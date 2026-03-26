@@ -1979,6 +1979,7 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce(4)
       .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(1)
       .mockResolvedValueOnce(1);
     prisma.moderationEvent.findMany
       .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
@@ -2073,11 +2074,12 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violationsSummary).toEqual({
       warn: 3,
       deleteMessage: 4,
-      kick: 1,
+      mute: 1,
       ban: 2,
+      unmute: 1,
       unban: 1,
       affectedUsers: 2,
-      total: 11,
+      total: 12,
     });
     expect(result.violations).toHaveLength(3);
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
@@ -2144,6 +2146,7 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
     prisma.moderationEvent.count
+      .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
@@ -2333,7 +2336,7 @@ describe('AdminService.getChatModerationFeed', () => {
           userId: 'user-3',
           createdAt: new Date('2026-03-02T11:00:00.000Z'),
           maskedExcerpt: null,
-          metadata: { banDurationHours: 24 },
+          metadata: { permanent: true },
         },
         {
           id: 'evt-ban-2',
@@ -2446,7 +2449,7 @@ describe('AdminService.getChatModerationFeed', () => {
         profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
         createdAt: '2026-03-02T11:00:00.000Z',
         maskedExcerpt: null,
-        metadata: { banDurationHours: 24 },
+        metadata: { permanent: true },
       },
       {
         id: 'evt-ban-2',
@@ -2500,7 +2503,7 @@ describe('AdminService.getChatModerationFeed', () => {
     expect(firstCall.where).toEqual(
       expect.objectContaining({
         chatId: 'chat-1',
-        action: 'BAN',
+        action: { in: ['BAN', 'KICK'] },
       }),
     );
     expect(firstCall.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
@@ -2526,7 +2529,7 @@ describe('AdminService.applyManualModerationAction', () => {
     jest.useRealTimers();
   });
 
-  it('cancels pending auto-unban before manual kick and records the action', async () => {
+  it('records manual mute without removing the participant from chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2550,29 +2553,25 @@ describe('AdminService.applyManualModerationAction', () => {
         displayName: null,
         chatTitle: null,
       },
-      { action: 'KICK' },
+      { action: 'MUTE', muteDurationHours: 6 },
     );
 
-    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-2');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-2', { immediate: true });
-    expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.kickMember.mock.invocationCallOrder[0],
-    );
-    expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
-      where: {
-        adminUserId: 'admin-1',
-        userId: 'user-2',
-      },
-    });
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.deleteMany).not.toHaveBeenCalled();
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           chatId: 'chat-1',
           userId: 'user-2',
-          ruleCode: 'MANUAL_KICK',
-          action: 'KICK',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
           operator: 'ADMIN',
+          metadata: expect.objectContaining({
+            muteDurationHours: 6,
+            muteExpiresAt: expect.any(String),
+          }),
         }),
       }),
     );
@@ -2581,29 +2580,26 @@ describe('AdminService.applyManualModerationAction', () => {
         data: expect.objectContaining({
           chatId: 'chat-1',
           actorUserId: 'admin-1',
-          action: 'MANUAL_KICK_MEMBER',
+          action: 'MANUAL_MUTE_MEMBER',
         }),
       }),
     );
     expect(result).toEqual({
       ok: true,
-      action: 'KICK',
+      action: 'MUTE',
       userId: 'user-2',
-      banDurationHours: null,
-      unbanScheduledAt: null,
-      message: 'Участник удалён из чата.',
+      muteDurationHours: 6,
+      muteExpiresAt: expect.any(String),
+      message: 'Участник замьючен на 6ч. Новые сообщения будут удаляться до конца срока.',
     });
   });
 
-  it('replaces previous auto-unban schedule on manual ban and records new schedule', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-03-15T14:00:00.000Z'));
-
+  it('applies permanent manual ban without scheduling auto-unban', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       banMember: jest.fn().mockResolvedValue(undefined),
-      unbanMember: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -2622,20 +2618,11 @@ describe('AdminService.applyManualModerationAction', () => {
         displayName: null,
         chatTitle: null,
       },
-      { action: 'BAN', banDurationHours: 6 },
+      { action: 'BAN' },
     );
 
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-3', {
-      delayMs: 6 * 60 * 60 * 1000,
-    });
-    expect(maxClient.banMember.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.cancelScheduledUnban.mock.invocationCallOrder[0],
-    );
-    expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.unbanMember.mock.invocationCallOrder[0],
-    );
     expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
       where: {
         adminUserId: 'admin-1',
@@ -2651,9 +2638,8 @@ describe('AdminService.applyManualModerationAction', () => {
           action: 'BAN',
           operator: 'ADMIN',
           metadata: expect.objectContaining({
-            banDurationHours: 6,
-            unbanScheduledAt: '2026-03-15T20:00:00.000Z',
             mode: 'MAX_BLOCK',
+            permanent: true,
           }),
         }),
       }),
@@ -2662,15 +2648,13 @@ describe('AdminService.applyManualModerationAction', () => {
       ok: true,
       action: 'BAN',
       userId: 'user-3',
-      banDurationHours: 6,
-      unbanScheduledAt: '2026-03-15T20:00:00.000Z',
-      message: 'Участник забанен на 6ч. Авторазбан запланирован.',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Участник забанен в чате.',
     });
   });
 
-  it('falls back to removal-only manual ban for closed chats without link', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-03-15T14:00:00.000Z'));
-
+  it('falls back to removal-only permanent manual ban for closed chats without link', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2718,7 +2702,7 @@ describe('AdminService.applyManualModerationAction', () => {
         displayName: null,
         chatTitle: null,
       },
-      { action: 'BAN', banDurationHours: 6 },
+      { action: 'BAN' },
     );
 
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
@@ -2736,10 +2720,10 @@ describe('AdminService.applyManualModerationAction', () => {
       ok: true,
       action: 'BAN',
       userId: 'user-3',
-      banDurationHours: 6,
-      unbanScheduledAt: '2026-03-15T20:00:00.000Z',
+      muteDurationHours: null,
+      muteExpiresAt: null,
       message:
-        'Участник удалён из чата на 6ч. Автовозврат запланирован. Для этого типа чата MAX блокировка недоступна, поэтому применено удаление без block.',
+        'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.',
     });
   });
 
@@ -2779,7 +2763,7 @@ describe('AdminService.applyManualModerationAction', () => {
           displayName: null,
           chatTitle: null,
         },
-        { action: 'BAN', banDurationHours: 6 },
+        { action: 'BAN' },
       ),
     ).rejects.toThrow(
       'У бота нет права MAX add_remove_members, поэтому он не может банить участников.',
@@ -2819,14 +2803,14 @@ describe('AdminService.applyManualModerationAction', () => {
           displayName: null,
           chatTitle: null,
         },
-        { action: 'BAN', banDurationHours: 6 },
+        { action: 'BAN' },
       ),
     ).rejects.toThrow('Пользователь уже не состоит в этом чате.');
 
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
-  it('rolls back manual ban when replacing auto-unban schedule fails', async () => {
+  it('still applies manual ban when cancelling a stale auto-unban fails', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2844,28 +2828,39 @@ describe('AdminService.applyManualModerationAction', () => {
       createConfigMock() as never,
     );
 
-    await expect(
-      service.applyManualModerationAction(
-        'chat-1',
-        'user-rollback',
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        { action: 'BAN', banDurationHours: 6 },
-      ),
-    ).rejects.toThrow('Не удалось заменить старый авторазбан.');
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-rollback',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN' },
+    );
 
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-rollback', {
       immediate: true,
     });
-    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-rollback', {
-      immediate: true,
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          ruleCode: 'MANUAL_BAN',
+          action: 'BAN',
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalled();
+    expect(result).toEqual({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-rollback',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Участник забанен в чате.',
     });
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('cancels pending auto-unban before manual unban and records the action', async () => {
@@ -2947,13 +2942,13 @@ describe('AdminService.applyManualModerationAction', () => {
       ok: true,
       action: 'UNBAN',
       userId: 'user-4',
-      banDurationHours: null,
-      unbanScheduledAt: null,
+      muteDurationHours: null,
+      muteExpiresAt: null,
       message: 'Участник возвращён в чат и разблокирован.',
     });
   });
 
-  it('releases active ban without re-adding a member who is already in chat', async () => {
+  it('releases active block without re-adding a member who is already in chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -3017,7 +3012,7 @@ describe('AdminService.applyManualModerationAction', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           metadata: expect.objectContaining({
-            mode: 'ACTIVE_BAN_RELEASE',
+            mode: 'ALREADY_PRESENT',
           }),
         }),
       }),
@@ -3026,9 +3021,9 @@ describe('AdminService.applyManualModerationAction', () => {
       ok: true,
       action: 'UNBAN',
       userId: 'user-4',
-      banDurationHours: null,
-      unbanScheduledAt: null,
-      message: 'Бан снят. Участник уже состоит в чате, повторное добавление не потребовалось.',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.',
     });
   });
 });
@@ -3101,8 +3096,8 @@ describe('AdminService.applyManualSystemBan', () => {
       ok: true,
       action: 'BAN',
       userId: 'user-3',
-      banDurationHours: null,
-      unbanScheduledAt: null,
+      muteDurationHours: null,
+      muteExpiresAt: null,
       message: 'Участник забанен в чате.',
     });
   });

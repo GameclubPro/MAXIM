@@ -107,7 +107,7 @@ type PendingInput =
   | { kind: 'giveaway_prize'; index: number }
   | { kind: 'poll_question' }
   | { kind: 'poll_option'; index: number }
-  | { kind: 'manual_ban_duration'; targetUserId: string };
+  | { kind: 'manual_mute_duration'; targetUserId: string };
 
 type PendingMassAction =
   | {
@@ -496,7 +496,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'linkWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'linkWarnMessageText', label: 'Текст предупреждения', type: 'text' },
     { key: 'linkBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
-    { key: 'linkKickEnabled', label: 'Кикать из чата', type: 'boolean' },
+    { key: 'linkMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
     { key: 'linkBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'linkBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'linkBotButtonText', label: 'Текст кнопки', type: 'text' },
@@ -518,7 +518,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'russianProfanityFilterEnabled', label: 'Включить фильтр', type: 'boolean' },
     { key: 'profanityBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'profanityWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
-    { key: 'profanityKickEnabled', label: 'Кикать из чата', type: 'boolean' },
+    { key: 'profanityMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
     { key: 'profanityBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
   ],
   commercialFilter: [
@@ -551,7 +551,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'textFiltersBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'textFiltersWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'textFiltersWarnMessageText', label: 'Текст предупреждения', type: 'text' },
-    { key: 'textFiltersKickEnabled', label: 'Кикать из чата', type: 'boolean' },
+    { key: 'textFiltersMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
     { key: 'textFiltersBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
     { key: 'textFiltersBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'textFiltersBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
@@ -584,8 +584,8 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       type: 'boolean',
     },
     {
-      key: 'thematicFiltersKickEnabled',
-      label: 'Шаг 4: кик',
+      key: 'thematicFiltersMuteEnabled',
+      label: 'Шаг 4: мут',
       type: 'boolean',
     },
     {
@@ -625,10 +625,10 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       step: 1,
       presets: [2, 3, 5],
     },
-    { key: 'duplicateKickEnabled', label: 'Штраф: кик', type: 'boolean' },
+    { key: 'duplicateMuteEnabled', label: 'Штраф: мут', type: 'boolean' },
     {
-      key: 'duplicateKickWindowSec',
-      label: 'Период для KICK (сек)',
+      key: 'duplicateMuteWindowSec',
+      label: 'Период для MUTE (сек)',
       type: 'number',
       min: 60,
       max: 604800,
@@ -636,8 +636,8 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       presets: [600, 1800, 3600],
     },
     {
-      key: 'duplicateKickMaxCount',
-      label: 'Лимит повторов для KICK',
+      key: 'duplicateMuteMaxCount',
+      label: 'Лимит повторов для MUTE',
       type: 'number',
       min: 1,
       max: 100,
@@ -669,8 +669,8 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'duplicateBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
     {
-      key: 'banDurationHours',
-      label: 'Длительность бана (часы)',
+      key: 'muteDurationHours',
+      label: 'Длительность мута (часы)',
       type: 'number',
       min: 1,
       max: 336,
@@ -736,14 +736,14 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
-    { key: 'messageLimitsKickEnabled', label: 'Штраф: кик', type: 'boolean' },
+    { key: 'messageLimitsMuteEnabled', label: 'Штраф: мут', type: 'boolean' },
     { key: 'messageLimitsBanEnabled', label: 'Штраф: бан', type: 'boolean' },
     { key: 'messageLimitsBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'messageLimitsBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'messageLimitsBotButtonText', label: 'Текст кнопки', type: 'text' },
     {
-      key: 'banDurationHours',
-      label: 'Длительность бана (часы)',
+      key: 'muteDurationHours',
+      label: 'Длительность мута (часы)',
       type: 'number',
       min: 1,
       max: 336,
@@ -818,7 +818,7 @@ const SECTION_CARD_FIELDS: Record<
     basic: [
       'linkPolicy',
       'linkWarnEnabled',
-      'linkKickEnabled',
+      'linkMuteEnabled',
       'linkBanEnabled',
       'linkBotMessageEnabled',
     ],
@@ -843,7 +843,7 @@ const SECTION_CARD_FIELDS: Record<
     basic: [
       'russianProfanityFilterEnabled',
       'profanityWarnEnabled',
-      'profanityKickEnabled',
+      'profanityMuteEnabled',
       'profanityBanEnabled',
     ],
     advanced: ['profanityBotMessageEnabled'],
@@ -860,7 +860,7 @@ const SECTION_CARD_FIELDS: Record<
       'textFiltersBotMessageText',
       'textFiltersWarnEnabled',
       'textFiltersWarnMessageText',
-      'textFiltersKickEnabled',
+      'textFiltersMuteEnabled',
       'textFiltersBanEnabled',
       'textFiltersBotButtonEnabled',
       'textFiltersBotButtonText',
@@ -874,7 +874,7 @@ const SECTION_CARD_FIELDS: Record<
       'thematicFiltersBotMessageEnabled',
       'thematicFiltersWarnEnabled',
       'thematicFiltersBanEnabled',
-      'thematicFiltersKickEnabled',
+      'thematicFiltersMuteEnabled',
     ],
     advanced: [
       'thematicFiltersBotButtonEnabled',
@@ -886,15 +886,15 @@ const SECTION_CARD_FIELDS: Record<
     basic: [
       'antiDuplicateEnabled',
       'duplicateWarnEnabled',
-      'duplicateKickEnabled',
+      'duplicateMuteEnabled',
       'duplicateBanEnabled',
-      'banDurationHours',
+      'muteDurationHours',
     ],
     advanced: [
       'duplicateWarnWindowSec',
       'duplicateWarnMaxCount',
-      'duplicateKickWindowSec',
-      'duplicateKickMaxCount',
+      'duplicateMuteWindowSec',
+      'duplicateMuteMaxCount',
       'duplicateBanWindowSec',
       'duplicateBanMaxCount',
       'duplicateBotMessageEnabled',
@@ -925,12 +925,12 @@ const SECTION_CARD_FIELDS: Record<
       'messageLimitsBotMessageEnabled',
       'messageLimitsBotMessageText',
       'messageLimitsWarnEnabled',
-      'messageLimitsKickEnabled',
+      'messageLimitsMuteEnabled',
       'messageLimitsBanEnabled',
       'messageLimitsBotButtonEnabled',
       'messageLimitsBotButtonText',
       'messageLimitsBotButtonUrl',
-      'banDurationHours',
+      'muteDurationHours',
     ],
   },
   night: {
@@ -3891,20 +3891,20 @@ export class PrivateControlService {
           throw new BadRequestException('Сначала выберите пользователя из списка');
         }
 
-        if (action === 'BAN') {
+        if (action === 'MUTE') {
           session.pendingInput = {
-            kind: 'manual_ban_duration',
+            kind: 'manual_mute_duration',
             targetUserId,
           };
           const view = this.renderInputPrompt(session.pendingInput);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
-            notification: 'Жду длительность бана',
+            notification: 'Жду длительность мута',
           });
           return;
         }
 
-        if (action !== 'KICK' && action !== 'UNBAN') {
+        if (action !== 'BAN' && action !== 'UNMUTE' && action !== 'UNBAN') {
           throw new BadRequestException('Неизвестное действие');
         }
 
@@ -4753,16 +4753,16 @@ export class PrivateControlService {
         return;
       }
 
-      case 'manual_ban_duration': {
+      case 'manual_mute_duration': {
         this.assertChatSelected(session);
-        const banDurationHours = this.parseIntInput(rawText, 1, 336);
+        const muteDurationHours = this.parseIntInput(rawText, 1, 336);
         const result = await this.adminService.applyManualModerationAction(
           session.selectedChatId!,
           pendingInput.targetUserId,
           context.actor,
           {
-            action: 'BAN',
-            banDurationHours,
+            action: 'MUTE',
+            muteDurationHours,
           },
           'private_bot',
         );
@@ -6866,7 +6866,7 @@ export class PrivateControlService {
       `Покинули чат: ${dashboard.membership.leftUsers}`,
       `WARN: ${dashboard.violationsSummary.warn}`,
       `DELETE: ${dashboard.violationsSummary.deleteMessage}`,
-      `KICK: ${dashboard.violationsSummary.kick}`,
+      `MUTE: ${dashboard.violationsSummary.mute}`,
       `BAN: ${dashboard.violationsSummary.ban}`,
       `Всего: ${dashboard.violationsSummary.total}`,
       '',
@@ -7004,10 +7004,13 @@ export class PrivateControlService {
       options: {
         buttons: [
           [
-            this.callbackButton('Кик', this.cb('manual_action', 'KICK'), 'negative'),
+            this.callbackButton('Мут', this.cb('manual_action', 'MUTE')),
             this.callbackButton('Бан', this.cb('manual_action', 'BAN'), 'negative'),
           ],
-          [this.callbackButton('Разбан', this.cb('manual_action', 'UNBAN'), 'positive')],
+          [
+            this.callbackButton('Снять мут', this.cb('manual_action', 'UNMUTE'), 'positive'),
+            this.callbackButton('Разбан', this.cb('manual_action', 'UNBAN'), 'positive'),
+          ],
           [
             this.callbackButton('⬅️ Назад', this.cb('back')),
             this.callbackButton('Главный экран', this.cb('home')),
@@ -7103,7 +7106,7 @@ export class PrivateControlService {
       button: ['кнопка', 'url'],
       message: ['сообщение', 'текст'],
       ban: ['бан'],
-      kick: ['кик'],
+      kick: ['кик', 'мут', 'мью', 'mute'],
       warn: ['предупреждение'],
       timezone: ['часовой пояс', 'timezone'],
     };
@@ -7145,7 +7148,7 @@ export class PrivateControlService {
       case 'links':
         return [
           `Политика: ${this.describeLinkPolicy(settings.linkPolicy)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.linkWarnEnabled)} • KICK ${this.describeBooleanCompact(settings.linkKickEnabled)} • BAN ${this.describeBooleanCompact(settings.linkBanEnabled)}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.linkWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.linkMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.linkBanEnabled)}`,
           `Сообщение бота: ${this.describeBooleanCompact(settings.linkBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.linkBotButtonEnabled)}`,
           ...(view === 'advanced'
             ? ['Allowlist и тексты предупреждений доступны в расширенном режиме ниже.']
@@ -7159,7 +7162,7 @@ export class PrivateControlService {
       case 'profanityFilter':
         return [
           `Фильтр: ${this.describeBooleanCompact(settings.russianProfanityFilterEnabled)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • KICK ${this.describeBooleanCompact(settings.profanityKickEnabled)} • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.profanityMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
           `Сообщение бота: ${this.describeBooleanCompact(settings.profanityBotMessageEnabled)}`,
         ];
       case 'commercialFilter':
@@ -7171,14 +7174,14 @@ export class PrivateControlService {
       case 'thematicFilters':
         return [
           `Кодовое слово: ${settings.thematicCodewordEnabled ? settings.thematicCodeword || 'не задано' : 'выключено'}`,
-          `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)} • KICK ${this.describeBooleanCompact(settings.thematicFiltersKickEnabled)}`,
+          `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.thematicFiltersMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)}`,
           `Кнопка: ${this.describeBooleanCompact(settings.thematicFiltersBotButtonEnabled)}`,
         ];
       case 'duplicates':
         return [
-          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • бан ${settings.banDurationHours}ч`,
+          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • мут ${settings.muteDurationHours}ч`,
           `WARN: ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} / ${settings.duplicateWarnMaxCount} повт. за ${settings.duplicateWarnWindowSec}с`,
-          `KICK: ${this.describeBooleanCompact(settings.duplicateKickEnabled)} / ${settings.duplicateKickMaxCount} повт. за ${settings.duplicateKickWindowSec}с`,
+          `MUTE: ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} / ${settings.duplicateMuteMaxCount} повт. за ${settings.duplicateMuteWindowSec}с`,
           `BAN: ${this.describeBooleanCompact(settings.duplicateBanEnabled)} / ${settings.duplicateBanMaxCount} повт. за ${settings.duplicateBanWindowSec}с`,
         ];
       case 'limits':
@@ -7981,9 +7984,9 @@ export class PrivateControlService {
           title: `Вариант ${input.index + 1}`,
           description: 'Введите текст варианта ответа.',
         };
-      case 'manual_ban_duration':
+      case 'manual_mute_duration':
         return {
-          title: `Длительность бана для ${input.targetUserId}`,
+          title: `Длительность мута для ${input.targetUserId}`,
           description: 'Введите длительность в часах (от 1 до 336).',
         };
     }
@@ -10517,7 +10520,7 @@ export class PrivateControlService {
       };
     }
 
-    if (kind === 'manual_ban_duration') {
+    if (kind === 'manual_mute_duration') {
       if (typeof row.targetUserId !== 'string' || !row.targetUserId.trim()) {
         return null;
       }

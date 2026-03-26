@@ -65,7 +65,7 @@ import {
   WEBHOOK_QUEUE_DEFAULT,
 } from '../webhook/webhook-queues';
 
-type ActiveBan = {
+type ActiveMute = {
   eventId: string;
   issuedAt: Date;
   expiresAt: Date;
@@ -102,8 +102,8 @@ type ForwardedModerationTarget = {
   senderName: string | null;
 };
 
-const DEFAULT_BAN_DURATION_HOURS = 6;
-const MAX_ACTIVE_BAN_DURATION_HOURS = 336;
+const DEFAULT_MUTE_DURATION_HOURS = 6;
+const MAX_ACTIVE_MUTE_DURATION_HOURS = 336;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
@@ -596,15 +596,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const activeBan = await this.getActiveBan(chatId, senderId, settings.banDurationHours);
-    if (activeBan) {
-      await this.handleActiveBanMessage({
+    const activeMute = await this.getActiveMute(chatId, senderId, settings.muteDurationHours);
+    if (activeMute) {
+      await this.handleActiveMuteMessage({
         chatId,
         userId: senderId,
         messageId,
         text,
         createdAt,
-        ban: activeBan,
+        mute: activeMute,
       });
       return;
     }
@@ -696,7 +696,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         createdAt,
         decision: detection.duplicateDecision,
         userLabel,
-        banDurationHours: settings.banDurationHours,
+        muteDurationHours: settings.muteDurationHours,
         botSpeechStyle: settings.botSpeechStyle,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
         duplicateBotMessageText: settings.duplicateBotMessageText,
@@ -888,31 +888,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
 
     let action: SanctionAction = SanctionAction.NONE;
-    const actionBanDurationHours = settings.banDurationHours;
+    const actionBanDurationHours = settings.muteDurationHours;
 
     if (topViolation.ruleCode === 'LINK_BLOCKED') {
       action = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
         warnEnabled: settings.linkWarnEnabled,
         banEnabled: settings.linkBanEnabled,
-        kickEnabled: settings.linkKickEnabled,
+        muteEnabled: settings.linkMuteEnabled,
       });
     } else if (isTextFilterHit) {
       action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
         warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
         banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
-        kickEnabled: Boolean(textFilterEscalationSettings?.kickEnabled),
+        muteEnabled: Boolean(textFilterEscalationSettings?.muteEnabled),
       });
     } else if (isTopicFilterHit) {
       action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
         warnEnabled: settings.thematicFiltersWarnEnabled,
         banEnabled: settings.thematicFiltersBanEnabled,
-        kickEnabled: settings.thematicFiltersKickEnabled,
+        muteEnabled: settings.thematicFiltersMuteEnabled,
       });
     } else if (isMessageLimitsHit) {
       action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
         warnEnabled: settings.messageLimitsWarnEnabled,
         banEnabled: settings.messageLimitsBanEnabled,
-        kickEnabled: settings.messageLimitsKickEnabled,
+        muteEnabled: settings.messageLimitsMuteEnabled,
       });
     } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
@@ -1154,7 +1154,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         action,
         userLabel,
         messageId,
-        banDurationHours: actionBanDurationHours,
+        muteDurationHours: actionBanDurationHours,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
         botMessageOptions:
@@ -1165,7 +1165,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               : isMessageLimitsHit
                 ? (limitsMessageOptions ?? undefined)
                 : undefined,
-        banNoticeText:
+        sanctionNoticeText:
           isMessageLimitsHit && action === SanctionAction.BAN
             ? this.buildMessageLimitsBanExplanation(
                 userLabel,
@@ -1185,10 +1185,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botSpeechStyle: settings.botSpeechStyle,
       });
 
-      if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
+      if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.MUTE) {
         try {
           await sendChatBotMessage(
-            this.buildLinkKickExplanation(userLabel, settings.botSpeechStyle),
+            this.buildLinkMuteExplanation(userLabel, settings.botSpeechStyle),
             linkMessageOptions ?? undefined,
           );
         } catch (error: unknown) {
@@ -1199,15 +1199,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               messageId,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send link kick message',
+            'Failed to send link mute message',
           );
         }
       }
 
-      if (isTextFilterHit && action === SanctionAction.KICK) {
+      if (isTextFilterHit && action === SanctionAction.MUTE) {
         try {
           await sendChatBotMessage(
-            this.buildTextFilterKickExplanation(
+            this.buildTextFilterMuteExplanation(
               userLabel,
               topViolation.ruleCode,
               settings.botSpeechStyle,
@@ -1221,15 +1221,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               messageId,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send text filter kick message',
+            'Failed to send text filter mute message',
           );
         }
       }
 
-      if (isTopicFilterHit && action === SanctionAction.KICK) {
+      if (isTopicFilterHit && action === SanctionAction.MUTE) {
         try {
           await sendChatBotMessage(
-            this.buildTopicFilterKickExplanation(
+            this.buildTopicFilterMuteExplanation(
               userLabel,
               this.extractTopicFilterRequiredCodeword(topViolation.metadata),
               settings.botSpeechStyle,
@@ -1245,15 +1245,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ruleCode: topViolation.ruleCode,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send thematic filter kick message',
+            'Failed to send thematic filter mute message',
           );
         }
       }
 
-      if (isMessageLimitsHit && action === SanctionAction.KICK) {
+      if (isMessageLimitsHit && action === SanctionAction.MUTE) {
         try {
           await sendChatBotMessage(
-            this.buildMessageLimitsKickExplanation(
+            this.buildMessageLimitsMuteExplanation(
               userLabel,
               topViolation.ruleCode,
               messageLimitsBlockedWord,
@@ -1270,7 +1270,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ruleCode: topViolation.ruleCode,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send message limits kick message',
+            'Failed to send message limits mute message',
           );
         }
       }
@@ -1295,7 +1295,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           typeof topViolation.metadata === 'object'
             ? topViolation.metadata
             : {}),
-          ...(action === SanctionAction.BAN ? { banDurationHours: actionBanDurationHours } : {}),
           ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
             ? {
                 linkViolationCount24h,
@@ -1333,7 +1332,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     createdAt: string;
     decision: DuplicateDecision;
     userLabel: string;
-    banDurationHours: number;
+    muteDurationHours: number;
     botSpeechStyle: BotSpeechStyle | null;
     duplicateBotMessageEnabled: boolean;
     duplicateBotMessageText: string;
@@ -1354,7 +1353,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       createdAt,
       decision,
       userLabel,
-      banDurationHours,
+      muteDurationHours,
       botSpeechStyle,
       duplicateBotMessageEnabled,
       duplicateBotMessageText,
@@ -1429,7 +1428,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text: this.buildDuplicateExplanation(
             userLabel,
             decision,
-            banDurationHours,
+            muteDurationHours,
             messageDeleted,
             duplicateBotMessageText,
             botSpeechStyle,
@@ -1458,7 +1457,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       action,
       userLabel,
       messageId,
-      banDurationHours,
+      muteDurationHours,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       botMessageOptions: duplicateMessageOptions ?? undefined,
@@ -1481,7 +1480,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           count: decision.count,
           threshold: decision.threshold,
           nextStep: decision.nextAction,
-          ...(action === SanctionAction.BAN ? { banDurationHours } : {}),
         },
       },
     });
@@ -1613,8 +1611,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (action === 'WARN') {
       return SanctionAction.WARN;
     }
-    if (action === 'KICK') {
-      return SanctionAction.KICK;
+    if (action === 'MUTE') {
+      return SanctionAction.MUTE;
     }
     return SanctionAction.BAN;
   }
@@ -1716,14 +1714,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalizedTitles.join(', ');
   }
 
-  private buildRequiredSubscriptionKickExplanation(
+  private buildRequiredSubscriptionMuteExplanation(
     userLabel: string,
     channelTitles: readonly string[],
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: 'requiredSubscriptionKick',
+      templateKey: 'requiredSubscriptionMute',
       replacements: {
         user: userLabel,
         channels: this.formatRequiredSubscriptionChannels(channelTitles),
@@ -1734,7 +1732,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildRequiredSubscriptionBanExplanation(
     userLabel: string,
     channelTitles: readonly string[],
-    banDurationHours: number,
+    _muteDurationHours: number,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
@@ -1743,18 +1741,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         channels: this.formatRequiredSubscriptionChannels(channelTitles),
-        ban_duration: this.formatBanDurationLabel(banDurationHours),
       },
     });
   }
 
-  private buildLinkKickExplanation(
+  private buildLinkMuteExplanation(
     userLabel: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: 'linkKick',
+      templateKey: 'linkMute',
       replacements: {
         user: userLabel,
       },
@@ -1787,17 +1784,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private buildTextFilterKickExplanation(
+  private buildTextFilterMuteExplanation(
     userLabel: string,
     ruleCode: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     const templateKey =
       ruleCode === 'COMMERCIAL_AD'
-        ? 'textFiltersKickCommercial'
+        ? 'textFiltersMuteCommercial'
         : ruleCode === 'PROFANITY'
-          ? 'textFiltersKickProfanity'
-          : 'textFiltersKickGeneric';
+          ? 'textFiltersMuteProfanity'
+          : 'textFiltersMuteGeneric';
 
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
@@ -1846,14 +1843,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private buildTopicFilterKickExplanation(
+  private buildTopicFilterMuteExplanation(
     userLabel: string,
     requiredCodeword: string | null,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: requiredCodeword ? 'topicKickAnnouncement' : 'topicKickMessage',
+      templateKey: requiredCodeword ? 'topicMuteAnnouncement' : 'topicMuteMessage',
       replacements: {
         user: userLabel,
       },
@@ -1863,10 +1860,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildTopicFilterBanExplanation(
     userLabel: string,
     requiredCodeword: string | null,
-    banDurationHours: number,
+    _muteDurationHours: number,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const durationLabel = this.formatBanDurationLabel(banDurationHours);
     const reason = this.resolveTopicFilterRequirementLabel(requiredCodeword);
 
     return this.renderSystemBotSpeechTemplate({
@@ -1874,7 +1870,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'topicBan',
       replacements: {
         user: userLabel,
-        ban_duration: durationLabel,
         reason,
       },
     });
@@ -1883,12 +1878,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildDuplicateExplanation(
     userLabel: string,
     decision: DuplicateDecision,
-    banDurationHours: number,
+    muteDurationHours: number,
     messageDeleted: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const banDurationLabel = this.formatBanDurationLabel(banDurationHours);
+    const banDurationLabel = this.formatMuteDurationLabel(muteDurationHours);
     const baseContext = this.buildDuplicateContextLabel(messageDeleted);
     const sanction = this.buildDuplicateSanctionLabel(
       botSpeechStyle,
@@ -1906,6 +1901,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: baseContext,
         sanction,
+        mute_duration: banDurationLabel,
         ban_duration: banDurationLabel,
       },
     });
@@ -2027,55 +2023,55 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildDuplicateSanctionLabel(
     style: BotSpeechStyle | null,
     action: SanctionAction,
-    banDurationLabel: string,
+    muteDurationLabel: string,
   ): string {
     if (style === 'POLICE' || style === null) {
       if (action === 'WARN') {
         return 'Предупреждение оформил.';
       }
-      if (action === 'KICK') {
-        return 'Пришлось оформить выход из чата.';
+      if (action === 'MUTE') {
+        return `Оформляю мут на ${muteDurationLabel}.`;
       }
-      return `Оформляю паузу на ${banDurationLabel}.`;
+      return 'Оформляю бан до ручного разбана.';
     }
 
     if (style === 'ROBOT') {
       if (action === 'WARN') {
         return 'Предупреждение зарегистрировано.';
       }
-      if (action === 'KICK') {
-        return 'Доступ к чату ограничен.';
+      if (action === 'MUTE') {
+        return `Установлен мут на ${muteDurationLabel}.`;
       }
-      return `Установлен тайм-аут на ${banDurationLabel}.`;
+      return 'Установлен бан до ручного снятия.';
     }
 
     if (style === 'FRIENDLY') {
       if (action === 'WARN') {
         return 'Это уже предупреждение.';
       }
-      if (action === 'KICK') {
-        return 'Пришлось вывести вас из чата.';
+      if (action === 'MUTE') {
+        return `Нужен мут на ${muteDurationLabel}.`;
       }
-      return `Нужна пауза на ${banDurationLabel}.`;
+      return 'Пришлось выдать бан до ручного разбана.';
     }
 
     if (style === 'IRONIC') {
       if (action === 'WARN') {
         return 'Да, это уже предупреждение.';
       }
-      if (action === 'KICK') {
-        return 'Чат решил немного передохнуть без вас.';
+      if (action === 'MUTE') {
+        return `Мут на ${muteDurationLabel}. Пусть идея чуть остынет.`;
       }
-      return `Пауза на ${banDurationLabel}. Пусть идея чуть остынет.`;
+      return 'Бан без таймера. Чат решил больше не рисковать.';
     }
 
     if (action === 'WARN') {
       return 'Фиксирую предупреждение.';
     }
-    if (action === 'KICK') {
-      return 'Пришлось вывести из чата.';
+    if (action === 'MUTE') {
+      return `Оформляю мут на ${muteDurationLabel}.`;
     }
-    return `Оформляю тайм-аут на ${banDurationLabel}.`;
+    return 'Оформляю бан до ручного снятия.';
   }
 
   private buildDuplicatePassiveSanctionLabel(style: BotSpeechStyle | null): string {
@@ -2114,11 +2110,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     action: SanctionAction;
     userLabel: string;
     messageId: string;
-    banDurationHours: number;
+    muteDurationHours: number;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
-    banNoticeText?: string;
+    sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
     trackAsGlobalSpammer?: boolean;
   }) {
@@ -2128,39 +2124,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       action,
       userLabel,
       messageId,
-      banDurationHours,
+      muteDurationHours,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
-      banNoticeText,
+      sanctionNoticeText,
       botSpeechStyle,
       trackAsGlobalSpammer = true,
     } = params;
-    if (action === SanctionAction.KICK) {
-      if (trackAsGlobalSpammer) {
-        await this.upsertGlobalSpammerEntry({
-          userId,
-          sourceChatId: chatId,
-          reason: 'SANCTION_KICK',
-          evidence: {
-            action: 'KICK',
-            source: 'sanction',
-          },
-        });
-      }
-      try {
-        await this.maxClient.kickMember(chatId, userId);
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to kick member',
-        );
-      }
+    if (action === SanctionAction.MUTE) {
+      await this.sendMuteNotice({
+        chatId,
+        userId,
+        messageId,
+        userLabel,
+        muteDurationHours,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+        botMessageOptions,
+        sanctionNoticeText,
+        botSpeechStyle,
+      });
       return;
     }
 
@@ -2180,31 +2164,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    // Soft-ban mode: do not remove member from chat, enforce ban via active-ban auto-delete window.
-    await this.sendBanNotice({
+    try {
+      await this.maxClient.banMember(chatId, userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to ban member',
+      );
+    }
+
+    await this.sendBanNoticeMessage({
       chatId,
       userId,
       messageId,
       userLabel,
-      banDurationHours,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
-      banNoticeText,
+      sanctionNoticeText,
       botSpeechStyle,
     });
   }
 
-  private async sendBanNotice(params: {
+  private async sendMuteNotice(params: {
     chatId: string;
     userId: string;
     messageId: string;
     userLabel: string;
-    banDurationHours: number;
+    muteDurationHours: number;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
-    banNoticeText?: string;
+    sanctionNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
   }) {
     const {
@@ -2212,15 +2208,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userId,
       messageId,
       userLabel,
-      banDurationHours,
+      muteDurationHours,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       botMessageOptions,
-      banNoticeText,
+      sanctionNoticeText,
       botSpeechStyle,
     } = params;
     const noticeText =
-      banNoticeText ?? this.buildBanNotice(userLabel, banDurationHours, botSpeechStyle);
+      sanctionNoticeText ?? this.buildMuteNotice(userLabel, muteDurationHours, botSpeechStyle);
     try {
       await this.sendBotMessageWithOptionalAutoDelete({
         chatId,
@@ -2237,24 +2233,89 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to send ban notice message',
+        'Failed to send mute notice message',
       );
     }
   }
 
-  private buildBanNotice(
+  private async sendBanNoticeMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    userLabel: string;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+    botMessageOptions?: MaxSendMessageOptions;
+    sanctionNoticeText?: string;
+    botSpeechStyle: BotSpeechStyle | null;
+  }) {
+    const {
+      chatId,
+      userId,
+      messageId,
+      userLabel,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
+      botMessageOptions,
+      sanctionNoticeText,
+      botSpeechStyle,
+    } = params;
+
+    const noticeText = sanctionNoticeText ?? this.buildPermanentBanNotice(userLabel, botSpeechStyle);
+    try {
+      await this.sendBotMessageWithOptionalAutoDelete({
+        chatId,
+        text: noticeText,
+        messageOptions: botMessageOptions,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send permanent ban notice message',
+      );
+    }
+  }
+
+  private buildMuteNotice(
     userLabel: string,
-    banDurationHours: number,
+    muteDurationHours: number,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: 'banNotice',
+      templateKey: 'muteNotice',
       replacements: {
         user: userLabel,
-        ban_duration: this.formatBanDurationLabel(banDurationHours),
+        mute_duration: this.formatMuteDurationLabel(muteDurationHours),
+        ban_duration: this.formatMuteDurationLabel(muteDurationHours),
       },
     });
+  }
+
+  private buildPermanentBanNotice(
+    userLabel: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    if (botSpeechStyle === 'ROBOT') {
+      return `Система: ${userLabel}. Выдан бан до ручного снятия.`;
+    }
+
+    if (botSpeechStyle === 'FRIENDLY') {
+      return `${userLabel}, пришлось выдать бан до ручного разбана.`;
+    }
+
+    if (botSpeechStyle === 'IRONIC') {
+      return `${userLabel}, на этот раз дошло до бана без таймера.`;
+    }
+
+    return `Товарищ ${userLabel}, оформляю бан до ручного разбана.`;
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
@@ -2263,16 +2324,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveLinkEscalationAction(
     linkViolationCount24h: number,
-    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+    settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
   ): SanctionAction {
     const count = Number.isInteger(linkViolationCount24h) ? Math.max(1, linkViolationCount24h) : 1;
 
     if (count >= 4) {
-      if (settings.kickEnabled) {
-        return SanctionAction.KICK;
-      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
+      }
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
       }
       if (settings.warnEnabled) {
         return SanctionAction.WARN;
@@ -2281,6 +2342,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (count === 3) {
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
+      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
       }
@@ -2299,25 +2363,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveRequiredSubscriptionEscalationAction(
     requiredSubscriptionViolationCount24h: number,
-    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+    settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
   ): SanctionAction {
     return this.resolveLinkEscalationAction(requiredSubscriptionViolationCount24h, settings);
   }
 
   private resolveTextFilterEscalationAction(
     textFilterViolationCount24h: number,
-    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+    settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
   ): SanctionAction {
     const count = Number.isInteger(textFilterViolationCount24h)
       ? Math.max(1, textFilterViolationCount24h)
       : 1;
 
     if (count >= 4) {
-      if (settings.kickEnabled) {
-        return SanctionAction.KICK;
-      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
+      }
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
       }
       if (settings.warnEnabled) {
         return SanctionAction.WARN;
@@ -2326,6 +2390,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (count === 3) {
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
+      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
       }
@@ -2344,16 +2411,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveMessageLimitsEscalationAction(
     violationCount12h: number,
-    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+    settings: { warnEnabled: boolean; banEnabled: boolean; muteEnabled: boolean },
   ): SanctionAction {
     const count = Number.isInteger(violationCount12h) ? Math.max(1, violationCount12h) : 1;
 
     if (count >= 4) {
-      if (settings.kickEnabled) {
-        return SanctionAction.KICK;
-      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
+      }
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
       }
       if (settings.warnEnabled) {
         return SanctionAction.WARN;
@@ -2362,6 +2429,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (count === 3) {
+      if (settings.muteEnabled) {
+        return SanctionAction.MUTE;
+      }
       if (settings.banEnabled) {
         return SanctionAction.BAN;
       }
@@ -2387,7 +2457,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     warnEnabled: boolean;
     warnMessageText: string;
     banEnabled: boolean;
-    kickEnabled: boolean;
+    muteEnabled: boolean;
   } {
     if (ruleCode === 'PROFANITY') {
       return {
@@ -2396,7 +2466,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         warnEnabled: settings.profanityWarnEnabled,
         warnMessageText: settings.textFiltersWarnMessageText,
         banEnabled: settings.profanityBanEnabled,
-        kickEnabled: settings.profanityKickEnabled,
+        muteEnabled: settings.profanityMuteEnabled,
       };
     }
 
@@ -2406,7 +2476,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       warnEnabled: settings.textFiltersWarnEnabled,
       warnMessageText: settings.textFiltersWarnMessageText,
       banEnabled: settings.textFiltersBanEnabled,
-      kickEnabled: settings.textFiltersKickEnabled,
+      muteEnabled: settings.textFiltersMuteEnabled,
     };
   }
 
@@ -2614,7 +2684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private buildMessageLimitsKickExplanation(
+  private buildMessageLimitsMuteExplanation(
     userLabel: string,
     ruleCode: string,
     blockedWord: string | null | undefined,
@@ -2622,7 +2692,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
-      templateKey: 'messageLimitsKick',
+      templateKey: 'messageLimitsMute',
       replacements: {
         user: userLabel,
         reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
@@ -2649,7 +2719,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildMessageLimitsBanExplanation(
     userLabel: string,
     ruleCode: string,
-    banDurationHours: number,
+    _muteDurationHours: number,
     blockedWord: string | null | undefined,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
@@ -2658,7 +2728,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'messageLimitsBan',
       replacements: {
         user: userLabel,
-        ban_duration: this.formatBanDurationLabel(banDurationHours),
         reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
       },
     });
@@ -3487,16 +3556,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return createdAt.getTime() + windowSec * 1000 > Date.now();
   }
 
-  private async getActiveBan(
+  private async getActiveMute(
     chatId: string,
     userId: string,
-    fallbackBanDurationHours: number,
-  ): Promise<ActiveBan | null> {
+    fallbackMuteDurationHours: number,
+  ): Promise<ActiveMute | null> {
     const latestRelevantEvent = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
         userId,
-        OR: [{ action: SanctionAction.BAN }, { ruleCode: 'MANUAL_UNBAN' }],
+        OR: [
+          { action: SanctionAction.MUTE },
+          { action: SanctionAction.BAN },
+          { ruleCode: 'MANUAL_UNMUTE' },
+          { ruleCode: 'MANUAL_UNBAN' },
+        ],
       },
       orderBy: {
         createdAt: 'desc',
@@ -3515,14 +3589,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const latestAction = latestRelevantEvent.action ?? SanctionAction.BAN;
-    if (latestRelevantEvent.ruleCode === 'MANUAL_UNBAN' || latestAction !== SanctionAction.BAN) {
+    if (
+      latestRelevantEvent.ruleCode === 'MANUAL_UNMUTE' ||
+      latestRelevantEvent.ruleCode === 'MANUAL_UNBAN'
+    ) {
       return null;
     }
 
-    const durationHours = this.readBanDurationHoursFromMetadata(
+    const storedDurationHours = this.readStoredMuteDurationHoursFromMetadata(
       latestRelevantEvent.metadata,
-      fallbackBanDurationHours,
     );
+    const isTimedMute =
+      latestAction === SanctionAction.MUTE ||
+      (latestAction === SanctionAction.BAN && storedDurationHours !== null);
+
+    if (!isTimedMute) {
+      return null;
+    }
+
+    const durationHours = storedDurationHours ?? fallbackMuteDurationHours;
     const expiresAt = new Date(
       latestRelevantEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
     );
@@ -3973,22 +4058,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return 'Попробуйте ещё раз через несколько секунд.';
   }
 
-  private async handleActiveBanMessage(params: {
+  private async handleActiveMuteMessage(params: {
     chatId: string;
     userId: string;
     messageId: string;
     text: string;
     createdAt: string;
-    ban: ActiveBan;
+    mute: ActiveMute;
   }) {
-    const { chatId, userId, messageId, text, createdAt, ban } = params;
+    const { chatId, userId, messageId, text, createdAt, mute } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
     if (!canDeleteMessage) {
       await this.maxClient.notifyModerators(
         chatId,
-        `Сообщение от ${userId} попало под активный бан, но старше 24 часов и не может быть удалено`,
+        `Сообщение от ${userId} попало под активный мут, но старше 24 часов и не может быть удалено`,
       );
       return;
     }
@@ -4001,17 +4086,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId,
           messageId,
           eventType: EventType.MESSAGE,
-          ruleCode: 'BAN_ACTIVE_DELETE',
+          ruleCode: 'MUTE_ACTIVE_DELETE',
           action: SanctionAction.DELETE_MESSAGE,
           maskedExcerpt: maskText(text),
           score: 1,
           operator: Operator.BOT,
           metadata: {
-            reason: 'Message removed during active ban window',
-            banEventId: ban.eventId,
-            banIssuedAt: ban.issuedAt.toISOString(),
-            banExpiresAt: ban.expiresAt.toISOString(),
-            banDurationHours: ban.durationHours,
+            reason: 'Message removed during active mute window',
+            muteEventId: mute.eventId,
+            muteIssuedAt: mute.issuedAt.toISOString(),
+            muteExpiresAt: mute.expiresAt.toISOString(),
+            muteDurationHours: mute.durationHours,
           },
         },
       });
@@ -4023,7 +4108,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to delete message during active ban',
+        'Failed to delete message during active mute',
       );
     }
   }
@@ -5567,12 +5652,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'requiredSubscriptionWarnEnabled'
       | 'requiredSubscriptionWarnMessageText'
       | 'requiredSubscriptionBanEnabled'
-      | 'requiredSubscriptionKickEnabled'
+      | 'requiredSubscriptionMuteEnabled'
       | 'botSpeechStyle'
       | 'rulesAttachViolationsEnabled'
       | 'deleteBotMessagesEnabled'
       | 'deleteBotMessagesDelayMinutes'
-      | 'banDurationHours'
+      | 'muteDurationHours'
     >;
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
@@ -5634,7 +5719,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       {
         warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
         banEnabled: params.settings.requiredSubscriptionBanEnabled,
-        kickEnabled: params.settings.requiredSubscriptionKickEnabled,
+        muteEnabled: params.settings.requiredSubscriptionMuteEnabled,
       },
     );
     const isFirstRequiredSubscriptionViolation = requiredSubscriptionViolationCount24h === 1;
@@ -5740,16 +5825,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         action,
         userLabel: params.userLabel,
         messageId: params.messageId,
-        banDurationHours: params.settings.banDurationHours,
+        muteDurationHours: params.settings.muteDurationHours,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
         botMessageOptions: requiredSubscriptionMessageOptions,
-        banNoticeText:
+        sanctionNoticeText:
           action === SanctionAction.BAN
             ? this.buildRequiredSubscriptionBanExplanation(
                 params.userLabel,
                 missingChannelTitles,
-                params.settings.banDurationHours,
+                params.settings.muteDurationHours,
                 params.settings.botSpeechStyle,
               )
             : undefined,
@@ -5757,10 +5842,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         trackAsGlobalSpammer: false,
       });
 
-      if (action === SanctionAction.KICK) {
+      if (action === SanctionAction.MUTE) {
         try {
           await sendRequiredSubscriptionBotMessage(
-            this.buildRequiredSubscriptionKickExplanation(
+            this.buildRequiredSubscriptionMuteExplanation(
               params.userLabel,
               missingChannelTitles,
               params.settings.botSpeechStyle,
@@ -5774,7 +5859,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               messageId: params.messageId,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
-            'Failed to send required subscription kick message',
+            'Failed to send required subscription mute message',
           );
         }
       }
@@ -5798,9 +5883,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           missingChannelTitles,
           requiredSubscriptionViolationCount24h,
           requiredSubscriptionEscalationWindowHours: REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
-          ...(action === SanctionAction.BAN
-            ? { banDurationHours: params.settings.banDurationHours }
-            : {}),
         },
       },
     });
@@ -9495,29 +9577,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private readBanDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
+  private readStoredMuteDurationHoursFromMetadata(metadata: unknown): number | null {
     if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
-      const value = (metadata as Record<string, unknown>).banDurationHours;
+      const normalizedMetadata = metadata as Record<string, unknown>;
+      const value =
+        typeof normalizedMetadata.muteDurationHours === 'number'
+          ? normalizedMetadata.muteDurationHours
+          : normalizedMetadata.banDurationHours;
       if (
         typeof value === 'number' &&
         Number.isInteger(value) &&
         value >= 1 &&
-        value <= MAX_ACTIVE_BAN_DURATION_HOURS
+        value <= MAX_ACTIVE_MUTE_DURATION_HOURS
       ) {
         return value;
       }
     }
 
-    if (Number.isInteger(fallback) && fallback >= 1 && fallback <= MAX_ACTIVE_BAN_DURATION_HOURS) {
+    return null;
+  }
+
+  private readMuteDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
+    const storedValue = this.readStoredMuteDurationHoursFromMetadata(metadata);
+    if (storedValue !== null) {
+      return storedValue;
+    }
+
+    if (Number.isInteger(fallback) && fallback >= 1 && fallback <= MAX_ACTIVE_MUTE_DURATION_HOURS) {
       return fallback;
     }
 
-    return DEFAULT_BAN_DURATION_HOURS;
+    return DEFAULT_MUTE_DURATION_HOURS;
   }
 
-  private formatBanDurationLabel(hours: number): string {
+  private formatMuteDurationLabel(hours: number): string {
     const safeHours =
-      Number.isInteger(hours) && hours >= 1 && hours <= 36 ? hours : DEFAULT_BAN_DURATION_HOURS;
+      Number.isInteger(hours) && hours >= 1 && hours <= 36 ? hours : DEFAULT_MUTE_DURATION_HOURS;
     return `${safeHours}ч`;
   }
 

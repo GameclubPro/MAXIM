@@ -19,7 +19,14 @@ export {
 } from './bot-speech.js';
 import { botSpeechStyleSchema } from './bot-speech.js';
 
-export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
+export const sanctionActionSchema = z.enum([
+  'NONE',
+  'WARN',
+  'DELETE_MESSAGE',
+  'MUTE',
+  'KICK',
+  'BAN',
+]);
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
@@ -449,13 +456,13 @@ function isValidIanaTimeZone(value: string): boolean {
 export const chatSettingsSchema = z
   .object({
     duplicateWarnEnabled: z.boolean().default(true),
-    duplicateKickEnabled: z.boolean().default(true),
+    duplicateMuteEnabled: z.boolean().default(true),
     duplicateBanEnabled: z.boolean().default(true),
     antiDuplicateEnabled: z.boolean().default(true),
     duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
     duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
-    duplicateKickWindowSec: duplicateWindowSecSchema.default(86_400),
-    duplicateKickMaxCount: duplicateMaxCountSchema.default(3),
+    duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
+    duplicateMuteMaxCount: duplicateMaxCountSchema.default(3),
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
@@ -475,7 +482,7 @@ export const chatSettingsSchema = z
     requiredSubscriptionWarnEnabled: z.boolean().default(false),
     requiredSubscriptionWarnMessageText: botMessageTextSchema,
     requiredSubscriptionBanEnabled: z.boolean().default(false),
-    requiredSubscriptionKickEnabled: z.boolean().default(false),
+    requiredSubscriptionMuteEnabled: z.boolean().default(false),
     commentsEnabled: z.boolean().default(false),
     commentsAdminsEnabled: z.boolean().default(true),
     commentsAllEnabled: z.boolean().default(false),
@@ -509,7 +516,7 @@ export const chatSettingsSchema = z
     messageLimitsBotMessageText: botMessageTextSchema,
     messageLimitsWarnEnabled: z.boolean().default(false),
     messageLimitsBanEnabled: z.boolean().default(false),
-    messageLimitsKickEnabled: z.boolean().default(false),
+    messageLimitsMuteEnabled: z.boolean().default(false),
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
     messageLimitsBotButtonText: botButtonTextSchema,
@@ -521,13 +528,13 @@ export const chatSettingsSchema = z
     profanityBotMessageEnabled: z.boolean().default(false),
     profanityWarnEnabled: z.boolean().default(false),
     profanityBanEnabled: z.boolean().default(false),
-    profanityKickEnabled: z.boolean().default(false),
+    profanityMuteEnabled: z.boolean().default(false),
     textFiltersBotMessageEnabled: z.boolean().default(false),
     textFiltersBotMessageText: botMessageTextSchema,
     textFiltersWarnEnabled: z.boolean().default(false),
     textFiltersWarnMessageText: botMessageTextSchema,
     textFiltersBanEnabled: z.boolean().default(false),
-    textFiltersKickEnabled: z.boolean().default(false),
+    textFiltersMuteEnabled: z.boolean().default(false),
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
@@ -537,7 +544,7 @@ export const chatSettingsSchema = z
     thematicFiltersBotMessageEnabled: z.boolean().default(false),
     thematicFiltersWarnEnabled: z.boolean().default(false),
     thematicFiltersBanEnabled: z.boolean().default(false),
-    thematicFiltersKickEnabled: z.boolean().default(false),
+    thematicFiltersMuteEnabled: z.boolean().default(false),
     thematicFiltersBotButtonEnabled: z.boolean().default(false),
     thematicFiltersBotButtonUrl: botButtonUrlSchema,
     thematicFiltersBotButtonText: botButtonTextSchema,
@@ -575,7 +582,7 @@ export const chatSettingsSchema = z
     linkWarnEnabled: z.boolean().default(false),
     linkWarnMessageText: botMessageTextSchema,
     linkBanEnabled: z.boolean().default(false),
-    linkKickEnabled: z.boolean().default(false),
+    linkMuteEnabled: z.boolean().default(false),
     linkBotButtonEnabled: z.boolean().default(false),
     linkBotButtonUrl: botButtonUrlSchema,
     linkBotButtonText: botButtonTextSchema,
@@ -588,13 +595,13 @@ export const chatSettingsSchema = z
     duplicateRulesButtonEnabled: z.boolean().default(false),
     messageLimitsRulesButtonEnabled: z.boolean().default(false),
     rulesAttachViolationsEnabled: z.boolean().default(true),
-    banDurationHours: z.number().int().min(1).max(36).default(6),
+    muteDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
   })
   .superRefine((value, ctx) => {
     const warnEnabled = value.antiDuplicateEnabled && value.duplicateWarnEnabled;
     const banEnabled = value.antiDuplicateEnabled && value.duplicateBanEnabled;
-    const kickEnabled = value.antiDuplicateEnabled && value.duplicateKickEnabled;
+    const muteEnabled = value.antiDuplicateEnabled && value.duplicateMuteEnabled;
 
     if (warnEnabled && banEnabled) {
       if (value.duplicateBanWindowSec < value.duplicateWarnWindowSec) {
@@ -614,38 +621,38 @@ export const chatSettingsSchema = z
       }
     }
 
-    if (warnEnabled && kickEnabled) {
-      if (value.duplicateKickWindowSec < value.duplicateWarnWindowSec) {
+    if (warnEnabled && muteEnabled) {
+      if (value.duplicateMuteWindowSec < value.duplicateWarnWindowSec) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['duplicateKickWindowSec'],
+          path: ['duplicateMuteWindowSec'],
           message: 'Окно должно быть не меньше предыдущей ступени.',
         });
       }
 
-      if (value.duplicateKickMaxCount < value.duplicateWarnMaxCount) {
+      if (value.duplicateMuteMaxCount < value.duplicateWarnMaxCount) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: ['duplicateKickMaxCount'],
+          path: ['duplicateMuteMaxCount'],
           message: 'Лимит должен быть не меньше предыдущей ступени.',
         });
       }
     }
 
-    if (kickEnabled && banEnabled) {
-      if (value.duplicateBanWindowSec < value.duplicateKickWindowSec) {
+    if (muteEnabled && banEnabled) {
+      if (value.duplicateBanWindowSec < value.duplicateMuteWindowSec) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['duplicateBanWindowSec'],
-          message: 'Окно бана должно быть не меньше ступени удаления участника.',
+          message: 'Окно бана должно быть не меньше ступени мута.',
         });
       }
 
-      if (value.duplicateBanMaxCount < value.duplicateKickMaxCount) {
+      if (value.duplicateBanMaxCount < value.duplicateMuteMaxCount) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['duplicateBanMaxCount'],
-          message: 'Лимит бана должен быть не меньше ступени удаления участника.',
+          message: 'Лимит бана должен быть не меньше ступени мута.',
         });
       }
     }
@@ -1404,8 +1411,9 @@ export const moderationFeedFilterSchema = z.enum([
   'ALL',
   'WARN',
   'DELETE_MESSAGE',
-  'KICK',
+  'MUTE',
   'BAN',
+  'UNMUTE',
   'UNBAN',
 ]);
 export type ModerationFeedFilter = z.infer<typeof moderationFeedFilterSchema>;
@@ -1583,8 +1591,9 @@ export const logsDashboardResponseSchema = z.object({
   violationsSummary: z.object({
     warn: z.number().int().min(0),
     deleteMessage: z.number().int().min(0),
-    kick: z.number().int().min(0),
+    mute: z.number().int().min(0),
     ban: z.number().int().min(0),
+    unmute: z.number().int().min(0),
     unban: z.number().int().min(0),
     affectedUsers: z.number().int().min(0),
     total: z.number().int().min(0),
@@ -1594,28 +1603,28 @@ export const logsDashboardResponseSchema = z.object({
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 
-export const manualModerationActionSchema = z.enum(['KICK', 'BAN', 'UNBAN']);
+export const manualModerationActionSchema = z.enum(['MUTE', 'BAN', 'UNMUTE', 'UNBAN']);
 export type ManualModerationAction = z.infer<typeof manualModerationActionSchema>;
 
 export const manualModerationActionRequestSchema = z
   .object({
     action: manualModerationActionSchema,
-    banDurationHours: z.number().int().min(1).max(336).optional(),
+    muteDurationHours: z.number().int().min(1).max(336).optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.action === 'BAN' && value.banDurationHours === undefined) {
+    if (value.action === 'MUTE' && value.muteDurationHours === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['banDurationHours'],
-        message: 'Укажите длительность бана в часах.',
+        path: ['muteDurationHours'],
+        message: 'Укажите длительность мута в часах.',
       });
     }
 
-    if (value.action !== 'BAN' && value.banDurationHours !== undefined) {
+    if (value.action !== 'MUTE' && value.muteDurationHours !== undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['banDurationHours'],
-        message: 'Длительность бана доступна только для действия BAN.',
+        path: ['muteDurationHours'],
+        message: 'Длительность мута доступна только для действия MUTE.',
       });
     }
   });
@@ -1625,8 +1634,8 @@ export const manualModerationActionResultSchema = z.object({
   ok: z.literal(true),
   action: manualModerationActionSchema,
   userId: z.string(),
-  banDurationHours: z.number().int().min(1).max(336).nullable(),
-  unbanScheduledAt: z.string().datetime().nullable(),
+  muteDurationHours: z.number().int().min(1).max(336).nullable(),
+  muteExpiresAt: z.string().datetime().nullable(),
   message: z.string().min(1),
 });
 export type ManualModerationActionResult = z.infer<typeof manualModerationActionResultSchema>;

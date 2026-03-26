@@ -16,13 +16,13 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     id: '1',
     chatId: 'chat-1',
     duplicateWarnEnabled: true,
-    duplicateKickEnabled: true,
+    duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
     duplicateWarnWindowSec: 12 * 60 * 60,
     duplicateWarnMaxCount: 2,
-    duplicateKickWindowSec: 24 * 60 * 60,
-    duplicateKickMaxCount: 3,
+    duplicateMuteWindowSec: 24 * 60 * 60,
+    duplicateMuteMaxCount: 3,
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
@@ -58,7 +58,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
     messageLimitsBanEnabled: false,
-    messageLimitsKickEnabled: false,
+    messageLimitsMuteEnabled: false,
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
@@ -70,13 +70,13 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     profanityBotMessageEnabled: false,
     profanityWarnEnabled: false,
     profanityBanEnabled: false,
-    profanityKickEnabled: false,
+    profanityMuteEnabled: false,
     textFiltersBotMessageEnabled: false,
     textFiltersBotMessageText: '',
     textFiltersWarnEnabled: false,
     textFiltersWarnMessageText: '',
     textFiltersBanEnabled: false,
-    textFiltersKickEnabled: false,
+    textFiltersMuteEnabled: false,
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
@@ -86,7 +86,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     thematicFiltersBotMessageEnabled: false,
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,
-    thematicFiltersKickEnabled: false,
+    thematicFiltersMuteEnabled: false,
     thematicFiltersBotButtonEnabled: false,
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
@@ -116,7 +116,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     requiredSubscriptionWarnEnabled: false,
     requiredSubscriptionWarnMessageText: '',
     requiredSubscriptionBanEnabled: false,
-    requiredSubscriptionKickEnabled: false,
+    requiredSubscriptionMuteEnabled: false,
     commentsEnabled: false,
     commentsAdminsEnabled: true,
     commentsAllEnabled: false,
@@ -126,7 +126,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     linkWarnEnabled: false,
     linkWarnMessageText: '',
     linkBanEnabled: false,
-    linkKickEnabled: false,
+    linkMuteEnabled: false,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
     linkBotButtonText: 'Открыть',
@@ -139,7 +139,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
-    banDurationHours: 6,
+    muteDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -1045,7 +1045,7 @@ describe('RuleEngineService', () => {
     expect(disabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
   });
 
-  it('escalates duplicate action to WARN/KICK/BAN for 12h/24h/48h windows', async () => {
+  it('escalates duplicate action to WARN/MUTE/BAN for 12h/24h/48h windows', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
 
     await service.detect({
@@ -1089,13 +1089,13 @@ describe('RuleEngineService', () => {
     expect(second.duplicateDecision).toBeUndefined();
     expect(third.duplicateDecision?.action).toBe('WARN');
     expect(third.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
-    expect(fourth.duplicateDecision?.action).toBe('KICK');
+    expect(fourth.duplicateDecision?.action).toBe('MUTE');
     expect(fourth.duplicateDecision?.windowSec).toBe(24 * 60 * 60);
     expect(fifth.duplicateDecision?.action).toBe('BAN');
     expect(fifth.duplicateDecision?.windowSec).toBe(48 * 60 * 60);
   });
 
-  it('falls back to KICK when BAN stage is disabled', async () => {
+  it('falls back to MUTE when BAN stage is disabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const localSettings = buildSettings({
       duplicateBanEnabled: false,
@@ -1130,7 +1130,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(fourth.duplicateDecision?.action).toBe('KICK');
+    expect(fourth.duplicateDecision?.action).toBe('MUTE');
   });
 
   it('tracks duplicate counters per user, not across the whole chat', async () => {

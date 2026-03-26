@@ -14,16 +14,16 @@ export class SanctionService {
     warnThreshold: number;
   }): Promise<SanctionAction> {
     const { chatId, userId, warnThreshold } = params;
-    const manualUnbanResetAt = await this.getManualUnbanResetAt(chatId, userId);
+    const manualReleaseResetAt = await this.getManualReleaseResetAt(chatId, userId);
 
     const warningsCount = await this.prisma.violation.count({
       where: {
         chatId,
         userId,
-        ...(manualUnbanResetAt
+        ...(manualReleaseResetAt
           ? {
               createdAt: {
-                gt: manualUnbanResetAt,
+                gt: manualReleaseResetAt,
               },
             }
           : {}),
@@ -36,14 +36,14 @@ export class SanctionService {
 
     const baseSince = new Date(Date.now() - DEFAULT_REPEAT_BAN_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     const since =
-      manualUnbanResetAt && manualUnbanResetAt.getTime() > baseSince.getTime()
-        ? manualUnbanResetAt
+      manualReleaseResetAt && manualReleaseResetAt.getTime() > baseSince.getTime()
+        ? manualReleaseResetAt
         : baseSince;
-    const recentKick = await this.prisma.moderationEvent.findFirst({
+    const recentMute = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
         userId,
-        action: SanctionAction.KICK,
+        action: SanctionAction.MUTE,
         createdAt: {
           gte: since,
         },
@@ -53,15 +53,17 @@ export class SanctionService {
       },
     });
 
-    return recentKick ? SanctionAction.BAN : SanctionAction.KICK;
+    return recentMute ? SanctionAction.BAN : SanctionAction.MUTE;
   }
 
-  private async getManualUnbanResetAt(chatId: string, userId: string): Promise<Date | null> {
-    const latestManualUnban = await this.prisma.moderationEvent.findFirst({
+  private async getManualReleaseResetAt(chatId: string, userId: string): Promise<Date | null> {
+    const latestManualRelease = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
         userId,
-        ruleCode: 'MANUAL_UNBAN',
+        ruleCode: {
+          in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
+        },
       },
       orderBy: {
         createdAt: 'desc',
@@ -71,6 +73,6 @@ export class SanctionService {
       },
     });
 
-    return latestManualUnban?.createdAt ?? null;
+    return latestManualRelease?.createdAt ?? null;
   }
 }

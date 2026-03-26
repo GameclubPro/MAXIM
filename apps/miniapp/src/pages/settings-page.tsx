@@ -238,14 +238,14 @@ function splitMessageLimitsBlockedWordsInput(value: string): string[] {
     .filter((item): item is string => Boolean(item));
 }
 
-type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
+type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateMuteEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
   | 'duplicateWarnWindowSec'
-  | 'duplicateKickWindowSec'
+  | 'duplicateMuteWindowSec'
   | 'duplicateBanWindowSec';
 type DuplicateMaxCountKey =
   | 'duplicateWarnMaxCount'
-  | 'duplicateKickMaxCount'
+  | 'duplicateMuteMaxCount'
   | 'duplicateBanMaxCount';
 type HintKey =
   | 'antiSpam'
@@ -367,7 +367,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'linkWarnEnabled',
     'linkWarnMessageText',
     'linkBanEnabled',
-    'linkKickEnabled',
+    'linkMuteEnabled',
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
@@ -386,7 +386,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'profanityBotMessageEnabled',
     'profanityWarnEnabled',
     'profanityBanEnabled',
-    'profanityKickEnabled',
+    'profanityMuteEnabled',
   ],
   commercialFilter: [
     'commercialAdsFilterEnabled',
@@ -398,7 +398,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'textFiltersWarnEnabled',
     'textFiltersWarnMessageText',
     'textFiltersBanEnabled',
-    'textFiltersKickEnabled',
+    'textFiltersMuteEnabled',
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
@@ -409,7 +409,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'thematicFiltersBotMessageEnabled',
     'thematicFiltersWarnEnabled',
     'thematicFiltersBanEnabled',
-    'thematicFiltersKickEnabled',
+    'thematicFiltersMuteEnabled',
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
@@ -417,12 +417,12 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
   duplicates: [
     'antiDuplicateEnabled',
     'duplicateWarnEnabled',
-    'duplicateKickEnabled',
+    'duplicateMuteEnabled',
     'duplicateBanEnabled',
     'duplicateWarnWindowSec',
     'duplicateWarnMaxCount',
-    'duplicateKickWindowSec',
-    'duplicateKickMaxCount',
+    'duplicateMuteWindowSec',
+    'duplicateMuteMaxCount',
     'duplicateBanWindowSec',
     'duplicateBanMaxCount',
     'duplicateBotMessageEnabled',
@@ -430,7 +430,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
-    'banDurationHours',
+    'muteDurationHours',
   ],
   limits: [
     'antiSpamEnabled',
@@ -451,11 +451,11 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
     'messageLimitsBanEnabled',
-    'messageLimitsKickEnabled',
+    'messageLimitsMuteEnabled',
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
-    'banDurationHours',
+    'muteDurationHours',
   ],
   night: [
     ...NIGHT_SECTION_SETTING_KEYS,
@@ -468,7 +468,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionWarnMessageText',
     'requiredSubscriptionBanEnabled',
-    'requiredSubscriptionKickEnabled',
+    'requiredSubscriptionMuteEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -485,7 +485,7 @@ const COMMENTS_SETTING_KEYS = [
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
-  id: 'WARN' | 'KICK' | 'BAN';
+  id: 'WARN' | 'MUTE' | 'BAN';
   label: string;
   enabledKey: DuplicateEnabledKey;
   windowKey: DuplicateWindowKey;
@@ -499,11 +499,11 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
-    id: 'KICK',
-    label: 'Удаление участника',
-    enabledKey: 'duplicateKickEnabled',
-    windowKey: 'duplicateKickWindowSec',
-    maxCountKey: 'duplicateKickMaxCount',
+    id: 'MUTE',
+    label: 'Мут',
+    enabledKey: 'duplicateMuteEnabled',
+    windowKey: 'duplicateMuteWindowSec',
+    maxCountKey: 'duplicateMuteMaxCount',
   },
   {
     id: 'BAN',
@@ -597,7 +597,7 @@ const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
     'Плейсхолдеры: {user}, {channels}, {message_status}. Поддерживается Markdown MAX.',
   textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   duplicate:
-    'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}. Поддерживается Markdown MAX.',
+    'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {mute_duration}. Старый {ban_duration} тоже поддерживается. Поддерживается Markdown MAX.',
   messageLimits:
     'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}, {message_limit_count}, {message_limit_window_hours}. Поддерживается Markdown MAX.',
   night:
@@ -672,8 +672,8 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
   greeting: string;
   explanation: string;
   warning: string;
+  mute: string;
   ban: string;
-  kick: string;
 } {
   return {
     greeting: renderBotMessageTemplatePreview(
@@ -699,12 +699,14 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
         reason: 'грубая лексика запрещена правилами чата',
       },
     ),
-    ban: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'banNotice'), {
+    mute: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'muteNotice'), {
       user: 'Алексей',
+      mute_duration: '24 часа',
       ban_duration: '24 часа',
     }),
-    kick: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'linkKick'), {
+    ban: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'topicBan'), {
       user: 'Алексей',
+      reason: 'повторные нарушения правил чата',
     }),
   };
 }
@@ -1247,6 +1249,24 @@ function CalendarIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden
+      focusable="false"
+      width="18"
+      height="18"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
+      <circle cx="12" cy="12" r="8.25" />
+      <path d="M12 7.75v4.8l3.45 1.95" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -2747,10 +2767,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const next = Math.min(
       BAN_DURATION_MAX_HOURS,
-      Math.max(BAN_DURATION_MIN_HOURS, Number(draft.banDurationHours) + deltaHours),
+      Math.max(BAN_DURATION_MIN_HOURS, Number(draft.muteDurationHours) + deltaHours),
     );
 
-    setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
+    setFieldValue('muteDurationHours', next as ChatSettings['muteDurationHours']);
   }
 
   function adjustDeleteBotMessagesDelay(direction: number) {
@@ -3459,7 +3479,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.linkBotMessageEnabled,
     draft?.linkWarnEnabled,
     draft?.linkBanEnabled,
-    draft?.linkKickEnabled,
+    draft?.linkMuteEnabled,
   ].filter(Boolean).length;
   const linksHeaderSummary =
     draft?.linkPolicy === 'ALERT_ONLY'
@@ -3506,7 +3526,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключено';
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
-    draft?.duplicateKickEnabled,
+    draft?.duplicateMuteEnabled,
     draft?.duplicateBanEnabled,
   ].filter(Boolean).length;
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
@@ -3517,7 +3537,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft?.profanityBotMessageEnabled,
         draft?.profanityWarnEnabled,
         draft?.profanityBanEnabled,
-        draft?.profanityKickEnabled,
+        draft?.profanityMuteEnabled,
       ].filter(Boolean).length
     : 0;
   const textFiltersStagesEnabledCount = draft?.commercialAdsFilterEnabled
@@ -3525,7 +3545,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft?.textFiltersBotMessageEnabled,
         draft?.textFiltersWarnEnabled,
         draft?.textFiltersBanEnabled,
-        draft?.textFiltersKickEnabled,
+        draft?.textFiltersMuteEnabled,
       ].filter(Boolean).length
     : 0;
   const thematicFiltersEnabledCount = draft?.thematicCodewordEnabled ? 1 : 0;
@@ -3534,7 +3554,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft?.thematicFiltersBotMessageEnabled,
         draft?.thematicFiltersWarnEnabled,
         draft?.thematicFiltersBanEnabled,
-        draft?.thematicFiltersKickEnabled,
+        draft?.thematicFiltersMuteEnabled,
       ].filter(Boolean).length
     : 0;
   const commercialSensitivitySliderValue = draft
@@ -3581,7 +3601,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.requiredSubscriptionBotMessageEnabled,
     draft?.requiredSubscriptionWarnEnabled,
     draft?.requiredSubscriptionBanEnabled,
-    draft?.requiredSubscriptionKickEnabled,
+    draft?.requiredSubscriptionMuteEnabled,
   ].filter(Boolean).length;
   const areChannelsSyncing =
     shouldLoadRequiredSubscriptionChannels &&
@@ -4123,16 +4143,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">3. Бан на 24ч</span>
+                    <span className="settings-native-toggle__title">3. Мут на 24ч</span>
                   </div>
-                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.ban}</p>
+                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.mute}</p>
                 </div>
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">4. Удаление из группы</span>
+                    <span className="settings-native-toggle__title">4. Бан</span>
                   </div>
-                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.kick}</p>
+                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.ban}</p>
                 </div>
               </div>
             ) : null}
@@ -4621,7 +4641,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 >
                                   Санкции усиливаются по ступеням, если пользователь повторно
                                   отправляет ссылки в течение 24 часов: сначала объяснение, затем
-                                  предупреждение, потом бан на 6 часов и далее удаление из группы.
+                                  предупреждение, потом мут на 6 часов и далее бан.
                                 </p>
                               ) : null}
 
@@ -4718,11 +4738,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+                                <span className="settings-native-toggle__title">Бан</span>
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
+                                  aria-label="Включить бан за повторные ссылки"
                                 >
                                   <input
                                     type="checkbox"
@@ -4746,19 +4766,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
                                 <span className="settings-native-toggle__title">
-                                  4. Удаление из группы
+                                  Мут на {draft.muteDurationHours}ч
                                 </span>
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
+                                  aria-label="Включить мут за четвертую ссылку в 24 часа"
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={draft.linkKickEnabled}
+                                    checked={draft.linkMuteEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('linkKickEnabled', enabled);
+                                      setFieldValue('linkMuteEnabled', enabled);
                                       if (enabled) {
                                         setFieldValue('linkWarnEnabled', true);
                                         setFieldValue('linkBotMessageEnabled', true);
@@ -5615,11 +5635,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+                              <span className="settings-native-toggle__title">Бан</span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить бан за нецензурную лексику"
+                                aria-label="Включить бан за повторную нецензурную лексику"
                               >
                                 <input
                                   type="checkbox"
@@ -5643,19 +5663,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
                               <span className="settings-native-toggle__title">
-                                4. Удаление из группы
+                                Мут на {draft.muteDurationHours}ч
                               </span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить удаление из группы за нецензурную лексику"
+                                aria-label="Включить мут за нецензурную лексику"
                               >
                                 <input
                                   type="checkbox"
-                                  checked={draft.profanityKickEnabled}
+                                  checked={draft.profanityMuteEnabled}
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
-                                    setFieldValue('profanityKickEnabled', enabled);
+                                    setFieldValue('profanityMuteEnabled', enabled);
                                     if (enabled) {
                                       setFieldValue('profanityWarnEnabled', true);
                                       setFieldValue('profanityBotMessageEnabled', true);
@@ -5989,11 +6009,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+                              <span className="settings-native-toggle__title">Бан</span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить бан на шесть часов за третье нарушение коммерческого фильтра"
+                                aria-label="Включить бан за повторное нарушение коммерческого фильтра"
                               >
                                 <input
                                   type="checkbox"
@@ -6017,19 +6037,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
                               <span className="settings-native-toggle__title">
-                                4. Удаление из группы
+                                Мут на {draft.muteDurationHours}ч
                               </span>
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Включить удаление из группы за четвертое нарушение коммерческого фильтра"
+                                aria-label="Включить мут за четвертое нарушение коммерческого фильтра"
                               >
                                 <input
                                   type="checkbox"
-                                  checked={draft.textFiltersKickEnabled}
+                                  checked={draft.textFiltersMuteEnabled}
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
-                                    setFieldValue('textFiltersKickEnabled', enabled);
+                                    setFieldValue('textFiltersMuteEnabled', enabled);
                                     if (enabled) {
                                       setFieldValue('textFiltersWarnEnabled', true);
                                       setFieldValue('textFiltersBotMessageEnabled', true);
@@ -6349,11 +6369,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+                                <span className="settings-native-toggle__title">Бан</span>
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить бан для тематического фильтра"
+                                  aria-label="Включить бан для повторного нарушения тематического фильтра"
                                 >
                                   <input
                                     type="checkbox"
@@ -6377,19 +6397,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
                                 <span className="settings-native-toggle__title">
-                                  4. Удаление из группы
+                                  Мут на {draft.muteDurationHours}ч
                                 </span>
 
                                 <label
                                   className="settings-native-switch"
-                                  aria-label="Включить удаление из группы для тематического фильтра"
+                                  aria-label="Включить мут для тематического фильтра"
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={draft.thematicFiltersKickEnabled}
+                                    checked={draft.thematicFiltersMuteEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersKickEnabled', enabled);
+                                      setFieldValue('thematicFiltersMuteEnabled', enabled);
                                       if (enabled) {
                                         setFieldValue('thematicFiltersWarnEnabled', true);
                                         setFieldValue('thematicFiltersBotMessageEnabled', true);
@@ -6467,78 +6487,150 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {draft.antiDuplicateEnabled ? (
                           <p className="settings-native-toggle__hint">
                             Первый повтор такого же текста удаляется автоматически. Дальше
-                            включаются предупреждение, удаление участника и бан по вашим порогам.
+                            включаются предупреждение, мут и бан по вашим порогам.
                           </p>
                         ) : null}
                       </div>
 
-                      {draft.antiDuplicateEnabled && draft.duplicateBanEnabled ? (
+                      {draft.antiDuplicateEnabled && draft.duplicateMuteEnabled ? (
                         <div
                           className={cn(
                             'settings-native-toggle',
-                            fieldErrors.banDurationHours && 'field--error',
+                            fieldErrors.muteDurationHours && 'field--error',
                           )}
                         >
                           <div className="settings-native-toggle__row">
                             <div className="settings-native-toggle__title-wrap">
                               <span className="settings-native-toggle__title">
-                                Длительность бана
+                                Длительность мута
                               </span>
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'banDuration' && 'is-open',
-                                )}
-                                aria-label="Пояснение для длительности бана"
-                                aria-controls="ban-duration-hint"
-                                aria-expanded={openHintKey === 'banDuration'}
-                                onClick={() => toggleHint('banDuration')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
+                              <div className="settings-native-toggle__title-actions">
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'banDuration' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для длительности мута"
+                                  aria-controls="ban-duration-hint"
+                                  aria-expanded={openHintKey === 'banDuration'}
+                                  onClick={() => toggleHint('banDuration')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="logs-violation-item__ban-config">
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <ClockIcon />
+                                <div>
+                                  <span className="settings-native-toggle__title">Срок мута</span>
+                                  <br />
+                                  <small className="settings-native-toggle__title settings-native-toggle__title--sub">
+                                    Участник останется в чате, а новые сообщения будут скрываться
+                                    до конца срока.
+                                  </small>
+                                </div>
+                              </div>
+                              <output className="ban-duration-stepper__value" aria-live="polite">
+                                {draft.muteDurationHours >= 24 && draft.muteDurationHours % 24 === 0
+                                  ? `${draft.muteDurationHours / 24}д`
+                                  : `${draft.muteDurationHours}ч`}
+                              </output>
                             </div>
 
-                            <div
-                              className="ban-duration-stepper"
-                              role="group"
-                              aria-label="Длительность бана в часах"
-                            >
-                              <button
-                                type="button"
-                                className="ban-duration-stepper__button"
-                                onClick={() => adjustBanDuration(-1)}
-                                disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
-                                aria-label="Уменьшить длительность бана"
-                              >
-                                -
-                              </button>
+                            <div className="logs-violation-item__ban-presets">
+                              {[1, 6, 24, 168].map((hours) => (
+                                <button
+                                  key={hours}
+                                  type="button"
+                                  className={cn(
+                                    'logs-violation-item__ban-preset',
+                                    draft.muteDurationHours === hours && 'is-active',
+                                  )}
+                                  onClick={() =>
+                                    setFieldValue(
+                                      'muteDurationHours',
+                                      hours as ChatSettings['muteDurationHours'],
+                                    )
+                                  }
+                                >
+                                  {hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`}
+                                </button>
+                              ))}
+                            </div>
 
-                              <output className="ban-duration-stepper__value" aria-live="polite">
-                                {draft.banDurationHours}ч
-                              </output>
-
-                              <button
-                                type="button"
-                                className="ban-duration-stepper__button"
-                                onClick={() => adjustBanDuration(1)}
-                                disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
-                                aria-label="Увеличить длительность бана"
+                            <div className="logs-violation-item__ban-config-controls">
+                              <div
+                                className="ban-duration-stepper"
+                                role="group"
+                                aria-label="Длительность мута"
                               >
-                                +
-                              </button>
+                                <button
+                                  type="button"
+                                  className="ban-duration-stepper__button"
+                                  onClick={() => adjustBanDuration(-1)}
+                                  disabled={draft.muteDurationHours <= BAN_DURATION_MIN_HOURS}
+                                  aria-label="Уменьшить длительность мута"
+                                >
+                                  -
+                                </button>
+                                <output className="ban-duration-stepper__value" aria-live="polite">
+                                  {draft.muteDurationHours}ч
+                                </output>
+                                <button
+                                  type="button"
+                                  className="ban-duration-stepper__button"
+                                  onClick={() => adjustBanDuration(1)}
+                                  disabled={draft.muteDurationHours >= BAN_DURATION_MAX_HOURS}
+                                  aria-label="Увеличить длительность мута"
+                                >
+                                  +
+                                </button>
+                              </div>
+
+                              <label className="logs-violation-item__hours-input">
+                                <span>Часы</span>
+                                <input
+                                  type="number"
+                                  min={BAN_DURATION_MIN_HOURS}
+                                  max={BAN_DURATION_MAX_HOURS}
+                                  step={1}
+                                  value={draft.muteDurationHours}
+                                  onChange={(event) => {
+                                    const nextValue = Number(event.target.value);
+                                    if (!Number.isFinite(nextValue)) {
+                                      return;
+                                    }
+
+                                    setFieldValue(
+                                      'muteDurationHours',
+                                      Math.min(
+                                        BAN_DURATION_MAX_HOURS,
+                                        Math.max(BAN_DURATION_MIN_HOURS, nextValue),
+                                      ) as ChatSettings['muteDurationHours'],
+                                    );
+                                  }}
+                                />
+                                <small>
+                                  {BAN_DURATION_MIN_HOURS}–{BAN_DURATION_MAX_HOURS}ч
+                                </small>
+                              </label>
                             </div>
                           </div>
 
                           {openHintKey === 'banDuration' ? (
                             <p id="ban-duration-hint" className="settings-native-toggle__hint">
-                              После выдачи бана сообщения пользователя удаляются автоматически в
+                              После выдачи мута новые сообщения пользователя удаляются автоматически в
                               течение этого времени.
                             </p>
                           ) : null}
 
-                          {fieldErrors.banDurationHours ? (
-                            <small className="field__hint">{fieldErrors.banDurationHours}</small>
+                          {fieldErrors.muteDurationHours ? (
+                            <small className="field__hint">{fieldErrors.muteDurationHours}</small>
                           ) : null}
                         </div>
                       ) : null}
@@ -7589,12 +7681,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
                           <span className="settings-native-toggle__title">
-                            3. Бан на {draft.banDurationHours}ч
+                            Бан
                           </span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить бан за третье нарушение ограничений сообщений за 12 часов"
+                            aria-label="Включить бан за повторные нарушения ограничений сообщений"
                           >
                             <input
                               type="checkbox"
@@ -7618,19 +7710,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
                           <span className="settings-native-toggle__title">
-                            4. Удаление из группы
+                            Мут на {draft.muteDurationHours}ч
                           </span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить удаление из группы за четвертое нарушение ограничений сообщений за 12 часов"
+                            aria-label="Включить мут за четвертое нарушение ограничений сообщений за 12 часов"
                           >
                             <input
                               type="checkbox"
-                              checked={draft.messageLimitsKickEnabled}
+                              checked={draft.messageLimitsMuteEnabled}
                               onChange={(event) => {
                                 const enabled = event.target.checked;
-                                setFieldValue('messageLimitsKickEnabled', enabled);
+                                setFieldValue('messageLimitsMuteEnabled', enabled);
                                 if (enabled) {
                                   setFieldValue('messageLimitsWarnEnabled', true);
                                   setFieldValue('messageLimitsBotMessageEnabled', true);
@@ -9320,7 +9412,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           >
                             Санкции усиливаются по ступеням, если пользователь повторно пишет без
                             подписки в течение 24 часов: сначала объяснение, затем предупреждение,
-                            потом бан на 6 часов и далее удаление из группы.
+                            потом мут на 6 часов и далее бан.
                           </p>
                         ) : null}
 
@@ -9416,11 +9508,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+                          <span className="settings-native-toggle__title">Бан</span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить бан за третье сообщение без подписки"
+                            aria-label="Включить бан за повторные сообщения без подписки"
                           >
                             <input
                               type="checkbox"
@@ -9444,19 +9536,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
                           <span className="settings-native-toggle__title">
-                            4. Удаление из группы
+                            Мут на {draft.muteDurationHours}ч
                           </span>
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить удаление из группы за четвертое сообщение без подписки"
+                            aria-label="Включить мут за четвертое сообщение без подписки"
                           >
                             <input
                               type="checkbox"
-                              checked={draft.requiredSubscriptionKickEnabled}
+                              checked={draft.requiredSubscriptionMuteEnabled}
                               onChange={(event) => {
                                 const enabled = event.target.checked;
-                                setFieldValue('requiredSubscriptionKickEnabled', enabled);
+                                setFieldValue('requiredSubscriptionMuteEnabled', enabled);
                                 if (enabled) {
                                   setFieldValue('requiredSubscriptionWarnEnabled', true);
                                   setFieldValue('requiredSubscriptionBotMessageEnabled', true);

@@ -169,9 +169,9 @@ type AdminAccessResolution =
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
 
-type ManualMemberModerationAction = 'KICK' | 'BAN';
+type ManualMemberModerationAction = 'MUTE' | 'BAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
-type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ACTIVE_BAN_RELEASE';
+type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
 
 type ResolvedUserProfile = {
   displayName: string | null;
@@ -312,7 +312,7 @@ const SETTINGS_SECTION_KEYS = {
     'linkWarnEnabled',
     'linkWarnMessageText',
     'linkBanEnabled',
-    'linkKickEnabled',
+    'linkMuteEnabled',
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
@@ -331,7 +331,7 @@ const SETTINGS_SECTION_KEYS = {
     'profanityBotMessageEnabled',
     'profanityWarnEnabled',
     'profanityBanEnabled',
-    'profanityKickEnabled',
+    'profanityMuteEnabled',
   ],
   commercialFilter: [
     'commercialAdsFilterEnabled',
@@ -343,7 +343,7 @@ const SETTINGS_SECTION_KEYS = {
     'textFiltersWarnEnabled',
     'textFiltersWarnMessageText',
     'textFiltersBanEnabled',
-    'textFiltersKickEnabled',
+    'textFiltersMuteEnabled',
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
@@ -354,7 +354,7 @@ const SETTINGS_SECTION_KEYS = {
     'thematicFiltersBotMessageEnabled',
     'thematicFiltersWarnEnabled',
     'thematicFiltersBanEnabled',
-    'thematicFiltersKickEnabled',
+    'thematicFiltersMuteEnabled',
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
@@ -362,12 +362,12 @@ const SETTINGS_SECTION_KEYS = {
   duplicates: [
     'antiDuplicateEnabled',
     'duplicateWarnEnabled',
-    'duplicateKickEnabled',
+    'duplicateMuteEnabled',
     'duplicateBanEnabled',
     'duplicateWarnWindowSec',
     'duplicateWarnMaxCount',
-    'duplicateKickWindowSec',
-    'duplicateKickMaxCount',
+    'duplicateMuteWindowSec',
+    'duplicateMuteMaxCount',
     'duplicateBanWindowSec',
     'duplicateBanMaxCount',
     'duplicateBotMessageEnabled',
@@ -375,7 +375,7 @@ const SETTINGS_SECTION_KEYS = {
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
-    'banDurationHours',
+    'muteDurationHours',
   ],
   limits: [
     'antiSpamEnabled',
@@ -396,11 +396,11 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
     'messageLimitsBanEnabled',
-    'messageLimitsKickEnabled',
+    'messageLimitsMuteEnabled',
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
-    'banDurationHours',
+    'muteDurationHours',
   ],
   night: [
     'nightModeEnabled',
@@ -427,7 +427,7 @@ const SETTINGS_SECTION_KEYS = {
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionWarnMessageText',
     'requiredSubscriptionBanEnabled',
-    'requiredSubscriptionKickEnabled',
+    'requiredSubscriptionMuteEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -6889,8 +6889,9 @@ export class AdminService {
     const [
       warnCount,
       deleteMessageCount,
-      kickCount,
+      muteCount,
       banCount,
+      unmuteCount,
       unbanCount,
       affectedUsers,
       violationRows,
@@ -6912,14 +6913,22 @@ export class AdminService {
       this.prisma.moderationEvent.count({
         where: {
           chatId,
-          action: 'KICK',
+          action: 'MUTE',
           createdAt: { gte: from, lte: now },
         },
       }),
       this.prisma.moderationEvent.count({
         where: {
           chatId,
-          action: 'BAN',
+          action: { in: [SanctionAction.BAN, SanctionAction.KICK] },
+          createdAt: { gte: from, lte: now },
+        },
+      }),
+      this.prisma.moderationEvent.count({
+        where: {
+          chatId,
+          action: SanctionAction.NONE,
+          ruleCode: 'MANUAL_UNMUTE',
           createdAt: { gte: from, lte: now },
         },
       }),
@@ -6980,11 +6989,12 @@ export class AdminService {
       violationsSummary: {
         warn: warnCount,
         deleteMessage: deleteMessageCount,
-        kick: kickCount,
+        mute: muteCount,
         ban: banCount,
+        unmute: unmuteCount,
         unban: unbanCount,
         affectedUsers: affectedUsers.length,
-        total: warnCount + deleteMessageCount + kickCount + banCount + unbanCount,
+        total: warnCount + deleteMessageCount + muteCount + banCount + unmuteCount + unbanCount,
       },
       violations: violationRows.map((row) =>
         this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
@@ -7050,86 +7060,68 @@ export class AdminService {
       initiatedByUserId: user.userId,
     } as const;
 
-    if (parsed.data.action === 'KICK') {
-      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'KICK');
-      await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
-
-      try {
-        await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
-      } catch (error: unknown) {
-        const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
-          chatId,
-          targetUserId,
-          'KICK',
-          error,
-        );
-        throw new BadRequestException(resolvedMessage || 'Не удалось удалить участника из чата.');
+    if (parsed.data.action === 'MUTE') {
+      const muteDurationHours = parsed.data.muteDurationHours;
+      if (!muteDurationHours) {
+        throw new BadRequestException('Укажите длительность мута в часах.');
       }
 
-      await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'MUTE');
+      const muteExpiresAt = new Date(Date.now() + muteDurationHours * ONE_HOUR_MS);
 
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
         actorUserId: user.userId,
-        ruleCode: 'MANUAL_KICK',
-        sanctionAction: SanctionAction.KICK,
-        auditAction: 'MANUAL_KICK_MEMBER',
+        ruleCode: 'MANUAL_MUTE',
+        sanctionAction: SanctionAction.MUTE,
+        auditAction: 'MANUAL_MUTE_MEMBER',
         metadata: {
           ...metadataBase,
-          reason: 'Ручное удаление участника через miniapp',
+          reason: 'Ручной мут участника через miniapp',
+          muteDurationHours,
+          muteExpiresAt: muteExpiresAt.toISOString(),
         },
         auditPayload: {
           userId: targetUserId,
           source,
+          muteDurationHours,
+          muteExpiresAt: muteExpiresAt.toISOString(),
         },
       });
 
       return manualModerationActionResultSchema.parse({
         ok: true,
-        action: 'KICK',
+        action: 'MUTE',
         userId: targetUserId,
-        banDurationHours: null,
-        unbanScheduledAt: null,
-        message: 'Участник удалён из чата.',
+        muteDurationHours,
+        muteExpiresAt: muteExpiresAt.toISOString(),
+        message: `Участник замьючен на ${muteDurationHours}ч. Новые сообщения будут удаляться до конца срока.`,
       });
     }
 
     if (parsed.data.action === 'BAN') {
-      const banDurationHours = parsed.data.banDurationHours;
-      if (!banDurationHours) {
-        throw new BadRequestException('Укажите длительность бана в часах.');
-      }
-      const unbanScheduledAt = new Date(Date.now() + banDurationHours * ONE_HOUR_MS);
       await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'BAN');
       const executionMode = await this.resolveManualBanExecutionMode(chatId);
 
       try {
+        try {
+          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+        } catch (cancelError: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: targetUserId,
+              err: cancelError instanceof Error ? cancelError.message : String(cancelError),
+            },
+            'Failed to cancel scheduled auto-unban before manual ban',
+          );
+        }
+
         if (executionMode === 'MAX_REMOVE_ONLY') {
           await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
         } else {
           await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
-        }
-        try {
-          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
-          await this.maxClient.unbanMember(chatId, targetUserId, {
-            delayMs: banDurationHours * ONE_HOUR_MS,
-          });
-        } catch (scheduleError: unknown) {
-          try {
-            await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
-          } catch (rollbackError: unknown) {
-            this.logger.warn(
-              {
-                chatId,
-                userId: targetUserId,
-                err: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
-              },
-              'Failed to rollback manual ban after scheduling error',
-            );
-          }
-
-          throw scheduleError;
         }
       } catch (error: unknown) {
         const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
@@ -7138,7 +7130,7 @@ export class AdminService {
           'BAN',
           error,
         );
-        throw new BadRequestException(resolvedMessage || 'Не удалось применить временный бан.');
+        throw new BadRequestException(resolvedMessage || 'Не удалось применить бан.');
       }
 
       await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
@@ -7153,16 +7145,14 @@ export class AdminService {
         metadata: {
           ...metadataBase,
           reason: 'Ручной бан участника через miniapp',
-          banDurationHours,
-          unbanScheduledAt: unbanScheduledAt.toISOString(),
           mode: executionMode,
+          permanent: true,
         },
         auditPayload: {
           userId: targetUserId,
-          banDurationHours,
-          unbanScheduledAt: unbanScheduledAt.toISOString(),
           source,
           mode: executionMode,
+          permanent: true,
         },
       });
 
@@ -7170,25 +7160,55 @@ export class AdminService {
         ok: true,
         action: 'BAN',
         userId: targetUserId,
-        banDurationHours,
-        unbanScheduledAt: unbanScheduledAt.toISOString(),
+        muteDurationHours: null,
+        muteExpiresAt: null,
         message:
           executionMode === 'MAX_REMOVE_ONLY'
-            ? `Участник удалён из чата на ${banDurationHours}ч. Автовозврат запланирован. Для этого типа чата MAX блокировка недоступна, поэтому применено удаление без block.`
-            : `Участник забанен на ${banDurationHours}ч. Авторазбан запланирован.`,
+            ? 'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.'
+            : 'Участник забанен в чате.',
+      });
+    }
+
+    if (parsed.data.action === 'UNMUTE') {
+      await this.resetDuplicateModerationState(chatId, targetUserId);
+
+      await this.recordManualModerationAction({
+        chatId,
+        targetUserId,
+        actorUserId: user.userId,
+        ruleCode: 'MANUAL_UNMUTE',
+        sanctionAction: SanctionAction.NONE,
+        auditAction: 'MANUAL_UNMUTE_MEMBER',
+        metadata: {
+          ...metadataBase,
+          reason: 'Ручное снятие мута участника через miniapp',
+        },
+        auditPayload: {
+          userId: targetUserId,
+          source,
+        },
+      });
+
+      return manualModerationActionResultSchema.parse({
+        ok: true,
+        action: 'UNMUTE',
+        userId: targetUserId,
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message: 'Мут снят. Новые сообщения больше не будут удаляться автоматически.',
       });
     }
 
     await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
 
     let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId);
-    if (unbanMode !== 'ACTIVE_BAN_RELEASE') {
+    if (unbanMode !== 'ALREADY_PRESENT') {
       try {
         await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
       } catch (error: unknown) {
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
         if (this.isAlreadyPresentMemberAddError(maxApiMessage)) {
-          unbanMode = 'ACTIVE_BAN_RELEASE';
+          unbanMode = 'ALREADY_PRESENT';
         } else {
           throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
         }
@@ -7221,11 +7241,11 @@ export class AdminService {
       ok: true,
       action: 'UNBAN',
       userId: targetUserId,
-      banDurationHours: null,
-      unbanScheduledAt: null,
+      muteDurationHours: null,
+      muteExpiresAt: null,
       message:
-        unbanMode === 'ACTIVE_BAN_RELEASE'
-          ? 'Бан снят. Участник уже состоит в чате, повторное добавление не потребовалось.'
+        unbanMode === 'ALREADY_PRESENT'
+          ? 'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.'
           : 'Участник возвращён в чат и разблокирован.',
     });
   }
@@ -7293,8 +7313,8 @@ export class AdminService {
       ok: true,
       action: 'BAN',
       userId: targetUserId,
-      banDurationHours: null,
-      unbanScheduledAt: null,
+      muteDurationHours: null,
+      muteExpiresAt: null,
       message: 'Участник забанен в чате.',
     });
   }
@@ -7321,7 +7341,9 @@ export class AdminService {
     targetUserId: string,
     action: ManualMemberModerationAction,
   ): Promise<void> {
-    await this.assertBotCanManageMembers(chatId, action);
+    if (action === 'BAN') {
+      await this.assertBotCanManageMembers(chatId, action);
+    }
     await this.assertTargetUserCanBeModerated(chatId, targetUserId, action);
   }
 
@@ -7356,7 +7378,7 @@ export class AdminService {
       throw new ForbiddenException(
         action === 'BAN'
           ? 'Бот должен быть администратором этого чата MAX, чтобы банить участников.'
-          : 'Бот должен быть администратором этого чата MAX, чтобы удалять участников.',
+          : 'Бот должен быть администратором этого чата MAX, чтобы модерировать участников.',
       );
     }
 
@@ -7367,7 +7389,7 @@ export class AdminService {
       throw new ForbiddenException(
         action === 'BAN'
           ? 'У бота нет права MAX add_remove_members, поэтому он не может банить участников.'
-          : 'У бота нет права MAX add_remove_members, поэтому он не может удалять участников.',
+          : 'У бота нет права MAX add_remove_members, поэтому он не может модерировать участников.',
       );
     }
   }
@@ -7393,7 +7415,7 @@ export class AdminService {
       throw new BadRequestException(
         action === 'BAN'
           ? 'Через бота нельзя забанить владельца или администратора чата.'
-          : 'Через бота нельзя удалить владельца или администратора чата.',
+          : 'Через бота нельзя замьютить владельца или администратора чата.',
       );
     }
   }
@@ -7442,7 +7464,7 @@ export class AdminService {
         chatId,
         targetUserId,
       );
-      return targetAccess ? 'ACTIVE_BAN_RELEASE' : 'MAX_UNBLOCK';
+      return targetAccess ? 'ALREADY_PRESENT' : 'MAX_UNBLOCK';
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -7490,7 +7512,7 @@ export class AdminService {
 
     return action === 'BAN'
       ? 'MAX отклонил бан участника. Проверьте тип чата, статус цели и права бота.'
-      : 'MAX отклонил удаление участника. Проверьте тип чата и статус цели.';
+      : 'MAX отклонил модерацию участника. Проверьте статус цели.';
   }
 
   private isAmbiguousMaxMemberModerationError(message: string): boolean {
@@ -7614,7 +7636,7 @@ export class AdminService {
           userId: targetUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to reset duplicate moderation state after manual unban',
+        'Failed to reset duplicate moderation state after manual release',
       );
     }
   }
@@ -7623,9 +7645,13 @@ export class AdminService {
     chatId: string;
     targetUserId: string;
     actorUserId: string;
-    ruleCode: 'MANUAL_KICK' | 'MANUAL_BAN' | 'MANUAL_UNBAN';
+    ruleCode: 'MANUAL_MUTE' | 'MANUAL_UNMUTE' | 'MANUAL_BAN' | 'MANUAL_UNBAN';
     sanctionAction: SanctionAction;
-    auditAction: 'MANUAL_KICK_MEMBER' | 'MANUAL_BAN_MEMBER' | 'MANUAL_UNBAN_MEMBER';
+    auditAction:
+      | 'MANUAL_MUTE_MEMBER'
+      | 'MANUAL_UNMUTE_MEMBER'
+      | 'MANUAL_BAN_MEMBER'
+      | 'MANUAL_UNBAN_MEMBER';
     metadata: Record<string, unknown>;
     auditPayload: Record<string, unknown>;
   }) {
@@ -8033,14 +8059,24 @@ export class AdminService {
         OR: [
           {
             action: {
-              in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
+              in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'],
             },
           },
           {
             action: SanctionAction.NONE,
-            ruleCode: 'MANUAL_UNBAN',
+            ruleCode: {
+              in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
+            },
           },
         ],
+      };
+    }
+
+    if (filter === 'UNMUTE') {
+      return {
+        ...baseWhere,
+        action: SanctionAction.NONE,
+        ruleCode: 'MANUAL_UNMUTE',
       };
     }
 
@@ -8052,10 +8088,83 @@ export class AdminService {
       };
     }
 
+    if (filter === 'BAN') {
+      return {
+        ...baseWhere,
+        action: {
+          in: [SanctionAction.BAN, SanctionAction.KICK],
+        },
+      };
+    }
+
     return {
       ...baseWhere,
       action: filter,
     };
+  }
+
+  private normalizeModerationViolationMetadata(
+    metadata: unknown,
+  ): Record<string, unknown> | null {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return null;
+    }
+
+    const normalized = { ...(metadata as Record<string, unknown>) };
+    if (
+      typeof normalized.muteDurationHours !== 'number' &&
+      typeof normalized.banDurationHours === 'number'
+    ) {
+      normalized.muteDurationHours = normalized.banDurationHours;
+    }
+
+    if (typeof normalized.muteExpiresAt !== 'string') {
+      if (typeof normalized.banExpiresAt === 'string') {
+        normalized.muteExpiresAt = normalized.banExpiresAt;
+      } else if (typeof normalized.unbanScheduledAt === 'string') {
+        normalized.muteExpiresAt = normalized.unbanScheduledAt;
+      }
+    }
+
+    return normalized;
+  }
+
+  private normalizeModerationViolationAction(
+    action: SanctionAction,
+    metadata: Record<string, unknown> | null,
+  ): SanctionAction {
+    if (action === SanctionAction.KICK) {
+      return SanctionAction.BAN;
+    }
+
+    if (
+      action === SanctionAction.BAN &&
+      metadata &&
+      (typeof metadata.muteDurationHours === 'number' || typeof metadata.banDurationHours === 'number')
+    ) {
+      return SanctionAction.MUTE;
+    }
+
+    return action;
+  }
+
+  private normalizeModerationViolationRuleCode(
+    ruleCode: string,
+    action: SanctionAction,
+  ): string {
+    if (ruleCode === 'MANUAL_KICK') {
+      return 'MANUAL_BAN';
+    }
+
+    if (ruleCode === 'BAN_ACTIVE_DELETE') {
+      return 'MUTE_ACTIVE_DELETE';
+    }
+
+    if (ruleCode === 'GLOBAL_SPAMMER_KICK' || action === SanctionAction.KICK) {
+      return 'GLOBAL_SPAMMER_BAN';
+    }
+
+    return ruleCode;
   }
 
   private mapModerationViolationRow(
@@ -8063,11 +8172,14 @@ export class AdminService {
     userProfiles: Map<string, ResolvedUserProfile>,
   ): LogsDashboardViolation {
     const userProfile = userProfiles.get(row.userId);
+    const metadata = this.normalizeModerationViolationMetadata(row.metadata);
+    const action = this.normalizeModerationViolationAction(row.action, metadata);
+    const ruleCode = this.normalizeModerationViolationRuleCode(row.ruleCode, row.action);
 
     return {
       id: row.id,
-      action: row.action,
-      ruleCode: row.ruleCode,
+      action,
+      ruleCode,
       userId: row.userId,
       userDisplayName: userProfile?.displayName ?? null,
       avatarUrl: userProfile?.avatarUrl ?? null,
@@ -8075,10 +8187,7 @@ export class AdminService {
       profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
       createdAt: row.createdAt.toISOString(),
       maskedExcerpt: row.maskedExcerpt,
-      metadata:
-        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-          ? (row.metadata as Record<string, unknown>)
-          : null,
+      metadata,
     };
   }
 

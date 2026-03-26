@@ -19,7 +19,7 @@ export type RuleViolation = {
   metadata?: Record<string, unknown>;
 };
 
-export type DuplicateAction = 'WARN' | 'KICK' | 'BAN';
+export type DuplicateAction = 'WARN' | 'MUTE' | 'BAN';
 
 export type DuplicateDecision = {
   action: DuplicateAction;
@@ -42,7 +42,7 @@ export type DetectionResult = {
   duplicateDecision?: DuplicateDecision;
 };
 
-type DuplicateStageName = 'warn' | 'kick' | 'ban';
+type DuplicateStageName = 'warn' | 'mute' | 'ban';
 
 type DuplicateStage = {
   name: DuplicateStageName;
@@ -517,7 +517,7 @@ export class RuleEngineService {
       repeatCounts.set(stage.name, Math.max(0, count - 1));
     }
 
-    const priority: DuplicateStageName[] = ['ban', 'kick', 'warn'];
+    const priority: DuplicateStageName[] = ['ban', 'mute', 'warn'];
     for (const stageName of priority) {
       const stage = stages.find((candidate) => candidate.name === stageName);
       if (!stage) {
@@ -555,12 +555,12 @@ export class RuleEngineService {
             threshold: settings.duplicateWarnMaxCount,
           }
         : null,
-      settings.duplicateKickEnabled
+      settings.duplicateMuteEnabled
         ? {
-            name: 'kick',
-            action: 'KICK',
-            windowSec: settings.duplicateKickWindowSec,
-            threshold: settings.duplicateKickMaxCount,
+            name: 'mute',
+            action: 'MUTE',
+            windowSec: settings.duplicateMuteWindowSec,
+            threshold: settings.duplicateMuteMaxCount,
           }
         : null,
       settings.duplicateBanEnabled
@@ -580,7 +580,7 @@ export class RuleEngineService {
     stages: DuplicateStage[],
     actionName: DuplicateStageName,
   ): DuplicateAction | null {
-    const order: DuplicateStageName[] = ['warn', 'kick', 'ban'];
+    const order: DuplicateStageName[] = ['warn', 'mute', 'ban'];
     const stageNames = stages.map((stage) => stage.name);
     const currentIndex = order.indexOf(actionName);
 
@@ -593,8 +593,8 @@ export class RuleEngineService {
       if (nextName === 'warn') {
         return 'WARN';
       }
-      if (nextName === 'kick') {
-        return 'KICK';
+      if (nextName === 'mute') {
+        return 'MUTE';
       }
       return 'BAN';
     }

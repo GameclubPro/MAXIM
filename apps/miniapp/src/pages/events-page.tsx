@@ -37,26 +37,28 @@ import { useModerationFeed } from '../lib/use-moderation-feed';
 
 type ViolationAction = LogsDashboardViolation['action'];
 type ViolationItem = LogsDashboardViolation;
-type DisplayAction = Exclude<ViolationAction, 'NONE'> | 'UNBAN';
+type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
 type EventsFilter = ModerationFeedFilter;
 type EventsSection = 'activity' | 'moderation';
 
-const BAN_DURATION_MIN_HOURS = 1;
-const BAN_DURATION_MAX_HOURS = 336;
+const MUTE_DURATION_MIN_HOURS = 1;
+const MUTE_DURATION_MAX_HOURS = 336;
 
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
   WARN: 'Предупреждение',
-  KICK: 'Исключение',
+  MUTE: 'Мут',
   BAN: 'Бан',
+  UNMUTE: 'Снять мут',
   UNBAN: 'Разбан',
 };
 
 const actionToneMap: Record<DisplayAction, 'neutral' | 'warning' | 'danger' | 'success'> = {
   WARN: 'warning',
   DELETE_MESSAGE: 'neutral',
-  KICK: 'danger',
+  MUTE: 'warning',
   BAN: 'danger',
+  UNMUTE: 'success',
   UNBAN: 'success',
 };
 
@@ -115,6 +117,23 @@ function ActivityTabIcon() {
   );
 }
 
+function ClockIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+    >
+      <circle cx="12" cy="12" r="8.25" />
+      <path d="M12 7.75v4.8l3.45 1.95" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -140,17 +159,21 @@ function formatViolationRule(ruleCode: string): string {
     PHOTO_RATE_LIMIT: 'Слишком много фото',
     DUPLICATE_WARN: 'Повторяющиеся сообщения',
     DUPLICATE_DELETE: 'Повторяющиеся сообщения',
+    DUPLICATE_MUTE: 'Повторяющиеся сообщения',
     DUPLICATE_KICK: 'Повторяющиеся сообщения',
     DUPLICATE_BAN: 'Повторяющиеся сообщения',
-    MANUAL_KICK: 'Ручное удаление',
+    MANUAL_MUTE: 'Ручной мут',
+    MANUAL_UNMUTE: 'Ручное снятие мута',
+    MANUAL_KICK: 'Ручной бан',
     MANUAL_BAN: 'Ручной бан',
     MANUAL_UNBAN: 'Ручной разбан',
     THEMATIC_FILTER: 'Объявления по теме',
     GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
     GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
     GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
+    GLOBAL_SPAMMER_BAN: 'Глобальная база спаммеров',
     GLOBAL_SPAMMER_KICK: 'Глобальная база спаммеров',
-    BAN_ACTIVE_DELETE: 'Активный бан',
+    MUTE_ACTIVE_DELETE: 'Активный мут',
     NIGHT_MODE_DELETE: 'Ночной режим',
     REQUIRED_SUBSCRIPTION: 'Обязательная подписка',
   };
@@ -214,38 +237,62 @@ function isManualUnban(violation: ViolationItem): boolean {
   return violation.ruleCode === 'MANUAL_UNBAN';
 }
 
+function isManualUnmute(violation: ViolationItem): boolean {
+  return violation.ruleCode === 'MANUAL_UNMUTE';
+}
+
 function resolveDisplayAction(violation: ViolationItem): DisplayAction {
+  if (isManualUnmute(violation)) {
+    return 'UNMUTE';
+  }
+
   if (isManualUnban(violation)) {
     return 'UNBAN';
   }
 
-  return violation.action === 'NONE' ? 'DELETE_MESSAGE' : violation.action;
+  if (violation.action === 'NONE') {
+    return 'DELETE_MESSAGE';
+  }
+
+  if (violation.action === 'KICK') {
+    return 'BAN';
+  }
+
+  return violation.action;
 }
 
 function resolveViolationBlurb(violation: ViolationItem): string {
+  if (violation.ruleCode === 'MANUAL_UNMUTE') {
+    return 'Модератор снял мут вручную';
+  }
+
   if (violation.ruleCode === 'MANUAL_UNBAN') {
     return 'Модератор снял блокировку вручную';
   }
 
-  if (violation.ruleCode === 'MANUAL_KICK') {
-    return 'Модератор удалил участника вручную';
-  }
-
-  if (violation.ruleCode === 'MANUAL_BAN') {
+  if (violation.ruleCode === 'MANUAL_MUTE') {
     const metadata =
       violation.metadata &&
       typeof violation.metadata === 'object' &&
       !Array.isArray(violation.metadata)
         ? violation.metadata
         : null;
-    const banDurationHours =
+    const muteDurationHours =
       metadata &&
-      typeof metadata.banDurationHours === 'number' &&
-      Number.isFinite(metadata.banDurationHours)
-        ? metadata.banDurationHours
+      typeof metadata.muteDurationHours === 'number' &&
+      Number.isFinite(metadata.muteDurationHours)
+        ? metadata.muteDurationHours
         : null;
 
-    return banDurationHours ? `Ручной бан на ${banDurationHours}ч` : 'Модератор выдал ручной бан';
+    return muteDurationHours ? `Ручной мут на ${muteDurationHours}ч` : 'Модератор выдал ручной мут';
+  }
+
+  if (violation.ruleCode === 'MANUAL_KICK') {
+    return 'Модератор выдал ручной бан';
+  }
+
+  if (violation.ruleCode === 'MANUAL_BAN') {
+    return 'Модератор выдал ручной бан';
   }
 
   return formatViolationRule(violation.ruleCode);
@@ -259,30 +306,38 @@ function formatSignedCount(value: number): string {
   return String(value);
 }
 
-function clampBanDurationHours(value: number): number {
-  const normalized = Number.isFinite(value) ? Math.trunc(value) : BAN_DURATION_MIN_HOURS;
-  return Math.max(BAN_DURATION_MIN_HOURS, Math.min(BAN_DURATION_MAX_HOURS, normalized));
+function clampMuteDurationHours(value: number): number {
+  const normalized = Number.isFinite(value) ? Math.trunc(value) : MUTE_DURATION_MIN_HOURS;
+  return Math.max(MUTE_DURATION_MIN_HOURS, Math.min(MUTE_DURATION_MAX_HOURS, normalized));
 }
 
-function resolveApplyActionLabel(action: ManualModerationAction, banDurationHours: number): string {
-  if (action === 'KICK') {
-    return 'Удалить участника';
+function resolveApplyActionLabel(action: ManualModerationAction, muteDurationHours: number): string {
+  if (action === 'MUTE') {
+    return `Замьютить на ${muteDurationHours}ч`;
+  }
+
+  if (action === 'UNMUTE') {
+    return 'Снять мут';
   }
 
   if (action === 'UNBAN') {
     return 'Разбанить участника';
   }
 
-  return `Забанить на ${banDurationHours}ч`;
+  return 'Забанить';
 }
 
 function resolveConfirmMessage(
   action: ManualModerationAction,
-  banDurationHours: number,
+  muteDurationHours: number,
   violation?: ViolationItem,
 ): string {
-  if (action === 'KICK') {
-    return 'Удалить участника из чата?';
+  if (action === 'MUTE') {
+    return `Замьютить участника на ${muteDurationHours}ч? Новые сообщения будут удаляться до конца срока.`;
+  }
+
+  if (action === 'UNMUTE') {
+    return 'Снять мут у участника?';
   }
 
   if (action === 'UNBAN') {
@@ -290,17 +345,17 @@ function resolveConfirmMessage(
       return 'Снять бан и вернуть участника в чат?';
     }
 
-    if (violation?.ruleCode === 'GLOBAL_SPAMMER_KICK') {
+    if (violation?.ruleCode === 'GLOBAL_SPAMMER_BAN' || violation?.ruleCode === 'GLOBAL_SPAMMER_KICK') {
       return 'Вернуть участника в чат и снять удаление по базе спаммеров?';
     }
 
     return 'Вернуть участника в чат?';
   }
 
-  return `Забанить участника на ${banDurationHours}ч с авторазбаном?`;
+  return 'Забанить участника в чате MAX до ручного разбана?';
 }
 
-function isBanActiveFromViolation(violation: ViolationItem): boolean {
+function isMuteActiveFromViolation(violation: ViolationItem): boolean {
   const metadata =
     violation.metadata &&
     typeof violation.metadata === 'object' &&
@@ -317,22 +372,12 @@ function isBanActiveFromViolation(violation: ViolationItem): boolean {
     return Number.isFinite(timestamp) && timestamp > now;
   };
 
-  if (readFutureIso('banExpiresAt') || readFutureIso('unbanScheduledAt')) {
+  if (readFutureIso('muteExpiresAt') || readFutureIso('banExpiresAt') || readFutureIso('unbanScheduledAt')) {
     return true;
   }
 
-  if (violation.action !== 'BAN') {
+  if (violation.action !== 'MUTE') {
     return false;
-  }
-
-  if (
-    violation.ruleCode === 'MANUAL_BAN' &&
-    metadata &&
-    !('banDurationHours' in metadata) &&
-    !('banExpiresAt' in metadata) &&
-    !('unbanScheduledAt' in metadata)
-  ) {
-    return true;
   }
 
   const createdAtMs = new Date(violation.createdAt).getTime();
@@ -340,23 +385,48 @@ function isBanActiveFromViolation(violation: ViolationItem): boolean {
     return false;
   }
 
-  const banDurationHours =
-    metadata && 'banDurationHours' in metadata && typeof metadata.banDurationHours === 'number'
-      ? metadata.banDurationHours
+  const muteDurationHours =
+    metadata && 'muteDurationHours' in metadata && typeof metadata.muteDurationHours === 'number'
+      ? metadata.muteDurationHours
       : null;
-  if (banDurationHours === null || !Number.isFinite(banDurationHours) || banDurationHours <= 0) {
+  if (muteDurationHours === null || !Number.isFinite(muteDurationHours) || muteDurationHours <= 0) {
     return false;
   }
 
-  return createdAtMs + banDurationHours * 60 * 60 * 1000 > now;
+  return createdAtMs + muteDurationHours * 60 * 60 * 1000 > now;
 }
 
-function canRestoreMembershipFromViolation(violation: ViolationItem): boolean {
-  return isBanActiveFromViolation(violation) || violation.action === 'KICK';
+function isBanActiveFromViolation(violation: ViolationItem): boolean {
+  const metadata =
+    violation.metadata &&
+    typeof violation.metadata === 'object' &&
+    !Array.isArray(violation.metadata)
+      ? violation.metadata
+      : null;
+
+  if (violation.action !== 'BAN') {
+    return false;
+  }
+
+  return !metadata || !('muteDurationHours' in metadata);
 }
 
-function resolveRestoreMembershipLabel(violation: ViolationItem): string {
-  return isBanActiveFromViolation(violation) ? 'Разбан' : 'Вернуть';
+function resolveReleaseAction(violation: ViolationItem): Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'> | null {
+  if (isMuteActiveFromViolation(violation)) {
+    return 'UNMUTE';
+  }
+
+  if (isBanActiveFromViolation(violation)) {
+    return 'UNBAN';
+  }
+
+  return null;
+}
+
+function resolveReleaseLabel(
+  action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>,
+): string {
+  return action === 'UNMUTE' ? 'Снять мут' : 'Разбан';
 }
 
 function normalizeActionErrorMessage(error: unknown): string {
@@ -399,18 +469,18 @@ function ViolationModerationControls({
   violation: ViolationItem;
   onApplied: () => void;
 }) {
-  const canUnban = canRestoreMembershipFromViolation(violation);
-  const [banDurationHours, setBanDurationHours] = useState(6);
-  const [banExpanded, setBanExpanded] = useState(false);
+  const releaseAction = resolveReleaseAction(violation);
+  const [muteDurationHours, setMuteDurationHours] = useState(6);
+  const [muteExpanded, setMuteExpanded] = useState(false);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
-  const banPresets = [1, 6, 24, 168];
+  const mutePresets = [1, 6, 24, 168];
 
   const applyMutation = useMutation({
     mutationFn: async (payload: ManualModerationActionRequest) =>
       applyManualModerationAction(api, chatId, violation.userId, payload),
     onSuccess: (result) => {
       setStatus({ tone: 'success', text: result.message });
-      setBanExpanded(false);
+      setMuteExpanded(false);
       onApplied();
     },
     onError: (error: unknown) => {
@@ -421,9 +491,9 @@ function ViolationModerationControls({
 
   const confirmAndApply = (action: ManualModerationAction, hours?: number) => {
     const normalizedHours =
-      action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
+      action === 'MUTE' ? clampMuteDurationHours(hours ?? muteDurationHours) : null;
     const confirmed = window.confirm(
-      resolveConfirmMessage(action, normalizedHours ?? banDurationHours, violation),
+      resolveConfirmMessage(action, normalizedHours ?? muteDurationHours, violation),
     );
     if (!confirmed) {
       return;
@@ -432,61 +502,97 @@ function ViolationModerationControls({
     setStatus(null);
     applyMutation.mutate({
       action,
-      ...(action === 'BAN' ? { banDurationHours: normalizedHours ?? banDurationHours } : {}),
+      ...(action === 'MUTE' ? { muteDurationHours: normalizedHours ?? muteDurationHours } : {}),
     });
   };
 
   return (
     <section className="logs-violation-item__moderation" aria-label="Действия модератора">
       <div className="logs-violation-item__quick-actions">
-        <button
-          type="button"
-          className="logs-violation-item__quick-button logs-violation-item__quick-button--danger"
-          disabled={applyMutation.isPending}
-          onClick={() => confirmAndApply('KICK')}
-        >
-          Кик
-        </button>
-        {!canUnban ? (
+        {!releaseAction ? (
           <button
             type="button"
             className={`logs-violation-item__quick-button logs-violation-item__quick-button--warning ${
-              banExpanded ? 'is-active' : ''
+              muteExpanded ? 'is-active' : ''
             }`}
             disabled={applyMutation.isPending}
             onClick={() => {
               setStatus(null);
-              setBanExpanded((current) => !current);
+              setMuteExpanded((current) => !current);
             }}
+          >
+            Мут
+          </button>
+        ) : null}
+        {!releaseAction ? (
+          <button
+            type="button"
+            className="logs-violation-item__quick-button logs-violation-item__quick-button--danger"
+            disabled={applyMutation.isPending}
+            onClick={() => confirmAndApply('BAN')}
           >
             Бан
           </button>
         ) : null}
-        {canUnban ? (
+        {releaseAction ? (
           <button
             type="button"
             className="logs-violation-item__quick-button logs-violation-item__quick-button--success"
             disabled={applyMutation.isPending}
-            onClick={() => confirmAndApply('UNBAN')}
+            onClick={() => confirmAndApply(releaseAction)}
           >
-            {resolveRestoreMembershipLabel(violation)}
+            {resolveReleaseLabel(releaseAction)}
           </button>
         ) : null}
       </div>
 
-      {!canUnban && banExpanded ? (
+      {!releaseAction && muteExpanded ? (
         <div className="logs-violation-item__ban-config">
-          <small className="logs-violation-item__ban-caption">Срок бана</small>
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'auto 1fr auto',
+              alignItems: 'center',
+              gap: 10,
+              padding: '10px 12px',
+              borderRadius: 14,
+              border: '1px solid rgba(62, 96, 127, 0.18)',
+            }}
+          >
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: 36,
+                height: 36,
+                borderRadius: 12,
+                color: 'rgba(18, 95, 158, 0.92)',
+              }}
+            >
+              <ClockIcon />
+            </span>
+            <div style={{ display: 'grid', gap: 2 }}>
+              <strong>Срок мута</strong>
+              <small>Участник останется в чате, а новые сообщения будут скрываться до конца срока.</small>
+            </div>
+            <output aria-live="polite" style={{ padding: '7px 10px', borderRadius: 999, fontWeight: 800 }}>
+              {muteDurationHours >= 24 && muteDurationHours % 24 === 0
+                ? `${muteDurationHours / 24}д`
+                : `${muteDurationHours}ч`}
+            </output>
+          </div>
+
           <div className="logs-violation-item__ban-presets">
-            {banPresets.map((hours) => (
+            {mutePresets.map((hours) => (
               <button
                 key={hours}
                 type="button"
                 className={`logs-violation-item__ban-preset ${
-                  banDurationHours === hours ? 'is-active' : ''
+                  muteDurationHours === hours ? 'is-active' : ''
                 }`}
                 disabled={applyMutation.isPending}
-                onClick={() => setBanDurationHours(hours)}
+                onClick={() => setMuteDurationHours(hours)}
               >
                 {hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`}
               </button>
@@ -498,34 +604,35 @@ function ViolationModerationControls({
               <button
                 type="button"
                 className="ban-duration-stepper__button"
-                onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev - 1))}
-                disabled={applyMutation.isPending || banDurationHours <= BAN_DURATION_MIN_HOURS}
-                aria-label="Уменьшить длительность бана"
+                onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev - 1))}
+                disabled={applyMutation.isPending || muteDurationHours <= MUTE_DURATION_MIN_HOURS}
+                aria-label="Уменьшить длительность мута"
               >
                 -
               </button>
-              <div className="ban-duration-stepper__value">{banDurationHours}ч</div>
+              <div className="ban-duration-stepper__value">{muteDurationHours}ч</div>
               <button
                 type="button"
                 className="ban-duration-stepper__button"
-                onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev + 1))}
-                disabled={applyMutation.isPending || banDurationHours >= BAN_DURATION_MAX_HOURS}
-                aria-label="Увеличить длительность бана"
+                onClick={() => setMuteDurationHours((prev) => clampMuteDurationHours(prev + 1))}
+                disabled={applyMutation.isPending || muteDurationHours >= MUTE_DURATION_MAX_HOURS}
+                aria-label="Увеличить длительность мута"
               >
                 +
               </button>
             </div>
 
             <label className="logs-violation-item__hours-input">
+              <span>Часы</span>
               <input
                 type="number"
-                min={BAN_DURATION_MIN_HOURS}
-                max={BAN_DURATION_MAX_HOURS}
+                min={MUTE_DURATION_MIN_HOURS}
+                max={MUTE_DURATION_MAX_HOURS}
                 step={1}
-                value={banDurationHours}
+                value={muteDurationHours}
                 disabled={applyMutation.isPending}
                 onChange={(event) =>
-                  setBanDurationHours(clampBanDurationHours(Number(event.target.value)))
+                  setMuteDurationHours(clampMuteDurationHours(Number(event.target.value)))
                 }
               />
               <small>1–336ч</small>
@@ -536,11 +643,11 @@ function ViolationModerationControls({
             type="button"
             className="button button--accent logs-violation-item__apply-button"
             disabled={applyMutation.isPending}
-            onClick={() => confirmAndApply('BAN', banDurationHours)}
+            onClick={() => confirmAndApply('MUTE', muteDurationHours)}
           >
             {applyMutation.isPending
               ? 'Применяем…'
-              : resolveApplyActionLabel('BAN', banDurationHours)}
+              : resolveApplyActionLabel('MUTE', muteDurationHours)}
           </button>
         </div>
       ) : null}
@@ -683,8 +790,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         label: 'Удаления',
         count: dashboard.violationsSummary.deleteMessage,
       },
-      { value: 'KICK', label: 'Кики', count: dashboard.violationsSummary.kick },
+      { value: 'MUTE', label: 'Муты', count: dashboard.violationsSummary.mute },
       { value: 'BAN', label: 'Баны', count: dashboard.violationsSummary.ban },
+      { value: 'UNMUTE', label: 'Снятия мута', count: dashboard.violationsSummary.unmute },
       { value: 'UNBAN', label: 'Разбаны', count: dashboard.violationsSummary.unban },
     ];
 
@@ -706,9 +814,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     [eventsFilter, filterOptions],
   );
 
-  const hardMeasures = dashboard
-    ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
-    : 0;
+  const hardMeasures = dashboard ? dashboard.violationsSummary.mute + dashboard.violationsSummary.ban : 0;
 
   if (!chatId) {
     return (
@@ -796,7 +902,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: 'neutral' as const,
     },
     {
-      label: 'Кик + бан',
+      label: 'Мут + бан',
       value: String(hardMeasures),
       note: 'Жёсткие меры',
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),

@@ -1,14 +1,14 @@
 import { chatSettingsSchema } from '@maxim/contracts';
 
 describe('chatSettingsSchema duplicate stage validation', () => {
-  it('rejects BAN thresholds that are lower than KICK thresholds', () => {
+  it('rejects BAN thresholds that are lower than MUTE thresholds', () => {
     const result = chatSettingsSchema.safeParse({
       antiDuplicateEnabled: true,
       duplicateWarnEnabled: false,
-      duplicateKickEnabled: true,
+      duplicateMuteEnabled: true,
       duplicateBanEnabled: true,
-      duplicateKickWindowSec: 48 * 60 * 60,
-      duplicateKickMaxCount: 6,
+      duplicateMuteWindowSec: 48 * 60 * 60,
+      duplicateMuteMaxCount: 6,
       duplicateBanWindowSec: 24 * 60 * 60,
       duplicateBanMaxCount: 4,
     });

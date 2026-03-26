@@ -22,7 +22,7 @@ describe('SanctionService', () => {
     ).resolves.toBe(SanctionAction.WARN);
   });
 
-  it('returns KICK on threshold without recent kick', async () => {
+  it('returns MUTE on threshold without recent mute', async () => {
     const prisma = {
       violation: {
         count: jest.fn().mockResolvedValue(3),
@@ -39,10 +39,10 @@ describe('SanctionService', () => {
         userId: 'u-1',
         warnThreshold: 3,
       }),
-    ).resolves.toBe(SanctionAction.KICK);
+    ).resolves.toBe(SanctionAction.MUTE);
   });
 
-  it('returns BAN on threshold with recent kick', async () => {
+  it('returns BAN on threshold with recent mute', async () => {
     const prisma = {
       violation: {
         count: jest.fn().mockResolvedValue(6),

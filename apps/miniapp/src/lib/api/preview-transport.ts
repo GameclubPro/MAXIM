@@ -767,7 +767,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
   const base = [
     {
       id: 'violation-1',
-      action: 'BAN' as const,
+      action: 'MUTE' as const,
       ruleCode: 'COMMERCIAL_AD',
       userId: 'preview-spammer-1',
       userDisplayName: 'Сергей Маркет',
@@ -776,7 +776,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       profileHandoffUrl: buildPreviewProfileHandoffUrl('sergey-market'),
       createdAt: addHours(now, -1.5).toISOString(),
       maskedExcerpt: 'Переходите по ссылке и получайте скидку ***',
-      metadata: { banDurationHours: 24, unbanScheduledAt: addHours(now, 22.5).toISOString() },
+      metadata: { muteDurationHours: 24, muteExpiresAt: addHours(now, 22.5).toISOString() },
     },
     {
       id: 'violation-2',
@@ -806,7 +806,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
     },
     {
       id: 'violation-4',
-      action: 'KICK' as const,
+      action: 'BAN' as const,
       ruleCode: 'GLOBAL_CROSS_CHAT_SPAM',
       userId: 'preview-user-4',
       userDisplayName: 'Инфо Буст',
@@ -832,7 +832,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
     },
     {
       id: 'violation-6',
-      action: 'BAN' as const,
+      action: 'MUTE' as const,
       ruleCode: 'DUPLICATE_BAN',
       userId: 'preview-user-6',
       userDisplayName: 'Олег Повтор',
@@ -841,7 +841,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       profileHandoffUrl: buildPreviewProfileHandoffUrl('oleg-repeat'),
       createdAt: addHours(now, -42).toISOString(),
       maskedExcerpt: 'Одинаковый текст ***',
-      metadata: { banDurationHours: 12, unbanScheduledAt: addHours(now, -30).toISOString() },
+      metadata: { muteDurationHours: 12, muteExpiresAt: addHours(now, -30).toISOString() },
     },
     {
       id: 'violation-7',
@@ -884,8 +884,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
     },
     {
       id: 'violation-10',
-      action: 'KICK' as const,
-      ruleCode: 'MANUAL_KICK',
+      action: 'MUTE' as const,
+      ruleCode: 'MANUAL_MUTE',
       userId: 'preview-user-10',
       userDisplayName: 'Андрей',
       avatarUrl: buildPreviewAvatarDataUrl('Андрей', '#4d94ff', '#2b64dd'),
@@ -916,7 +916,7 @@ function createInitialState(): PreviewState {
     profanityWarnEnabled: true,
     textFiltersWarnEnabled: true,
     duplicateWarnEnabled: true,
-    duplicateKickEnabled: true,
+    duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
     nightModeEnabled: true,
@@ -930,12 +930,12 @@ function createInitialState(): PreviewState {
       'Для сообщений в этом чате нужна подписка на {channels}. Подпишитесь и отправьте сообщение ещё раз. Статус: {message_status}.',
     requiredSubscriptionWarnEnabled: true,
     requiredSubscriptionBanEnabled: true,
-    requiredSubscriptionKickEnabled: true,
+    requiredSubscriptionMuteEnabled: true,
     commentsEnabled: true,
     commentsAdminsEnabled: true,
     commentsAllEnabled: false,
     commentsChatBroadcastsEnabled: true,
-    banDurationHours: 12,
+    muteDurationHours: 12,
     warnThreshold: 2,
   });
   const chatRules = chatRulesSchema.parse({
@@ -1484,15 +1484,17 @@ function buildLogsDashboard(
   const leftUsers = membershipItems.filter((item) => item.type === 'left').length;
   const summary = violations.reduce(
     (accumulator, item) => {
-      if (item.ruleCode === 'MANUAL_UNBAN') {
+      if (item.ruleCode === 'MANUAL_UNMUTE') {
+        accumulator.unmute += 1;
+      } else if (item.ruleCode === 'MANUAL_UNBAN') {
         accumulator.unban += 1;
       } else if (item.action === 'WARN') {
         accumulator.warn += 1;
       } else if (item.action === 'DELETE_MESSAGE') {
         accumulator.deleteMessage += 1;
-      } else if (item.action === 'KICK') {
-        accumulator.kick += 1;
-      } else if (item.action === 'BAN') {
+      } else if (item.action === 'MUTE') {
+        accumulator.mute += 1;
+      } else if (item.action === 'KICK' || item.action === 'BAN') {
         accumulator.ban += 1;
       }
 
@@ -1502,8 +1504,9 @@ function buildLogsDashboard(
     {
       warn: 0,
       deleteMessage: 0,
-      kick: 0,
+      mute: 0,
       ban: 0,
+      unmute: 0,
       unban: 0,
       users: new Set<string>(),
     },
@@ -1528,8 +1531,9 @@ function buildLogsDashboard(
     violationsSummary: {
       warn: summary.warn,
       deleteMessage: summary.deleteMessage,
-      kick: summary.kick,
+      mute: summary.mute,
       ban: summary.ban,
+      unmute: summary.unmute,
       unban: summary.unban,
       affectedUsers: summary.users.size,
       total: violations.length,
@@ -1787,13 +1791,16 @@ function createDraftGiveaway(
 }
 
 function buildModerationMessage(payload: ManualModerationActionRequest): string {
-  if (payload.action === 'KICK') {
-    return 'Участник удален из чата в preview-режиме.';
+  if (payload.action === 'MUTE') {
+    return `Участник замьючен на ${payload.muteDurationHours ?? 24}ч в preview-режиме.`;
+  }
+  if (payload.action === 'UNMUTE') {
+    return 'Мут снят в preview-режиме.';
   }
   if (payload.action === 'UNBAN') {
     return 'Участник разбанен в preview-режиме.';
   }
-  return `Участник забанен на ${payload.banDurationHours ?? 24}ч в preview-режиме.`;
+  return 'Участник забанен в preview-режиме.';
 }
 
 function createModerationResult(
@@ -1805,9 +1812,9 @@ function createModerationResult(
     ok: true,
     action: payload.action,
     userId,
-    banDurationHours: payload.action === 'BAN' ? (payload.banDurationHours ?? 24) : null,
-    unbanScheduledAt:
-      payload.action === 'BAN' ? addHours(now, payload.banDurationHours ?? 24).toISOString() : null,
+    muteDurationHours: payload.action === 'MUTE' ? (payload.muteDurationHours ?? 24) : null,
+    muteExpiresAt:
+      payload.action === 'MUTE' ? addHours(now, payload.muteDurationHours ?? 24).toISOString() : null,
     message: buildModerationMessage(payload),
   });
 }
@@ -1823,6 +1830,22 @@ function createManualViolation(
   payload: ManualModerationActionRequest,
 ): LogsDashboardResponse['violations'][number] {
   const now = new Date();
+
+  if (payload.action === 'UNMUTE') {
+    return {
+      id: `manual-unmute-${Date.now()}`,
+      action: 'NONE',
+      ruleCode: 'MANUAL_UNMUTE',
+      userId,
+      userDisplayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      profileUrl: user.profileUrl,
+      profileHandoffUrl: user.profileHandoffUrl,
+      createdAt: now.toISOString(),
+      maskedExcerpt: null,
+      metadata: null,
+    };
+  }
 
   if (payload.action === 'UNBAN') {
     return {
@@ -1840,11 +1863,11 @@ function createManualViolation(
     };
   }
 
-  if (payload.action === 'KICK') {
+  if (payload.action === 'MUTE') {
     return {
-      id: `manual-kick-${Date.now()}`,
-      action: 'KICK',
-      ruleCode: 'MANUAL_KICK',
+      id: `manual-mute-${Date.now()}`,
+      action: 'MUTE',
+      ruleCode: 'MANUAL_MUTE',
       userId,
       userDisplayName: user.displayName,
       avatarUrl: user.avatarUrl,
@@ -1852,7 +1875,10 @@ function createManualViolation(
       profileHandoffUrl: user.profileHandoffUrl,
       createdAt: now.toISOString(),
       maskedExcerpt: null,
-      metadata: null,
+      metadata: {
+        muteDurationHours: payload.muteDurationHours ?? 24,
+        muteExpiresAt: addHours(now, payload.muteDurationHours ?? 24).toISOString(),
+      },
     };
   }
 
@@ -1867,10 +1893,7 @@ function createManualViolation(
     profileHandoffUrl: user.profileHandoffUrl,
     createdAt: now.toISOString(),
     maskedExcerpt: null,
-    metadata: {
-      banDurationHours: payload.banDurationHours ?? 24,
-      unbanScheduledAt: addHours(now, payload.banDurationHours ?? 24).toISOString(),
-    },
+    metadata: null,
   };
 }
 

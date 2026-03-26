@@ -41,10 +41,12 @@ describe('bot speech styles', () => {
       userLabel,
       'MESSAGE_TOO_LONG',
       null,
+      null,
     );
     const policeWarnText = (service as any).buildMessageLimitsWarnExplanation(
       userLabel,
       'MESSAGE_TOO_LONG',
+      null,
       'POLICE',
     );
 
@@ -94,6 +96,7 @@ describe('bot speech styles', () => {
         5,
         187,
         100,
+        null,
         '',
         'ROBOT',
       ),
@@ -114,16 +117,22 @@ describe('bot speech styles', () => {
           threshold: 2,
           windowSec: 30,
           hash: 'dup-hash',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
         6,
+        true,
         '',
         'ROBOT',
       ),
     ).toBe('Система: **Алексей**. Зафиксирован повтор сообщения. Предупреждение зарегистрировано.');
 
     expect(
-      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'ROBOT'),
+      (service as any).buildMessageLimitsWarnExplanation(
+        userLabel,
+        'MESSAGE_TOO_LONG',
+        null,
+        'ROBOT',
+      ),
     ).toBe('Система: **Алексей**. Предупреждение. Причина: слишком длинное сообщение.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
@@ -156,6 +165,7 @@ describe('bot speech styles', () => {
         5,
         187,
         100,
+        null,
         '',
         'FRIENDLY',
       ),
@@ -176,25 +186,31 @@ describe('bot speech styles', () => {
           threshold: 2,
           windowSec: 30,
           hash: 'dup-hash',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
         6,
+        true,
         '',
         'FRIENDLY',
       ),
     ).toBe('**Алексей**, такое сообщение уже было. Это уже предупреждение.');
 
     expect(
-      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY'),
+      (service as any).buildMessageLimitsWarnExplanation(
+        userLabel,
+        'MESSAGE_TOO_LONG',
+        null,
+        'FRIENDLY',
+      ),
     ).toBe('**Алексей**, это предупреждение. Причина: слишком длинное сообщение.');
     expect(
-      (service as any).buildRequiredSubscriptionKickExplanation(
+      (service as any).buildRequiredSubscriptionMuteExplanation(
         userLabel,
         ['Новости MAX'],
         'FRIENDLY',
       ),
     ).toBe(
-      '**Алексей**, сообщения без подписки повторились, поэтому пришлось вывести вас из чата. Сначала подпишитесь на Новости MAX.',
+      '**Алексей**, сообщения без подписки повторились, поэтому выдан мут. Сначала подпишитесь на Новости MAX.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
@@ -221,9 +237,10 @@ describe('bot speech styles', () => {
           threshold: 2,
           windowSec: 30,
           hash: 'dup-hash',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
         6,
+        true,
         '',
         'IRONIC',
       ),
@@ -244,13 +261,18 @@ describe('bot speech styles', () => {
     ).toBe('Ручной разбор для **Алексей**. Причина: в этом чате ссылки не проходят, без ссылок.');
 
     expect(
-      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'IRONIC'),
+      (service as any).buildMessageLimitsWarnExplanation(
+        userLabel,
+        'MESSAGE_TOO_LONG',
+        null,
+        'IRONIC',
+      ),
     ).toBe(
       '**Алексей**, это уже предупреждение. Причина: слишком длинное сообщение. Лимиты тут правда считают.',
     );
 
-    expect((service as any).buildLinkKickExplanation(userLabel, 'IRONIC')).toBe(
-      '**Алексей**, со ссылками вышел небольшой сериал, поэтому дальше чат без вас.',
+    expect((service as any).buildLinkMuteExplanation(userLabel, 'IRONIC')).toBe(
+      '**Алексей**, со ссылками вышел небольшой сериал, поэтому выдан мут.',
     );
   });
 

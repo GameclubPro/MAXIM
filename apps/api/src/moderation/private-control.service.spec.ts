@@ -597,7 +597,7 @@ function createHarness(
       ok: true,
       action: 'BAN',
       userId: 'user-77',
-      banDurationHours: null,
+      muteDurationHours: null,
       unbanScheduledAt: null,
       message: 'Участник забанен в чате.',
     }),
@@ -1092,7 +1092,7 @@ describe('PrivateControlService', () => {
     const { service, adminService, maxClient, chats } = createHarness({
       settings: {
         ...defaultSettings,
-        banDurationHours: 12,
+        muteDurationHours: 12,
       },
     });
 
@@ -1117,7 +1117,7 @@ describe('PrivateControlService', () => {
     const { service, adminService, maxClient } = createHarness({
       settings: {
         ...defaultSettings,
-        banDurationHours: 6,
+        muteDurationHours: 6,
       },
     });
 
@@ -1148,7 +1148,7 @@ describe('PrivateControlService', () => {
       settings: {
         ...defaultSettings,
         duplicateWarnMaxCount: 2,
-        banDurationHours: 6,
+        muteDurationHours: 6,
       },
     });
 
@@ -1158,7 +1158,7 @@ describe('PrivateControlService', () => {
       createPrivateCallbackUpdate('pc2|set_number_preset|duplicates|duplicateWarnMaxCount|5'),
     );
     await service.handleUpdate(
-      createPrivateCallbackUpdate('pc2|step_number|duplicates|banDurationHours|1'),
+      createPrivateCallbackUpdate('pc2|step_number|duplicates|muteDurationHours|1'),
     );
 
     expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');

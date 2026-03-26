@@ -68,16 +68,17 @@ function majorExplanation(
 
 function duplicateExplanation(
   name: string,
-  sanction:
-    | 'Предупреждение оформил.'
-    | 'Пришлось оформить выход из чата.'
-    | 'Повтор изъял, пока без протокола.',
+  sanction: string,
 ): string {
   return `Товарищ ${boldUser(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
 }
 
-function banNotice(name: string, duration: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю паузу на ${duration}. Возвращайтесь без приключений.`;
+function muteNotice(name: string, duration: string): string {
+  return `Товарищ ${boldUser(name)}, оформляю мут на ${duration}. До конца срока новые сообщения будут скрываться.`;
+}
+
+function permanentBanNotice(name: string): string {
+  return `Товарищ ${boldUser(name)}, оформляю бан до ручного разбана.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
@@ -92,12 +93,12 @@ function messageLimitsWarnNotice(name: string, reason: string): string {
   return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
-function messageLimitsKickNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, ограничения снова решили проверить на прочность. Пришлось вывести из чата. Причина: ${reason}.`;
+function messageLimitsMuteNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, ограничения снова решили проверить на прочность. Оформляю мут. Причина: ${reason}.`;
 }
 
-function messageLimitsBanNotice(name: string, duration: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю паузу на ${duration} 👮‍♂️ Причина: ${reason}.`;
+function messageLimitsBanNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, оформляю бан до ручного разбана 👮‍♂️ Причина: ${reason}.`;
 }
 
 function topicFilterWarnNotice(name: string, reason: string): string {
@@ -117,13 +118,13 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     id: 'settings-1',
     chatId: 'chat-1',
     duplicateWarnEnabled: true,
-    duplicateKickEnabled: true,
+    duplicateMuteEnabled: true,
     duplicateBanEnabled: true,
     antiDuplicateEnabled: true,
     duplicateWarnWindowSec: 12 * 60 * 60,
     duplicateWarnMaxCount: 2,
-    duplicateKickWindowSec: 24 * 60 * 60,
-    duplicateKickMaxCount: 3,
+    duplicateMuteWindowSec: 24 * 60 * 60,
+    duplicateMuteMaxCount: 3,
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
@@ -159,7 +160,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
     messageLimitsBanEnabled: false,
-    messageLimitsKickEnabled: false,
+    messageLimitsMuteEnabled: false,
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
@@ -171,13 +172,13 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     profanityBotMessageEnabled: false,
     profanityWarnEnabled: false,
     profanityBanEnabled: false,
-    profanityKickEnabled: false,
+    profanityMuteEnabled: false,
     textFiltersBotMessageEnabled: false,
     textFiltersBotMessageText: '',
     textFiltersWarnEnabled: false,
     textFiltersWarnMessageText: '',
     textFiltersBanEnabled: false,
-    textFiltersKickEnabled: false,
+    textFiltersMuteEnabled: false,
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
@@ -187,7 +188,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     thematicFiltersBotMessageEnabled: false,
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,
-    thematicFiltersKickEnabled: false,
+    thematicFiltersMuteEnabled: false,
     thematicFiltersBotButtonEnabled: false,
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
@@ -221,13 +222,13 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     requiredSubscriptionWarnEnabled: false,
     requiredSubscriptionWarnMessageText: '',
     requiredSubscriptionBanEnabled: false,
-    requiredSubscriptionKickEnabled: false,
+    requiredSubscriptionMuteEnabled: false,
     linkBotMessageEnabled: true,
     linkBotMessageText: '',
     linkWarnEnabled: false,
     linkWarnMessageText: '',
     linkBanEnabled: false,
-    linkKickEnabled: false,
+    linkMuteEnabled: false,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
     linkBotButtonText: 'Открыть',
@@ -240,7 +241,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: false,
-    banDurationHours: 6,
+    muteDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -4098,7 +4099,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('deletes messages silently while 6h active ban is in effect', async () => {
+  it('deletes messages silently while 6h active mute is in effect', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4115,6 +4116,9 @@ describe('ModerationService', () => {
         findFirst: jest.fn().mockResolvedValue({
           id: 'ban-1',
           createdAt: new Date(Date.now() - 5 * 60 * 1000),
+          action: SanctionAction.BAN,
+          ruleCode: 'DUPLICATE_BAN',
+          metadata: { banDurationHours: 6 },
         }),
         create: jest.fn(),
       },
@@ -4155,7 +4159,7 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'msg-1',
-        ruleCode: 'BAN_ACTIVE_DELETE',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
@@ -4284,7 +4288,7 @@ describe('ModerationService', () => {
       detect: jest.fn().mockResolvedValue({
         violations: [],
         duplicateDecision: {
-          action: 'KICK',
+          action: 'MUTE',
           count: 3,
           threshold: 3,
           windowSec: 24 * 60 * 60,
@@ -4340,7 +4344,7 @@ describe('ModerationService', () => {
           action: SanctionAction.BAN,
           ruleCode: 'MANUAL_BAN',
           metadata: {
-            banDurationHours: 72,
+            muteDurationHours: 72,
           },
         }),
         create: jest.fn(),
@@ -4380,7 +4384,7 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'msg-1',
-        ruleCode: 'BAN_ACTIVE_DELETE',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
@@ -5978,7 +5982,7 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({
-            banDurationHours: 12,
+            muteDurationHours: 12,
             deleteBotMessagesEnabled: true,
             deleteBotMessagesDelayMinutes: 3,
           }),
@@ -6017,7 +6021,7 @@ describe('ModerationService', () => {
         ok: true,
         action: 'BAN',
         userId: 'user-2',
-        banDurationHours: null,
+        muteDurationHours: null,
         unbanScheduledAt: null,
         message: 'Участник забанен в чате.',
       }),
@@ -6132,7 +6136,7 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({
-            banDurationHours: 12,
+            muteDurationHours: 12,
             deleteBotMessagesEnabled: true,
             deleteBotMessagesDelayMinutes: 3,
           }),
@@ -6337,7 +6341,7 @@ describe('ModerationService', () => {
       detect: jest.fn().mockResolvedValue({
         violations: [],
         duplicateDecision: {
-          action: 'KICK',
+          action: 'MUTE',
           count: 3,
           threshold: 3,
           windowSec: 24 * 60 * 60,
@@ -6369,8 +6373,13 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      muteNotice('Алексей', '6ч'),
+      expect.objectContaining({ textFormat: 'markdown' }),
+      undefined,
+    );
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
 
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
@@ -6388,8 +6397,8 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'msg-1',
-        ruleCode: 'DUPLICATE_KICK',
-        action: SanctionAction.KICK,
+        ruleCode: 'DUPLICATE_MUTE',
+        action: SanctionAction.MUTE,
         metadata: expect.objectContaining({
           windowSec: 24 * 60 * 60,
           count: 3,
@@ -6431,7 +6440,7 @@ describe('ModerationService', () => {
           threshold: 2,
           windowSec: 12 * 60 * 60,
           hash: 'dup-hash-1',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
       }),
     };
@@ -6578,7 +6587,7 @@ describe('ModerationService', () => {
           threshold: 2,
           windowSec: 12 * 60 * 60,
           hash: 'dup-hash-button',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
       }),
     };
@@ -6615,7 +6624,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('sends 6h ban notice for duplicate BAN even when duplicate toggle is disabled', async () => {
+  it('sends permanent ban notice for duplicate BAN even when duplicate toggle is disabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -6671,21 +6680,21 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      banNotice('Алексей', '6ч'),
+      permanentBanNotice('Алексей'),
     );
   });
 
-  it('uses configured ban duration in ban notice', async () => {
+  it('uses permanent ban notice for duplicate BAN regardless of mute duration', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ duplicateBotMessageEnabled: false, banDurationHours: 12 }),
+          settings: createSettings({ duplicateBotMessageEnabled: false, muteDurationHours: 12 }),
           domains: [],
         }),
       },
@@ -6734,10 +6743,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      banNotice('Алексей', '12ч'),
+      permanentBanNotice('Алексей'),
     );
   });
 
@@ -6960,7 +6969,7 @@ describe('ModerationService', () => {
             profanityBotMessageEnabled: true,
             profanityWarnEnabled: false,
             profanityBanEnabled: false,
-            profanityKickEnabled: false,
+            profanityMuteEnabled: false,
           }),
           domains: [],
         }),
@@ -7006,7 +7015,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('uses configured ban duration for text-filter BAN escalation', async () => {
+  it('uses permanent ban flow for text-filter BAN escalation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -7015,7 +7024,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             profanityBotMessageEnabled: false,
             profanityBanEnabled: true,
-            banDurationHours: 12,
+            muteDurationHours: 12,
           }),
           domains: [],
         }),
@@ -7059,11 +7068,11 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      banNotice('Алексей', '12ч'),
+      permanentBanNotice('Алексей'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -7071,7 +7080,6 @@ describe('ModerationService', () => {
         ruleCode: 'PROFANITY',
         action: SanctionAction.BAN,
         metadata: expect.objectContaining({
-          banDurationHours: 12,
           textFilterViolationCount24h: 3,
           textFilterEscalationWindowHours: 24,
         }),
@@ -7079,7 +7087,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('kicks user on fourth text-filter violation in 24h when kick stage is enabled', async () => {
+  it('issues MUTE on fourth text-filter violation in 24h when mute stage is enabled', async () => {
     const globalSpammer = {
       upsert: jest.fn(),
     };
@@ -7090,7 +7098,7 @@ describe('ModerationService', () => {
           title: 'Chat 1',
           settings: createSettings({
             profanityBotMessageEnabled: false,
-            profanityKickEnabled: true,
+            profanityMuteEnabled: true,
           }),
           domains: [],
         }),
@@ -7135,40 +7143,18 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, по лексике пошёл рецидив. Дальше чат без вас.',
+      muteNotice('Алексей', '6ч'),
     );
-    expect(globalSpammer.upsert).toHaveBeenCalledWith({
-      where: { userId: 'user-1' },
-      create: {
-        userId: 'user-1',
-        lastReason: 'SANCTION_KICK',
-        lastChatId: 'chat-1',
-        lastEvidence: {
-          action: 'KICK',
-          source: 'sanction',
-        },
-      },
-      update: {
-        detectionsCount: {
-          increment: 1,
-        },
-        lastReason: 'SANCTION_KICK',
-        lastChatId: 'chat-1',
-        lastEvidence: {
-          action: 'KICK',
-          source: 'sanction',
-        },
-      },
-    });
+    expect(globalSpammer.upsert).not.toHaveBeenCalled();
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'PROFANITY',
-        action: SanctionAction.KICK,
+        action: SanctionAction.MUTE,
         metadata: expect.objectContaining({
           textFilterViolationCount24h: 4,
           textFilterEscalationWindowHours: 24,
@@ -7757,7 +7743,7 @@ describe('ModerationService', () => {
             thematicFiltersBotMessageEnabled: true,
             thematicFiltersWarnEnabled: true,
             thematicFiltersBanEnabled: true,
-            banDurationHours: 12,
+            muteDurationHours: 12,
           }),
           domains: [],
         }),
@@ -7805,7 +7791,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, оформляю паузу на 12ч 👮‍♂️ Причина: объявление должно начинаться с кодового слова "недвижимость".',
+      'Товарищ **Алексей**, оформляю бан до ручного разбана 👮‍♂️ Причина: объявление должно начинаться с кодового слова "недвижимость".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -7816,13 +7802,12 @@ describe('ModerationService', () => {
           requiredCodeword: 'недвижимость',
           topicFilterViolationCount24h: 3,
           topicFilterEscalationWindowHours: 24,
-          banDurationHours: 12,
         }),
       }),
     });
   });
 
-  it('kicks user on fourth codeword violation in 24h when kick stage is enabled', async () => {
+  it('issues MUTE on fourth codeword violation in 24h when mute stage is enabled', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -7840,7 +7825,7 @@ describe('ModerationService', () => {
             thematicCodeword: 'авторынок',
             thematicFiltersBotMessageEnabled: true,
             thematicFiltersWarnEnabled: true,
-            thematicFiltersKickEnabled: true,
+            thematicFiltersMuteEnabled: true,
           }),
           domains: [],
         }),
@@ -7885,15 +7870,16 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, объявления снова мимо формы. Пришлось оформить выход из чата.',
+      muteNotice('Алексей', '6ч'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'TOPIC_FILTER_MISMATCH',
-        action: SanctionAction.KICK,
+        action: SanctionAction.MUTE,
         metadata: expect.objectContaining({
           mode: 'CODEWORD',
           requiredCodeword: 'авторынок',
@@ -7930,7 +7916,7 @@ describe('ModerationService', () => {
       detect: jest.fn().mockResolvedValue({
         violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
         duplicateDecision: {
-          action: 'KICK',
+          action: 'MUTE',
           count: 3,
           threshold: 3,
           windowSec: 24 * 60 * 60,
@@ -8051,7 +8037,7 @@ describe('ModerationService', () => {
             linkBotMessageEnabled: true,
             linkWarnEnabled: false,
             linkBanEnabled: false,
-            linkKickEnabled: false,
+            linkMuteEnabled: false,
           }),
           domains: [],
         }),
@@ -8672,7 +8658,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('uses configured ban duration for link BAN escalation', async () => {
+  it('uses permanent ban flow for link BAN escalation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8681,7 +8667,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: false,
             linkBanEnabled: true,
-            banDurationHours: 12,
+            muteDurationHours: 12,
           }),
           domains: [],
         }),
@@ -8725,11 +8711,11 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      banNotice('Алексей', '12ч'),
+      permanentBanNotice('Алексей'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -8737,7 +8723,6 @@ describe('ModerationService', () => {
         ruleCode: 'LINK_BLOCKED',
         action: SanctionAction.BAN,
         metadata: expect.objectContaining({
-          banDurationHours: 12,
           linkViolationCount24h: 3,
           linkEscalationWindowHours: 24,
         }),
@@ -8745,7 +8730,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('uses inline button in link BAN notice when button toggle is enabled', async () => {
+  it('uses inline button in permanent link BAN notice when button toggle is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8754,7 +8739,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: true,
             linkBanEnabled: true,
-            banDurationHours: 12,
+            muteDurationHours: 12,
             linkBotButtonEnabled: true,
             linkBotButtonUrl: 'https://max.ru/channel/rules',
             linkBotButtonText: 'Правила',
@@ -8803,7 +8788,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      banNotice('Алексей', '12ч'),
+      permanentBanNotice('Алексей'),
       {
         button: {
           text: 'Правила',
@@ -8814,7 +8799,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('kicks user on fourth link in 24h when link kick stage is enabled', async () => {
+  it('issues MUTE on fourth link in 24h when mute stage is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8822,7 +8807,7 @@ describe('ModerationService', () => {
           title: 'Chat 1',
           settings: createSettings({
             linkBotMessageEnabled: false,
-            linkKickEnabled: true,
+            linkMuteEnabled: true,
           }),
           domains: [],
         }),
@@ -8866,17 +8851,17 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
+      muteNotice('Алексей', '6ч'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'LINK_BLOCKED',
-        action: SanctionAction.KICK,
+        action: SanctionAction.MUTE,
         metadata: expect.objectContaining({
           linkViolationCount24h: 4,
           linkEscalationWindowHours: 24,
@@ -8885,7 +8870,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('uses inline button in link KICK message when button toggle is enabled', async () => {
+  it('uses inline button in link MUTE message when button toggle is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8893,7 +8878,7 @@ describe('ModerationService', () => {
           title: 'Chat 1',
           settings: createSettings({
             linkBotMessageEnabled: true,
-            linkKickEnabled: true,
+            linkMuteEnabled: true,
             linkBotButtonEnabled: true,
             linkBotButtonUrl: 'https://max.ru/channel/rules',
             linkBotButtonText: 'Правила',
@@ -8939,10 +8924,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
+      muteNotice('Алексей', '6ч'),
       {
         button: {
           text: 'Правила',
@@ -8984,7 +8969,7 @@ describe('ModerationService', () => {
           threshold: 2,
           windowSec: 12 * 60 * 60,
           hash: 'hash-1',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
       }),
     };
@@ -9059,7 +9044,7 @@ describe('ModerationService', () => {
           threshold: 2,
           windowSec: 12 * 60 * 60,
           hash: 'hash-status-1',
-          nextAction: 'KICK',
+          nextAction: 'MUTE',
         },
       }),
     };
@@ -9544,7 +9529,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues BAN on third PHOTO_RATE_LIMIT violation in 12h when ban stage is enabled', async () => {
+  it('issues permanent BAN on third PHOTO_RATE_LIMIT violation in 12h when ban stage is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -9556,7 +9541,7 @@ describe('ModerationService', () => {
             messageLimitsBotMessageEnabled: false,
             messageLimitsWarnEnabled: true,
             messageLimitsBanEnabled: true,
-            banDurationHours: 12,
+            muteDurationHours: 12,
           }),
           domains: [],
         }),
@@ -9601,10 +9586,10 @@ describe('ModerationService', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsBanNotice('Алексей', '12ч', 'слишком частая отправка фото'),
+      messageLimitsBanNotice('Алексей', 'слишком частая отправка фото'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -9614,13 +9599,12 @@ describe('ModerationService', () => {
         metadata: expect.objectContaining({
           messageLimitsViolationCount12h: 3,
           messageLimitsEscalationWindowHours: 12,
-          banDurationHours: 12,
         }),
       }),
     });
   });
 
-  it('kicks user on fourth PHOTO_RATE_LIMIT violation within 12h when kick stage is enabled', async () => {
+  it('issues MUTE on fourth PHOTO_RATE_LIMIT violation within 12h when mute stage is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -9631,7 +9615,7 @@ describe('ModerationService', () => {
             photoMessageCooldownHours: 12,
             messageLimitsBotMessageEnabled: false,
             messageLimitsWarnEnabled: true,
-            messageLimitsKickEnabled: true,
+            messageLimitsMuteEnabled: true,
           }),
           domains: [],
         }),
@@ -9675,17 +9659,17 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsKickNotice('Алексей', 'слишком частая отправка фото'),
+      muteNotice('Алексей', '6ч'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'PHOTO_RATE_LIMIT',
-        action: SanctionAction.KICK,
+        action: SanctionAction.MUTE,
         metadata: expect.objectContaining({
           messageLimitsViolationCount12h: 4,
           messageLimitsEscalationWindowHours: 12,
@@ -10596,7 +10580,7 @@ describe('ModerationService', () => {
 
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('пауз');
+      expect(noticeText).toContain('бан');
       expect(noticeText).toContain('Новости MAX');
       expect(prisma.moderationEvent.create.mock.calls).toEqual(
         expect.arrayContaining([
@@ -10606,7 +10590,6 @@ describe('ModerationService', () => {
                 ruleCode: 'REQUIRED_SUBSCRIPTION',
                 action: SanctionAction.BAN,
                 metadata: expect.objectContaining({
-                  banDurationHours: 6,
                   requiredSubscriptionViolationCount24h: 3,
                 }),
               }),
@@ -10616,16 +10599,16 @@ describe('ModerationService', () => {
       );
       expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
       expect(maxClient.kickMember).not.toHaveBeenCalled();
-      expect(maxClient.banMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
     });
 
-    it('issues KICK on fourth required subscription violation without adding the user to global spammers', async () => {
+    it('issues BAN on fourth required subscription violation without adding the user to global spammers', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
         requiredSubscriptionWarnEnabled: true,
         requiredSubscriptionBanEnabled: true,
-        requiredSubscriptionKickEnabled: true,
+        requiredSubscriptionMuteEnabled: true,
       });
       prisma.violation.count.mockResolvedValue(4);
       const ruleEngine = {
@@ -10661,7 +10644,8 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+      expect(maxClient.kickMember).not.toHaveBeenCalled();
+      expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
@@ -10671,7 +10655,7 @@ describe('ModerationService', () => {
             expect.objectContaining({
               data: expect.objectContaining({
                 ruleCode: 'REQUIRED_SUBSCRIPTION',
-                action: SanctionAction.KICK,
+                action: SanctionAction.BAN,
                 metadata: expect.objectContaining({
                   requiredSubscriptionViolationCount24h: 4,
                 }),
