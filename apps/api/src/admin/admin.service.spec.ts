@@ -4960,6 +4960,93 @@ describe('AdminService.listChats', () => {
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
+
+  it('fills a cached chat avatar from chat snapshot during refresh when MAX list has no icon', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          title: 'Кэшированный чат',
+          lastEventTime: 100,
+          entityType: 'chat',
+          link: null,
+          avatarUrl: null,
+        },
+      ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Кэшированный чат',
+        participantsCount: 87,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        avatarUrl: 'https://i.oneme.ru/chat-1.webp',
+      }),
+      getChatAdminIds: jest.fn(),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Кэшированный чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        avatarUrl: 'https://i.oneme.ru/chat-1.webp',
+        channelOverview: null,
+      },
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledWith({
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'interactive',
+    });
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
+      id: 'chat-1',
+      title: 'Кэшированный чат',
+      entityType: 'chat',
+      link: null,
+      participantsCount: 87,
+      avatarUrl: 'https://i.oneme.ru/chat-1.webp',
+    });
+  });
 });
 
 describe('AdminService settings screen endpoints', () => {

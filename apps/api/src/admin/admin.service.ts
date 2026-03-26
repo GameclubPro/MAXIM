@@ -117,6 +117,7 @@ import {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
+  type MaxBotChat,
   type MaxChatMemberAccess,
   type MaxMessageButton,
   type MaxSendMessageOptions,
@@ -1178,7 +1179,12 @@ export class AdminService {
 
         return b.lastEventTime - a.lastEventTime;
       });
-      const items = await this.attachChannelOverview(mergedChats.map((item) => item.chat));
+      const items = await this.hydrateManagedEntities(
+        mergedChats.map((item) => item.chat),
+        {
+          remoteChats: supportedCandidateChats,
+        },
+      );
       return {
         items,
         refresh:
@@ -12110,7 +12116,12 @@ export class AdminService {
     }
   }
 
-  private async attachManagedEntityAvatars(chats: ChatSummary[]): Promise<ChatSummary[]> {
+  private async attachManagedEntityAvatars(
+    chats: ChatSummary[],
+    options: {
+      remoteChats?: readonly MaxBotChat[];
+    } = {},
+  ): Promise<ChatSummary[]> {
     const missingAvatarChats = chats.filter((chat) => !this.readTrimmedString(chat.avatarUrl));
     if (missingAvatarChats.length === 0) {
       return chats;
@@ -12132,7 +12143,34 @@ export class AdminService {
     );
 
     const unresolvedChats = missingAvatarChats.filter((chat) => !avatarByChatId.has(chat.id));
-    if (
+    const remoteChatsSource =
+      Array.isArray(options.remoteChats) && options.remoteChats.length > 0
+        ? options.remoteChats
+        : null;
+
+    if (unresolvedChats.length > 0 && remoteChatsSource) {
+      const remoteByChatId = new Map(remoteChatsSource.map((chat) => [chat.chatId, chat]));
+
+      await Promise.all(
+        unresolvedChats.map(async (chat) => {
+          const remoteChat = remoteByChatId.get(chat.id);
+          const avatarUrl = this.readTrimmedString(remoteChat?.avatarUrl);
+          if (!avatarUrl) {
+            return;
+          }
+
+          avatarByChatId.set(chat.id, avatarUrl);
+          await this.chatContextCache.setManagedEntityHeader?.({
+            id: chat.id,
+            title: remoteChat?.title?.trim() || chat.title,
+            entityType: chat.entityType,
+            link: remoteChat?.link ?? chat.link ?? null,
+            participantsCount: null,
+            avatarUrl,
+          });
+        }),
+      );
+    } else if (
       unresolvedChats.length > 0 &&
       typeof this.maxClient.listBotChats === 'function'
     ) {
@@ -12232,8 +12270,13 @@ export class AdminService {
     });
   }
 
-  private async hydrateManagedEntities(chats: ChatSummary[]): Promise<ChatSummary[]> {
-    const withAvatars = await this.attachManagedEntityAvatars(chats);
+  private async hydrateManagedEntities(
+    chats: ChatSummary[],
+    options: {
+      remoteChats?: readonly MaxBotChat[];
+    } = {},
+  ): Promise<ChatSummary[]> {
+    const withAvatars = await this.attachManagedEntityAvatars(chats, options);
     return this.attachChannelOverview(withAvatars);
   }
 
