@@ -1512,7 +1512,7 @@ describe('PrivateControlService', () => {
     expect(parsed).toBe('2026-03-24T12:00:00.000Z');
   });
 
-  it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
+  it('preserves incoming MAX text markup in markdown broadcast preview from private bot', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';
 
@@ -1533,19 +1533,13 @@ describe('PrivateControlService', () => {
 
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('<strong>Рассылка</strong>');
-    expect(getLastSentText(maxClient)).toContain('<strong>Контент:</strong>');
-    expect(getLastSentText(maxClient)).toContain('<strong>Важный</strong>');
-    expect(getLastSentText(maxClient)).toContain(
-      '<p>&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелом</p>',
-    );
-    expect(getLastSentText(maxClient)).toContain(
-      '<strong>Дальше:</strong> Пришлите новый текст или фото.',
-    );
-    expect(getLastSentText(maxClient)).not.toContain('**Важный**');
+    expect(getLastSentText(maxClient)).toContain('**Рассылка**');
+    expect(getLastSentText(maxClient)).toContain('**Контент**');
+    expect(getLastSentText(maxClient)).toContain('**Важный** анонс\n\n  Второй абзац с  пробелом');
+    expect(getLastSentText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
@@ -1561,7 +1555,7 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('renders broadcast preview with separate chat, content, status and next-step blocks', async () => {
+  it('renders broadcast preview with separate plain-text blocks', async () => {
     const { service, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
@@ -1576,7 +1570,7 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
   });
 
-  it('renders giveaway content preview without raw markdown markers in private bot', async () => {
+  it('renders giveaway content preview as markdown in private bot', async () => {
     const { service, maxClient, chats } = createHarness({
       managedGiveaway: createGiveaway({
         id: 'giveaway-draft-1',
@@ -1607,14 +1601,13 @@ describe('PrivateControlService', () => {
 
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('<strong>Розыгрыш </strong>апреля');
-    expect(getLastSentText(maxClient)).not.toContain('**Розыгрыш**');
+    expect(getLastSentText(maxClient)).toContain('**Розыгрыш **апреля');
   });
 
-  it('renders bold hyperlink preview without raw markdown syntax in private bot', async () => {
+  it('renders bold hyperlink preview as markdown in private bot', async () => {
     const { service, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
@@ -1638,11 +1631,12 @@ describe('PrivateControlService', () => {
 
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('<u><strong>Вррвврврврврвв</strong></u>');
-    expect(getLastSentText(maxClient)).not.toContain('[Вррвврврврврвв](');
+    expect(getLastSentText(maxClient)).toContain(
+      '[**Вррвврврврврвв**](https://business.max.ru/self/?#/chat-bots)',
+    );
   });
 
   it('keeps bold italic underline hyperlink formatting for broadcast drafts from private bot', async () => {
@@ -1679,13 +1673,12 @@ describe('PrivateControlService', () => {
 
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
     expect(getLastSentText(maxClient)).toContain(
-      '<u><strong><em><u>MAX Docs</u></em></strong></u>',
+      '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
     );
-    expect(getLastSentText(maxClient)).not.toContain('[**_++MAX Docs++_**](');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
@@ -1758,16 +1751,15 @@ describe('PrivateControlService', () => {
     );
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
     expect(getLastSentText(maxClient)).toContain(
-      '<u><strong><em><u>MAX Docs</u></em></strong></u>',
+      '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
     );
-    expect(getLastSentText(maxClient)).not.toContain('[**_++MAX Docs++_**](');
   });
 
-  it('renders heading and bold giveaway content from incoming MAX markup without raw stars', async () => {
+  it('renders heading and bold giveaway content as markdown preview', async () => {
     const { service, maxClient, chats, managedGiveawayService } = createHarness({
       managedGiveaway: createGiveaway({
         id: 'giveaway-draft-1',
@@ -1813,12 +1805,69 @@ describe('PrivateControlService', () => {
     );
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
-        textFormat: 'html',
+        textFormat: 'markdown',
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('<p><strong>Заголовок</strong></p>');
-    expect(getLastSentText(maxClient)).toContain('<p><strong>Жирный</strong> текст</p>');
-    expect(getLastSentText(maxClient)).not.toContain('**Жирный**');
+    expect(getLastSentText(maxClient)).toContain('# Заголовок\n**Жирный** текст');
+  });
+
+  it('blocks concurrent duplicate broadcast publish callbacks for the same chat', async () => {
+    let resolveSend!: (value: {
+      targetChats: number;
+      sentChats: number;
+      failedChats: number;
+    }) => void;
+    const pendingSend = new Promise<{ targetChats: number; sentChats: number; failedChats: number }>(
+      (resolve) => {
+        resolveSend = resolve;
+      },
+    );
+    const sendChannelBroadcast = jest.fn().mockReturnValue(pendingSend);
+    const { service, maxClient, channels } = createHarness({
+      adminService: {
+        sendChannelBroadcast,
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateTextUpdate('Дубль публикации'));
+
+    const firstSend = service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    const secondSend = service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    await secondSend;
+
+    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
+    expect(getLastEditedText(maxClient)).toContain('Эта рассылка уже отправляется.');
+
+    resolveSend({ targetChats: 1, sentChats: 1, failedChats: 0 });
+    await firstSend;
+  });
+
+  it('drops stale duplicate broadcast publish callback for the same draft', async () => {
+    const sendChannelBroadcast = jest
+      .fn()
+      .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 });
+    const { service, maxClient, channels } = createHarness({
+      adminService: {
+        sendChannelBroadcast,
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateTextUpdate('Старый callback'));
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
+    expect(getLastEditedText(maxClient)).toContain('Эта рассылка уже была запущена.');
   });
 
   it('hands off chat broadcast from miniapp into private bot content flow and sends success follow-up', async () => {

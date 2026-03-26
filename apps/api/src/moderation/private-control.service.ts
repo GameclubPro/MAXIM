@@ -28,10 +28,7 @@ import {
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
-import {
-  containsSupportedMarkdownSyntax,
-  renderSupportedMarkdownAsHtml,
-} from '../common/max-markdown.util';
+import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -327,6 +324,7 @@ const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
+const BROADCAST_PUBLISH_DEDUP_WINDOW_MS = 15_000;
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
@@ -1039,6 +1037,11 @@ export class PrivateControlService {
   private readonly memorySession = new Map<
     string,
     { expiresAt: number; session: PrivateSession }
+  >();
+  private readonly activeBroadcastPublishes = new Set<string>();
+  private readonly recentBroadcastPublishes = new Map<
+    string,
+    { fingerprint: string; expiresAt: number }
   >();
 
   constructor(
@@ -3610,8 +3613,33 @@ export class PrivateControlService {
           return;
         }
 
-        const result = await this.sendBroadcastFromSession(context, session);
-        await this.respondToSuccessfulBroadcast(context, session, result);
+        const publishClaim = this.claimBroadcastPublish(session);
+        if (publishClaim === 'active' || publishClaim === 'recent') {
+          const notice =
+            publishClaim === 'active'
+              ? 'Эта рассылка уже отправляется.'
+              : 'Эта рассылка уже была запущена.';
+          const view = await this.renderBroadcastScreen(context, session, notice);
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification:
+              publishClaim === 'active' ? 'Рассылка уже отправляется' : 'Повторная отправка пропущена',
+          });
+          return;
+        }
+
+        let rememberPublish = false;
+        try {
+          const result = await this.sendBroadcastFromSession(context, session);
+          rememberPublish = true;
+          await this.respondToSuccessfulBroadcast(context, session, result);
+        } finally {
+          this.releaseBroadcastPublish(
+            publishClaim.key,
+            publishClaim.fingerprint,
+            rememberPublish,
+          );
+        }
         return;
       }
 
@@ -5083,6 +5111,71 @@ export class PrivateControlService {
     return result;
   }
 
+  private claimBroadcastPublish(
+    session: PrivateSession,
+  ): { key: string; fingerprint: string } | 'active' | 'recent' {
+    const key = this.buildBroadcastPublishLockKey(session);
+    const fingerprint = this.buildBroadcastPublishFingerprint(session);
+    const now = Date.now();
+    const recent = this.recentBroadcastPublishes.get(key);
+
+    if (recent && recent.expiresAt <= now) {
+      this.recentBroadcastPublishes.delete(key);
+    } else if (recent && recent.fingerprint === fingerprint) {
+      return 'recent';
+    }
+
+    if (this.activeBroadcastPublishes.has(key)) {
+      return 'active';
+    }
+
+    this.activeBroadcastPublishes.add(key);
+    return { key, fingerprint };
+  }
+
+  private releaseBroadcastPublish(key: string, fingerprint: string, remember: boolean): void {
+    this.activeBroadcastPublishes.delete(key);
+
+    if (!remember) {
+      return;
+    }
+
+    this.recentBroadcastPublishes.set(key, {
+      fingerprint,
+      expiresAt: Date.now() + BROADCAST_PUBLISH_DEDUP_WINDOW_MS,
+    });
+  }
+
+  private buildBroadcastPublishLockKey(session: PrivateSession): string {
+    return `${session.selectedEntityType ?? 'chat'}:${session.selectedChatId ?? ''}`;
+  }
+
+  private buildBroadcastPublishFingerprint(session: PrivateSession): string {
+    const draft = session.broadcastDraft;
+
+    return JSON.stringify({
+      chatId: session.selectedChatId ?? '',
+      entityType: session.selectedEntityType ?? 'chat',
+      text: draft.text,
+      textFormat: draft.textFormat,
+      applyToAllChats: draft.applyToAllChats,
+      buttonEnabled: draft.buttonEnabled,
+      buttonUrl: draft.buttonUrl.trim(),
+      buttonText: draft.buttonText,
+      imageEnabled: draft.imageEnabled,
+      imageBase64: draft.imageBase64,
+      imageMimeType: draft.imageMimeType,
+      imageFileName: draft.imageFileName,
+      scheduleMode: draft.scheduleMode,
+      scheduleTimezone: draft.scheduleTimezone,
+      scheduledSlots: [...draft.scheduledSlots].sort((left, right) => left.localeCompare(right)),
+      sendAt: draft.sendAt,
+      cycleEnabled: draft.cycleEnabled,
+      cycleEveryHours: draft.cycleEveryHours,
+      cycleCount: draft.cycleCount,
+    });
+  }
+
   private async respondToSuccessfulBroadcast(
     context: PrivateContext,
     session: PrivateSession,
@@ -5463,7 +5556,7 @@ export class PrivateControlService {
 
     const textPayload =
       previewText.length > 0 && usesMarkdown
-        ? this.buildHtmlPreviewText({
+        ? this.buildMarkdownPreviewText({
             entityLead,
             contentText: previewText,
             promptText: 'Пришлите новый текст или фото.',
@@ -5532,7 +5625,7 @@ export class PrivateControlService {
     const usesMarkdown = previewTextFormat === 'markdown';
     const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
     const textPayload = usesMarkdown
-      ? this.buildHtmlPreviewText({
+      ? this.buildMarkdownPreviewText({
           entityLead,
           contentText: previewText,
           promptText: null,
@@ -6194,7 +6287,7 @@ export class PrivateControlService {
         ? 'Пришлите текст или фото.'
         : 'Пришлите новый текст или фото.';
     const textPayload = usesMarkdown
-      ? this.buildBroadcastHtmlPreviewText({
+      ? this.buildBroadcastMarkdownPreviewText({
           entityLead,
           contentText: hasText ? draft.text : null,
           hasImage: draft.imageEnabled,
@@ -6523,43 +6616,34 @@ export class PrivateControlService {
     return { text: lines.join('\n') };
   }
 
-  private buildBroadcastHtmlPreviewText(payload: {
+  private buildBroadcastMarkdownPreviewText(payload: {
     entityLead: string | null;
     contentText: string | null;
     hasImage: boolean;
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
-    const blocks: string[] = ['<p><strong>Рассылка</strong></p>'];
+    const lines: string[] = [this.markdownTitle('Рассылка')];
 
     if (payload.entityLead) {
-      blocks.push(`<p>${this.escapeHtml(payload.entityLead)}</p>`);
+      lines.push('', payload.entityLead);
     }
 
     if (payload.contentText || payload.hasImage) {
-      blocks.push('<p><strong>Контент:</strong></p>');
-      if (payload.contentText) {
-        blocks.push(
-          renderSupportedMarkdownAsHtml(payload.contentText, {
-            linkMode: 'underline',
-          }),
-        );
-      } else {
-        blocks.push('<p>Фото без текста.</p>');
-      }
+      lines.push('', this.markdownTitle('Контент'), '', payload.contentText ?? 'Фото без текста.');
     }
 
     if (payload.notice) {
-      blocks.push(`<p><strong>Статус:</strong> ${this.escapeHtml(payload.notice)}</p>`);
+      lines.push('', `Статус: ${this.escapeMarkdown(payload.notice)}`);
     }
 
     if (payload.promptText) {
-      blocks.push(`<p><strong>Дальше:</strong> ${this.escapeHtml(payload.promptText)}</p>`);
+      lines.push('', `Дальше: ${this.escapeMarkdown(payload.promptText)}`);
     }
 
     return {
-      text: blocks.join(''),
-      textFormat: 'html',
+      text: lines.join('\n'),
+      textFormat: 'markdown',
     };
   }
 
@@ -6599,37 +6683,42 @@ export class PrivateControlService {
     return { text: lines.join('\n') };
   }
 
-  private buildHtmlPreviewText(payload: {
+  private buildMarkdownPreviewText(payload: {
     entityLead: string | null;
     contentText: string | null;
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
-    const blocks: string[] = [];
+    const lines: string[] = [];
 
     if (payload.entityLead) {
-      blocks.push(`<p>${this.escapeHtml(payload.entityLead)}</p>`);
+      lines.push(payload.entityLead);
     }
 
     if (payload.contentText) {
-      blocks.push(
-        renderSupportedMarkdownAsHtml(payload.contentText, {
-          linkMode: 'underline',
-        }),
-      );
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(payload.contentText);
     }
 
     if (payload.promptText) {
-      blocks.push(`<p>${this.escapeHtml(payload.promptText)}</p>`);
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(this.escapeMarkdown(payload.promptText));
     }
 
     if (payload.notice) {
-      blocks.push(`<p>${this.escapeHtml(payload.notice)}</p>`);
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(this.escapeMarkdown(payload.notice));
     }
 
     return {
-      text: blocks.join(''),
-      textFormat: 'html',
+      text: lines.join('\n'),
+      textFormat: 'markdown',
     };
   }
 
