@@ -4153,7 +4153,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const footerNote =
       options?.note !== undefined
         ? options.note
-        : 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.';
+        : null;
 
     return (
       <>
@@ -6571,10 +6571,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner">
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">Анти дубль</span>
+                          <span className="settings-native-toggle__title">Антидубль</span>
                           <label
                             className="settings-native-switch"
-                            aria-label="Включить анти дубль"
+                            aria-label="Включить антидубль"
                           >
                             <input
                               type="checkbox"
@@ -6588,204 +6588,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
-
-                        {draft.antiDuplicateEnabled ? (
-                          <p className="settings-native-toggle__hint">
-                            Первый повтор такого же текста удаляется автоматически. Дальше
-                            включаются предупреждение, мут и бан по вашим порогам.
-                          </p>
-                        ) : null}
                       </div>
-
-                      {draft.antiDuplicateEnabled ? (
-                        <div className="duplicate-stage-list">
-                          {DUPLICATE_STAGE_OPTIONS.map((stage) => {
-                            const enabled = draft[stage.enabledKey];
-                            const windowSec = draft[stage.windowKey];
-                            const maxCount = draft[stage.maxCountKey];
-                            const durationKey = stage.durationKey ?? null;
-                            const windowError = fieldErrors[stage.windowKey];
-                            const maxCountError = fieldErrors[stage.maxCountKey];
-                            const durationError = durationKey ? fieldErrors[durationKey] : undefined;
-
-                            return (
-                              <article
-                                key={stage.id}
-                                className={cn('duplicate-stage', !enabled && 'is-disabled')}
-                              >
-                                <div className="duplicate-stage__top">
-                                  <label className="duplicate-stage__toggle">
-                                    <input
-                                      type="checkbox"
-                                      checked={enabled}
-                                      onChange={(event) => {
-                                        const stageEnabled = event.target.checked;
-                                        setFieldValue(
-                                          stage.enabledKey,
-                                          stageEnabled as ChatSettings[DuplicateEnabledKey],
-                                        );
-                                        if (stageEnabled) {
-                                          setFieldValue('duplicateBotMessageEnabled', true);
-                                        }
-                                      }}
-                                    />
-                                    <span className="toggle-switch" aria-hidden>
-                                      <span className="toggle-switch__thumb" />
-                                    </span>
-                                    <span className="duplicate-stage__title">{stage.label}</span>
-                                  </label>
-                                  {durationKey ? (
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        'logs-violation-item__ban-preset',
-                                        openMuteDurationKey === durationKey && 'is-active',
-                                      )}
-                                      onClick={() => toggleMuteDurationEditor(durationKey)}
-                                    >
-                                      <ClockIcon />
-                                      <span>
-                                        {formatMuteDurationCompact(Number(draft[durationKey]))}
-                                      </span>
-                                    </button>
-                                  ) : null}
-                                </div>
-
-                                <div className="duplicate-stage__controls">
-                                  <label
-                                    className={cn(
-                                      'duplicate-stage__field',
-                                      windowError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="duplicate-stage__field-label">Интервал</span>
-                                    <div className="duplicate-stage__input-wrap">
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        max={168}
-                                        step={1}
-                                        value={
-                                          duplicateWindowInputValues[stage.windowKey] ??
-                                          String(secondsToHours(Number(windowSec)))
-                                        }
-                                        onChange={(event) =>
-                                          handleDuplicateWindowHoursChange(
-                                            stage.windowKey,
-                                            event.target.value,
-                                          )
-                                        }
-                                        onBlur={() =>
-                                          handleDuplicateWindowHoursBlur(stage.windowKey)
-                                        }
-                                        disabled={!enabled}
-                                        aria-label={`Интервал для ступени ${stage.label} в часах`}
-                                      />
-                                      <span className="duplicate-stage__suffix" aria-hidden>
-                                        часы
-                                      </span>
-                                    </div>
-                                  </label>
-
-                                  <div
-                                    className={cn(
-                                      'duplicate-stage__field',
-                                      maxCountError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="duplicate-stage__field-label">
-                                      Количество дублей
-                                    </span>
-                                    <div
-                                      className="duplicate-count-stepper"
-                                      role="group"
-                                      aria-label={`Количество дублей для ступени ${stage.label}`}
-                                    >
-                                      <button
-                                        type="button"
-                                        className="duplicate-count-stepper__button"
-                                        onClick={() =>
-                                          adjustDuplicateMaxCount(
-                                            stage.maxCountKey,
-                                            Number(maxCount),
-                                            -1,
-                                          )
-                                        }
-                                        disabled={
-                                          !enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN
-                                        }
-                                        aria-label={`Уменьшить количество дублей для ${stage.label}`}
-                                      >
-                                        -
-                                      </button>
-
-                                      <output
-                                        className="duplicate-count-stepper__value"
-                                        aria-live="polite"
-                                      >
-                                        {Number(maxCount)}
-                                      </output>
-
-                                      <button
-                                        type="button"
-                                        className="duplicate-count-stepper__button"
-                                        onClick={() =>
-                                          adjustDuplicateMaxCount(
-                                            stage.maxCountKey,
-                                            Number(maxCount),
-                                            1,
-                                          )
-                                        }
-                                        disabled={
-                                          !enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX
-                                        }
-                                        aria-label={`Увеличить количество дублей для ${stage.label}`}
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                  </div>
-                                </div>
-
-                                {windowError || maxCountError ? (
-                                  <div className="duplicate-stage__errors">
-                                    {windowError ? (
-                                      <small className="field__hint">{windowError}</small>
-                                    ) : null}
-                                    {maxCountError ? (
-                                      <small className="field__hint">{maxCountError}</small>
-                                    ) : null}
-                                  </div>
-                                ) : null}
-
-                                {durationKey ? renderMuteDurationEditor(durationKey, 'Срок мута') : null}
-
-                                {durationError ? (
-                                  <small className="field__hint">{durationError}</small>
-                                ) : null}
-                              </article>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-
-                      {draft.antiDuplicateEnabled ? (
-                        <div
-                          className="settings-subsection-divider"
-                          role="separator"
-                          aria-label="Блок действий бота"
-                        >
-                          <span>Действия бота</span>
-                        </div>
-                      ) : null}
 
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-native-toggle">
                           <div className="settings-native-toggle__row">
                             <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">
-                                Сообщение от бота
-                              </span>
+                              <span className="settings-native-toggle__title">1. Объяснение</span>
                               <div className="settings-native-toggle__title-actions">
                                 <EditToggleButton
                                   label="Редактировать текст сообщения о дублях"
@@ -6930,6 +6739,181 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               textPlaceholder="Открыть"
                             />
                           ) : null}
+                        </div>
+                      ) : null}
+
+                      {draft.antiDuplicateEnabled ? (
+                        <div className="duplicate-stage-list">
+                          {DUPLICATE_STAGE_OPTIONS.map((stage, index) => {
+                            const enabled = draft[stage.enabledKey];
+                            const windowSec = draft[stage.windowKey];
+                            const maxCount = draft[stage.maxCountKey];
+                            const durationKey = stage.durationKey ?? null;
+                            const windowError = fieldErrors[stage.windowKey];
+                            const maxCountError = fieldErrors[stage.maxCountKey];
+                            const durationError = durationKey ? fieldErrors[durationKey] : undefined;
+                            const stageTitle = `${index + 2}. ${stage.label}`;
+
+                            return (
+                              <article
+                                key={stage.id}
+                                className={cn('duplicate-stage', !enabled && 'is-disabled')}
+                              >
+                                <div className="duplicate-stage__top">
+                                  <label className="duplicate-stage__toggle">
+                                    <input
+                                      type="checkbox"
+                                      checked={enabled}
+                                      onChange={(event) => {
+                                        const stageEnabled = event.target.checked;
+                                        setFieldValue(
+                                          stage.enabledKey,
+                                          stageEnabled as ChatSettings[DuplicateEnabledKey],
+                                        );
+                                        if (stageEnabled) {
+                                          setFieldValue('duplicateBotMessageEnabled', true);
+                                        }
+                                      }}
+                                    />
+                                    <span className="toggle-switch" aria-hidden>
+                                      <span className="toggle-switch__thumb" />
+                                    </span>
+                                    <span className="duplicate-stage__title">{stageTitle}</span>
+                                  </label>
+                                  {durationKey ? (
+                                    <button
+                                      type="button"
+                                      className={cn(
+                                        'logs-violation-item__ban-preset',
+                                        openMuteDurationKey === durationKey && 'is-active',
+                                      )}
+                                      onClick={() => toggleMuteDurationEditor(durationKey)}
+                                    >
+                                      <ClockIcon />
+                                      <span>
+                                        {formatMuteDurationCompact(Number(draft[durationKey]))}
+                                      </span>
+                                    </button>
+                                  ) : null}
+                                </div>
+
+                                <div className="duplicate-stage__controls">
+                                  <label
+                                    className={cn(
+                                      'duplicate-stage__field',
+                                      windowError && 'field--error',
+                                    )}
+                                  >
+                                    <span className="duplicate-stage__field-label">Интервал</span>
+                                    <div className="duplicate-stage__input-wrap">
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={168}
+                                        step={1}
+                                        value={
+                                          duplicateWindowInputValues[stage.windowKey] ??
+                                          String(secondsToHours(Number(windowSec)))
+                                        }
+                                        onChange={(event) =>
+                                          handleDuplicateWindowHoursChange(
+                                            stage.windowKey,
+                                            event.target.value,
+                                          )
+                                        }
+                                        onBlur={() =>
+                                          handleDuplicateWindowHoursBlur(stage.windowKey)
+                                        }
+                                        disabled={!enabled}
+                                        aria-label={`Интервал для ступени ${stage.label} в часах`}
+                                      />
+                                      <span className="duplicate-stage__suffix" aria-hidden>
+                                        часы
+                                      </span>
+                                    </div>
+                                  </label>
+
+                                  <div
+                                    className={cn(
+                                      'duplicate-stage__field',
+                                      maxCountError && 'field--error',
+                                    )}
+                                  >
+                                    <span className="duplicate-stage__field-label">
+                                      Количество дублей
+                                    </span>
+                                    <div
+                                      className="duplicate-count-stepper"
+                                      role="group"
+                                      aria-label={`Количество дублей для ступени ${stage.label}`}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="duplicate-count-stepper__button"
+                                        onClick={() =>
+                                          adjustDuplicateMaxCount(
+                                            stage.maxCountKey,
+                                            Number(maxCount),
+                                            -1,
+                                          )
+                                        }
+                                        disabled={
+                                          !enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN
+                                        }
+                                        aria-label={`Уменьшить количество дублей для ${stage.label}`}
+                                      >
+                                        -
+                                      </button>
+
+                                      <output
+                                        className="duplicate-count-stepper__value"
+                                        aria-live="polite"
+                                      >
+                                        {Number(maxCount)}
+                                      </output>
+
+                                      <button
+                                        type="button"
+                                        className="duplicate-count-stepper__button"
+                                        onClick={() =>
+                                          adjustDuplicateMaxCount(
+                                            stage.maxCountKey,
+                                            Number(maxCount),
+                                            1,
+                                          )
+                                        }
+                                        disabled={
+                                          !enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX
+                                        }
+                                        aria-label={`Увеличить количество дублей для ${stage.label}`}
+                                      >
+                                        +
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {windowError || maxCountError ? (
+                                  <div className="duplicate-stage__errors">
+                                    {windowError ? (
+                                      <small className="field__hint">{windowError}</small>
+                                    ) : null}
+                                    {maxCountError ? (
+                                      <small className="field__hint">{maxCountError}</small>
+                                    ) : null}
+                                  </div>
+                                ) : null}
+
+                                {durationKey
+                                  ? renderMuteDurationEditor(durationKey, 'Срок мута')
+                                  : null}
+
+                                {durationError ? (
+                                  <small className="field__hint">{durationError}</small>
+                                ) : null}
+                              </article>
+                            );
+                          })}
                         </div>
                       ) : null}
                     </div>

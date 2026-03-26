@@ -311,9 +311,13 @@ function clampMuteDurationHours(value: number): number {
   return Math.max(MUTE_DURATION_MIN_HOURS, Math.min(MUTE_DURATION_MAX_HOURS, normalized));
 }
 
+function formatMuteDurationCompact(hours: number): string {
+  return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
+}
+
 function resolveApplyActionLabel(action: ManualModerationAction, muteDurationHours: number): string {
   if (action === 'MUTE') {
-    return `Замьютить на ${muteDurationHours}ч`;
+    return `Замьютить на ${formatMuteDurationCompact(muteDurationHours)}`;
   }
 
   if (action === 'UNMUTE') {
@@ -550,36 +554,34 @@ function ViolationModerationControls({
         <div className="logs-violation-item__ban-config">
           <div
             style={{
-              display: 'grid',
-              gridTemplateColumns: 'auto 1fr auto',
+              display: 'flex',
               alignItems: 'center',
+              justifyContent: 'space-between',
               gap: 10,
               padding: '10px 12px',
               borderRadius: 14,
               border: '1px solid rgba(62, 96, 127, 0.18)',
             }}
           >
-            <span
+            <div
               style={{
+                minWidth: 0,
                 display: 'inline-flex',
                 alignItems: 'center',
-                justifyContent: 'center',
-                width: 36,
-                height: 36,
-                borderRadius: 12,
-                color: 'rgba(18, 95, 158, 0.92)',
+                gap: 8,
+                color: 'var(--text-primary)',
+                fontSize: '0.82rem',
+                fontWeight: 700,
               }}
             >
               <ClockIcon />
-            </span>
-            <div style={{ display: 'grid', gap: 2 }}>
-              <strong>Срок мута</strong>
-              <small>Участник останется в чате, а новые сообщения будут скрываться до конца срока.</small>
+              <span>Срок мута</span>
             </div>
-            <output aria-live="polite" style={{ padding: '7px 10px', borderRadius: 999, fontWeight: 800 }}>
-              {muteDurationHours >= 24 && muteDurationHours % 24 === 0
-                ? `${muteDurationHours / 24}д`
-                : `${muteDurationHours}ч`}
+            <output
+              aria-live="polite"
+              style={{ padding: 0, color: 'var(--text-primary)', fontSize: '0.82rem', fontWeight: 800 }}
+            >
+              {formatMuteDurationCompact(muteDurationHours)}
             </output>
           </div>
 
@@ -594,7 +596,7 @@ function ViolationModerationControls({
                 disabled={applyMutation.isPending}
                 onClick={() => setMuteDurationHours(hours)}
               >
-                {hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`}
+                {formatMuteDurationCompact(hours)}
               </button>
             ))}
           </div>
@@ -610,7 +612,9 @@ function ViolationModerationControls({
               >
                 -
               </button>
-              <div className="ban-duration-stepper__value">{muteDurationHours}ч</div>
+              <div className="ban-duration-stepper__value">
+                {formatMuteDurationCompact(muteDurationHours)}
+              </div>
               <button
                 type="button"
                 className="ban-duration-stepper__button"
