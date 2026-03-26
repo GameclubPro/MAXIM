@@ -556,8 +556,16 @@ function resolveChatTitle(chatId: string, state: PreviewState): string {
   return state.chats.find((item) => item.id === chatId)?.title ?? PREVIEW_CHAT_TITLE;
 }
 
+function resolveChatAvatarUrl(chatId: string, state: PreviewState): string | null {
+  return state.chats.find((item) => item.id === chatId)?.avatarUrl ?? null;
+}
+
 function resolveChannelTitle(channelId: string, state: PreviewState): string {
   return state.channels.find((item) => item.id === channelId)?.title ?? PREVIEW_CHANNEL_TITLE;
+}
+
+function resolveChannelAvatarUrl(channelId: string, state: PreviewState): string | null {
+  return state.channels.find((item) => item.id === channelId)?.avatarUrl ?? null;
 }
 
 function buildPreviewDialogMessage(payload: {
@@ -1358,6 +1366,7 @@ function createInitialState(): PreviewState {
         createdAt: addDays(now, -280).toISOString(),
         entityType: 'chat',
         link: null,
+        avatarUrl: buildPreviewAvatarDataUrl(PREVIEW_CHAT_TITLE, '#20b7aa', '#117e87'),
         channelOverview: null,
       },
       {
@@ -1366,6 +1375,7 @@ function createInitialState(): PreviewState {
         createdAt: addDays(now, -120).toISOString(),
         entityType: 'chat',
         link: null,
+        avatarUrl: buildPreviewAvatarDataUrl('Клуб соседей', '#6a8cff', '#4b55dd'),
         channelOverview: null,
       },
     ],
@@ -1376,6 +1386,7 @@ function createInitialState(): PreviewState {
         createdAt: addDays(now, -250).toISOString(),
         entityType: 'channel',
         link: 'https://max.ru/channels/yuzhnoe-news',
+        avatarUrl: buildPreviewAvatarDataUrl(PREVIEW_CHANNEL_TITLE, '#4f69ff', '#2d3fd5'),
         channelOverview: {
           enabledScenariosCount: 2,
           commentsEnabled: true,
@@ -1389,6 +1400,7 @@ function createInitialState(): PreviewState {
         createdAt: addDays(now, -90).toISOString(),
         entityType: 'channel',
         link: 'https://max.ru/channels/afisha',
+        avatarUrl: buildPreviewAvatarDataUrl('Афиша района', '#7d56f6', '#5c2fd6'),
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
@@ -1443,6 +1455,7 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       entityType: 'chat',
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
+      avatarUrl: resolveChatAvatarUrl(chatId, state),
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
@@ -1453,6 +1466,7 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
           entityType: 'channel',
           link: channel?.link ?? null,
           participantsCount: null,
+          avatarUrl: channel?.avatarUrl ?? resolveChannelAvatarUrl(channelId, state),
         };
       },
     ),
@@ -1473,6 +1487,7 @@ function buildChannelSettingsScreen(
       entityType: 'channel',
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
+      avatarUrl: resolveChannelAvatarUrl(channelId, state),
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
@@ -1525,6 +1540,7 @@ function buildLogsDashboard(
     chat: {
       id: chatId,
       title: resolveChatTitle(chatId, state),
+      avatarUrl: resolveChatAvatarUrl(chatId, state),
     },
     period: {
       range,
@@ -1647,6 +1663,7 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       isPublic: true,
       link: 'https://max.ru/channels/yuzhnoe-news',
       lastEventAt: state.channelActivity[0]?.createdAt ?? null,
+      avatarUrl: resolveChannelAvatarUrl(channelId, state),
     },
     period: {
       range,
@@ -1943,6 +1960,7 @@ async function handleChatRequest(
       entityType: 'chat',
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
+      avatarUrl: resolveChatAvatarUrl(chatId, state),
     };
   }
 
@@ -1981,6 +1999,7 @@ async function handleChatRequest(
         entityType: 'channel',
         link: channel.link ?? null,
         participantsCount: null,
+        avatarUrl: channel.avatarUrl ?? resolveChannelAvatarUrl(channel.id, state),
       },
     });
   }
@@ -2483,6 +2502,7 @@ async function handleChannelRequest(
       entityType: 'channel',
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
+      avatarUrl: resolveChannelAvatarUrl(channelId, state),
     };
   }
 

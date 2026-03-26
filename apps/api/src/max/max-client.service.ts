@@ -15,6 +15,7 @@ export type MaxBotChat = {
   lastEventTime: number | null;
   entityType: 'chat' | 'channel';
   link: string | null;
+  avatarUrl: string | null;
 };
 
 export type MaxChatSnapshot = {
@@ -26,6 +27,7 @@ export type MaxChatSnapshot = {
   link: string | null;
   lastEventAt: string | null;
   entityType: 'chat' | 'channel';
+  avatarUrl: string | null;
 };
 
 export type MaxChannelMessageSnapshot = {
@@ -1110,6 +1112,7 @@ export class MaxClientService implements OnModuleDestroy {
         data.last_event_time ?? data.lastEventTime ?? data.updated_at ?? data.updatedAt,
       ),
       entityType: this.parseChatEntityType(data),
+      avatarUrl: this.parseChatAvatarUrl(data),
     };
 
     if (!options.bypassCache) {
@@ -1358,6 +1361,7 @@ export class MaxClientService implements OnModuleDestroy {
                 : null,
           entityType,
           link,
+          avatarUrl: this.parseChatAvatarUrl(row),
         });
       }
 
@@ -1442,7 +1446,8 @@ export class MaxClientService implements OnModuleDestroy {
       (typeof row.title === 'string' || row.title === null) &&
       (typeof row.lastEventTime === 'number' || row.lastEventTime === null) &&
       (row.entityType === 'chat' || row.entityType === 'channel') &&
-      (typeof row.link === 'string' || row.link === null)
+      (typeof row.link === 'string' || row.link === null) &&
+      (typeof row.avatarUrl === 'string' || row.avatarUrl === null)
     );
   }
 
@@ -1460,7 +1465,8 @@ export class MaxClientService implements OnModuleDestroy {
       (typeof row.isPublic === 'boolean' || row.isPublic === null) &&
       (typeof row.link === 'string' || row.link === null) &&
       (typeof row.lastEventAt === 'string' || row.lastEventAt === null) &&
-      (row.entityType === 'chat' || row.entityType === 'channel')
+      (row.entityType === 'chat' || row.entityType === 'channel') &&
+      (typeof row.avatarUrl === 'string' || row.avatarUrl === null)
     );
   }
 
@@ -1687,6 +1693,36 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return inferredChatPostLink;
+  }
+
+  private parseChatAvatarUrl(row: Record<string, unknown>): string | null {
+    const icon =
+      row.icon && typeof row.icon === 'object' && !Array.isArray(row.icon)
+        ? (row.icon as Record<string, unknown>)
+        : null;
+
+    for (const candidate of [
+      row.full_icon_url,
+      row.fullIconUrl,
+      row.icon_url,
+      row.iconUrl,
+      row.avatar_url,
+      row.avatarUrl,
+      icon?.url,
+      icon?.icon_url,
+      icon?.iconUrl,
+      icon?.full_url,
+      icon?.fullUrl,
+      icon?.full_icon_url,
+      icon?.fullIconUrl,
+    ]) {
+      const value = this.readTrimmedString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    return null;
   }
 
   private buildWebhookUrl(

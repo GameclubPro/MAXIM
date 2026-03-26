@@ -148,6 +148,20 @@ function getRouteChatTitle(state: unknown): string {
   return '';
 }
 
+function getRouteChatAvatarUrl(state: unknown): string | null {
+  if (
+    typeof state === 'object' &&
+    state &&
+    'avatarUrl' in state &&
+    typeof state.avatarUrl === 'string'
+  ) {
+    const normalized = state.avatarUrl.trim();
+    return normalized || null;
+  }
+
+  return null;
+}
+
 function formatViolationRule(ruleCode: string): string {
   const labels: Record<string, string> = {
     LINK_BLOCKED: 'Ссылки запрещены',
@@ -689,6 +703,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
 
   const routeChatTitle = getRouteChatTitle(location.state);
+  const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
 
   useEffect(() => {
     if (chatId) {
@@ -738,6 +753,28 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
     return 'Чат без названия';
   }, [chatId, chatsQuery.data, dashboardQuery.data?.chat.title, routeChatTitle]);
+
+  const chatAvatarUrl = useMemo(() => {
+    if (!chatId) {
+      return null;
+    }
+
+    const fromList = chatsQuery.data?.find((chat) => chat.id === chatId)?.avatarUrl;
+    if (typeof fromList === 'string' && fromList.trim()) {
+      return fromList.trim();
+    }
+
+    if (routeChatAvatarUrl) {
+      return routeChatAvatarUrl;
+    }
+
+    const fromDashboard = dashboardQuery.data?.chat.avatarUrl;
+    if (typeof fromDashboard === 'string' && fromDashboard.trim()) {
+      return fromDashboard.trim();
+    }
+
+    return null;
+  }, [chatId, chatsQuery.data, dashboardQuery.data?.chat.avatarUrl, routeChatAvatarUrl]);
 
   useEffect(() => {
     if (!chatId || !chatTitle) {
@@ -964,6 +1001,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <EntityAvatar
                 title={chatTitle}
                 entityType="chat"
+                avatarUrl={chatAvatarUrl}
                 className="events-stage__entity-avatar"
               />
               <div className="events-stage__appbar-copy">

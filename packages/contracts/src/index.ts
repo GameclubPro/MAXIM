@@ -1316,6 +1316,7 @@ export const chatSummarySchema = z.object({
   createdAt: z.string().datetime(),
   entityType: managedEntityTypeSchema.default('chat'),
   link: z.string().trim().max(2048).nullable().optional().default(null),
+  avatarUrl: z.string().trim().url().nullable().optional(),
   channelOverview: channelOverviewSchema.nullable().optional().default(null),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
@@ -1340,6 +1341,7 @@ export const managedEntityHeaderSchema = z.object({
   entityType: managedEntityTypeSchema,
   link: z.string().trim().max(2048).nullable(),
   participantsCount: z.number().int().min(0).nullable(),
+  avatarUrl: z.string().trim().url().nullable().optional(),
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
 
@@ -1475,6 +1477,7 @@ export const channelStatsResponseSchema = z.object({
     isPublic: z.boolean().nullable(),
     link: z.string().trim().max(2_048).nullable(),
     lastEventAt: z.string().datetime().nullable(),
+    avatarUrl: z.string().trim().url().nullable().optional(),
   }),
   period: z.object({
     range: channelStatsRangeSchema,
@@ -1564,6 +1567,7 @@ export const logsDashboardResponseSchema = z.object({
   chat: z.object({
     id: z.string(),
     title: z.string(),
+    avatarUrl: z.string().trim().url().nullable().optional(),
   }),
   period: z.object({
     range: logsDashboardRangeSchema,

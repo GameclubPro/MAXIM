@@ -2069,7 +2069,7 @@ describe('AdminService.getLogsDashboard', () => {
       { range: '7d' },
     );
 
-    expect(result.chat).toEqual({ id: 'chat-1', title: 'Команда MAX' });
+    expect(result.chat).toEqual({ id: 'chat-1', title: 'Команда MAX', avatarUrl: null });
     expect(result.membership).toEqual({ joinedUsers: 5, leftUsers: 2, netUsers: 3 });
     expect(result.violationsSummary).toEqual({
       warn: 3,
@@ -4061,7 +4061,7 @@ describe('AdminService.listChannels', () => {
     });
   });
 
-  it('scans beyond the uncached chat delta limit during explicit refresh', async () => {
+  it('limits a single explicit refresh pass to the configured full refresh window', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -4138,17 +4138,9 @@ describe('AdminService.listChannels', () => {
         link: null,
         channelOverview: null,
       },
-      {
-        id: 'chat-101',
-        title: 'Хвостовой чат',
-        createdAt: '2026-03-03T10:00:00.000Z',
-        entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
     ]);
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-101', {
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-101', {
       trafficClass: 'interactive',
     });
   });
@@ -5451,6 +5443,7 @@ describe('AdminService.getChannelStats', () => {
       isPublic: true,
       link: 'https://max.ru/news',
       lastEventAt: '2026-03-07T11:55:00.000Z',
+      avatarUrl: null,
     });
     expect(result.period).toEqual({
       range: '7d',
@@ -5729,6 +5722,7 @@ describe('AdminService.getChannelStats', () => {
       isPublic: null,
       link: null,
       lastEventAt: null,
+      avatarUrl: null,
     });
     expect(result.official.audience).toEqual({
       joined: 1,

@@ -694,7 +694,10 @@ export class AdminService {
       includeRefreshState: options.includeRefreshState === true,
     });
     if (discovered.items.length > 0) {
-      return discovered;
+      return {
+        items: discovered.items,
+        refresh: discovered.refresh,
+      };
     }
 
     const cached = await this.revalidateCachedManagedEntities(
@@ -1040,6 +1043,9 @@ export class AdminService {
               ...cachedChat,
               title: remoteChat.title?.trim() ? remoteChat.title : cachedChat.title,
               link: remoteChat.link,
+              ...(remoteChat.avatarUrl?.trim()
+                ? { avatarUrl: remoteChat.avatarUrl.trim() }
+                : {}),
             },
             lastEventTime: remoteChat.lastEventTime ?? 0,
             remoteIndex,
@@ -1091,6 +1097,9 @@ export class AdminService {
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: remoteChat.link,
+            ...(remoteChat.avatarUrl?.trim()
+              ? { avatarUrl: remoteChat.avatarUrl.trim() }
+              : {}),
             channelOverview: null,
           };
 
@@ -1236,6 +1245,7 @@ export class AdminService {
 
     const [
       chat,
+      header,
       secondaryRows,
       latestAudienceSnapshot,
       earliestAudienceSnapshot,
@@ -1250,6 +1260,7 @@ export class AdminService {
         where: { id: chatId },
         select: { id: true, title: true },
       }),
+      this.getManagedEntityHeader(chatId, user, 'channel').catch(() => null),
       this.prisma.$queryRaw<
         Array<{
           posts_with_buttons: unknown;
@@ -1374,6 +1385,7 @@ export class AdminService {
     let isPublic = latestAudienceSnapshot?.isPublic ?? null;
     let link = latestAudienceSnapshot?.link ?? null;
     let lastEventAt = latestAudienceSnapshot?.lastEventAt?.toISOString() ?? null;
+    let avatarUrl = header?.avatarUrl?.trim() || null;
 
     if (latestAudienceSnapshot) {
       title = chat?.title?.trim() || localTitle;
@@ -1386,6 +1398,7 @@ export class AdminService {
         isPublic = snapshot.isPublic;
         link = snapshot.link;
         lastEventAt = snapshot.lastEventAt;
+        avatarUrl = snapshot.avatarUrl?.trim() || avatarUrl;
         maxSnapshotAvailable = true;
       } catch (error: unknown) {
         maxSnapshotAvailable = false;
@@ -1446,6 +1459,7 @@ export class AdminService {
         isPublic,
         link,
         lastEventAt,
+        avatarUrl,
       },
       period: {
         range: parsed.data.range,
@@ -3328,6 +3342,7 @@ export class AdminService {
       entityType: 'channel',
       link,
       participantsCount: snapshot.participantsCount,
+      avatarUrl: snapshot.avatarUrl,
     };
 
     try {
@@ -6883,6 +6898,7 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
+    const headerPromise = this.getManagedEntityHeader(chatId, user, 'chat').catch(() => null);
 
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
@@ -6905,6 +6921,7 @@ export class AdminService {
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const [
+      chatHeader,
       warnCount,
       deleteMessageCount,
       muteCount,
@@ -6914,6 +6931,7 @@ export class AdminService {
       affectedUsers,
       violationRows,
     ] = await Promise.all([
+      headerPromise,
       this.prisma.moderationEvent.count({
         where: {
           chatId,
@@ -6993,6 +7011,7 @@ export class AdminService {
       chat: {
         id: chatId,
         title: chat?.title?.trim() || 'Чат без названия',
+        avatarUrl: chatHeader?.avatarUrl?.trim() || null,
       },
       period: {
         range: parsed.data.range,
@@ -12282,6 +12301,7 @@ export class AdminService {
         entityType,
         link: snapshot.link,
         participantsCount: snapshot.participantsCount,
+        avatarUrl: snapshot.avatarUrl,
       };
       await this.chatContextCache.setManagedEntityHeader?.(header);
       return header;
@@ -12302,6 +12322,7 @@ export class AdminService {
       entityType,
       link: null,
       participantsCount: null,
+      avatarUrl: null,
     };
     await this.chatContextCache.setManagedEntityHeader?.(fallbackHeader);
     return fallbackHeader;

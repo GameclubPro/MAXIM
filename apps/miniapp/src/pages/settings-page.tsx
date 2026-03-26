@@ -1368,6 +1368,20 @@ function getRouteChatTitle(state: unknown): string {
   return '';
 }
 
+function getRouteChatAvatarUrl(state: unknown): string | null {
+  if (
+    typeof state === 'object' &&
+    state &&
+    'avatarUrl' in state &&
+    typeof state.avatarUrl === 'string'
+  ) {
+    const normalized = state.avatarUrl.trim();
+    return normalized || null;
+  }
+
+  return null;
+}
+
 function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLabelElement | null {
   if (
     typeof window === 'undefined' ||
@@ -1752,6 +1766,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
+  const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
   const handoffRequested = searchParams.get('handoff') === '1';
@@ -1982,9 +1997,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     navigate(`${location.pathname}${location.search}`, {
       replace: true,
-      state: { chatTitle },
+      state: {
+        chatTitle,
+        avatarUrl: chatHeaderQuery.data?.avatarUrl ?? routeChatAvatarUrl ?? null,
+      },
     });
-  }, [chatTitle, location.pathname, location.search, navigate, routeChatTitle]);
+  }, [
+    chatHeaderQuery.data?.avatarUrl,
+    chatTitle,
+    location.pathname,
+    location.search,
+    navigate,
+    routeChatAvatarUrl,
+    routeChatTitle,
+  ]);
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -4420,6 +4446,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <EntityAvatar
                 title={chatTitle || chatId || 'Настройки'}
                 entityType="chat"
+                avatarUrl={chatHeaderQuery.data?.avatarUrl ?? routeChatAvatarUrl ?? null}
                 className="compact-page-header__entity-avatar"
               />
             }

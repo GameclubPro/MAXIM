@@ -39,6 +39,7 @@ import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 type ChannelRouteState = {
   chatTitle: string;
   chatLink: string;
+  avatarUrl: string | null;
 };
 
 type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
@@ -130,7 +131,7 @@ function isHttpUrl(value: string): boolean {
 
 function getRouteState(state: unknown): ChannelRouteState {
   if (!state || typeof state !== 'object') {
-    return { chatTitle: '', chatLink: '' };
+    return { chatTitle: '', chatLink: '', avatarUrl: null };
   }
 
   const row = state as Record<string, unknown>;
@@ -139,8 +140,10 @@ function getRouteState(state: unknown): ChannelRouteState {
   const candidateLink =
     typeof row.chatLink === 'string' && row.chatLink.trim() ? row.chatLink.trim() : '';
   const chatLink = isHttpUrl(candidateLink) ? candidateLink : '';
+  const avatarUrl =
+    typeof row.avatarUrl === 'string' && row.avatarUrl.trim() ? row.avatarUrl.trim() : null;
 
-  return { chatTitle, chatLink };
+  return { chatTitle, chatLink, avatarUrl };
 }
 
 function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLabelElement | null {
@@ -427,6 +430,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
+  const routeAvatarUrl = routeState.avatarUrl;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -1106,6 +1110,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <EntityAvatar
             title={resolvedTitle || 'Настройки'}
             entityType="channel"
+            avatarUrl={channelHeader?.avatarUrl ?? routeAvatarUrl ?? null}
             className="compact-page-header__entity-avatar"
           />
         }

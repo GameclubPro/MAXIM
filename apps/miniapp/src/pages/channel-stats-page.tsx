@@ -31,6 +31,7 @@ import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ChannelStatsRouteState = {
   chatTitle: string;
+  avatarUrl: string | null;
 };
 
 type ChartTab = 'audience' | 'views';
@@ -77,6 +78,7 @@ function getRouteState(state: unknown): ChannelStatsRouteState {
   if (!state || typeof state !== 'object') {
     return {
       chatTitle: '',
+      avatarUrl: null,
     };
   }
 
@@ -84,6 +86,7 @@ function getRouteState(state: unknown): ChannelStatsRouteState {
   return {
     chatTitle:
       typeof row.chatTitle === 'string' && row.chatTitle.trim() ? row.chatTitle.trim() : '',
+    avatarUrl: typeof row.avatarUrl === 'string' && row.avatarUrl.trim() ? row.avatarUrl.trim() : null,
   };
 }
 
@@ -1176,6 +1179,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <EntityAvatar
             title={resolvedTitle}
             entityType="channel"
+            avatarUrl={statsQuery.data?.channel.avatarUrl ?? routeState.avatarUrl ?? null}
             className="compact-page-header__entity-avatar"
           />
         }

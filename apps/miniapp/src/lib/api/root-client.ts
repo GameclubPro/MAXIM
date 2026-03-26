@@ -44,6 +44,7 @@ function parseChatSummary(value: unknown): ChatSummary {
 
   const entityType = value.entityType === 'channel' ? 'channel' : 'chat';
   const link = typeof value.link === 'string' ? value.link.trim() || null : null;
+  const avatarUrl = typeof value.avatarUrl === 'string' ? value.avatarUrl.trim() || null : null;
 
   if (
     typeof value.id !== 'string' ||
@@ -59,6 +60,7 @@ function parseChatSummary(value: unknown): ChatSummary {
     createdAt: value.createdAt,
     entityType,
     link,
+    avatarUrl,
     channelOverview: parseChannelOverview(value.channelOverview),
   };
 }

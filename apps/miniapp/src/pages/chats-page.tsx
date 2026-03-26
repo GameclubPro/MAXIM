@@ -393,6 +393,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <EntityAvatar
                     title={entity.title}
                     entityType={activeTab}
+                    avatarUrl={entity.avatarUrl ?? null}
                     className="chat-card__avatar"
                   />
                   <h3>{entity.title}</h3>
@@ -404,7 +405,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <Link
                     to={`/chat/${entity.id}/settings`}
                     className="button button--accent"
-                    state={{ chatTitle: entity.title }}
+                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
                     onClick={() => {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
@@ -417,7 +418,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <Link
                     to={`/chat/${entity.id}/events`}
                     className="button button--ghost"
-                    state={{ chatTitle: entity.title }}
+                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
                     onClick={() => {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
@@ -433,7 +434,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <Link
                     to={`/channel/${entity.id}/settings`}
                     className="button button--accent"
-                    state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
+                    state={{
+                      chatTitle: entity.title,
+                      chatLink: entity.link ?? '',
+                      avatarUrl: entity.avatarUrl ?? null,
+                    }}
                     onClick={() => {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
@@ -446,7 +451,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <Link
                     to={`/channel/${entity.id}/stats`}
                     className="button button--ghost"
-                    state={{ chatTitle: entity.title }}
+                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
                     onClick={() => {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
