@@ -772,7 +772,11 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'nightModeBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'nightModeCommentsEnabled', label: 'Показывать кнопку комментариев', type: 'boolean' },
-    { key: 'nightModeOpenMessageEnabled', label: 'Показывать сообщение об открытии', type: 'boolean' },
+    {
+      key: 'nightModeOpenMessageEnabled',
+      label: 'Показывать сообщение об открытии',
+      type: 'boolean',
+    },
     { key: 'nightModeOpenMessageText', label: 'Текст сообщения об открытии', type: 'text' },
     { key: 'nightModeBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'nightModeBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
@@ -1155,7 +1159,10 @@ export class PrivateControlService {
       session.channelSection = null;
       session.searchQuery = null;
       session.lastScreenStack = [];
-      const view = await this.renderChannelSuggestionIntroView(channelSuggestionPayload.chatId);
+      const view = await this.renderChannelSuggestionIntroView(
+        channelSuggestionPayload.chatId,
+        channelSuggestionPayload.token,
+      );
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -1377,7 +1384,7 @@ export class PrivateControlService {
 
     await this.saveSession(params.userId, session);
 
-    const view = await this.renderChannelSuggestionIntroView(params.chatId);
+    const view = await this.renderChannelSuggestionIntroView(params.chatId, params.token);
     const text = this.limitMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
     const inferredTextFormat =
@@ -2094,10 +2101,44 @@ export class PrivateControlService {
     };
     session.suggestionDraft = null;
 
-    const view = await this.renderChannelSuggestionIntroView(chatId);
+    const view = await this.renderChannelSuggestionIntroView(chatId, token);
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
       notification: 'Жду новый вариант',
+    });
+  }
+
+  private async processChannelSuggestionComposeCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+    args: string[],
+  ): Promise<void> {
+    const chatId = args[0]?.trim() ?? '';
+    const token = args[1]?.trim() ?? '';
+    if (!chatId || !token) {
+      throw new BadRequestException('Не удалось открыть ввод контента.');
+    }
+
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId,
+      token,
+    };
+    session.suggestionDraft = null;
+
+    const view: PrivateView = {
+      text: [
+        this.markdownTitle('✍️ Добавьте контент'),
+        '',
+        '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
+      ].join('\n'),
+      options: {
+        buttons: [[await this.buildChannelSuggestionReturnButton(chatId)]],
+      },
+    };
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: 'Жду текст или фото',
     });
   }
 
@@ -2203,6 +2244,11 @@ export class PrivateControlService {
 
     if (callback.action === 'suggestion_send') {
       await this.processChannelSuggestionSendCallback(context, session);
+      return;
+    }
+
+    if (callback.action === 'suggestion_compose') {
+      await this.processChannelSuggestionComposeCallback(context, session, callback.args);
       return;
     }
 
@@ -3598,7 +3644,9 @@ export class PrivateControlService {
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification:
-              publishClaim === 'active' ? 'Рассылка уже отправляется' : 'Повторная отправка пропущена',
+              publishClaim === 'active'
+                ? 'Рассылка уже отправляется'
+                : 'Повторная отправка пропущена',
           });
           return;
         }
@@ -3609,11 +3657,7 @@ export class PrivateControlService {
           rememberPublish = true;
           await this.respondToSuccessfulBroadcast(context, session, result);
         } finally {
-          this.releaseBroadcastPublish(
-            publishClaim.key,
-            publishClaim.fingerprint,
-            rememberPublish,
-          );
+          this.releaseBroadcastPublish(publishClaim.key, publishClaim.fingerprint, rememberPublish);
         }
         return;
       }
@@ -4911,7 +4955,10 @@ export class PrivateControlService {
       (settings.duplicateWarnEnabled ? 1 : 0) +
       (settings.duplicateMuteEnabled ? 1 : 0);
 
-    return Math.max(DUPLICATE_ALLOWED_COUNT_MIN, DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset);
+    return Math.max(
+      DUPLICATE_ALLOWED_COUNT_MIN,
+      DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset,
+    );
   }
 
   private resolveDuplicateAllowedCount(
@@ -7794,7 +7841,10 @@ export class PrivateControlService {
     };
   }
 
-  private async renderChannelSuggestionIntroView(chatId: string): Promise<PrivateView> {
+  private async renderChannelSuggestionIntroView(
+    chatId: string,
+    token: string,
+  ): Promise<PrivateView> {
     const requirementsText = await this.getChannelSuggestionRequirementsText(chatId);
 
     return {
@@ -7803,10 +7853,10 @@ export class PrivateControlService {
         '',
         requirementsText,
         '',
-        'Следующим сообщением пришлите текст, фото или фото с подписью.',
+        '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
       ].join('\n'),
       options: {
-        buttons: this.buildChannelSuggestionButtons(),
+        buttons: await this.buildChannelSuggestionIntroButtons(chatId, token),
       },
     };
   }
@@ -7870,8 +7920,14 @@ export class PrivateControlService {
     };
   }
 
-  private buildChannelSuggestionButtons(): MaxMessageButton[][] {
-    return [[this.callbackButton('✖️ Закрыть', this.cb('input_cancel'), 'negative')]];
+  private async buildChannelSuggestionIntroButtons(
+    chatId: string,
+    token: string,
+  ): Promise<MaxMessageButton[][]> {
+    return [
+      [this.callbackButton('✍️ Добавить контент', this.cb('suggestion_compose', chatId, token))],
+      [await this.buildChannelSuggestionReturnButton(chatId)],
+    ];
   }
 
   private async buildChannelSuggestionPreviewButtons(

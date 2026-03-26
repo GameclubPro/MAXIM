@@ -1817,11 +1817,13 @@ describe('PrivateControlService', () => {
       sentChats: number;
       failedChats: number;
     }) => void;
-    const pendingSend = new Promise<{ targetChats: number; sentChats: number; failedChats: number }>(
-      (resolve) => {
-        resolveSend = resolve;
-      },
-    );
+    const pendingSend = new Promise<{
+      targetChats: number;
+      sentChats: number;
+      failedChats: number;
+    }>((resolve) => {
+      resolveSend = resolve;
+    });
     const sendChannelBroadcast = jest.fn().mockReturnValue(pendingSend);
     const { service, maxClient, channels } = createHarness({
       adminService: {
@@ -1942,14 +1944,22 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain(
       'Пришлите готовый текст, город и ссылку на источник.',
     );
-    expect(getLastSentText(maxClient)).toContain(
-      'Следующим сообщением пришлите текст, фото или фото с подписью.',
-    );
+    expect(getLastSentText(maxClient)).toContain('⬇️ Пришлите следующим сообщением');
     const introButtons = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(introButtons).toContain('✖️ Закрыть');
-    expect(introButtons).toHaveLength(1);
+    expect(introButtons).toContain('✍️ Добавить контент');
+    expect(introButtons).toContain('↩️ Вернуться в канал');
+    expect(introButtons).toHaveLength(2);
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|suggestion_compose|${channels[0].id}|cdt-suggest-token-1`),
+    );
+
+    expect(getLastEditedText(maxClient)).toContain('✍️ Добавьте контент');
+    expect(getLastEditedText(maxClient)).toContain(
+      '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
+    );
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
