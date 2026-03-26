@@ -87,7 +87,11 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
     typeof refresh.complete !== 'boolean' ||
     typeof refresh.backoffActive !== 'boolean' ||
     (refresh.cursor !== null &&
-      (typeof refresh.cursor !== 'number' || !Number.isInteger(refresh.cursor)))
+      (typeof refresh.cursor !== 'number' || !Number.isInteger(refresh.cursor))) ||
+    (refresh.nextPollAfterMs !== undefined &&
+      (typeof refresh.nextPollAfterMs !== 'number' ||
+        !Number.isInteger(refresh.nextPollAfterMs) ||
+        refresh.nextPollAfterMs < 0))
   ) {
     throw new Error('Invalid managed entities refresh state');
   }
@@ -98,6 +102,7 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       complete: refresh.complete,
       cursor: refresh.cursor,
       backoffActive: refresh.backoffActive,
+      nextPollAfterMs: refresh.nextPollAfterMs ?? 900,
     },
   };
 }

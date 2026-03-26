@@ -465,180 +465,183 @@ const AUTO_MUTE_DURATION_FIELD_KEYS = [
 ] as const;
 
 export const chatSettingsSchema = z
-  .preprocess((input) => {
-    if (!input || typeof input !== 'object' || Array.isArray(input)) {
-      return input;
-    }
-
-    const value = input as Record<string, unknown>;
-    const legacyMuteDurationHours =
-      typeof value.muteDurationHours === 'number' && Number.isFinite(value.muteDurationHours)
-        ? value.muteDurationHours
-        : null;
-
-    if (legacyMuteDurationHours === null) {
-      return value;
-    }
-
-    const nextValue = { ...value };
-    for (const key of AUTO_MUTE_DURATION_FIELD_KEYS) {
-      if (nextValue[key] === undefined) {
-        nextValue[key] = legacyMuteDurationHours;
+  .preprocess(
+    (input) => {
+      if (!input || typeof input !== 'object' || Array.isArray(input)) {
+        return input;
       }
-    }
 
-    return nextValue;
-  }, z.object({
-    duplicateWarnEnabled: z.boolean().default(true),
-    duplicateMuteEnabled: z.boolean().default(true),
-    duplicateBanEnabled: z.boolean().default(true),
-    antiDuplicateEnabled: z.boolean().default(true),
-    duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
-    duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
-    duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
-    duplicateMuteMaxCount: duplicateMaxCountSchema.default(3),
-    duplicateMuteDurationHours: autoMuteDurationHoursSchema,
-    duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
-    duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
-    linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
-    botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
-    greetingEnabled: z.boolean().default(false),
-    greetingBotMessageEnabled: z.boolean().default(false),
-    greetingDeleteBotMessageEnabled: z.boolean().default(false),
-    greetingBotMessageText: botMessageTextSchema,
-    greetingBotButtonEnabled: z.boolean().default(false),
-    greetingBotButtonUrl: botButtonUrlSchema,
-    greetingBotButtonText: botButtonTextSchema,
-    greetingRulesButtonEnabled: z.boolean().default(false),
-    requiredSubscriptionEnabled: z.boolean().default(false),
-    requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
-    requiredSubscriptionBotMessageEnabled: z.boolean().default(true),
-    requiredSubscriptionBotMessageText: botMessageTextSchema,
-    requiredSubscriptionWarnEnabled: z.boolean().default(false),
-    requiredSubscriptionWarnMessageText: botMessageTextSchema,
-    requiredSubscriptionBanEnabled: z.boolean().default(false),
-    requiredSubscriptionMuteEnabled: z.boolean().default(false),
-    requiredSubscriptionMuteDurationHours: autoMuteDurationHoursSchema,
-    commentsEnabled: z.boolean().default(false),
-    commentsAdminsEnabled: z.boolean().default(true),
-    commentsAllEnabled: z.boolean().default(false),
-    commentsChatBroadcastsEnabled: z.boolean().default(false),
-    deleteBotMessagesEnabled: z.boolean().default(true),
-    deleteBotMessagesDelayMinutes: z
-      .number()
-      .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
-      .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
-      .refine(isValidDeleteBotMessagesDelayMinutes, {
-        message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
-      })
-      .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES),
-    removeBotsFromGroupEnabled: z.boolean().default(true),
-    deleteSpammersEnabled: z.boolean().default(false),
-    antiSpamEnabled: z.boolean().default(true),
-    messageCountLimitEnabled: z.boolean().default(false),
-    messageCountLimitMessages: z.number().int().min(1).max(10).default(5),
-    messageCountLimitWindowHours: z.number().int().min(1).max(24).default(1),
-    maxMessageLengthEnabled: z.boolean().default(false),
-    maxMessageLength: z.number().int().min(50).max(1500).default(1500),
-    photoMessageCooldownEnabled: z.boolean().default(false),
-    photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
-    stickerMessageCooldownEnabled: z.boolean().default(false),
-    stickerMessageCooldownMinutes: z.number().int().min(1).max(60).default(5),
-    videoMessagesEnabled: z.boolean().default(true),
-    fileMessagesEnabled: z.boolean().default(true),
-    voiceMessagesEnabled: z.boolean().default(true),
-    messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
-    messageLimitsBotMessageEnabled: z.boolean().default(false),
-    messageLimitsBotMessageText: botMessageTextSchema,
-    messageLimitsWarnEnabled: z.boolean().default(false),
-    messageLimitsBanEnabled: z.boolean().default(false),
-    messageLimitsMuteEnabled: z.boolean().default(false),
-    messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,
-    messageLimitsBotButtonEnabled: z.boolean().default(false),
-    messageLimitsBotButtonUrl: botButtonUrlSchema,
-    messageLimitsBotButtonText: botButtonTextSchema,
-    russianProfanityFilterEnabled: z.boolean().default(true),
-    commercialAdsFilterEnabled: z.boolean().default(false),
-    commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
-    commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
-    commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
-    profanityBotMessageEnabled: z.boolean().default(false),
-    profanityWarnEnabled: z.boolean().default(false),
-    profanityBanEnabled: z.boolean().default(false),
-    profanityMuteEnabled: z.boolean().default(false),
-    profanityMuteDurationHours: autoMuteDurationHoursSchema,
-    textFiltersBotMessageEnabled: z.boolean().default(false),
-    textFiltersBotMessageText: botMessageTextSchema,
-    textFiltersWarnEnabled: z.boolean().default(false),
-    textFiltersWarnMessageText: botMessageTextSchema,
-    textFiltersBanEnabled: z.boolean().default(false),
-    textFiltersMuteEnabled: z.boolean().default(false),
-    textFiltersMuteDurationHours: autoMuteDurationHoursSchema,
-    textFiltersBotButtonEnabled: z.boolean().default(false),
-    textFiltersBotButtonUrl: botButtonUrlSchema,
-    textFiltersBotButtonText: botButtonTextSchema,
-    textFiltersRulesButtonEnabled: z.boolean().default(false),
-    thematicCodewordEnabled: z.boolean().default(false),
-    thematicCodeword: thematicCodewordSchema,
-    thematicFiltersBotMessageEnabled: z.boolean().default(false),
-    thematicFiltersWarnEnabled: z.boolean().default(false),
-    thematicFiltersBanEnabled: z.boolean().default(false),
-    thematicFiltersMuteEnabled: z.boolean().default(false),
-    thematicFiltersMuteDurationHours: autoMuteDurationHoursSchema,
-    thematicFiltersBotButtonEnabled: z.boolean().default(false),
-    thematicFiltersBotButtonUrl: botButtonUrlSchema,
-    thematicFiltersBotButtonText: botButtonTextSchema,
-    thematicFiltersRulesButtonEnabled: z.boolean().default(false),
-    nightModeEnabled: z.boolean().default(false),
-    nightModeStartTimeMinutes: z
-      .number()
-      .int()
-      .min(0)
-      .max(1_439)
-      .default(23 * 60),
-    nightModeEndTimeMinutes: z
-      .number()
-      .int()
-      .min(0)
-      .max(1_439)
-      .default(8 * 60),
-    nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
-    nightModeBotMessageEnabled: z.boolean().default(false),
-    nightModeBotMessageText: botMessageTextSchema,
-    nightModeCommentsEnabled: z.boolean().default(false),
-    nightModeOpenMessageEnabled: z.boolean().default(true),
-    nightModeOpenMessageText: botMessageTextSchema,
-    nightModeBotButtonEnabled: z.boolean().default(false),
-    nightModeBotButtonUrl: botButtonUrlSchema,
-    nightModeBotButtonText: botButtonTextSchema,
-    nightModeRulesButtonEnabled: z.boolean().default(false),
-    nightModeForceCloseEnabled: z.boolean().default(false),
-    nightModeForceCloseForever: z.boolean().default(false),
-    nightModeForceCloseHours: z.number().int().min(0).max(23).default(8),
-    nightModeForceCloseDays: z.number().int().min(0).max(30).default(0),
-    nightModeForceCloseUntil: nightModeForceCloseUntilSchema,
-    linkBotMessageEnabled: z.boolean().default(true),
-    linkBotMessageText: botMessageTextSchema,
-    linkWarnEnabled: z.boolean().default(false),
-    linkWarnMessageText: botMessageTextSchema,
-    linkBanEnabled: z.boolean().default(false),
-    linkMuteEnabled: z.boolean().default(false),
-    linkMuteDurationHours: autoMuteDurationHoursSchema,
-    linkBotButtonEnabled: z.boolean().default(false),
-    linkBotButtonUrl: botButtonUrlSchema,
-    linkBotButtonText: botButtonTextSchema,
-    linkRulesButtonEnabled: z.boolean().default(false),
-    duplicateBotMessageEnabled: z.boolean().default(false),
-    duplicateBotMessageText: botMessageTextSchema,
-    duplicateBotButtonEnabled: z.boolean().default(false),
-    duplicateBotButtonUrl: botButtonUrlSchema,
-    duplicateBotButtonText: botButtonTextSchema,
-    duplicateRulesButtonEnabled: z.boolean().default(false),
-    messageLimitsRulesButtonEnabled: z.boolean().default(false),
-    rulesAttachViolationsEnabled: z.boolean().default(true),
-    muteDurationHours: autoMuteDurationHoursSchema,
-    warnThreshold: z.number().int().min(1).max(10).default(3),
-  }))
+      const value = input as Record<string, unknown>;
+      const legacyMuteDurationHours =
+        typeof value.muteDurationHours === 'number' && Number.isFinite(value.muteDurationHours)
+          ? value.muteDurationHours
+          : null;
+
+      if (legacyMuteDurationHours === null) {
+        return value;
+      }
+
+      const nextValue = { ...value };
+      for (const key of AUTO_MUTE_DURATION_FIELD_KEYS) {
+        if (nextValue[key] === undefined) {
+          nextValue[key] = legacyMuteDurationHours;
+        }
+      }
+
+      return nextValue;
+    },
+    z.object({
+      duplicateWarnEnabled: z.boolean().default(true),
+      duplicateMuteEnabled: z.boolean().default(true),
+      duplicateBanEnabled: z.boolean().default(true),
+      antiDuplicateEnabled: z.boolean().default(true),
+      duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
+      duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
+      duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
+      duplicateMuteMaxCount: duplicateMaxCountSchema.default(3),
+      duplicateMuteDurationHours: autoMuteDurationHoursSchema,
+      duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
+      duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
+      linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+      botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
+      greetingEnabled: z.boolean().default(false),
+      greetingBotMessageEnabled: z.boolean().default(false),
+      greetingDeleteBotMessageEnabled: z.boolean().default(false),
+      greetingBotMessageText: botMessageTextSchema,
+      greetingBotButtonEnabled: z.boolean().default(false),
+      greetingBotButtonUrl: botButtonUrlSchema,
+      greetingBotButtonText: botButtonTextSchema,
+      greetingRulesButtonEnabled: z.boolean().default(false),
+      requiredSubscriptionEnabled: z.boolean().default(false),
+      requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
+      requiredSubscriptionBotMessageEnabled: z.boolean().default(true),
+      requiredSubscriptionBotMessageText: botMessageTextSchema,
+      requiredSubscriptionWarnEnabled: z.boolean().default(false),
+      requiredSubscriptionWarnMessageText: botMessageTextSchema,
+      requiredSubscriptionBanEnabled: z.boolean().default(false),
+      requiredSubscriptionMuteEnabled: z.boolean().default(false),
+      requiredSubscriptionMuteDurationHours: autoMuteDurationHoursSchema,
+      commentsEnabled: z.boolean().default(false),
+      commentsAdminsEnabled: z.boolean().default(true),
+      commentsAllEnabled: z.boolean().default(false),
+      commentsChatBroadcastsEnabled: z.boolean().default(false),
+      deleteBotMessagesEnabled: z.boolean().default(true),
+      deleteBotMessagesDelayMinutes: z
+        .number()
+        .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
+        .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
+        .refine(isValidDeleteBotMessagesDelayMinutes, {
+          message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
+        })
+        .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES),
+      removeBotsFromGroupEnabled: z.boolean().default(true),
+      deleteSpammersEnabled: z.boolean().default(false),
+      antiSpamEnabled: z.boolean().default(true),
+      messageCountLimitEnabled: z.boolean().default(false),
+      messageCountLimitMessages: z.number().int().min(1).max(10).default(5),
+      messageCountLimitWindowHours: z.number().int().min(1).max(24).default(1),
+      maxMessageLengthEnabled: z.boolean().default(false),
+      maxMessageLength: z.number().int().min(50).max(1500).default(1500),
+      photoMessageCooldownEnabled: z.boolean().default(false),
+      photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
+      stickerMessageCooldownEnabled: z.boolean().default(false),
+      stickerMessageCooldownMinutes: z.number().int().min(1).max(60).default(5),
+      videoMessagesEnabled: z.boolean().default(true),
+      fileMessagesEnabled: z.boolean().default(true),
+      voiceMessagesEnabled: z.boolean().default(true),
+      messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
+      messageLimitsBotMessageEnabled: z.boolean().default(false),
+      messageLimitsBotMessageText: botMessageTextSchema,
+      messageLimitsWarnEnabled: z.boolean().default(false),
+      messageLimitsBanEnabled: z.boolean().default(false),
+      messageLimitsMuteEnabled: z.boolean().default(false),
+      messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,
+      messageLimitsBotButtonEnabled: z.boolean().default(false),
+      messageLimitsBotButtonUrl: botButtonUrlSchema,
+      messageLimitsBotButtonText: botButtonTextSchema,
+      russianProfanityFilterEnabled: z.boolean().default(true),
+      commercialAdsFilterEnabled: z.boolean().default(false),
+      commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
+      commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
+      commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
+      profanityBotMessageEnabled: z.boolean().default(false),
+      profanityWarnEnabled: z.boolean().default(false),
+      profanityBanEnabled: z.boolean().default(false),
+      profanityMuteEnabled: z.boolean().default(false),
+      profanityMuteDurationHours: autoMuteDurationHoursSchema,
+      textFiltersBotMessageEnabled: z.boolean().default(false),
+      textFiltersBotMessageText: botMessageTextSchema,
+      textFiltersWarnEnabled: z.boolean().default(false),
+      textFiltersWarnMessageText: botMessageTextSchema,
+      textFiltersBanEnabled: z.boolean().default(false),
+      textFiltersMuteEnabled: z.boolean().default(false),
+      textFiltersMuteDurationHours: autoMuteDurationHoursSchema,
+      textFiltersBotButtonEnabled: z.boolean().default(false),
+      textFiltersBotButtonUrl: botButtonUrlSchema,
+      textFiltersBotButtonText: botButtonTextSchema,
+      textFiltersRulesButtonEnabled: z.boolean().default(false),
+      thematicCodewordEnabled: z.boolean().default(false),
+      thematicCodeword: thematicCodewordSchema,
+      thematicFiltersBotMessageEnabled: z.boolean().default(false),
+      thematicFiltersWarnEnabled: z.boolean().default(false),
+      thematicFiltersBanEnabled: z.boolean().default(false),
+      thematicFiltersMuteEnabled: z.boolean().default(false),
+      thematicFiltersMuteDurationHours: autoMuteDurationHoursSchema,
+      thematicFiltersBotButtonEnabled: z.boolean().default(false),
+      thematicFiltersBotButtonUrl: botButtonUrlSchema,
+      thematicFiltersBotButtonText: botButtonTextSchema,
+      thematicFiltersRulesButtonEnabled: z.boolean().default(false),
+      nightModeEnabled: z.boolean().default(false),
+      nightModeStartTimeMinutes: z
+        .number()
+        .int()
+        .min(0)
+        .max(1_439)
+        .default(23 * 60),
+      nightModeEndTimeMinutes: z
+        .number()
+        .int()
+        .min(0)
+        .max(1_439)
+        .default(8 * 60),
+      nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+      nightModeBotMessageEnabled: z.boolean().default(false),
+      nightModeBotMessageText: botMessageTextSchema,
+      nightModeCommentsEnabled: z.boolean().default(false),
+      nightModeOpenMessageEnabled: z.boolean().default(true),
+      nightModeOpenMessageText: botMessageTextSchema,
+      nightModeBotButtonEnabled: z.boolean().default(false),
+      nightModeBotButtonUrl: botButtonUrlSchema,
+      nightModeBotButtonText: botButtonTextSchema,
+      nightModeRulesButtonEnabled: z.boolean().default(false),
+      nightModeForceCloseEnabled: z.boolean().default(false),
+      nightModeForceCloseForever: z.boolean().default(false),
+      nightModeForceCloseHours: z.number().int().min(0).max(23).default(8),
+      nightModeForceCloseDays: z.number().int().min(0).max(30).default(0),
+      nightModeForceCloseUntil: nightModeForceCloseUntilSchema,
+      linkBotMessageEnabled: z.boolean().default(true),
+      linkBotMessageText: botMessageTextSchema,
+      linkWarnEnabled: z.boolean().default(false),
+      linkWarnMessageText: botMessageTextSchema,
+      linkBanEnabled: z.boolean().default(false),
+      linkMuteEnabled: z.boolean().default(false),
+      linkMuteDurationHours: autoMuteDurationHoursSchema,
+      linkBotButtonEnabled: z.boolean().default(false),
+      linkBotButtonUrl: botButtonUrlSchema,
+      linkBotButtonText: botButtonTextSchema,
+      linkRulesButtonEnabled: z.boolean().default(false),
+      duplicateBotMessageEnabled: z.boolean().default(false),
+      duplicateBotMessageText: botMessageTextSchema,
+      duplicateBotButtonEnabled: z.boolean().default(false),
+      duplicateBotButtonUrl: botButtonUrlSchema,
+      duplicateBotButtonText: botButtonTextSchema,
+      duplicateRulesButtonEnabled: z.boolean().default(false),
+      messageLimitsRulesButtonEnabled: z.boolean().default(false),
+      rulesAttachViolationsEnabled: z.boolean().default(true),
+      muteDurationHours: autoMuteDurationHoursSchema,
+      warnThreshold: z.number().int().min(1).max(10).default(3),
+    }),
+  )
   .superRefine((value, ctx) => {
     if (
       value.linkBotMessageEnabled &&
@@ -1321,6 +1324,7 @@ export const managedEntitiesRefreshStateSchema = z.object({
   complete: z.boolean(),
   cursor: z.number().int().nullable(),
   backoffActive: z.boolean(),
+  nextPollAfterMs: z.number().int().min(0).default(900),
 });
 export type ManagedEntitiesRefreshState = z.infer<typeof managedEntitiesRefreshStateSchema>;
 

@@ -8,7 +8,7 @@ import type {
 import { getChannels, getChats } from './api/root-client';
 import type { ApiTransport } from './api/transport';
 
-const MANAGED_ENTITIES_REFRESH_DELAY_MS = 900;
+const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
 
 type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
@@ -76,10 +76,7 @@ export function useManagedEntitiesSync({
   skipInitialSyncIfCached?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
-  const cacheKey = useMemo(
-    () => ['managed-entities-sync', entityType] as const,
-    [entityType],
-  );
+  const cacheKey = useMemo(() => ['managed-entities-sync', entityType] as const, [entityType]);
   const [state, setState] = useState<ManagedEntitiesSyncState>(
     () =>
       queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? {
@@ -215,7 +212,7 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          await delay(MANAGED_ENTITIES_REFRESH_DELAY_MS);
+          await delay(next.refresh.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS);
         }
       } catch (error: unknown) {
         if (cancelled) {
@@ -243,14 +240,7 @@ export function useManagedEntitiesSync({
     return () => {
       cancelled = true;
     };
-  }, [
-    api,
-    enabled,
-    entityType,
-    reloadNonce,
-    skipInitialSyncIfCached,
-    visibilityResumeNonce,
-  ]);
+  }, [api, enabled, entityType, reloadNonce, skipInitialSyncIfCached, visibilityResumeNonce]);
 
   return {
     ...state,

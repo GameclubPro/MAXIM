@@ -290,6 +290,7 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
       complete: true,
       cursor: -1,
       backoffActive: false,
+      nextPollAfterMs: 0,
     },
   });
 }
@@ -1821,7 +1822,9 @@ function createModerationResult(
     userId,
     muteDurationHours: payload.action === 'MUTE' ? (payload.muteDurationHours ?? 24) : null,
     muteExpiresAt:
-      payload.action === 'MUTE' ? addHours(now, payload.muteDurationHours ?? 24).toISOString() : null,
+      payload.action === 'MUTE'
+        ? addHours(now, payload.muteDurationHours ?? 24).toISOString()
+        : null,
     message: buildModerationMessage(payload),
   });
 }

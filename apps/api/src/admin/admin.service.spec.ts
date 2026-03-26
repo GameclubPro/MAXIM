@@ -2722,8 +2722,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message:
-        'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.',
+      message: 'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.',
     });
   });
 
@@ -3023,7 +3022,8 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-4',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.',
+      message:
+        'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.',
     });
   });
 });
@@ -3821,15 +3821,16 @@ describe('AdminService.listChannels', () => {
       ],
       refresh: {
         complete: false,
-        cursor: 120,
+        cursor: 40,
         backoffActive: false,
+        nextPollAfterMs: 250,
       },
     });
 
     expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
       'admin-1',
       'channel',
-      120,
+      40,
       3600,
     );
   });
@@ -3907,6 +3908,7 @@ describe('AdminService.listChannels', () => {
         complete: true,
         cursor: -1,
         backoffActive: false,
+        nextPollAfterMs: 0,
       },
     });
 
@@ -3990,6 +3992,7 @@ describe('AdminService.listChannels', () => {
         complete: false,
         cursor: null,
         backoffActive: true,
+        nextPollAfterMs: 60000,
       },
     });
 

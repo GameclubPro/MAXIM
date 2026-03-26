@@ -255,14 +255,17 @@ const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 1;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 120;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 180;
-const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
-const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 120;
+const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
+const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 40;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
-const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 25;
+const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
+const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 1_500;
+const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
+const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
@@ -2961,63 +2964,67 @@ export class AdminService {
       await this.assertRequiredSubscriptionSettings(normalizedSettings);
     }
 
-    for (const chatId of appliedChatIds) {
-      await this.prisma.chat.upsert({
-        where: { id: chatId },
-        create: {
-          id: chatId,
-          title: `Chat ${chatId}`,
-          entityType: ChatEntityType.CHAT,
-          settings: {
+    await this.mapWithConcurrencyLimit(
+      appliedChatIds,
+      APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY,
+      async (chatId) => {
+        await this.prisma.$transaction([
+          this.prisma.chat.upsert({
+            where: { id: chatId },
             create: {
-              ...settingsCreatePayload,
-            },
-          },
-        },
-        update: {
-          settings: {
-            upsert: {
-              update: {
-                ...settingsUpdatePayload,
-              },
-              create: {
-                ...settingsCreatePayload,
+              id: chatId,
+              title: `Chat ${chatId}`,
+              entityType: ChatEntityType.CHAT,
+              settings: {
+                create: {
+                  ...settingsCreatePayload,
+                },
               },
             },
-          },
-        },
-      });
+            update: {
+              settings: {
+                upsert: {
+                  update: {
+                    ...settingsUpdatePayload,
+                  },
+                  create: {
+                    ...settingsCreatePayload,
+                  },
+                },
+              },
+            },
+          }),
+          this.prisma.chatAdminAllowlist.upsert({
+            where: {
+              chatId_userId: {
+                chatId,
+                userId: user.userId,
+              },
+            },
+            create: {
+              chatId,
+              userId: user.userId,
+            },
+            update: {},
+          }),
+          this.prisma.auditLog.create({
+            data: {
+              chatId,
+              actorUserId: user.userId,
+              action: 'APPLY_SETTINGS_TO_ALL_CHATS',
+              payload: {
+                sourceChatId,
+                targetChatId: chatId,
+                source,
+                ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
+              },
+            },
+          }),
+        ]);
 
-      await this.prisma.chatAdminAllowlist.upsert({
-        where: {
-          chatId_userId: {
-            chatId,
-            userId: user.userId,
-          },
-        },
-        create: {
-          chatId,
-          userId: user.userId,
-        },
-        update: {},
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId,
-          actorUserId: user.userId,
-          action: 'APPLY_SETTINGS_TO_ALL_CHATS',
-          payload: {
-            sourceChatId,
-            targetChatId: chatId,
-            source,
-            ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
-          },
-        },
-      });
-
-      await this.chatContextCache.invalidate(chatId);
-    }
+        await this.chatContextCache.invalidate(chatId);
+      },
+    );
 
     return {
       sourceChatId,
@@ -4962,7 +4969,9 @@ export class AdminService {
       ? renderSupportedMarkdownAsHtml(normalizedSourceText)
       : hasMeaningfulText
         ? normalizedSourceText
-        : (payload.imageEnabled ? ' ' : '');
+        : payload.imageEnabled
+          ? ' '
+          : '';
     const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
       broadcastButtons.length > 0 || imagePayload || textFormat
@@ -7513,7 +7522,10 @@ export class AdminService {
     }
 
     try {
-      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
+        chatId,
+        targetUserId,
+      );
       if (!targetAccess) {
         return 'absent';
       }
@@ -8475,9 +8487,7 @@ export class AdminService {
     };
   }
 
-  private normalizeModerationViolationMetadata(
-    metadata: unknown,
-  ): Record<string, unknown> | null {
+  private normalizeModerationViolationMetadata(metadata: unknown): Record<string, unknown> | null {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
       return null;
     }
@@ -8512,7 +8522,8 @@ export class AdminService {
     if (
       action === SanctionAction.BAN &&
       metadata &&
-      (typeof metadata.muteDurationHours === 'number' || typeof metadata.banDurationHours === 'number')
+      (typeof metadata.muteDurationHours === 'number' ||
+        typeof metadata.banDurationHours === 'number')
     ) {
       return SanctionAction.MUTE;
     }
@@ -8520,10 +8531,7 @@ export class AdminService {
     return action;
   }
 
-  private normalizeModerationViolationRuleCode(
-    ruleCode: string,
-    action: SanctionAction,
-  ): string {
+  private normalizeModerationViolationRuleCode(ruleCode: string, action: SanctionAction): string {
     if (ruleCode === 'MANUAL_KICK') {
       return 'MANUAL_BAN';
     }
@@ -11874,6 +11882,13 @@ export class AdminService {
       complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
       cursor,
       backoffActive,
+      nextPollAfterMs: backoffActive
+        ? MANAGED_ENTITIES_REFRESH_BACKOFF_MS
+        : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+          ? 0
+          : cursor === null
+            ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
+            : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
     };
   }
 
