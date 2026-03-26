@@ -31,3 +31,4 @@ npm-debug.log*
 infra/data/
 autorinok-users.txt
 rostov-*
+TEST_COMMIT.txt
