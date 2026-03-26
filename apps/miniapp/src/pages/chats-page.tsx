@@ -25,6 +25,9 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
+const CHAT_CARD_STAGGER_STEP_MS = 45;
+const CHAT_CARD_STAGGER_LIMIT = 10;
+const CHAT_CARD_STAGGER_THRESHOLD = 24;
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
@@ -92,6 +95,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return haystack.includes(normalized);
     });
   }, [activeEntities, deferredQuery]);
+  const limitedStagger =
+    filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
 
   function handleRefresh() {
     lastRefreshAtRef.current = Date.now();
@@ -381,12 +386,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
       {!isLoading && !queryError && !isNoEntitiesForTab && filteredEntities.length > 0 ? (
         <section className="chat-grid" aria-label="Список">
-          {filteredEntities.map((entity, index) => (
+          {filteredEntities.map((entity, index) => {
+            const staggerIndex =
+              limitedStagger === null ? index : index < limitedStagger ? index : null;
+            const className = staggerIndex === null ? 'chat-card' : 'chat-card stagger-in';
+            const style =
+              staggerIndex === null
+                ? undefined
+                : { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
+
+            return (
             <GlassCard
               as="article"
               key={entity.id}
-              className="chat-card stagger-in"
-              style={{ animationDelay: `${index * 55}ms` }}
+              className={className}
+              style={style}
             >
               <div className="chat-card__header">
                 <div className="chat-card__identity">
@@ -464,7 +478,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 </div>
               )}
             </GlassCard>
-          ))}
+            );
+          })}
         </section>
       ) : null}
     </div>

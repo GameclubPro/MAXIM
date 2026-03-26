@@ -253,7 +253,7 @@ const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
-const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 1;
+const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 120;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 180;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
@@ -661,9 +661,8 @@ export class AdminService {
     entityType: ManagedEntityTypeFilter = 'all',
     options: { refresh?: boolean; includeRefreshState?: boolean } = {},
   ): Promise<ManagedEntitiesListResult> {
-    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
-
     if (options.refresh !== true) {
+      const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
       const cached = await this.revalidateCachedManagedEntities(
         user,
         await this.listChatsFromAllowlist(user.userId, entityType),
@@ -707,6 +706,7 @@ export class AdminService {
       user,
       await this.listChatsFromAllowlist(user.userId, entityType),
     );
+    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
     const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
     const fallback = this.mergeManagedEntityGroups(
       bootstrapped ? [bootstrapped] : [],
@@ -931,24 +931,52 @@ export class AdminService {
       return chats;
     }
 
-    const filtered: ChatSummary[] = [];
-    for (const chat of chats) {
-      const cachedAccess =
-        (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null;
-      if (cachedAccess !== 'user_denied' && cachedAccess !== 'bot_denied') {
-        filtered.push(chat);
+    const cachedAccessStates = await Promise.all(
+      chats.map(async (chat) => ({
+        chat,
+        cachedAccess: (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null,
+      })),
+    );
+    const filtered: Array<ChatSummary | null> = new Array<ChatSummary | null>(chats.length).fill(
+      null,
+    );
+    const staleDeniedChats: Array<{ chat: ChatSummary; index: number }> = [];
+
+    for (const [index, entry] of cachedAccessStates.entries()) {
+      if (entry.cachedAccess !== 'user_denied' && entry.cachedAccess !== 'bot_denied') {
+        filtered[index] = entry.chat;
         continue;
       }
 
-      const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, {
-        bypassNegativeCache: true,
+      staleDeniedChats.push({
+        chat: entry.chat,
+        index,
       });
-      if (access.status === 'granted') {
-        filtered.push(chat);
+    }
+
+    if (staleDeniedChats.length > 0) {
+      const revalidatedChats = await this.mapWithConcurrencyLimit(
+        staleDeniedChats,
+        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+        async ({ chat }) => {
+          const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, {
+            bypassNegativeCache: true,
+          });
+
+          return access.status === 'granted' ? chat : null;
+        },
+      );
+
+      for (const [index, chat] of revalidatedChats.entries()) {
+        if (!chat) {
+          continue;
+        }
+
+        filtered[staleDeniedChats[index].index] = chat;
       }
     }
 
-    return filtered;
+    return filtered.filter((chat): chat is ChatSummary => chat !== null);
   }
 
   private async discoverManagedEntities(
@@ -1027,6 +1055,9 @@ export class AdminService {
           : remoteChats.filter((chat) => chat.entityType === entityType);
       const supportedCandidateChats = candidateChats.filter(
         (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
+      );
+      const remoteIndexByChatId = new Map(
+        supportedCandidateChats.map((chat, index) => [chat.chatId, index]),
       );
       const storedCursor =
         options.fullScan === true
@@ -1127,9 +1158,7 @@ export class AdminService {
           return {
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
-            remoteIndex: supportedCandidateChats.findIndex(
-              (chat) => chat.chatId === remoteChat.chatId,
-            ),
+            remoteIndex: remoteIndexByChatId.get(remoteChat.chatId) ?? Number.MAX_SAFE_INTEGER,
           };
         },
       );
