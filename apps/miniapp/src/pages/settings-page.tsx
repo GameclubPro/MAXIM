@@ -468,9 +468,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
   ],
-  night: [
-    ...NIGHT_SECTION_SETTING_KEYS,
-  ],
+  night: [...NIGHT_SECTION_SETTING_KEYS],
   requiredSubscription: [
     'requiredSubscriptionEnabled',
     'requiredSubscriptionChannelIds',
@@ -1687,9 +1685,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
-  const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(
-    null,
-  );
+  const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
@@ -3835,7 +3831,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : 'Сообщение выключено'
     : 'Выключено';
   const duplicateAllowedCount = draft ? resolveDuplicateAllowedCount(draft) : 1;
-  const duplicateSharedWindowHours = draft ? secondsToHours(resolveDuplicateSharedWindowSec(draft)) : 12;
+  const duplicateSharedWindowHours = draft
+    ? secondsToHours(resolveDuplicateSharedWindowSec(draft))
+    : 12;
   const duplicateStagesEnabledCount = [
     draft?.duplicateBotMessageEnabled,
     draft?.duplicateWarnEnabled,
@@ -4015,9 +4013,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingTargetLabel = mailingApplyToAllChats
-    ? 'Во все чаты'
-    : 'Текущий чат';
+  const mailingTargetLabel = mailingApplyToAllChats ? 'Во все чаты' : 'Текущий чат';
   const mailingHeaderTargetLabel = mailingApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
@@ -4282,10 +4278,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       emphasize === 'save' ? 'button button--accent' : 'button button--ghost';
     const applyToAllButtonClassName =
       emphasize === 'save' ? 'button button--ghost' : 'button button--accent';
-    const footerNote =
-      options?.note !== undefined
-        ? options.note
-        : null;
+    const footerNote = options?.note !== undefined ? options.note : null;
 
     return (
       <>
@@ -4354,6 +4347,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             backTo={buildManagedEntitiesRoute('chat')}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
+            subtitle="Настройки чата"
             compact={isHeaderCompact}
             hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"
@@ -6704,10 +6698,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
                           <span className="settings-native-toggle__title">Антидубль</span>
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить антидубль"
-                          >
+                          <label className="settings-native-switch" aria-label="Включить антидубль">
                             <input
                               type="checkbox"
                               checked={draft.antiDuplicateEnabled}
@@ -6724,18 +6715,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">1. Объяснение</span>
-                                <div className="settings-native-toggle__title-actions">
-                                  <EditToggleButton
-                                    label="Текст о дублях"
-                                    onClick={() => toggleBotMessageEditor('duplicate')}
-                                    disabled={!draft.duplicateBotMessageEnabled}
-                                    isOpen={openBotEditorKey === 'duplicate'}
-                                  />
-                                </div>
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">1. Объяснение</span>
+                              <div className="settings-native-toggle__title-actions">
+                                <EditToggleButton
+                                  label="Текст о дублях"
+                                  onClick={() => toggleBotMessageEditor('duplicate')}
+                                  disabled={!draft.duplicateBotMessageEnabled}
+                                  isOpen={openBotEditorKey === 'duplicate'}
+                                />
                               </div>
+                            </div>
 
                             <label
                               className="settings-native-switch"
@@ -6898,9 +6889,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     onClick={() =>
                                       adjustDuplicateAllowedCount(duplicateAllowedCount, -1)
                                     }
-                                    disabled={
-                                      duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN
-                                    }
+                                    disabled={duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN}
                                     aria-label="Меньше дублей"
                                   >
                                     -
@@ -6919,9 +6908,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     onClick={() =>
                                       adjustDuplicateAllowedCount(duplicateAllowedCount, 1)
                                     }
-                                    disabled={
-                                      duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX
-                                    }
+                                    disabled={duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX}
                                     aria-label="Больше дублей"
                                   >
                                     +
@@ -6930,7 +6917,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
                             </div>
 
-                            {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
+                            {fieldErrors.duplicateWarnWindowSec ||
+                            fieldErrors.duplicateWarnMaxCount ? (
                               <div className="duplicate-stage__errors">
                                 {fieldErrors.duplicateWarnWindowSec ? (
                                   <small className="field__hint">

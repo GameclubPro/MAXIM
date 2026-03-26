@@ -1040,6 +1040,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         backTo={buildManagedEntitiesRoute('channel')}
         backLabel="Назад к каналам"
         title={resolvedTitle || 'Настройки'}
+        subtitle="Настройки канала"
         compact={isHeaderCompact}
         hidden={isHeaderHidden}
         className="channel-settings-screen__sticky-header"

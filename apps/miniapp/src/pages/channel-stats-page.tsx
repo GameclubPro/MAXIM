@@ -9,7 +9,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { BackChevronIcon } from '../components/ui/entity-header-icons';
+import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -282,7 +282,11 @@ function resolveSparseLabelIndices(length: number, activeIndex: number): Set<num
   return new Set(anchors);
 }
 
-function resolveChartIndexFromClientX(clientX: number, rect: DOMRect, pointsLength: number): number {
+function resolveChartIndexFromClientX(
+  clientX: number,
+  rect: DOMRect,
+  pointsLength: number,
+): number {
   if (pointsLength <= 1) {
     return 0;
   }
@@ -401,8 +405,7 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     const joined = membership?.joined ?? 0;
     const left = membership?.left ?? 0;
     const joinedHeight = joined * joinedScale;
-    const leftHeight =
-      typeof left === 'number' && left > 0 ? left * leftScale : 0;
+    const leftHeight = typeof left === 'number' && left > 0 ? left * leftScale : 0;
 
     return {
       at: item.at,
@@ -555,7 +558,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         <>
           <div className="channel-stats-graph__summary">
             <div className="channel-stats-graph__summary-copy">
-              <small>{activePoint ? formatChartDetailDate(activePoint.at, stats.period.bucket) : 'Нет данных'}</small>
+              <small>
+                {activePoint
+                  ? formatChartDetailDate(activePoint.at, stats.period.bucket)
+                  : 'Нет данных'}
+              </small>
               <strong>{activeParticipantsLabel} участников</strong>
             </div>
 
@@ -804,7 +811,11 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <>
           <div className="channel-stats-graph__summary">
             <div className="channel-stats-graph__summary-copy">
-              <small>{activeBar ? formatChartDetailDate(activeBar.at, stats.period.bucket) : 'Нет данных'}</small>
+              <small>
+                {activeBar
+                  ? formatChartDetailDate(activeBar.at, stats.period.bucket)
+                  : 'Нет данных'}
+              </small>
               <strong>{activeViewsLabel} просмотров</strong>
             </div>
 
@@ -1155,37 +1166,25 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="channel-insights page-enter">
-      <header
-        className={`channel-insights__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
-          isHeaderHidden ? 'is-hidden' : ''
-        }`}
-      >
-        <div className="channel-insights__appbar-bar">
-          <Link
-            to={buildManagedEntitiesRoute('channel')}
-            className="channel-insights__back"
-            aria-label="К списку каналов"
-          >
-            <BackChevronIcon />
-          </Link>
-
-          <div className="channel-insights__appbar-copy">
-            <strong>Статистика</strong>
-            <span className="channel-insights__appbar-label">{resolvedTitle}</span>
-          </div>
-
-          <div className="channel-insights__appbar-side">
-            {statsQuery.isFetching ? (
-              <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
-            ) : (
-              <span
-                className="channel-insights__pulse channel-insights__pulse--idle"
-                aria-hidden="true"
-              />
-            )}
-          </div>
-        </div>
-      </header>
+      <CompactStickyHeader
+        backTo={buildManagedEntitiesRoute('channel')}
+        backLabel="К списку каналов"
+        title={resolvedTitle}
+        subtitle="Статистика канала"
+        compact={isHeaderCompact}
+        hidden={isHeaderHidden}
+        className="channel-insights__sticky-header"
+        aside={
+          statsQuery.isFetching ? (
+            <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
+          ) : (
+            <span
+              className="channel-insights__pulse channel-insights__pulse--idle"
+              aria-hidden="true"
+            />
+          )
+        }
+      />
 
       <div className="channel-insights__body">
         <section className="channel-insights__summary stagger-in" aria-label="Сводка по каналу">
