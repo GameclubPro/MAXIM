@@ -87,6 +87,7 @@ type GiveawayEligibilityResult = {
   reason: string | null;
   missingChannelIds: string[];
 };
+type GiveawayEntryAuditAction = 'ENTER_GIVEAWAY' | 'RECHECK_GIVEAWAY_ENTRY';
 
 @Injectable()
 export class ManagedGiveawayService {
@@ -619,6 +620,7 @@ export class ManagedGiveawayService {
     const eligibility = await this.evaluateGiveawayEligibility(refreshed, user.userId);
     const displayName = this.resolveUserDisplayName(user);
     const existing = refreshed.entries.find((entry) => entry.userId === user.userId) ?? null;
+    const checkedAt = new Date();
     const saved = await this.prisma.managedGiveawayEntry.upsert({
       where: {
         giveawayId_userId: {
@@ -633,26 +635,29 @@ export class ManagedGiveawayService {
         eligibilityState: eligibility.state,
         eligibilityReason: eligibility.reason,
         missingChannelIds: eligibility.missingChannelIds,
-        checkedAt: new Date(),
+        checkedAt,
       },
       update: {
         displayName,
         eligibilityState: eligibility.state,
         eligibilityReason: eligibility.reason,
         missingChannelIds: eligibility.missingChannelIds,
-        checkedAt: new Date(),
+        checkedAt,
       },
     });
 
-    await this.writeAuditLog(refreshed.sourceChatId, user.userId, 'ENTER_GIVEAWAY', {
-      giveawayId: refreshed.id,
-      entityType: this.fromPrismaEntityType(refreshed.entityType),
-      previousEntryId: existing?.id ?? null,
-      entryId: saved.id,
-      eligibilityState: saved.eligibilityState,
-      eligibilityReason: saved.eligibilityReason,
-      missingChannelIds: this.readMissingChannelIds(saved.missingChannelIds),
-    });
+    const auditAction = this.resolveGiveawayEntryAuditAction(existing, saved);
+    if (auditAction) {
+      await this.writeAuditLog(refreshed.sourceChatId, user.userId, auditAction, {
+        giveawayId: refreshed.id,
+        entityType: this.fromPrismaEntityType(refreshed.entityType),
+        previousEntryId: existing?.id ?? null,
+        entryId: saved.id,
+        eligibilityState: saved.eligibilityState,
+        eligibilityReason: saved.eligibilityReason,
+        missingChannelIds: this.readMissingChannelIds(saved.missingChannelIds),
+      });
+    }
 
     const latest = await this.findGiveawayById(refreshed.id);
     await this.editGiveawayPublicationIfNeeded(latest, ManagedGiveawayStatus.ACTIVE);
@@ -1793,6 +1798,56 @@ export class ManagedGiveawayService {
     );
   }
 
+  private areSameStringSets(left: string[], right: string[]): boolean {
+    if (left.length !== right.length) {
+      return false;
+    }
+
+    const sortedLeft = [...left].sort();
+    const sortedRight = [...right].sort();
+    return sortedLeft.every((value, index) => value === sortedRight[index]);
+  }
+
+  private resolveGiveawayEntryAuditAction(
+    existing: PersistedManagedGiveawayEntry | null,
+    saved: PersistedManagedGiveawayEntry,
+  ): GiveawayEntryAuditAction | null {
+    if (!existing) {
+      return 'ENTER_GIVEAWAY';
+    }
+
+    const existingMissingChannelIds = this.readMissingChannelIds(existing.missingChannelIds);
+    const savedMissingChannelIds = this.readMissingChannelIds(saved.missingChannelIds);
+
+    if (
+      existing.eligibilityState === saved.eligibilityState &&
+      (existing.eligibilityReason ?? null) === (saved.eligibilityReason ?? null) &&
+      this.areSameStringSets(existingMissingChannelIds, savedMissingChannelIds)
+    ) {
+      return null;
+    }
+
+    return 'RECHECK_GIVEAWAY_ENTRY';
+  }
+
+  private resolveDrawEligibilityResult(
+    entry: PersistedManagedGiveawayEntry,
+    result: GiveawayEligibilityResult,
+  ): GiveawayEligibilityResult {
+    if (
+      entry.eligibilityState === GiveawayEligibilityState.VERIFIED &&
+      result.state === GiveawayEligibilityState.PENDING
+    ) {
+      return {
+        state: GiveawayEligibilityState.VERIFIED,
+        reason: null,
+        missingChannelIds: [],
+      };
+    }
+
+    return result;
+  }
+
   private buildGiveawayMandatoryChannelIds(row: PersistedGiveawayWithRelations): string[] {
     return Array.from(
       new Set([row.sourceChatId, ...this.readRequiredChannelIds(row.requiredChannelIds)]),
@@ -1903,20 +1958,20 @@ export class ManagedGiveawayService {
           return entry;
         }
 
-        if (entry.eligibilityState === GiveawayEligibilityState.PENDING) {
-          const result = await this.evaluateGiveawayEligibility(giveaway, entry.userId);
-          return this.prisma.managedGiveawayEntry.update({
-            where: { id: entry.id },
-            data: {
-              eligibilityState: result.state,
-              eligibilityReason: result.reason,
-              missingChannelIds: result.missingChannelIds,
-              checkedAt: now,
-            },
-          });
-        }
+        const result = this.resolveDrawEligibilityResult(
+          entry,
+          await this.evaluateGiveawayEligibility(giveaway, entry.userId),
+        );
 
-        return entry;
+        return this.prisma.managedGiveawayEntry.update({
+          where: { id: entry.id },
+          data: {
+            eligibilityState: result.state,
+            eligibilityReason: result.reason,
+            missingChannelIds: result.missingChannelIds,
+            checkedAt: now,
+          },
+        });
       }),
     );
 

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
 import type { CSSProperties } from 'react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useToast } from '../components/ui/toast';
 import {
@@ -467,10 +467,13 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const isSubscriptionFlow =
     participant?.eligibilityState === 'REJECTED' && missingChannelCards.length > 0;
 
-  const canRetryParticipation =
+  const canRetryRejectedParticipation =
     giveaway?.status === 'ACTIVE' && participant?.eligibilityState === 'REJECTED';
+  const canManualEligibilityRecheck =
+    giveaway?.status === 'ACTIVE' &&
+    (participant?.eligibilityState === 'PENDING' || participant?.eligibilityState === 'REJECTED');
   const canEnterParticipation =
-    giveaway?.status === 'ACTIVE' && (!participant?.joined || canRetryParticipation);
+    giveaway?.status === 'ACTIVE' && (!participant?.joined || canRetryRejectedParticipation);
 
   const loadingPresentation: GiveawayModalPresentation = {
     tone: 'muted',
@@ -524,7 +527,47 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     });
   };
 
-  const recheckSubscriptionEligibility = async (mode: 'return' | 'manual') => {
+  const applyEligibilityRecheckResult = (
+    nextParticipant: ManagedGiveawayParticipantState,
+    mode: 'return' | 'manual',
+  ) => {
+    if (nextParticipant.eligibilityState === 'VERIFIED') {
+      maxNotify('success');
+      pushToast({
+        tone: 'success',
+        title: 'Подписка подтверждена',
+        description: 'Можно продолжать участие.',
+      });
+      return;
+    }
+
+    setSubscriptionNeedsManualRetry(true);
+    maxNotify('warning');
+
+    if (nextParticipant.eligibilityState === 'REJECTED') {
+      pushToast({
+        tone: 'info',
+        title:
+          mode === 'manual' ? 'Подписка ещё не обновилась' : 'MAX ещё обновляет подписку',
+        description:
+          mode === 'manual'
+            ? 'Откройте канал ещё раз, если MAX не успел синхронизировать статус.'
+            : 'Нажмите «Проверить снова», если подписка уже оформлена.',
+      });
+      return;
+    }
+
+    pushToast({
+      tone: 'info',
+      title: mode === 'manual' ? 'Проверка ещё не завершена' : 'MAX ещё проверяет участие',
+      description:
+        mode === 'manual'
+          ? 'Подождите пару секунд и нажмите «Проверить снова».'
+          : 'Если статус не обновится, нажмите «Проверить снова».',
+    });
+  };
+
+  const recheckParticipationEligibility = async (mode: 'return' | 'manual') => {
     if (!giveawayId || subscriptionCheckInFlightRef.current) {
       return null;
     }
@@ -543,11 +586,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
         }
 
         latestParticipant = await enterGiveaway(api, giveawayId);
-        const missingChannelIds = Array.isArray(latestParticipant.missingChannelIds)
-          ? latestParticipant.missingChannelIds
-          : [];
-
-        if (latestParticipant.eligibilityState === 'VERIFIED' || missingChannelIds.length === 0) {
+        if (latestParticipant.eligibilityState !== 'PENDING') {
           break;
         }
       }
@@ -578,6 +617,16 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     openMaxBotLink(url);
   };
 
+  const handleSubscriptionReturnVisible = useEffectEvent(() => {
+    void recheckParticipationEligibility('return').then((nextParticipant) => {
+      if (!nextParticipant) {
+        return;
+      }
+
+      applyEligibilityRecheckResult(nextParticipant, 'return');
+    });
+  });
+
   const primaryAction = giveawayQuery.error
     ? {
         label: 'Повторить',
@@ -602,33 +651,25 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               void participantQuery.refetch();
             },
           }
-        : isSubscriptionFlow && subscriptionNeedsManualRetry
+        : canManualEligibilityRecheck &&
+            (participant?.eligibilityState === 'PENDING' ||
+              subscriptionNeedsManualRetry ||
+              !nextMissingChannel?.link)
           ? {
-              label: subscriptionRecheckPending ? 'Проверяем подписку…' : 'Проверить снова',
+              label:
+                subscriptionRecheckPending
+                  ? 'Проверяем статус…'
+                  : participant?.eligibilityState === 'PENDING'
+                    ? 'Обновить проверку'
+                    : 'Проверить снова',
               disabled: subscriptionRecheckPending,
               onClick: () => {
-                void recheckSubscriptionEligibility('manual').then((nextParticipant) => {
+                void recheckParticipationEligibility('manual').then((nextParticipant) => {
                   if (!nextParticipant) {
                     return;
                   }
 
-                  if (nextParticipant.eligibilityState === 'VERIFIED') {
-                    maxNotify('success');
-                    pushToast({
-                      tone: 'success',
-                      title: 'Подписка подтверждена',
-                      description: 'Можно продолжать участие.',
-                    });
-                    return;
-                  }
-
-                  maxNotify('warning');
-                  pushToast({
-                    tone: 'info',
-                    title: 'Подписка ещё не обновилась',
-                    description:
-                      'Откройте канал ещё раз, если MAX не успел синхронизировать статус.',
-                  });
+                  applyEligibilityRecheckResult(nextParticipant, 'manual');
                 });
               },
             }
@@ -650,10 +691,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               : canEnterParticipation
                 ? {
                     label: enterMutation.isPending
-                      ? canRetryParticipation
-                        ? 'Проверяем…'
-                        : 'Входим…'
-                      : canRetryParticipation
+                        ? canRetryRejectedParticipation
+                          ? 'Проверяем…'
+                          : 'Входим…'
+                      : canRetryRejectedParticipation
                         ? 'Проверить снова'
                         : 'Участвовать',
                     disabled: enterMutation.isPending || participantQuery.isLoading,
@@ -690,31 +731,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
         return;
       }
 
-      void recheckSubscriptionEligibility('return').then((nextParticipant) => {
-        if (!nextParticipant) {
-          return;
-        }
-
-        if (nextParticipant.eligibilityState === 'VERIFIED') {
-          maxNotify('success');
-          pushToast({
-            tone: 'success',
-            title: 'Подписка подтверждена',
-            description: 'Можно продолжать участие.',
-          });
-          return;
-        }
-
-        if (nextParticipant.eligibilityState === 'REJECTED') {
-          setSubscriptionNeedsManualRetry(true);
-          maxNotify('warning');
-          pushToast({
-            tone: 'info',
-            title: 'MAX ещё обновляет подписку',
-            description: 'Нажмите «Проверить снова», если подписка уже оформлена.',
-          });
-        }
-      });
+      handleSubscriptionReturnVisible();
     };
 
     window.addEventListener('focus', handleVisible);
@@ -726,7 +743,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('pageshow', handleVisible);
       document.removeEventListener('visibilitychange', handleVisible);
     };
-  }, [awaitingSubscriptionReturn, giveawayId, participantQueryKey, pushToast, queryClient]);
+  }, [awaitingSubscriptionReturn, handleSubscriptionReturnVisible]);
 
   useEffect(() => {
     if (!countdown || typeof window === 'undefined') {
