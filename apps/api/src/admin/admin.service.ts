@@ -114,6 +114,7 @@ import {
   ChatContextCacheService,
   type ChatAdminAccessState,
 } from '../chat-context/chat-context-cache.service';
+import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -513,6 +514,7 @@ export class AdminService {
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
+  private readonly maxBotTokenValidationSecrets: readonly string[];
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
   private readonly managedEntitiesDiscoveryChecks = new Map<
     string,
@@ -530,7 +532,14 @@ export class AdminService {
     private readonly channelStatsCollector?: ChannelStatsCollectorService,
     @Optional() private readonly redisCounter?: RedisCounterService,
   ) {
-    this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    const configuredBotTokens = collectBotTokenSecrets(
+      configService.getOrThrow<string>('MAX_BOT_TOKEN'),
+      configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
+    );
+    this.maxBotToken =
+      configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.maxBotTokenValidationSecrets =
+      configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
       configService.get<string>('MAX_BOT_CONTACT_ID'),
@@ -11344,8 +11353,7 @@ export class AdminService {
       return null;
     }
 
-    const expectedSignature = this.buildChannelSuggestionStartSignature(chatId, threadId);
-    if (!this.isValidChannelDialogSignature(signature, expectedSignature)) {
+    if (!this.isValidChannelSuggestionStartSignature(signature, chatId, threadId)) {
       return null;
     }
 
@@ -11500,8 +11508,7 @@ export class AdminService {
 
     if (/^[a-f0-9]{64}$/iu.test(normalizedToken)) {
       const signature = normalizedToken.toLowerCase();
-      const expected = this.buildEntityDialogTokenSignature(entityType, chatId, type);
-      if (!this.isValidChannelDialogSignature(signature, expected)) {
+      if (!this.isValidEntityDialogTokenSignature(signature, entityType, chatId, type)) {
         throw new BadRequestException(staleMessage);
       }
 
@@ -11537,12 +11544,41 @@ export class AdminService {
       throw new BadRequestException(openAgainMessage);
     }
 
-    const expected = this.buildEntityDialogTokenSignature(entityType, chatId, type, threadId);
-    if (!this.isValidChannelDialogSignature(signature, expected)) {
+    if (
+      !this.isValidEntityDialogTokenSignature(signature, entityType, chatId, type, threadId)
+    ) {
       throw new BadRequestException(staleMessage);
     }
 
     return threadId;
+  }
+
+  private isValidChannelSuggestionStartSignature(
+    providedHex: string,
+    chatId: string,
+    threadId: string,
+  ): boolean {
+    return this.maxBotTokenValidationSecrets.some((botToken) =>
+      this.isValidChannelDialogSignature(
+        providedHex,
+        this.buildChannelSuggestionStartSignature(chatId, threadId, botToken),
+      ),
+    );
+  }
+
+  private isValidEntityDialogTokenSignature(
+    providedHex: string,
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ): boolean {
+    return this.maxBotTokenValidationSecrets.some((botToken) =>
+      this.isValidChannelDialogSignature(
+        providedHex,
+        this.buildEntityDialogTokenSignature(entityType, chatId, type, threadId, botToken),
+      ),
+    );
   }
 
   private isValidChannelDialogSignature(providedHex: string, expectedHex: string): boolean {

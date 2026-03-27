@@ -1,14 +1,20 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class InitDataService {
-  private readonly botToken: string;
+  private readonly botTokens: readonly string[];
 
   constructor(configService: ConfigService) {
-    this.botToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    const configuredBotTokens = collectBotTokenSecrets(
+      configService.getOrThrow<string>('MAX_BOT_TOKEN'),
+      configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
+    );
+    const currentBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.botTokens = configuredBotTokens.length > 0 ? configuredBotTokens : [currentBotToken];
   }
 
   validate(initData: string): AuthUser {
@@ -29,9 +35,11 @@ export class InitDataService {
       throw new UnauthorizedException('Invalid init data signature');
     }
 
-    const valid = this.isValidHexSignature(
-      receivedHash.toLowerCase(),
-      this.calculateInitDataHash(sortedPairs, this.botToken),
+    const valid = this.botTokens.some((botToken) =>
+      this.isValidHexSignature(
+        receivedHash.toLowerCase(),
+        this.calculateInitDataHash(sortedPairs, botToken),
+      ),
     );
     if (!valid) {
       throw new UnauthorizedException('Invalid init data signature');

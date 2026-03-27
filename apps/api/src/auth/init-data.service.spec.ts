@@ -4,6 +4,7 @@ import { createHmac } from 'node:crypto';
 import { InitDataService } from './init-data.service';
 
 const botToken = 'max-bot-token-test';
+const previousBotToken = 'max-bot-token-previous-test';
 
 function sign(params: URLSearchParams, token = botToken): string {
   const rows = [...params.entries()]
@@ -14,7 +15,7 @@ function sign(params: URLSearchParams, token = botToken): string {
   return createHmac('sha256', secretKey).update(rows).digest('hex');
 }
 
-function createConfigMock(): ConfigService {
+function createConfigMock(previousToken?: string): ConfigService {
   return {
     getOrThrow: jest.fn((key: string) => {
       const values: Record<string, string> = {
@@ -22,7 +23,12 @@ function createConfigMock(): ConfigService {
       };
       return values[key];
     }),
-    get: jest.fn(() => undefined),
+    get: jest.fn((key: string) => {
+      if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
+        return previousToken;
+      }
+      return undefined;
+    }),
   } as unknown as ConfigService;
 }
 
@@ -101,5 +107,16 @@ describe('InitDataService', () => {
     expect(user.userId).toBe('777');
     expect(user.chatId).toBe('152517912');
     expect(user.chatTitle).toBe('MAXIM Chat');
+  });
+
+  it('accepts init data signed with the previous bot token', () => {
+    const service = new InitDataService(createConfigMock(previousBotToken));
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '555' }));
+    params.set('auth_date', '1700000003');
+    params.set('hash', sign(params, previousBotToken));
+
+    const user = service.validate(params.toString());
+    expect(user.userId).toBe('555');
   });
 });
