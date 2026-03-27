@@ -46,10 +46,28 @@ function rangesOverlap(left: UrlMatch, right: UrlMatch): boolean {
   return left.start < right.end && right.start < left.end;
 }
 
+function isLikelyNumberedListItem(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed || /^https?:\/\//iu.test(trimmed)) {
+    return false;
+  }
+
+  const hostEnd = trimmed.search(/[/?#]/u);
+  const host = hostEnd === -1 ? trimmed : trimmed.slice(0, hostEnd);
+  const parts = host.split('.');
+  if (parts.length !== 2) {
+    return false;
+  }
+
+  return /^\d+$/u.test(parts[0]);
+}
+
 function collectUrlMatches(value: string): UrlMatch[] {
   const schemeMatches = collectMatches(value, createSchemeUrlRegex());
   const bareMatches = collectMatches(value, createBareUrlRegex()).filter(
-    (candidate) => !schemeMatches.some((existing) => rangesOverlap(candidate, existing)),
+    (candidate) =>
+      !schemeMatches.some((existing) => rangesOverlap(candidate, existing)) &&
+      !isLikelyNumberedListItem(candidate.text),
   );
 
   return [...schemeMatches, ...bareMatches].sort((left, right) => left.start - right.start);

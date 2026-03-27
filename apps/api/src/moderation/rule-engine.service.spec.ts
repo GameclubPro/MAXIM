@@ -314,6 +314,27 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('does not treat numbered cultivar list items as blocked links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: [
+        'Доброе утро!',
+        '2.Humako Inches',
+        '5.Dn-Bora Bora',
+        '8.Dn- Цвет Сакуры',
+        'тел.89883218131',
+      ].join('\n'),
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('matches legacy allowlist rows with encoded trailing text', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
