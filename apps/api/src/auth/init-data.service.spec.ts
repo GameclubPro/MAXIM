@@ -4,27 +4,37 @@ import { createHmac } from 'node:crypto';
 import { InitDataService } from './init-data.service';
 
 const botToken = 'max-bot-token-test';
+const previousBotToken = 'max-bot-token-previous-test';
 
-function sign(params: URLSearchParams): string {
+function sign(params: URLSearchParams, token = botToken): string {
   const rows = [...params.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
-  const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const secretKey = createHmac('sha256', 'WebAppData').update(token).digest();
   return createHmac('sha256', secretKey).update(rows).digest('hex');
 }
 
-describe('InitDataService', () => {
-  const configService = {
+function createConfigMock(previousToken?: string): ConfigService {
+  return {
     getOrThrow: jest.fn((key: string) => {
       const values: Record<string, string> = {
         MAX_BOT_TOKEN: botToken,
       };
       return values[key];
     }),
+    get: jest.fn((key: string) => {
+      if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
+        return previousToken;
+      }
+      return undefined;
+    }),
   } as unknown as ConfigService;
+}
 
+describe('InitDataService', () => {
   it('validates correct init data', () => {
+    const configService = createConfigMock();
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set(
@@ -44,6 +54,7 @@ describe('InitDataService', () => {
   });
 
   it('extracts direct MAX profile url from user payload', () => {
+    const configService = createConfigMock();
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set(
@@ -61,6 +72,7 @@ describe('InitDataService', () => {
   });
 
   it('throws on invalid hash', () => {
+    const configService = createConfigMock();
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '42' }));
@@ -70,6 +82,7 @@ describe('InitDataService', () => {
   });
 
   it('validates urlencoded payload', () => {
+    const configService = createConfigMock();
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '100' }));
@@ -82,6 +95,7 @@ describe('InitDataService', () => {
   });
 
   it('extracts chat context when chat payload is present', () => {
+    const configService = createConfigMock();
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '777' }));
@@ -93,5 +107,16 @@ describe('InitDataService', () => {
     expect(user.userId).toBe('777');
     expect(user.chatId).toBe('152517912');
     expect(user.chatTitle).toBe('MAXIM Chat');
+  });
+
+  it('accepts init data signed with the previous bot token', () => {
+    const service = new InitDataService(createConfigMock(previousBotToken));
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '555' }));
+    params.set('auth_date', '1700000003');
+    params.set('hash', sign(params, previousBotToken));
+
+    const user = service.validate(params.toString());
+    expect(user.userId).toBe('555');
   });
 });

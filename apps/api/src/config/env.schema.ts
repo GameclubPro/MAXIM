@@ -8,6 +8,7 @@ const envSchema = z.object({
   MAX_BOT_ID: z.string().min(3),
   MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
   MAX_BOT_TOKEN: z.string().min(10),
+  MAX_BOT_TOKEN_PREVIOUS: z.string().min(10).optional(),
   MAX_WEBHOOK_SECRET_PATH: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api.max.ru'),

@@ -30,6 +30,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import {
   buildManagedGiveawayDrawRank,
@@ -94,6 +95,7 @@ export class ManagedGiveawayService {
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
+  private readonly maxBotTokenValidationSecrets: readonly string[];
 
   constructor(
     private readonly prisma: PrismaService,
@@ -107,7 +109,14 @@ export class ManagedGiveawayService {
       configService.get<string>('MAX_BOT_CONTACT_ID'),
     );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
-    this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    const configuredBotTokens = collectBotTokenSecrets(
+      configService.getOrThrow<string>('MAX_BOT_TOKEN'),
+      configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
+    );
+    this.maxBotToken =
+      configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.maxBotTokenValidationSecrets =
+      configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
   }
 
   async listManagedGiveaways(
@@ -838,8 +847,7 @@ export class ManagedGiveawayService {
       ) {
         return null;
       }
-      const expectedSignature = this.buildGiveawayClaimSignature(parsed.g, parsed.w);
-      if (!this.isSafeEqualHex(parsed.s, expectedSignature)) {
+      if (!this.isValidGiveawayClaimSignature(parsed.s, parsed.g, parsed.w)) {
         return null;
       }
 
@@ -2237,10 +2245,27 @@ export class ManagedGiveawayService {
     return `${this.appBaseUrl}/app/giveaways/${encodeURIComponent(giveawayId)}`;
   }
 
-  private buildGiveawayClaimSignature(giveawayId: string, winnerId: string): string {
-    return createHmac('sha256', this.maxBotToken)
+  private buildGiveawayClaimSignature(
+    giveawayId: string,
+    winnerId: string,
+    botToken = this.maxBotToken,
+  ): string {
+    return createHmac('sha256', botToken)
       .update(`giveaway-claim:${giveawayId}:${winnerId}`)
       .digest('hex');
+  }
+
+  private isValidGiveawayClaimSignature(
+    providedHex: string,
+    giveawayId: string,
+    winnerId: string,
+  ): boolean {
+    return this.maxBotTokenValidationSecrets.some((botToken) =>
+      this.isSafeEqualHex(
+        providedHex,
+        this.buildGiveawayClaimSignature(giveawayId, winnerId, botToken),
+      ),
+    );
   }
 
   private isSafeEqualHex(providedHex: string, expectedHex: string): boolean {

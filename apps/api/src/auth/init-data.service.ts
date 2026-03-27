@@ -1,11 +1,21 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
+import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class InitDataService {
-  constructor(private readonly configService: ConfigService) {}
+  private readonly botTokens: readonly string[];
+
+  constructor(configService: ConfigService) {
+    const configuredBotTokens = collectBotTokenSecrets(
+      configService.getOrThrow<string>('MAX_BOT_TOKEN'),
+      configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
+    );
+    const currentBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.botTokens = configuredBotTokens.length > 0 ? configuredBotTokens : [currentBotToken];
+  }
 
   validate(initData: string): AuthUser {
     const params = new URLSearchParams(this.normalizeInitData(initData));
@@ -21,21 +31,15 @@ export class InitDataService {
       .map(([key, value]) => `${key}=${value}`)
       .join('\n');
 
-    const botToken = this.configService.getOrThrow<string>('MAX_BOT_TOKEN');
-    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
-    const calculatedHash = createHmac('sha256', secretKey).update(sortedPairs).digest('hex');
-
     if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
       throw new UnauthorizedException('Invalid init data signature');
     }
 
-    if (receivedHash.length !== calculatedHash.length) {
-      throw new UnauthorizedException('Invalid init data signature');
-    }
-
-    const valid = timingSafeEqual(
-      Buffer.from(calculatedHash, 'hex'),
-      Buffer.from(receivedHash.toLowerCase(), 'hex'),
+    const valid = this.botTokens.some((botToken) =>
+      this.isValidHexSignature(
+        receivedHash.toLowerCase(),
+        this.calculateInitDataHash(sortedPairs, botToken),
+      ),
     );
     if (!valid) {
       throw new UnauthorizedException('Invalid init data signature');
@@ -104,6 +108,18 @@ export class InitDataService {
     }
 
     return current;
+  }
+
+  private calculateInitDataHash(sortedPairs: string, botToken: string): string {
+    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
+    return createHmac('sha256', secretKey).update(sortedPairs).digest('hex');
+  }
+
+  private isValidHexSignature(providedHex: string, expectedHex: string): boolean {
+    return (
+      providedHex.length === expectedHex.length &&
+      timingSafeEqual(Buffer.from(providedHex, 'hex'), Buffer.from(expectedHex, 'hex'))
+    );
   }
 
   private parseChat(chatPayload: string | null): { chatId?: string; chatTitle?: string | null } | null {
