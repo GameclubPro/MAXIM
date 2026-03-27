@@ -71,6 +71,11 @@ const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
 const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
 const SWIPE_REPLY_TRIGGER_DISTANCE = 54;
 const SWIPE_REPLY_MAX_OFFSET = 78;
+const DIALOG_REDIRECTABLE_ERROR_PATTERNS = [
+  /^Комментарии для этого (чата|канала) сейчас закрыты\.$/u,
+  /^Кнопка устарела\./u,
+  /^Неверный токен кнопки\./u,
+] as const;
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -88,6 +93,11 @@ function normalizeApiError(error: unknown): string {
   }
 
   return normalized;
+}
+
+function shouldRedirectFromDialogError(message: string): boolean {
+  const normalized = message.trim();
+  return DIALOG_REDIRECTABLE_ERROR_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function resolveDialogType(mode: string | undefined): ChannelDialogType {
@@ -816,6 +826,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messageLayoutContextRef = useRef<string | null>(null);
   const messageRectsRef = useRef(new Map<string, DOMRect>());
   const ignoreNextBubbleClickRef = useRef(false);
+  const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
@@ -855,6 +866,26 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId && token),
     refetchInterval: dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false,
   });
+
+  useEffect(() => {
+    if (!dialogQuery.error || launchErrorRedirectedRef.current) {
+      return;
+    }
+
+    const message = normalizeApiError(dialogQuery.error);
+    if (!shouldRedirectFromDialogError(message)) {
+      return;
+    }
+
+    launchErrorRedirectedRef.current = true;
+    pushToast({
+      tone: 'info',
+      title: 'Диалог недоступен',
+      description: message,
+      durationMs: 4_000,
+    });
+    navigate(buildManagedEntitiesRoute(entityType), { replace: true });
+  }, [dialogQuery.error, entityType, navigate, pushToast]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
