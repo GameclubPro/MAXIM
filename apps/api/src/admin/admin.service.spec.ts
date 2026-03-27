@@ -605,9 +605,7 @@ function extractSqlText(arg: unknown): string {
   return String(arg);
 }
 
-function createConfigMock(
-  options: { previousToken?: string; botId?: string | null; token?: string } = {},
-) {
+function createConfigMock(options: { botId?: string | null; token?: string } = {}) {
   return {
     getOrThrow: jest.fn((key: string) => {
       if (key === 'MAX_BOT_TOKEN') {
@@ -624,9 +622,6 @@ function createConfigMock(
       }
       if (key === 'MAX_BOT_CONTACT_ID') {
         return '777000';
-      }
-      if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
-        return options.previousToken ?? null;
       }
       return null;
     }),
@@ -7556,34 +7551,6 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
-  it('accepts chat dialog tokens signed with the previous bot token', () => {
-    const prisma = createPrismaMock();
-    const chatContextCache = createChatContextCacheMock();
-    const previousToken = 'test-max-bot-token-previous';
-
-    const legacyService = new AdminService(
-      prisma as never,
-      {} as never,
-      chatContextCache as never,
-      createConfigMock({ token: previousToken }) as never,
-    );
-    const service = new AdminService(
-      prisma as never,
-      {} as never,
-      chatContextCache as never,
-      createConfigMock({ previousToken }) as never,
-    );
-
-    const commentsToken = (
-      legacyService as unknown as { buildEntityDialogToken: Function }
-    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-legacy') as string;
-    const threadId = (
-      service as unknown as { resolveChatDialogThreadId: Function }
-    ).resolveChatDialogThreadId('chat-1', 'comments', commentsToken) as string | null;
-
-    expect(threadId).toBe('chat-thread-legacy');
-  });
-
   it('updates the chat comments button counter after a new comment', async () => {
     const prisma = createPrismaMock();
     prisma.chatSettings.findUnique.mockResolvedValue(
@@ -9118,35 +9085,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
-  it('accepts compact suggestion launch payloads signed with the previous bot token', () => {
-    const prisma = createPrismaMock();
-    const chatContextCache = createChatContextCacheMock();
-    const previousToken = 'test-max-bot-token-previous';
-
-    const legacyService = new AdminService(
-      prisma as never,
-      {} as never,
-      chatContextCache as never,
-      createConfigMock({ token: previousToken }) as never,
-    );
-    const service = new AdminService(
-      prisma as never,
-      {} as never,
-      chatContextCache as never,
-      createConfigMock({ previousToken }) as never,
-    );
-
-    const startPayload = legacyService.buildChannelSuggestionStartPayload(
-      'channel-1',
-      '12345678-1234-1234-9234-1234567890ab',
-    );
-
-    expect(service.parseChannelSuggestionStartPayload(startPayload)).toMatchObject({
-      chatId: 'channel-1',
-      token: expect.stringMatching(/^cdt-/u),
-    });
-  });
-
   it('publishes only the selected engagement button rows', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -10321,7 +10259,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           return 'https://maxim.play-team.ru';
         }
         if (key === 'MAX_BOT_ID') {
-          return 'id613002203036_4_bot';
+          return 'id613002203036_bot';
         }
         if (key === 'MAX_BOT_CONTACT_ID') {
           return null;

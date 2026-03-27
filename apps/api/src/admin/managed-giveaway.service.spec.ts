@@ -6,7 +6,7 @@ import {
 } from '@prisma/client';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 
-function createConfigMock(options: { token?: string; previousToken?: string } = {}) {
+function createConfigMock(options: { token?: string } = {}) {
   return {
     get: jest.fn((key: string) => {
       if (key === 'APP_BASE_URL') {
@@ -17,9 +17,6 @@ function createConfigMock(options: { token?: string; previousToken?: string } = 
       }
       if (key === 'MAX_BOT_ID') {
         return 'maxim-bot';
-      }
-      if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
-        return options.previousToken;
       }
       return undefined;
     }),
@@ -734,31 +731,5 @@ describe('ManagedGiveawayService', () => {
         ],
       }),
     );
-  });
-
-  it('accepts giveaway claim payloads signed with the previous bot token', () => {
-    const previousToken = 'test-token-previous';
-    const legacyService = new ManagedGiveawayService(
-      createPrismaMock() as never,
-      createMaxClientMock() as never,
-      { invalidate: jest.fn() } as never,
-      {} as never,
-      createConfigMock({ token: previousToken }) as never,
-    );
-    const service = new ManagedGiveawayService(
-      createPrismaMock() as never,
-      createMaxClientMock() as never,
-      { invalidate: jest.fn() } as never,
-      {} as never,
-      createConfigMock({ previousToken }) as never,
-    );
-
-    const claimUrl = legacyService.buildGiveawayClaimBotStartUrl('giveaway-1', 'winner-1');
-    const claimPayload = claimUrl ? new URL(claimUrl).searchParams.get('start') : null;
-
-    expect(service.parseClaimStartPayload(claimPayload)).toEqual({
-      giveawayId: 'giveaway-1',
-      winnerId: 'winner-1',
-    });
   });
 });

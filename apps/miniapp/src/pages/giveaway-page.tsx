@@ -42,7 +42,7 @@ type GiveawayCountdownPresentation = {
   targetAt: string;
 };
 
-const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_4_bot';
+const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_bot';
 
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {

@@ -734,7 +734,7 @@ function buildPreviewProfileUrl(handle: string): string {
 }
 
 function buildPreviewProfileHandoffUrl(seed: string): string {
-  return `https://max.ru/id613002203036_4_bot?start=${encodeURIComponent(`preview-profile-${seed}`)}`;
+  return `https://max.ru/id613002203036_bot?start=${encodeURIComponent(`preview-profile-${seed}`)}`;
 }
 
 function createActivityItems(

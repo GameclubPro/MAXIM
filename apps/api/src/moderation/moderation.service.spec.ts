@@ -1429,7 +1429,7 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       {
-        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
       } as never,
     );
 
@@ -1494,7 +1494,7 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       {
-        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
       } as never,
     );
 
@@ -1559,7 +1559,7 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       {
-        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
       } as never,
     );
 
@@ -1636,7 +1636,7 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       {
-        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+        get: jest.fn().mockReturnValue('id613002203036_bot'),
       } as never,
     );
 
