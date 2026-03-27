@@ -1718,6 +1718,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [, setRulesImageError] = useState('');
   const [rulesButtonUrlError, setRulesButtonUrlError] = useState('');
   const [rulesButtonTextError, setRulesButtonTextError] = useState('');
+  const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
   const [domainInput, setDomainInput] = useState('');
   const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
   const [domainInputError, setDomainInputError] = useState('');
@@ -1837,6 +1838,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesImageError('');
     setRulesButtonUrlError('');
     setRulesButtonTextError('');
+    setRulesButtonFieldsTouched(false);
     setRulesFailedSnapshot('');
     setMailingApplyToAllChats(false);
     setMailingText('');
@@ -2109,6 +2111,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesImageError('');
     setRulesButtonUrlError('');
     setRulesButtonTextError('');
+    setRulesButtonFieldsTouched(false);
   }, [rulesQuery.data]);
 
   useEffect(() => {
@@ -2271,6 +2274,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setRulesImageError('');
       setRulesButtonUrlError('');
       setRulesButtonTextError('');
+      setRulesButtonFieldsTouched(false);
       setRulesFailedSnapshot('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     },
@@ -2907,7 +2911,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  function validateRulesDraft(value: ChatRules): UpdateChatRulesPayload | null {
+  function validateRulesDraft(
+    value: ChatRules,
+    options: { forceButtonErrors?: boolean } = {},
+  ): UpdateChatRulesPayload | null {
     const normalizedText = value.text;
     if (normalizedText.length > MAX_CHAT_RULES_TEXT_LENGTH) {
       setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
@@ -2927,15 +2934,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const normalizedButtonUrl = value.buttonUrl.trim();
     const normalizedButtonText = value.buttonText.trim();
+    const shouldShowButtonErrors = Boolean(
+      options.forceButtonErrors || rulesButtonFieldsTouched,
+    );
     if (value.buttonEnabled) {
       if (!isValidHttpUrl(normalizedButtonUrl)) {
-        setRulesButtonUrlError('Укажите корректную ссылку (http/https).');
+        setRulesButtonUrlError(
+          shouldShowButtonErrors ? 'Укажите корректную ссылку (http/https).' : '',
+        );
+        setRulesButtonTextError('');
         return null;
       }
       setRulesButtonUrlError('');
 
       if (!normalizedButtonText || normalizedButtonText.length > 32) {
-        setRulesButtonTextError('Введите название кнопки до 32 символов.');
+        setRulesButtonTextError(
+          shouldShowButtonErrors ? 'Введите название кнопки до 32 символов.' : '',
+        );
         return null;
       }
       setRulesButtonTextError('');
@@ -2956,12 +2971,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }
 
-  async function saveRulesDraftNow(): Promise<ChatRules | null> {
+  async function saveRulesDraftNow(
+    options: { forceButtonErrors?: boolean } = {},
+  ): Promise<ChatRules | null> {
     if (!rulesDraft) {
       return null;
     }
 
-    const payload = validateRulesDraft(rulesDraft);
+    const payload = validateRulesDraft(rulesDraft, options);
     if (!payload) {
       return null;
     }
@@ -3211,6 +3228,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isSavingRules,
     isPendingAutoFillOnly,
     mutateRules,
+    rulesButtonFieldsTouched,
     rulesDraft,
     rulesDraftSnapshot,
     rulesFailedSnapshot,
@@ -3357,7 +3375,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const saved = hasRulesChanges ? await saveRulesDraftNow() : rulesDraft;
+    if (!hasRulesChanges && !validateRulesDraft(rulesDraft, { forceButtonErrors: true })) {
+      return;
+    }
+
+    const saved = hasRulesChanges
+      ? await saveRulesDraftNow({ forceButtonErrors: true })
+      : rulesDraft;
     if (!saved) {
       return;
     }
@@ -3959,6 +3983,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
+  const rulesButtonPreviewText =
+    rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
+  const rulesButtonPreviewUrl = rulesDraft?.buttonUrl.trim() ?? '';
+  const hasRulesButtonPreviewUrl = isValidHttpUrl(rulesButtonPreviewUrl);
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled
@@ -5418,37 +5446,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             >
                               <div className="rules-media-card__head">
                                 <div className="rules-media-card__title-wrap">
-                                  <span className="rules-media-card__title">
-                                    Ввод контента в чат-боте
-                                  </span>
-                                  <small className="rules-media-card__subtitle">
-                                    В боте открывается текущий текст правила и можно сразу
-                                    отправить новую версию. В mini app остаются публикация,
-                                    кнопка поста и кнопка «Правила» в сообщениях о нарушениях.
-                                  </small>
+                                  <span className="rules-media-card__title">Контур правил</span>
                                 </div>
                               </div>
 
-                              <small className="field__hint">
-                                Текст:{' '}
-                                {rulesDraft.text.trim()
-                                  ? `${rulesDraft.text.length} символов`
-                                  : 'не задан'}
-                              </small>
-                              <small className="field__hint">
-                                Фото:{' '}
-                                {rulesDraft.imageBase64
-                                  ? rulesDraft.imageFileName || 'прикреплено'
-                                  : 'не добавлено'}
-                              </small>
-                              <small className="field__hint">
-                                Кнопка поста:{' '}
-                                {rulesDraft.buttonEnabled
-                                  ? `${rulesDraft.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT} · ${
-                                      rulesDraft.buttonUrl.trim() || 'нужна ссылка'
-                                    }`
-                                  : 'выключена'}
-                              </small>
+                              <div className="rules-status-grid">
+                                <div className="rules-status-pill is-accent">
+                                  <span>Бот</span>
+                                  <strong>Текст и фото</strong>
+                                </div>
+                                <div className="rules-status-pill">
+                                  <span>Mini App</span>
+                                  <strong>Публикация и кнопки</strong>
+                                </div>
+                                <div
+                                  className={cn(
+                                    'rules-status-pill',
+                                    rulesDraft.text.trim() && 'is-active',
+                                  )}
+                                >
+                                  <span>Текст</span>
+                                  <strong>
+                                    {rulesDraft.text.trim()
+                                      ? `${rulesDraft.text.length} симв.`
+                                      : 'Пусто'}
+                                  </strong>
+                                </div>
+                                <div
+                                  className={cn(
+                                    'rules-status-pill',
+                                    rulesDraft.imageBase64 && 'is-active',
+                                  )}
+                                >
+                                  <span>Фото</span>
+                                  <strong>
+                                    {rulesDraft.imageBase64 ? 'Включено' : 'Выключено'}
+                                  </strong>
+                                </div>
+                                <div
+                                  className={cn(
+                                    'rules-status-pill',
+                                    rulesDraft.buttonEnabled && 'is-active',
+                                  )}
+                                >
+                                  <span>Кнопка поста</span>
+                                  <strong>{rulesDraft.buttonEnabled ? 'Включена' : 'Выключена'}</strong>
+                                </div>
+                                <div
+                                  className={cn(
+                                    'rules-status-pill',
+                                    draft?.rulesAttachViolationsEnabled && 'is-active',
+                                  )}
+                                >
+                                  <span>Кнопка «Правила»</span>
+                                  <strong>
+                                    {draft?.rulesAttachViolationsEnabled ? 'Включена' : 'Выключена'}
+                                  </strong>
+                                </div>
+                              </div>
                             </div>
 
                             <div className="settings-native-toggle">
@@ -5467,10 +5522,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     type="checkbox"
                                     checked={rulesDraft.buttonEnabled}
                                     onChange={(event) => {
-                                      if (!event.target.checked) {
-                                        setRulesButtonUrlError('');
-                                        setRulesButtonTextError('');
-                                      }
+                                      setRulesButtonFieldsTouched(false);
+                                      setRulesButtonUrlError('');
+                                      setRulesButtonTextError('');
                                       setRulesDraft((current) =>
                                         current
                                           ? {
@@ -5489,49 +5543,69 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </span>
                                 </label>
                               </div>
-
-                              <p className="settings-native-toggle__hint">
-                                Эта ссылка публикуется рядом с текстом правил. В боте она не
-                                редактируется и сохраняется за mini app.
-                              </p>
                             </div>
 
                             {rulesDraft.buttonEnabled ? (
-                              <ManagedLinkButtonFieldsSlot
-                                api={api}
-                                urlValue={rulesDraft.buttonUrl}
-                                onUrlChange={(nextValue) => {
-                                  if (rulesButtonUrlError) {
-                                    setRulesButtonUrlError('');
-                                  }
-                                  setRulesDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          buttonUrl: nextValue,
-                                        }
-                                      : current,
-                                  );
-                                }}
-                                textValue={rulesDraft.buttonText}
-                                onTextChange={(nextValue) => {
-                                  if (rulesButtonTextError) {
-                                    setRulesButtonTextError('');
-                                  }
-                                  setRulesDraft((current) =>
-                                    current
-                                      ? {
-                                          ...current,
-                                          buttonText: nextValue,
-                                        }
-                                      : current,
-                                  );
-                                }}
-                                urlError={rulesButtonUrlError || undefined}
-                                textError={rulesButtonTextError || undefined}
-                                urlPlaceholder="https://max.ru/channel/rules"
-                                textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
-                              />
+                              <>
+                                <div className="rules-button-preview">
+                                  {hasRulesButtonPreviewUrl ? (
+                                    <a
+                                      href={rulesButtonPreviewUrl}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="rules-button-preview__button"
+                                    >
+                                      {rulesButtonPreviewText}
+                                    </a>
+                                  ) : (
+                                    <span
+                                      className="rules-button-preview__button is-disabled"
+                                      aria-disabled="true"
+                                    >
+                                      {rulesButtonPreviewText}
+                                    </span>
+                                  )}
+                                </div>
+                                <ManagedLinkButtonFieldsSlot
+                                  api={api}
+                                  urlValue={rulesDraft.buttonUrl}
+                                  onUrlChange={(nextValue) => {
+                                    setRulesButtonFieldsTouched(true);
+                                    if (rulesButtonUrlError) {
+                                      setRulesButtonUrlError('');
+                                    }
+                                    setRulesDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            buttonUrl: nextValue,
+                                          }
+                                        : current,
+                                    );
+                                  }}
+                                  textValue={rulesDraft.buttonText}
+                                  onTextChange={(nextValue) => {
+                                    setRulesButtonFieldsTouched(true);
+                                    if (rulesButtonTextError) {
+                                      setRulesButtonTextError('');
+                                    }
+                                    setRulesDraft((current) =>
+                                      current
+                                        ? {
+                                            ...current,
+                                            buttonText: nextValue,
+                                          }
+                                        : current,
+                                    );
+                                  }}
+                                  urlError={rulesButtonUrlError || undefined}
+                                  textError={rulesButtonTextError || undefined}
+                                  urlPlaceholder="https://max.ru/channel/rules"
+                                  textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
+                                  urlHint={null}
+                                  textHint={null}
+                                />
+                              </>
                             ) : null}
 
                             <div className="settings-native-toggle">
@@ -5559,11 +5633,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </span>
                                 </label>
                               </div>
-
-                              <p className="settings-native-toggle__hint">
-                                Эта кнопка остаётся в mini app, а в боте редактируется только сам
-                                контент правил.
-                              </p>
                             </div>
 
                             <div className="rules-action-panel">

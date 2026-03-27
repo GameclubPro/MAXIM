@@ -16,6 +16,8 @@ export type ManagedLinkButtonFieldsProps = {
   urlPlaceholder?: string;
   textPlaceholder?: string;
   textMaxLength?: number;
+  urlHint?: string | null;
+  textHint?: string | null;
 };
 
 export function ManagedLinkButtonFields({
@@ -33,6 +35,8 @@ export function ManagedLinkButtonFields({
   urlPlaceholder = 'https://max.ru/...',
   textPlaceholder = 'Открыть',
   textMaxLength = 32,
+  urlHint = 'Вставьте ссылку вручную.',
+  textHint = 'Текст кнопки задаётся вручную.',
 }: ManagedLinkButtonFieldsProps) {
   return (
     <div className="settings-button-fields">
@@ -46,7 +50,8 @@ export function ManagedLinkButtonFields({
           placeholder={urlPlaceholder}
           disabled={disabled}
         />
-        <small className="field__hint">{urlError ?? 'Вставьте ссылку вручную.'}</small>
+        {urlError ? <small className="field__hint">{urlError}</small> : null}
+        {!urlError && urlHint !== null ? <small className="field__hint">{urlHint}</small> : null}
       </label>
 
       <label className={cn('field settings-text-field', textError && 'field--error')}>
@@ -59,7 +64,10 @@ export function ManagedLinkButtonFields({
           placeholder={textPlaceholder}
           disabled={disabled}
         />
-        <small className="field__hint">{textError ?? 'Текст кнопки задаётся вручную.'}</small>
+        {textError ? <small className="field__hint">{textError}</small> : null}
+        {!textError && textHint !== null ? (
+          <small className="field__hint">{textHint}</small>
+        ) : null}
       </label>
     </div>
   );
