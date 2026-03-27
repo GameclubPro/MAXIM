@@ -298,6 +298,80 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).not.toContain('слишком частая отправка фото');
   });
 
+  it('does not append forwarded share preview urls when forwarded text has no links', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-forward-share-1',
+        chat_id: 'chat-forward-share-1',
+        sender_id: 'user-forward-share-1',
+        created_at: '2026-03-27T08:16:08.596Z',
+        body: {
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Пересланное объявление без ссылок',
+            attachments: [
+              {
+                type: 'share',
+                title: 'Внешний preview',
+                payload: {
+                  url: 'https://example.com/hidden-preview-link',
+                },
+                description: 'Карточка с превью',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toBe('Пересланное объявление без ссылок');
+    expect(parsed.message?.text).not.toContain('https://example.com/hidden-preview-link');
+  });
+
+  it('does not append forwarded inline keyboard button urls when forwarded text has no links', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-forward-buttons-1',
+        chat_id: 'chat-forward-buttons-1',
+        sender_id: 'user-forward-buttons-1',
+        created_at: '2026-03-27T08:16:08.596Z',
+        body: {
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Пересланное сообщение без ссылок',
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [
+                      {
+                        type: 'link',
+                        text: 'Открыть',
+                        url: 'https://example.com/hidden-button-link',
+                      },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toBe('Пересланное сообщение без ссылок');
+    expect(parsed.message?.text).not.toContain('https://example.com/hidden-button-link');
+  });
+
   it('extracts url from nested structures when plain text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

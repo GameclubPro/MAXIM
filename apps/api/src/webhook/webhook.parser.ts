@@ -709,7 +709,7 @@ export class WebhookParser {
     }
 
     const entityType = this.readEntityType(row);
-    if (entityType === 'share' || entityType === 'reply') {
+    if (this.shouldSkipSupplementalEntity(entityType)) {
       return;
     }
 
@@ -742,7 +742,7 @@ export class WebhookParser {
     }
 
     const type = this.readEntityType(row);
-    if (type === 'reply') {
+    if (this.shouldSkipSupplementalEntity(type)) {
       return;
     }
 
@@ -969,5 +969,9 @@ export class WebhookParser {
 
   private readEntityType(row: Record<string, unknown>): string | undefined {
     return this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+  }
+
+  private shouldSkipSupplementalEntity(entityType: string | undefined): boolean {
+    return entityType === 'reply' || entityType === 'share' || entityType === 'inline_keyboard';
   }
 }
