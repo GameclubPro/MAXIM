@@ -251,6 +251,53 @@ describe('WebhookParser', () => {
     );
   });
 
+  it('does not append reply quote text or buttons to the current message', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-reply-1',
+        chat_id: 'chat-reply-1',
+        sender_id: 'user-reply-1',
+        created_at: '2026-03-27T07:59:59.886Z',
+        body: {
+          text: 'Здравствуйте, это первое объявление было сегодня!',
+        },
+        link: {
+          type: 'reply',
+          sender: {
+            user_id: 'bot-1',
+            name: 'Майор Максимов',
+            is_bot: true,
+          },
+          message: {
+            text: 'Товарищ Ольга, сообщение завернул. Причина: слишком частая отправка фото.',
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [
+                    [
+                      {
+                        type: 'link',
+                        text: 'Правила',
+                        url: 'https://max.ru/c/-71520449562631/AZ0U59k8egE',
+                      },
+                    ],
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toBe('Здравствуйте, это первое объявление было сегодня!');
+    expect(parsed.message?.text).not.toContain('Правила');
+    expect(parsed.message?.text).not.toContain('https://max.ru/c/-71520449562631/AZ0U59k8egE');
+    expect(parsed.message?.text).not.toContain('слишком частая отправка фото');
+  });
+
   it('extracts url from nested structures when plain text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

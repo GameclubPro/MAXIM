@@ -708,8 +708,8 @@ export class WebhookParser {
       return;
     }
 
-    const entityType = this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
-    if (entityType === 'share') {
+    const entityType = this.readEntityType(row);
+    if (entityType === 'share' || entityType === 'reply') {
       return;
     }
 
@@ -741,7 +741,11 @@ export class WebhookParser {
       return;
     }
 
-    const type = this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+    const type = this.readEntityType(row);
+    if (type === 'reply') {
+      return;
+    }
+
     const parent = parentKey.toLowerCase();
     const isExplicitLinkEntity =
       type === 'link' ||
@@ -961,5 +965,9 @@ export class WebhookParser {
     }
 
     return normalized.toLowerCase();
+  }
+
+  private readEntityType(row: Record<string, unknown>): string | undefined {
+    return this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
   }
 }
