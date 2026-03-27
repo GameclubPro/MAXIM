@@ -840,6 +840,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
+  it('does not normalize malformed configured blocked words into a different token', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Комбинация ив сама по себе не должна ловиться.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['и/в'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+  });
+
   it('detects MESSAGE_BLOCKED_WORD with special characters and digits', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -855,6 +868,26 @@ describe('RuleEngineService', () => {
         expect.objectContaining({
           ruleCode: 'MESSAGE_BLOCKED_WORD',
           metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+  });
+
+  it('detects MESSAGE_BLOCKED_WORD for latin-configured short marketplace aliases', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Пишите по ВБ, там выложила карточки.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['wb'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'вб' }),
         }),
       ]),
     );

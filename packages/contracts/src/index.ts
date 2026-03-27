@@ -221,7 +221,8 @@ export function normalizeMessageLimitsBlockedWordCandidate(value: string): strin
     return null;
   }
 
-  return fragments[0];
+  const [candidate] = fragments;
+  return candidate.length >= 2 && candidate.length <= 32 ? candidate : null;
 }
 
 function isValidBotButtonUrl(value: string): boolean {

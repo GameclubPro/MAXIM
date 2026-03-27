@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import {
+  normalizeMessageLimitsBlockedWordCandidate,
   normalizeAllowlistDomain,
   normalizeAllowlistLink,
   parseStoredAllowlistEntry,
@@ -1216,17 +1217,7 @@ export class RuleEngineService {
   }
 
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
-    if (!value) {
-      return null;
-    }
-
-    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
-    const fragments = normalized.match(/[\p{L}\p{N}]+/gu);
-    if (!fragments || fragments.length === 0) {
-      return null;
-    }
-
-    const token = fragments.join('');
-    return token.length >= 2 && token.length <= 32 ? token : null;
+    const candidate = normalizeMessageLimitsBlockedWordCandidate(value);
+    return candidate ? this.normalizeMixedWriting(candidate) : null;
   }
 }
