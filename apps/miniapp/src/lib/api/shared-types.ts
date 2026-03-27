@@ -62,5 +62,12 @@ export type ToggleChannelDialogReactionPayload = {
 
 export type UpdateChatRulesPayload = Pick<
   ChatRules,
-  'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName' | 'autoTextEnabled'
+  | 'text'
+  | 'imageBase64'
+  | 'imageMimeType'
+  | 'imageFileName'
+  | 'autoTextEnabled'
+  | 'buttonEnabled'
+  | 'buttonUrl'
+  | 'buttonText'
 >;

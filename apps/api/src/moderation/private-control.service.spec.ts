@@ -412,6 +412,9 @@ function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
     imageMimeType: '',
     imageFileName: '',
     autoTextEnabled: false,
+    buttonEnabled: false,
+    buttonUrl: '',
+    buttonText: 'Открыть',
     publishedMessageId: null,
     publishedUrl: null,
     publishedAt: null,
@@ -556,6 +559,9 @@ function createHarness(
         imageMimeType: payload.imageMimeType,
         imageFileName: payload.imageFileName,
         autoTextEnabled: payload.autoTextEnabled,
+        buttonEnabled: payload.buttonEnabled ?? currentRules.buttonEnabled,
+        buttonUrl: payload.buttonUrl ?? currentRules.buttonUrl,
+        buttonText: payload.buttonText ?? currentRules.buttonText,
       });
       return currentRules;
     }),
@@ -1251,9 +1257,10 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
 
     expect(getLastUiText(maxClient)).toContain('Правила');
-    expect(getLastUiText(maxClient)).toContain('Текст правил:');
     expect(getLastUiText(maxClient)).toContain('Соблюдайте **правила** чата.');
-    expect(getLastUiText(maxClient)).not.toContain('Превью:');
+    expect(getLastUiText(maxClient)).toContain(
+      'Здесь меняется только текст и фото. Кнопки поста и кнопка «Правила» остаются в mini app.',
+    );
 
     const buttonTexts = getLastButtons(maxClient)
       .flat()
@@ -1285,7 +1292,7 @@ describe('PrivateControlService', () => {
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
-    const { service, maxClient, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила из handoff.',
       }),
@@ -1305,10 +1312,29 @@ describe('PrivateControlService', () => {
 
     expect(getLastSentText(maxClient)).toContain('Правила');
     expect(getLastSentText(maxClient)).toContain('Правила из handoff.');
+    expect(getLastSentText(maxClient)).toContain('Отправьте новый текст одним сообщением.');
+
+    await service.handleUpdate(createPrivateTextUpdate('Новая версия из handoff'));
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Новая версия из handoff',
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
   });
 
   it('updates rules text only after choosing the text button', async () => {
-    const { service, adminService, chats } = createHarness();
+    const { service, adminService, chats } = createHarness({
+      rules: createRules({
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/help',
+        buttonText: 'Подробнее',
+      }),
+    });
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -1324,6 +1350,9 @@ describe('PrivateControlService', () => {
         imageMimeType: '',
         imageFileName: '',
         autoTextEnabled: false,
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/help',
+        buttonText: 'Подробнее',
       }),
       'private_bot',
     );
@@ -1377,7 +1406,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
 
     expect(getLastEditedText(maxClient)).toContain('Правила');
-    expect(getLastEditedText(maxClient)).toContain('Жду: Жду новый текст одним сообщением.');
+    expect(getLastEditedText(maxClient)).toContain('Отправьте новый текст одним сообщением.');
 
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()

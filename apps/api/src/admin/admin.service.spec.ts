@@ -8529,6 +8529,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-1',
       publishedUrl: 'https://max.ru/chats/chat-1/message/123',
       publishedAt: new Date('2026-03-09T10:00:00.000Z'),
@@ -8564,6 +8567,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-1',
       publishedUrl: 'https://max.ru/chats/chat-1/message/123',
       publishedAt: '2026-03-09T10:00:00.000Z',
@@ -8580,6 +8586,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-9',
       publishedUrl: null,
       publishedAt: new Date('2026-03-09T10:00:00.000Z'),
@@ -8631,6 +8640,9 @@ describe('AdminService chat rules', () => {
         imageMimeType: '',
         imageFileName: '',
         autoTextEnabled: true,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
         publishedMessageId: null,
         publishedUrl: null,
         publishedAt: null,
@@ -8645,6 +8657,9 @@ describe('AdminService chat rules', () => {
         imageMimeType: '',
         imageFileName: '',
         autoTextEnabled: true,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
         publishedMessageId: null,
         publishedUrl: null,
         publishedAt: null,
@@ -8696,6 +8711,7 @@ describe('AdminService chat rules', () => {
         chatId: 'chat-1',
         action: 'UPDATE_CHAT_RULES',
         payload: expect.objectContaining({
+          buttonEnabled: false,
           source: 'miniapp',
         }),
       }),
@@ -8761,6 +8777,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,
@@ -8826,6 +8845,65 @@ describe('AdminService chat rules', () => {
     );
   });
 
+  it('publishes rules with a custom post button from mini app settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила с кнопкой.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: true,
+      buttonUrl: 'https://max.ru/help/rules',
+      buttonText: 'Подробнее',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-5',
+        url: 'https://max.ru/chats/chat-1/message/505',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Правила с кнопкой.',
+      {
+        textFormat: 'markdown',
+        buttons: [[{ text: 'Подробнее', url: 'https://max.ru/help/rules' }]],
+      },
+    );
+  });
+
   it('records private bot as the rules source in audit log payloads', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({
@@ -8836,6 +8914,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-7',
       publishedUrl: 'https://max.ru/chats/chat-1/message/777',
       publishedAt: new Date('2026-03-09T11:00:00.000Z'),
@@ -8850,6 +8931,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,
@@ -8904,7 +8988,10 @@ describe('AdminService chat rules', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           action: 'UPDATE_CHAT_RULES',
-          payload: expect.objectContaining({ source: 'private_bot' }),
+          payload: expect.objectContaining({
+            buttonEnabled: false,
+            source: 'private_bot',
+          }),
         }),
       }),
     );
@@ -8913,7 +9000,10 @@ describe('AdminService chat rules', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           action: 'PUBLISH_CHAT_RULES',
-          payload: expect.objectContaining({ source: 'private_bot' }),
+          payload: expect.objectContaining({
+            buttonEnabled: false,
+            source: 'private_bot',
+          }),
         }),
       }),
     );
@@ -8938,6 +9028,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: 'mid-rules-4',
       publishedUrl: 'https://max.ru/chats/chat-1/message/654',
       publishedAt: new Date('2026-03-09T11:00:00.000Z'),
@@ -8952,6 +9045,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,
@@ -8999,6 +9095,9 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,

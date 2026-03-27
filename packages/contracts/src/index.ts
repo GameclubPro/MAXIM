@@ -918,6 +918,9 @@ const chatRulesObjectSchema = z.object({
   imageMimeType: chatRulesImageMimeTypeSchema,
   imageFileName: chatRulesImageFileNameSchema,
   autoTextEnabled: z.boolean().default(false),
+  buttonEnabled: z.boolean().default(false),
+  buttonUrl: botButtonUrlSchema,
+  buttonText: botButtonTextSchema,
   publishedMessageId: z.string().trim().min(1).nullable().default(null),
   publishedUrl: z.string().trim().max(2_048).nullable().default(null),
   publishedAt: z.string().datetime().nullable().default(null),
@@ -934,6 +937,22 @@ export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) =>
     }
   }
 
+  if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonUrl'],
+      message: 'Укажите корректную ссылку для кнопки (http/https).',
+    });
+  }
+
+  if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['buttonText'],
+      message: 'Введите название кнопки.',
+    });
+  }
+
   if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -944,13 +963,44 @@ export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) =>
 });
 export type ChatRules = z.infer<typeof chatRulesSchema>;
 
-export const updateChatRulesRequestSchema = chatRulesObjectSchema.pick({
-  text: true,
-  imageBase64: true,
-  imageMimeType: true,
-  imageFileName: true,
-  autoTextEnabled: true,
-});
+export const updateChatRulesRequestSchema = chatRulesObjectSchema
+  .pick({
+    text: true,
+    imageBase64: true,
+    imageMimeType: true,
+    imageFileName: true,
+    autoTextEnabled: true,
+    buttonEnabled: true,
+    buttonUrl: true,
+    buttonText: true,
+  })
+  .superRefine((value, ctx) => {
+    if (value.imageBase64) {
+      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['imageMimeType'],
+          message: 'Неверный формат фото.',
+        });
+      }
+    }
+
+    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+  });
 export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
 
 export const publishChatRulesResultSchema = z.object({

@@ -1842,6 +1842,7 @@ export class AdminService {
         action: 'UPDATE_CHAT_RULES',
         payload: {
           autoTextEnabled: normalizedDraft.autoTextEnabled,
+          buttonEnabled: normalizedDraft.buttonEnabled,
           hasImage: Boolean(normalizedDraft.imageBase64),
           textLength: normalizedDraft.text.length,
           source,
@@ -1901,10 +1902,12 @@ export class AdminService {
     }
 
     let published: { messageId: string; url: string | null };
+    const buttonRow = this.buildChatRulesButtonRow(rules);
     try {
       published = await this.publishMessageWithRetry(chatId, messageText, {
         textFormat: 'markdown',
         ...(imagePayload ? { imagePayload } : {}),
+        ...(buttonRow ? { buttons: [buttonRow] } : {}),
       });
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
@@ -1930,6 +1933,7 @@ export class AdminService {
           messageId: published.messageId,
           url: published.url,
           publishedAt: publishedAt.toISOString(),
+          buttonEnabled: rules.buttonEnabled,
           hasImage: Boolean(imagePayload),
           source,
         },
@@ -6435,23 +6439,32 @@ export class AdminService {
   }
 
   private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
+    const normalizedButtonText = value.buttonText.trim() || 'Открыть';
+    const baseDraft = {
+      text: value.text,
+      autoTextEnabled: value.autoTextEnabled,
+      buttonEnabled: value.buttonEnabled,
+      buttonUrl: value.buttonUrl.trim(),
+      buttonText: normalizedButtonText,
+    } satisfies Pick<
+      UpdateChatRulesRequest,
+      'text' | 'autoTextEnabled' | 'buttonEnabled' | 'buttonUrl' | 'buttonText'
+    >;
     const normalizedImageBase64 = value.imageBase64.trim();
     if (!normalizedImageBase64) {
       return {
-        text: value.text,
+        ...baseDraft,
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
-        autoTextEnabled: value.autoTextEnabled,
       };
     }
 
     return {
-      text: value.text,
+      ...baseDraft,
       imageBase64: normalizedImageBase64,
       imageMimeType: value.imageMimeType.trim(),
       imageFileName: value.imageFileName.trim(),
-      autoTextEnabled: value.autoTextEnabled,
     };
   }
 
@@ -6472,6 +6485,9 @@ export class AdminService {
       imageMimeType: rules.imageMimeType,
       imageFileName: rules.imageFileName,
       autoTextEnabled: rules.autoTextEnabled,
+      buttonEnabled: rules.buttonEnabled,
+      buttonUrl: rules.buttonUrl,
+      buttonText: rules.buttonText,
       publishedMessageId: rules.publishedMessageId,
       publishedUrl: rules.publishedUrl,
       publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
@@ -6540,6 +6556,27 @@ export class AdminService {
     } catch {
       return null;
     }
+  }
+
+  private buildChatRulesButtonRow(rules: Pick<ChatRules, 'buttonEnabled' | 'buttonUrl' | 'buttonText'>): [
+    MaxMessageButton,
+  ] | null {
+    if (!rules.buttonEnabled) {
+      return null;
+    }
+
+    const buttonUrl = this.normalizePublishedRulesUrl(rules.buttonUrl);
+    if (!buttonUrl) {
+      return null;
+    }
+
+    const buttonText = rules.buttonText.trim() || 'Открыть';
+    return [
+      {
+        text: buttonText.slice(0, 32),
+        url: buttonUrl,
+      },
+    ];
   }
 
   private async getManagedPoll(

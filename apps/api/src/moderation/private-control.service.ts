@@ -1197,10 +1197,13 @@ export class PrivateControlService {
         : session.screen === 'chat_select'
           ? this.resolvePrimaryScreen(session)
           : session.screen;
+    const preserveRulesTextPrompt =
+      startPayload === RULES_HANDOFF_START_PAYLOAD && session.pendingInput?.kind === 'rules_text';
     if (
       session.pendingInput?.kind !== 'channel_suggestion' &&
       session.pendingInput?.kind !== 'broadcast_content' &&
-      session.pendingInput?.kind !== 'giveaway_content'
+      session.pendingInput?.kind !== 'giveaway_content' &&
+      !preserveRulesTextPrompt
     ) {
       session.pendingInput = null;
     }
@@ -1357,7 +1360,7 @@ export class PrivateControlService {
     session.channelSection = null;
     session.searchQuery = null;
     session.pendingMassAction = null;
-    session.pendingInput = null;
+    session.pendingInput = { kind: 'rules_text' };
     session.lastScreenStack = [];
 
     await this.saveSession(user.userId, session);
@@ -3122,13 +3125,7 @@ export class PrivateControlService {
         }
 
         session.screen = 'rules';
-        const view = await this.renderRulesScreen(
-          context,
-          session,
-          mode === 'photo'
-            ? 'Жду новое фото одним сообщением.'
-            : 'Жду новый текст одним сообщением.',
-        );
+        const view = await this.renderRulesScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: mode === 'photo' ? 'Жду фото правил' : 'Жду текст правил',
@@ -3148,6 +3145,9 @@ export class PrivateControlService {
             imageMimeType: '',
             imageFileName: '',
             autoTextEnabled: false,
+            buttonEnabled: rules.buttonEnabled,
+            buttonUrl: rules.buttonUrl,
+            buttonText: rules.buttonText,
           },
           'private_bot',
         );
@@ -5184,6 +5184,9 @@ export class PrivateControlService {
         imageMimeType,
         imageFileName,
         autoTextEnabled: false,
+        buttonEnabled: currentRules.buttonEnabled,
+        buttonUrl: currentRules.buttonUrl,
+        buttonText: currentRules.buttonText,
       },
       'private_bot',
     );
@@ -6379,49 +6382,43 @@ export class PrivateControlService {
 
     const hasText = rules.text.trim().length > 0;
     const hasImage = rules.imageBase64.trim().length > 0;
-    const hasPublishedPost = Boolean(rules.publishedMessageId || rules.publishedUrl);
     const rulesSettingsMiniappUrl = this.buildRulesSettingsMiniappUrl(session.selectedChatId);
     const rulesSettingsMiniappRoute = this.buildRulesSettingsMiniappRoute(session.selectedChatId);
     const waitingHint =
       session.pendingInput?.kind === 'rules_text'
-        ? 'Жду новый текст одним сообщением.'
+        ? 'Отправьте новый текст одним сообщением.'
         : session.pendingInput?.kind === 'rules_photo'
-          ? 'Жду новое фото одним сообщением.'
+          ? 'Отправьте новое фото одним сообщением.'
           : null;
 
     const lines: string[] = [
       this.markdownTitle('Правила'),
       '',
       `Чат: ${this.escapeMarkdown(chatTitle)}`,
-      `Статус: ${
-        hasPublishedPost ? 'опубликованы' : hasText || hasImage ? 'черновик' : 'не настроены'
-      }`,
-      `Текст: ${hasText ? `${rules.text.trim().length} симв.` : 'нет'}`,
-      `Фото: ${hasImage ? 'добавлено' : 'нет'}`,
+      '',
+      hasText ? rules.text : '_Текст правила пока не задан._',
     ];
 
-    if (rules.publishedAt) {
-      lines.push(`Опубликовано: ${this.formatIsoDate(rules.publishedAt)}`);
-    }
-
-    if (rules.publishedUrl) {
-      lines.push(`Ссылка: ${rules.publishedUrl}`);
-    }
-
     if (waitingHint) {
-      lines.push(`Жду: ${this.escapeMarkdown(waitingHint)}`);
+      lines.push('', this.escapeMarkdown(waitingHint));
     } else {
       lines.push(
-        'Действия: «Изменить текст», «Добавить фото» или «Опубликовать». Кнопка «Правила» остаётся в mini app.',
+        '',
+        'Здесь меняется только текст и фото. Кнопки поста и кнопка «Правила» остаются в mini app.',
       );
+    }
+
+    if (hasImage) {
+      lines.push('', 'Фото прикреплено.');
+    }
+
+    if (rules.publishedAt) {
+      lines.push('', `Опубликовано: ${this.formatIsoDate(rules.publishedAt)}`);
     }
 
     if (notice) {
       lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
     }
-
-    lines.push('', 'Текст правил:');
-    lines.push(hasText ? rules.text : 'не задан');
 
     const rows: MaxMessageButton[][] = [
       [this.callbackButton('Изменить текст', this.cb('rules_input_prompt', 'text'))],
@@ -6439,7 +6436,7 @@ export class PrivateControlService {
 
     rows.push([this.callbackButton('Опубликовать', this.cb('rules_publish'), 'positive')]);
 
-    if (hasPublishedPost) {
+    if (rules.publishedMessageId || rules.publishedUrl) {
       const publicationRow: MaxMessageButton[] = [];
       if (rules.publishedUrl) {
         publicationRow.push({
