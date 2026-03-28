@@ -9369,7 +9369,6 @@ export class PrivateControlService {
       return null;
     }
 
-    const chars = Array.from(text);
     const openTags = new Map<
       number,
       Array<{ open: string; close: string; end: number; priority: number }>
@@ -9378,17 +9377,18 @@ export class PrivateControlService {
       number,
       Array<{ close: string; start: number; end: number; priority: number }>
     >();
+    const boundaries = new Set<number>([0, text.length]);
 
     for (const item of markup) {
       const start = item.from;
       const end = item.from + item.length;
-      if (start < 0 || end <= start || end > chars.length) {
+      if (start < 0 || end <= start || end > text.length) {
         continue;
       }
 
       const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(
         item,
-        chars.slice(start, end).join(''),
+        text.slice(start, end),
       );
       if (!delimiters) {
         continue;
@@ -9411,6 +9411,8 @@ export class PrivateControlService {
         priority: delimiters.priority,
       });
       closeTags.set(end, closeBucket);
+      boundaries.add(start);
+      boundaries.add(end);
     }
 
     if (openTags.size === 0 && closeTags.size === 0) {
@@ -9418,8 +9420,15 @@ export class PrivateControlService {
     }
 
     let markdown = '';
-    for (let index = 0; index < chars.length; index += 1) {
-      const closing = closeTags.get(index);
+    let previousBoundary = 0;
+    const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
+
+    for (const boundary of sortedBoundaries) {
+      if (boundary > previousBoundary) {
+        markdown += this.escapeMarkdownText(text.slice(previousBoundary, boundary));
+      }
+
+      const closing = closeTags.get(boundary);
       if (closing) {
         closing
           .slice()
@@ -9432,7 +9441,7 @@ export class PrivateControlService {
           });
       }
 
-      const opening = openTags.get(index);
+      const opening = openTags.get(boundary);
       if (opening) {
         opening
           .slice()
@@ -9441,21 +9450,7 @@ export class PrivateControlService {
             markdown += tag.open;
           });
       }
-
-      markdown += this.escapeMarkdownText(chars[index] ?? '');
-    }
-
-    const trailing = closeTags.get(chars.length);
-    if (trailing) {
-      trailing
-        .slice()
-        .sort(
-          (left, right) =>
-            right.start - left.start || left.end - right.end || right.priority - left.priority,
-        )
-        .forEach((tag) => {
-          markdown += tag.close;
-        });
+      previousBoundary = boundary;
     }
 
     return markdown;
@@ -9479,7 +9474,7 @@ export class PrivateControlService {
       case 'monospaced':
         return visibleText.includes('\n') ? null : { open: '`', close: '`', priority: 60 };
       case 'link':
-        return markup.url
+        return markup.url && !this.isRedundantIncomingAutoLink(visibleText, markup.url)
           ? {
               open: '[',
               close: `](${markup.url})`,
@@ -9503,6 +9498,25 @@ export class PrivateControlService {
       default:
         return null;
     }
+  }
+
+  private isRedundantIncomingAutoLink(visibleText: string, targetUrl: string): boolean {
+    const normalizedVisibleText = visibleText.trim();
+    const normalizedTargetUrl = targetUrl.trim();
+    if (!normalizedVisibleText || !normalizedTargetUrl) {
+      return false;
+    }
+
+    if (!/^(https?:\/\/|max:\/\/)\S+$/iu.test(normalizedVisibleText)) {
+      return false;
+    }
+
+    return this.normalizeIncomingComparableUrl(normalizedVisibleText) ===
+      this.normalizeIncomingComparableUrl(normalizedTargetUrl);
+  }
+
+  private normalizeIncomingComparableUrl(value: string): string {
+    return value.trim().replace(/\/+$/u, '').toLowerCase();
   }
 
   private escapeMarkdownText(value: string): string {

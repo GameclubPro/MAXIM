@@ -1628,6 +1628,94 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('keeps raw auto-detected urls intact when saving rules text with emoji prefixes', async () => {
+    const { service, adminService, chats } = createHarness();
+    const firstUrl = 'https://t.me/glavnyy_admin';
+    const secondUrl = 'https://wa.me/79362615370';
+    const thirdUrl = 'https://linku.su/ekp4z9j';
+    const sourceText = `🔗 ${firstUrl}\n📱 ${secondUrl}\nMAX: ${thirdUrl}`;
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'link',
+          from: sourceText.indexOf(firstUrl),
+          length: firstUrl.length,
+          url: firstUrl,
+        },
+        {
+          type: 'link',
+          from: sourceText.indexOf(secondUrl),
+          length: secondUrl.length,
+          url: secondUrl,
+        },
+        {
+          type: 'link',
+          from: sourceText.indexOf(thirdUrl),
+          length: thirdUrl.length,
+          url: thirdUrl,
+        },
+      ]),
+    );
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: sourceText,
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('preserves formatted links after emoji prefixes when saving rules from private bot', async () => {
+    const { service, adminService, chats } = createHarness();
+    const sourceText = '🔥MAX Docs';
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'strong',
+          from: '🔥'.length,
+          length: 'MAX Docs'.length,
+        },
+        {
+          type: 'emphasized',
+          from: '🔥'.length,
+          length: 'MAX Docs'.length,
+        },
+        {
+          type: 'underline',
+          from: '🔥'.length,
+          length: 'MAX Docs'.length,
+        },
+        {
+          type: 'link',
+          from: '🔥'.length,
+          length: 'MAX Docs'.length,
+          url: 'https://dev.max.ru/docs-api',
+        },
+      ]),
+    );
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
+  });
+
   it('does not autosave rules content without an explicit input button', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
 
