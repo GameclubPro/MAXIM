@@ -115,7 +115,9 @@ export default function MessageLimitsBlockedWordPresets({
               ? 'Казино'
               : preset.id === 'earnings'
                 ? 'Заработок'
-                : 'Крипта';
+                : preset.id === 'crypto'
+                  ? 'Крипта'
+                  : 'Таро';
 
           return (
             <article
