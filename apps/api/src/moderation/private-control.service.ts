@@ -464,6 +464,7 @@ const CHAT_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'section_view',
   'open_search',
   'open_rules',
+  'rules_autofill',
   'rules_input_prompt',
   'rules_clear_photo',
   'rules_toggle_attach',
@@ -3275,6 +3276,42 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: mode === 'photo' ? 'Жду фото правил' : 'Жду текст правил',
+        });
+        return;
+      }
+
+      case 'rules_autofill': {
+        this.assertSelectedEntityType(session, 'chat');
+        const rules = await this.adminService.getRules(session.selectedChatId!, context.actor);
+        if (!rules.text.trim()) {
+          throw new BadRequestException('Сначала сохраните текст правил.');
+        }
+
+        await this.adminService.updateRules(
+          session.selectedChatId!,
+          context.actor,
+          {
+            text: rules.text,
+            imageBase64: rules.imageBase64,
+            imageMimeType: rules.imageMimeType,
+            imageFileName: rules.imageFileName,
+            autoTextEnabled: true,
+            buttonEnabled: rules.buttonEnabled,
+            buttonUrl: rules.buttonUrl,
+            buttonText: rules.buttonText,
+          },
+          'private_bot',
+        );
+        session.pendingInput = null;
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(
+          context,
+          session,
+          'Текст из настроек снова подставляется.',
+        );
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Текст подставлен',
         });
         return;
       }
@@ -6316,7 +6353,7 @@ export class PrivateControlService {
       showStoredText
         ? rules.text
         : hasText
-          ? '_Автозаполнение текста выключено._'
+          ? '_Текст из настроек сейчас не подставляется._'
           : '_Текст правила пока не задан._',
     ];
 
@@ -6337,7 +6374,10 @@ export class PrivateControlService {
     }
 
     const rows: MaxMessageButton[][] = [
-      [this.callbackButton('✏️ Изменить', this.cb('rules_input_prompt', 'text'))],
+      ...(hasText && !showStoredText
+        ? [[this.callbackButton('🤖 Подставить текст', this.cb('rules_autofill'))]]
+        : []),
+      [this.callbackButton('✏️ Изменить текст', this.cb('rules_input_prompt', 'text'))],
       [
         this.callbackButton(
           hasImage ? '✏️ Изменить фото' : '✍️ Добавить фото',

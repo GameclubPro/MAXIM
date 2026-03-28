@@ -1305,7 +1305,7 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('✏️ Изменить');
+    expect(buttonTexts).toContain('✏️ Изменить текст');
     expect(buttonTexts).toContain('✍️ Добавить фото');
     expect(buttonTexts).toContain('🚀 Опубликовать');
     expect(buttonTexts.some((text) => text.startsWith('📱 В прилож'))).toBe(true);
@@ -1345,8 +1345,50 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
 
     expect(getLastUiText(maxClient)).toContain('Правила');
-    expect(getLastUiText(maxClient)).toContain('Автозаполнение текста выключено.');
+    expect(getLastUiText(maxClient)).toContain('Текст из настроек сейчас не подставляется.');
     expect(getLastUiText(maxClient)).not.toContain('Старый текст правил.');
+
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('🤖 Подставить текст');
+    expect(buttonTexts).toContain('✏️ Изменить текст');
+  });
+
+  it('reenables rules autofill from the private bot with a dedicated button', async () => {
+    const { service, adminService, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: 'Текущий текст правил.',
+        autoTextEnabled: false,
+        imageBase64: TINY_PNG.toString('base64'),
+        imageMimeType: 'image/png',
+        imageFileName: 'rules.png',
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/help',
+        buttonText: 'Подробнее',
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Текущий текст правил.',
+        imageMimeType: 'image/png',
+        imageFileName: 'rules.png',
+        autoTextEnabled: true,
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/help',
+        buttonText: 'Подробнее',
+      }),
+      'private_bot',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Текущий текст правил.');
+    expect(getLastEditedText(maxClient)).toContain('Текст из настроек снова подставляется.');
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
@@ -1470,7 +1512,7 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('✏️ Изменить');
+    expect(buttonTexts).toContain('✏️ Изменить текст');
     expect(buttonTexts).toContain('✍️ Добавить фото');
   });
 
