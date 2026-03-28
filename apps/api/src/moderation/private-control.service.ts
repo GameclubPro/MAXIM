@@ -189,6 +189,8 @@ type PrivateSession = {
   lastPrivateChatId: string | null;
   lastGiveawayHandoffDeliveredChatId: string | null;
   lastGiveawayHandoffDeliveredAt: number | null;
+  lastRulesHandoffDeliveredChatId: string | null;
+  lastRulesHandoffDeliveredAt: number | null;
   lastProfileMentionHandoffDeliveredChatId: string | null;
   lastProfileMentionHandoffDeliveredAt: number | null;
   selectedChatId: string | null;
@@ -348,6 +350,7 @@ type ForwardedModerationTarget = {
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
+const RULES_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const BROADCAST_PUBLISH_DEDUP_WINDOW_MS = 15_000;
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
@@ -1266,6 +1269,15 @@ export class PrivateControlService {
       return;
     }
 
+    if (
+      startPayload === RULES_HANDOFF_START_PAYLOAD &&
+      this.wasRulesHandoffAlreadyDelivered(session, context.chatId)
+    ) {
+      this.clearDeliveredRulesHandoff(session);
+      await this.saveSession(context.actor.userId, session);
+      return;
+    }
+
     const view = await this.renderByCurrentScreen(context, session);
 
     await this.respond(context, session, view, {
@@ -1415,6 +1427,7 @@ export class PrivateControlService {
     session.lastScreenStack = [];
 
     await this.saveSession(user.userId, session);
+    await this.deliverRulesHandoffToKnownPrivateChat(user, session);
 
     const botUrl = this.buildBotStartUrl(RULES_HANDOFF_START_PAYLOAD);
     if (!botUrl) {
@@ -6309,11 +6322,6 @@ export class PrivateControlService {
 
     if (waitingHint) {
       lines.push('', this.escapeMarkdown(waitingHint));
-    } else {
-      lines.push(
-        '',
-        'Здесь меняется только текст и фото. Кнопки поста и кнопка «Правила» остаются в mini app.',
-      );
     }
 
     if (hasImage) {
@@ -8738,6 +8746,26 @@ export class PrivateControlService {
     session.lastGiveawayHandoffDeliveredAt = null;
   }
 
+  private wasRulesHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
+    if (
+      !session.lastRulesHandoffDeliveredChatId ||
+      session.lastRulesHandoffDeliveredChatId !== chatId
+    ) {
+      return false;
+    }
+
+    if (typeof session.lastRulesHandoffDeliveredAt !== 'number') {
+      return false;
+    }
+
+    return Date.now() - session.lastRulesHandoffDeliveredAt < RULES_HANDOFF_DEDUP_WINDOW_MS;
+  }
+
+  private clearDeliveredRulesHandoff(session: PrivateSession): void {
+    session.lastRulesHandoffDeliveredChatId = null;
+    session.lastRulesHandoffDeliveredAt = null;
+  }
+
   private wasProfileMentionHandoffAlreadyDelivered(
     session: PrivateSession,
     chatId: string,
@@ -8817,6 +8845,38 @@ export class PrivateControlService {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to proactively deliver giveaway handoff to private chat',
+      );
+    }
+  }
+
+  private async deliverRulesHandoffToKnownPrivateChat(
+    user: AuthUser,
+    session: PrivateSession,
+  ): Promise<void> {
+    if (!session.lastPrivateChatId) {
+      this.clearDeliveredRulesHandoff(session);
+      return;
+    }
+
+    try {
+      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
+      const view = await this.renderByCurrentScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      session.lastRulesHandoffDeliveredChatId = session.lastPrivateChatId;
+      session.lastRulesHandoffDeliveredAt = Date.now();
+      await this.saveSession(user.userId, session);
+    } catch (error: unknown) {
+      this.clearDeliveredRulesHandoff(session);
+      this.logger.warn(
+        {
+          userId: user.userId,
+          chatId: session.lastPrivateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to proactively deliver rules handoff to private chat',
       );
     }
   }
@@ -10940,6 +11000,8 @@ export class PrivateControlService {
       lastPrivateChatId: null,
       lastGiveawayHandoffDeliveredChatId: null,
       lastGiveawayHandoffDeliveredAt: null,
+      lastRulesHandoffDeliveredChatId: null,
+      lastRulesHandoffDeliveredAt: null,
       lastProfileMentionHandoffDeliveredChatId: null,
       lastProfileMentionHandoffDeliveredAt: null,
       selectedChatId: null,
@@ -11002,6 +11064,16 @@ export class PrivateControlService {
         typeof row.lastGiveawayHandoffDeliveredAt === 'number' &&
         Number.isFinite(row.lastGiveawayHandoffDeliveredAt)
           ? row.lastGiveawayHandoffDeliveredAt
+          : null,
+      lastRulesHandoffDeliveredChatId:
+        typeof row.lastRulesHandoffDeliveredChatId === 'string' &&
+        row.lastRulesHandoffDeliveredChatId.trim().length > 0
+          ? row.lastRulesHandoffDeliveredChatId.trim()
+          : null,
+      lastRulesHandoffDeliveredAt:
+        typeof row.lastRulesHandoffDeliveredAt === 'number' &&
+        Number.isFinite(row.lastRulesHandoffDeliveredAt)
+          ? row.lastRulesHandoffDeliveredAt
           : null,
       lastProfileMentionHandoffDeliveredChatId:
         typeof row.lastProfileMentionHandoffDeliveredChatId === 'string' &&

@@ -1298,7 +1298,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('Правила');
     expect(getLastUiText(maxClient)).toContain('Соблюдайте **правила** чата.');
-    expect(getLastUiText(maxClient)).toContain(
+    expect(getLastUiText(maxClient)).not.toContain(
       'Здесь меняется только текст и фото. Кнопки поста и кнопка «Правила» остаются в mini app.',
     );
 
@@ -2652,6 +2652,38 @@ describe('PrivateControlService', () => {
       expect.anything(),
       expect.objectContaining({ immediate: true }),
     );
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('proactively delivers rules handoff into a known private chat and skips duplicate bot_started reply', async () => {
+    const { service, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: 'Правила для быстрой правки.',
+        autoTextEnabled: true,
+      }),
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
+    maxClient.sendMessage.mockClear();
+
+    const result = await service.handoffRulesFromMiniapp(chats[0].id, actor);
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(getLastSentText(maxClient)).toContain('Правила');
+    expect(getLastSentText(maxClient)).toContain('Правила для быстрой правки.');
+    expect(getLastSentText(maxClient)).toContain('Отправьте новый текст одним сообщением.');
 
     await service.handleBotStarted(
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
