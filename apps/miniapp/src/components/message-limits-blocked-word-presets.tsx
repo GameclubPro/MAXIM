@@ -15,6 +15,20 @@ type MessageLimitsBlockedWordPresetsProps = {
   onApplyWords: (nextWords: string[]) => void;
 };
 
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden focusable="false">
+      <path
+        d="M8 3.25V12.75M3.25 8H12.75"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function normalizeMessageLimitsBlockedWords(values: readonly string[]): string[] {
   return Array.from(
     new Set(
@@ -96,8 +110,12 @@ export default function MessageLimitsBlockedWordPresets({
           const presetWords = normalizeMessageLimitsBlockedWords(preset.words);
           const missingWords = presetWords.filter((word) => !selectedWordsSet.has(word));
           const addableCount = Math.min(remainingSlots, missingWords.length);
-          const previewWords = presetWords.slice(0, 4);
-          const hiddenPreviewWords = Math.max(0, presetWords.length - previewWords.length);
+          const compactTitle =
+            preset.id === 'gambling'
+              ? 'Казино'
+              : preset.id === 'earnings'
+                ? 'Заработок'
+                : 'Крипта';
 
           return (
             <article
@@ -108,61 +126,50 @@ export default function MessageLimitsBlockedWordPresets({
               )}
             >
               <div className="settings-word-banlist__preset-head">
-                <div className="settings-word-banlist__preset-copy">
-                  <strong>{preset.title}</strong>
-                  <p>{preset.description}</p>
+                <div className="settings-word-banlist__preset-badge-copy">
+                  <span className="settings-word-banlist__preset-badge-mark" aria-hidden>
+                    +
+                  </span>
+                  <div className="settings-word-banlist__preset-badge-text">
+                    <strong>{compactTitle}</strong>
+                    <small>
+                      {addableCount > 0
+                        ? `+${addableCount} из ${presetWords.length}`
+                        : remainingSlots === 0
+                          ? 'лимит'
+                          : 'добавлено'}
+                    </small>
+                  </div>
                 </div>
 
-                <button
-                  type="button"
-                  className={cn('settings-info-button', activePresetId === preset.id && 'is-open')}
-                  aria-label={`Открыть полный список слов пакета ${preset.title}`}
-                  onClick={() =>
-                    setActivePresetId((current) => (current === preset.id ? null : preset.id))
-                  }
-                >
-                  <span aria-hidden>i</span>
-                </button>
-              </div>
+                <div className="settings-word-banlist__preset-actions">
+                  <button
+                    type="button"
+                    className={cn('settings-info-button', activePresetId === preset.id && 'is-open')}
+                    aria-label={`Открыть полный список слов пакета ${preset.title}`}
+                    onClick={() =>
+                      setActivePresetId((current) => (current === preset.id ? null : preset.id))
+                    }
+                  >
+                    <span aria-hidden>i</span>
+                  </button>
 
-              <div
-                className="settings-word-banlist__preset-preview"
-                aria-label={`Превью слов пакета ${preset.title}`}
-              >
-                {previewWords.map((word) => (
-                  <span key={word} className="settings-word-banlist__preset-preview-chip">
-                    {word}
-                  </span>
-                ))}
-                {hiddenPreviewWords > 0 ? (
-                  <span className="settings-word-banlist__preset-preview-chip is-muted">
-                    +{hiddenPreviewWords}
-                  </span>
-                ) : null}
-              </div>
-
-              <div className="settings-word-banlist__preset-footer">
-                <span className="settings-word-banlist__preset-meta">
-                  {presetWords.length} слов
-                  {addableCount > 0
-                    ? ` • добавится ${addableCount}`
-                    : remainingSlots === 0
-                      ? ' • лимит достигнут'
-                      : ' • уже в списке'}
-                </span>
-
-                <button
-                  type="button"
-                  className="button button--ghost settings-word-banlist__preset-action"
-                  onClick={() => applyPreset(preset)}
-                  disabled={addableCount === 0}
-                >
-                  {addableCount > 0
-                    ? `Добавить ${addableCount}`
-                    : remainingSlots === 0
-                      ? 'Лимит'
-                      : 'Добавлено'}
-                </button>
+                  <button
+                    type="button"
+                    className="settings-word-banlist__preset-plus"
+                    onClick={() => applyPreset(preset)}
+                    disabled={addableCount === 0}
+                    aria-label={
+                      addableCount > 0
+                        ? `Добавить пакет ${preset.title}`
+                        : remainingSlots === 0
+                          ? `Лимит стоп-слов достигнут для пакета ${preset.title}`
+                          : `Пакет ${preset.title} уже добавлен`
+                    }
+                  >
+                    <PlusIcon />
+                  </button>
+                </div>
               </div>
             </article>
           );
