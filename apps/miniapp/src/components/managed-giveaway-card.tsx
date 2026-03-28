@@ -8,7 +8,7 @@ import {
   type ManagedGiveawaySummary,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { getChannels } from '../lib/api/root-client';
 import {
@@ -16,7 +16,6 @@ import {
   createManagedGiveaway,
   getManagedGiveaway,
   getManagedGiveaways,
-  handoffManagedGiveaway,
   publishManagedGiveaway,
   updateManagedGiveaway,
 } from '../lib/api/managed-giveaway-client';
@@ -24,7 +23,7 @@ import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
-import { openMaxBotLink } from '../lib/max-bridge';
+import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -579,7 +578,6 @@ export function ManagedGiveawayCard({
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelModalSelection, setChannelModalSelection] = useState<string[]>([]);
   const [channelLinkValue, setChannelLinkValue] = useState('');
-  const [awaitingBotSync, setAwaitingBotSync] = useState(false);
 
   const listQueryKey = useMemo(
     () => ['managed-giveaways', entityType, entityId] as const,
@@ -869,21 +867,6 @@ export function ManagedGiveawayCard({
         : !mediaValidation.valid
           ? { step: 'prizes' as GiveawayEditorStepId, message: mediaValidation.message }
           : null;
-  const handoffMutation = useMutation({
-    mutationFn: (giveawayId: string | null) =>
-      handoffManagedGiveaway(api, entityType, entityId, { giveawayId }),
-    onSuccess: (result) => {
-      openMaxBotLink(result.botUrl);
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть бота',
-        description: formatApiError(error, 'Не удалось открыть бота.'),
-      });
-    },
-  });
-
   const createMutation = useMutation({
     mutationFn: (payload: UpdateManagedGiveawayPayload) =>
       createManagedGiveaway(api, entityType, entityId, payload),
@@ -905,7 +888,6 @@ export function ManagedGiveawayCard({
   });
 
   const isBusy =
-    handoffMutation.isPending ||
     createMutation.isPending ||
     updateMutation.isPending ||
     publishMutation.isPending ||
@@ -922,7 +904,6 @@ export function ManagedGiveawayCard({
     setChannelModalOpen(false);
     setChannelModalSelection([]);
     setChannelLinkValue('');
-    setAwaitingBotSync(false);
   };
 
   const applyEditorPayload = (giveaway: ManagedGiveawayDetails) => {
@@ -950,7 +931,6 @@ export function ManagedGiveawayCard({
     setChannelModalOpen(false);
     setChannelModalSelection([]);
     setChannelLinkValue('');
-    setAwaitingBotSync(false);
   };
 
   const startEditCurrentDraft = () => {
@@ -965,13 +945,53 @@ export function ManagedGiveawayCard({
     setChannelModalOpen(false);
     setChannelModalSelection([]);
     setChannelLinkValue('');
-    setAwaitingBotSync(false);
   };
 
   const updateDraft = (updater: (current: GiveawayEditorDraft) => GiveawayEditorDraft) => {
     setDraft((current) => (current ? updater(current) : current));
     setValidationHint('');
     setEditorError('');
+  };
+
+  const clearPublicationImage = () => {
+    updateDraft((current) => ({
+      ...current,
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+    }));
+  };
+
+  const handlePublicationImageChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (!file) {
+      return;
+    }
+
+    try {
+      const prepared = await prepareBroadcastImage(file);
+      updateDraft((current) => ({
+        ...current,
+        imageEnabled: true,
+        imageBase64: prepared.base64,
+        imageMimeType: prepared.mimeType,
+        imageFileName: prepared.fileName,
+      }));
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error && error.message.trim()
+          ? error.message
+          : 'Не удалось подготовить фото.';
+      setValidationHint(message);
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось добавить фото',
+        description: message,
+      });
+    }
   };
 
   const toggleStartMode = (nextMode: 'instant' | 'scheduled') => {
@@ -1165,29 +1185,6 @@ export function ManagedGiveawayCard({
     ]);
   };
 
-  useEffect(() => {
-    if (!awaitingBotSync || !editingGiveawayId) {
-      return;
-    }
-
-    const syncAfterBotReturn = () => {
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        return;
-      }
-      void draftDetailsQuery.refetch();
-      void refetchManagedGiveaways();
-      setAwaitingBotSync(false);
-    };
-
-    window.addEventListener('focus', syncAfterBotReturn);
-    document.addEventListener('visibilitychange', syncAfterBotReturn);
-
-    return () => {
-      window.removeEventListener('focus', syncAfterBotReturn);
-      document.removeEventListener('visibilitychange', syncAfterBotReturn);
-    };
-  }, [awaitingBotSync, draftDetailsQuery, editingGiveawayId, refetchManagedGiveaways]);
-
   const saveEditor = async ({
     silent = false,
   }: {
@@ -1261,7 +1258,7 @@ export function ManagedGiveawayCard({
     }
 
     if (!draft.description.trim()) {
-      const message = 'Добавьте текст розыгрыша в чат-боте перед публикацией.';
+      const message = 'Добавьте текст публикации прямо в mini app перед публикацией.';
       setEditorStep('prizes');
       setValidationHint(message);
       pushToast({
@@ -1319,40 +1316,6 @@ export function ManagedGiveawayCard({
         title: 'Не удалось опубликовать',
         description: message,
       });
-    }
-  };
-
-  const openEditorInBot = async () => {
-    if (!draft) {
-      return;
-    }
-
-    if (firstConfigIssue) {
-      setEditorStep(firstConfigIssue.step);
-      setValidationHint(firstConfigIssue.message);
-      pushToast({
-        tone: 'danger',
-        title: 'Сначала закончите настройки',
-        description: firstConfigIssue.message,
-      });
-      return;
-    }
-
-    try {
-      let targetId = editingGiveawayId;
-
-      if (editorMode === 'create' || !targetId || isDirty) {
-        const saved = await saveEditor({ silent: true });
-        if (!saved) {
-          return;
-        }
-        targetId = saved.id;
-      }
-
-      await handoffMutation.mutateAsync(targetId);
-      setAwaitingBotSync(true);
-    } catch {
-      // `handoffMutation` already reports the failure.
     }
   };
 
@@ -1419,7 +1382,14 @@ export function ManagedGiveawayCard({
     }
 
     if (!publicationTextReady) {
-      void openEditorInBot();
+      setEditorStep('prizes');
+      const message = 'Добавьте текст публикации и при необходимости фото прямо в этом шаге.';
+      setValidationHint(message);
+      pushToast({
+        tone: 'danger',
+        title: 'Нужен текст публикации',
+        description: message,
+      });
       return;
     }
 
@@ -1465,12 +1435,12 @@ export function ManagedGiveawayCard({
     ? 'Проверить'
     : publicationTextReady
       ? 'Опубликовать'
-      : 'Настроить текст/фото';
+      : 'Заполнить публикацию';
   const finalPrimaryBusyLabel = firstConfigIssue
     ? 'Готовим…'
     : publicationTextReady
       ? 'Публикуем…'
-      : 'Открываем чат…';
+      : 'Сохраняем…';
   const nextStepLabel =
     editorStep === 'basics'
       ? 'К условиям'
@@ -1481,21 +1451,17 @@ export function ManagedGiveawayCard({
     editorStep === 'prizes'
       ? firstConfigIssue
         ? 'Нужно закончить'
-        : awaitingBotSync
-          ? 'Возвращаемся из бота'
-          : publicationTextReady
-            ? 'Готово к запуску'
-            : 'Последний шаг: текст и фото'
+        : publicationTextReady
+          ? 'Готово к запуску'
+          : 'Последний шаг: публикация'
       : `Шаг ${activeEditorStepIndex + 1}. ${activeEditorStep.title}`;
   const stickyDescription =
     editorStep === 'prizes'
       ? firstConfigIssue
         ? firstConfigIssue.message
-        : awaitingBotSync
-          ? 'Как только вы вернётесь, текст и фото подтянутся сюда автоматически.'
-          : publicationTextReady
-            ? 'Черновик сохраним автоматически перед публикацией.'
-            : 'Откроем чат и попросим прислать текст публикации. Фото можно добавить сразу или позже.'
+        : publicationTextReady
+          ? 'Черновик сохраним автоматически перед публикацией.'
+          : 'Добавьте текст публикации и при необходимости фото прямо здесь.'
       : currentStepValidation.valid
         ? editorStep === 'basics'
           ? 'Дальше соберём условия участия и список каналов для проверки.'
@@ -1563,24 +1529,16 @@ export function ManagedGiveawayCard({
           </div>
 
           <div className="managed-giveaway__primary-actions">
-            <button
-              type="button"
-              className="button button--accent"
-              disabled={isBusy}
-              onClick={() => {
-                if (currentIsDraft) {
-                  startEditCurrentDraft();
-                  return;
-                }
-                void handoffMutation.mutateAsync(currentItem.id);
-              }}
-            >
-              {currentIsDraft
-                ? 'Продолжить настройку'
-                : handoffMutation.isPending
-                  ? 'Открываем…'
-                  : 'Открыть в боте'}
-            </button>
+            {currentIsDraft ? (
+              <button
+                type="button"
+                className="button button--accent"
+                disabled={isBusy}
+                onClick={startEditCurrentDraft}
+              >
+                Продолжить настройку
+              </button>
+            ) : null}
           </div>
         </div>
       );
@@ -1592,7 +1550,7 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__hero-copy">
             <span className="managed-giveaway__eyebrow">Розыгрыши</span>
             <h2>Соберите сценарий</h2>
-            <p>3 шага и финальный запуск через бота.</p>
+            <p>3 шага и публикация полностью внутри mini app.</p>
           </div>
           <div className="managed-giveaway__hero-badges">
             <GiveawayHintAnchor
@@ -1601,8 +1559,8 @@ export function ManagedGiveawayCard({
               onToggleHint={toggleHint}
               label="Как устроен запуск розыгрыша"
             >
-              Здесь настраиваются тайминг, условия и призы. Текст и фото публикации добавляются в
-              чате MAX на финальном шаге.
+              Здесь настраиваются тайминг, условия, призы и финальная публикация. Бот для запуска
+              больше не нужен.
             </GiveawayHintAnchor>
           </div>
         </div>
@@ -1659,18 +1617,6 @@ export function ManagedGiveawayCard({
             >
               {editorStatusLabel}
             </span>
-            {editorStep === 'prizes' && (publicationTextReady || awaitingBotSync) ? (
-              <button
-                type="button"
-                className="button button--ghost managed-giveaway__hero-button"
-                onClick={() => {
-                  void openEditorInBot();
-                }}
-                disabled={isBusy}
-              >
-                Текст/фото
-              </button>
-            ) : null}
             {canSaveEditor ? (
               <button
                 type="button"
@@ -2154,6 +2100,67 @@ export function ManagedGiveawayCard({
                     ) : null}
                   </div>
                 ))}
+              </div>
+
+              <div className="managed-giveaway__subsection">
+                <div className="managed-giveaway__subsection-row">
+                  <div className="managed-giveaway__subsection-copy">
+                    <strong>Публикация</strong>
+                  </div>
+                  <div className="managed-giveaway__section-actions">
+                    <span className="managed-giveaway__chip">
+                      {draft.description.trim() ? `${draft.description.trim().length}/2000` : 'Текст'}
+                    </span>
+                  </div>
+                </div>
+
+                <label className="field">
+                  <span>Текст публикации</span>
+                  <textarea
+                    rows={5}
+                    value={draft.description}
+                    onChange={(event) =>
+                      updateDraft((current) => ({
+                        ...current,
+                        description: event.target.value,
+                      }))
+                    }
+                    maxLength={2_000}
+                    placeholder="Опишите розыгрыш, условия и что получат победители."
+                    disabled={isBusy}
+                  />
+                </label>
+
+                <div className="managed-giveaway__editor-grid managed-giveaway__editor-grid--align-end">
+                  <label className="field">
+                    <span>Фото публикации</span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      onChange={handlePublicationImageChange}
+                      disabled={isBusy}
+                    />
+                  </label>
+                  {draft.imageEnabled ? (
+                    <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                      <button
+                        type="button"
+                        className="button button--ghost managed-giveaway__channel-action"
+                        onClick={clearPublicationImage}
+                        disabled={isBusy}
+                      >
+                        Убрать фото
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {draft.imageEnabled ? (
+                  <div className="managed-giveaway__empty managed-giveaway__empty--soft">
+                    <strong>Фото прикреплено</strong>
+                    <span>{draft.imageFileName || 'Изображение готово к публикации.'}</span>
+                  </div>
+                ) : null}
               </div>
             </div>
           </div>

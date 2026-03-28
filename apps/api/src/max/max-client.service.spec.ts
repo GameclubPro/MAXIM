@@ -1089,6 +1089,104 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('uploads video via /uploads?type=video and falls back to the issued token', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              url: 'https://upload.max.ru/video-1',
+              token: 'video-upload-token-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {},
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.uploadVideo(
+      Buffer.from('video-binary'),
+      'channel-suggestion-video.mp4',
+      'video/mp4',
+    );
+
+    expect(result).toEqual({ token: 'video-upload-token-1' });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/uploads',
+        params: {
+          type: 'video',
+        },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://upload.max.ru/video-1',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('sends generic media attachments together with inline keyboard', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            mid: 'mid-video-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessage(
+      'chat-1',
+      'Видео предложки',
+      {
+        textFormat: 'markdown',
+        attachments: [{ type: 'video', payload: { token: 'video-upload-token-1' } }],
+        buttons: [[{ type: 'callback', text: '✅ Подтвердить', payload: 'review|publish' }]],
+      },
+      { immediate: true },
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: 'Видео предложки',
+          format: 'markdown',
+          attachments: [
+            {
+              type: 'video',
+              payload: { token: 'video-upload-token-1' },
+            },
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [[{ type: 'callback', text: '✅ Подтвердить', payload: 'review|publish' }]],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('pins a message in chat without system notify when requested', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

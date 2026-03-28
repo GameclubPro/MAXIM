@@ -282,6 +282,48 @@ function createPrivateImageFileUpdate(): MaxUpdate {
   return createPrivateFileUpdate();
 }
 
+function createPrivateVideoUpdate(text = ''): MaxUpdate {
+  return {
+    updateId: `upd-video-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-video-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          ...(text ? { text } : {}),
+          attachments: [
+            {
+              type: 'video',
+              payload: {
+                url: 'https://example.test/channel-suggestion-video.mp4',
+                video_id: 'video-1',
+                file_name: 'channel-suggestion-video.mp4',
+                mime_type: 'video/mp4',
+              },
+            },
+          ],
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivateCallbackUpdate(
   payload: string,
   options: {
@@ -518,6 +560,7 @@ function createHarness(
       .mockResolvedValue({ messageId: 'msg-preview-1', url: null }),
     sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
     uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
+    uploadVideo: jest.fn().mockResolvedValue({ token: 'upload-video-token-1' }),
     editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     answerCallback: jest.fn().mockResolvedValue(undefined),
     getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
@@ -962,18 +1005,22 @@ function mockImageFetch(buffer: Buffer = TINY_PNG, mimeType = 'image/png') {
 }
 
 describe('PrivateControlService', () => {
-  it('renders the entity picker for plain text in private dialog', async () => {
+  it('renders the launcher home for plain text in private dialog', async () => {
     const { service, maxClient, adminService } = createHarness();
 
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastUiText(maxClient)).toContain('Выбор: чат');
-    expect(getLastUiText(maxClient)).toContain('Нажмите на нужный чат');
-    expect(getLastButtons(maxClient).length).toBeGreaterThan(0);
-    expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
+    expect(getLastUiText(maxClient)).toContain('**MAXIM**');
+    expect(getLastUiText(maxClient)).toContain('Открывайте приложение');
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .map((button) => String((button as { text?: string }).text ?? '')),
+    ).toEqual(['📱 Приложение', '🆘 Поддержка']);
+    expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
-  it('refreshes inline chat picker and shows newly discovered chats', async () => {
+  it('keeps entity refresh in mini app instead of opening inline picker', async () => {
     const staleChats = [
       {
         id: '-70000000000001',
@@ -1011,24 +1058,16 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('меню'));
 
-    let buttonTexts = getLastButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts.some((text) => text.includes('Обновить'))).toBe(true);
-    expect(buttonTexts.some((text) => text.includes('Новый чат'))).toBe(false);
+    expect(getLastUiText(maxClient)).toContain('Открывайте приложение');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
 
-    expect(listManagedEntities).toHaveBeenLastCalledWith(
-      expect.objectContaining({ userId: 'user-1' }),
-      'chat',
-      { refresh: true },
-    );
-    expect(getLastEditedText(maxClient)).toContain('1-2 из 2 (чаты)');
-    buttonTexts = getLastEditedButtons(maxClient)
+    expect(listManagedEntities).not.toHaveBeenCalled();
+    expect(getLastEditedText(maxClient)).toContain('Список управляемых сущностей обновляется в mini app.');
+    const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts.some((text) => text.includes('Обновить'))).toBe(true);
+    expect(buttonTexts).toEqual(['📱 Приложение', '🆘 Поддержка']);
   });
 
   it('does not expose sticker-from-photo action in the private bot navigation', async () => {
@@ -1049,7 +1088,7 @@ describe('PrivateControlService', () => {
     ).not.toContain('Стикер из фото');
   });
 
-  it('does not hijack a plain photo into sticker flow when no content input is active', async () => {
+  it('does not hijack a plain photo when no content input is active', async () => {
     const { service, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
@@ -1057,7 +1096,7 @@ describe('PrivateControlService', () => {
 
     expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
-    expect(getLastUiText(maxClient)).toContain('Панель чата');
+    expect(getLastUiText(maxClient)).toContain('**MAXIM**');
   });
 
   it('redirects settings callbacks to mini app instead of editing inline', async () => {
@@ -1078,7 +1117,7 @@ describe('PrivateControlService', () => {
       getLastEditedButtons(maxClient)
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
-    ).toContain('Открыть управление');
+    ).toContain('📱 Открыть в приложении');
     expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
@@ -1090,7 +1129,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('/modern'));
 
     const sentMessages = maxClient.sendMessage.mock.calls.map((call) => String(call[1]));
-    expect(sentMessages.some((text) => text.includes('Чат:'))).toBe(true);
+    expect(sentMessages.some((text) => text.includes('**MAXIM**'))).toBe(true);
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
   });
 
@@ -1266,17 +1305,19 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('Изменить текст');
-    expect(buttonTexts).toContain('Добавить фото');
-    expect(buttonTexts).toContain('Опубликовать');
-    expect(buttonTexts).toContain('Мини-апп');
+    expect(buttonTexts).toContain('✏️ Изменить');
+    expect(buttonTexts).toContain('✍️ Добавить фото');
+    expect(buttonTexts).toContain('🚀 Опубликовать');
+    expect(buttonTexts.some((text) => text.startsWith('📱 В прилож'))).toBe(true);
     expect(buttonTexts).not.toContain('Сбросить публикацию');
     expect(buttonTexts).not.toContain('✅ Кнопка "Правила" в нарушениях');
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.textFormat).toBe('markdown');
 
     const miniappButton = getLastButtons(maxClient)
       .flat()
-      .find((button) => String((button as { text?: string }).text ?? '') === 'Мини-апп') as
+      .find((button) =>
+        String((button as { text?: string }).text ?? '').startsWith('📱 В прилож'),
+      ) as
       | {
           type?: string;
           url?: string;
@@ -1346,7 +1387,7 @@ describe('PrivateControlService', () => {
   });
 
   it('updates rules text only after choosing the text button', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         buttonEnabled: true,
         buttonUrl: 'https://max.ru/help',
@@ -1429,12 +1470,12 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('Изменить текст');
-    expect(buttonTexts).toContain('Добавить фото');
+    expect(buttonTexts).toContain('✏️ Изменить');
+    expect(buttonTexts).toContain('✍️ Добавить фото');
   });
 
   it('updates rules photo from image and image-file messages in private bot', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила с фото.',
       }),
@@ -1495,8 +1536,8 @@ describe('PrivateControlService', () => {
     }
   });
 
-  it('supports rules photo cleanup, toggle, publish, and publication reset in private bot', async () => {
-    const { service, adminService, chats } = createHarness({
+  it('supports rules photo cleanup and redirects advanced rules toggles to mini app', async () => {
+    const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила чата',
         imageBase64: TINY_PNG.toString('base64'),
@@ -1528,12 +1569,7 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-    expect(adminService.updateSettings).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({ rulesAttachViolationsEnabled: true }),
-      'private_bot',
-    );
+    expect(adminService.updateSettings).not.toHaveBeenCalled();
     expect(adminService.publishRules).toHaveBeenCalledWith(
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
@@ -1544,6 +1580,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'private_bot',
     );
+    expect(getLastEditedText(maxClient)).toContain('Публикация правил сброшена.');
   });
 
   it('surfaces publish error when rules text is empty', async () => {
@@ -1681,43 +1718,6 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
   });
 
-  it('renders giveaway content preview as markdown in private bot', async () => {
-    const { service, maxClient, chats } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        description: '',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate('Розыгрыш апреля', [
-        {
-          type: 'strong',
-          from: 0,
-          length: 9,
-        },
-      ]),
-    );
-
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain('**Розыгрыш **апреля');
-  });
-
   it('renders bold hyperlink preview as markdown in private bot', async () => {
     const { service, maxClient, chats } = createHarness();
 
@@ -1803,123 +1803,6 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-  });
-
-  it('keeps bold italic underline hyperlink formatting for giveaway drafts from private bot', async () => {
-    const { service, maxClient, chats, managedGiveawayService } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        description: '',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate('MAX Docs', [
-        {
-          type: 'strong',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'emphasized',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'underline',
-          from: 0,
-          length: 8,
-        },
-        {
-          type: 'link',
-          from: 0,
-          length: 8,
-          url: 'https://dev.max.ru/docs-api',
-        },
-      ]),
-    );
-
-    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
-      chats[0].id,
-      'giveaway-draft-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        description: '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
-      }),
-      'chat',
-      'private_bot',
-    );
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain(
-      '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
-    );
-  });
-
-  it('renders heading and bold giveaway content as markdown preview', async () => {
-    const { service, maxClient, chats, managedGiveawayService } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        description: '',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
-    await service.handleUpdate(
-      createPrivateFormattedTextUpdate('Заголовок\nЖирный текст', [
-        {
-          type: 'heading',
-          from: 0,
-          length: 9,
-        },
-        {
-          type: 'strong',
-          from: 10,
-          length: 6,
-        },
-      ]),
-    );
-
-    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
-      chats[0].id,
-      'giveaway-draft-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        description: '# Заголовок\n**Жирный** текст',
-      }),
-      'chat',
-      'private_bot',
-    );
-    expect(getLastSendOptions(maxClient)).toEqual(
-      expect.objectContaining({
-        textFormat: 'markdown',
-      }),
-    );
-    expect(getLastSentText(maxClient)).toContain('# Заголовок\n**Жирный** текст');
   });
 
   it('blocks concurrent duplicate broadcast publish callbacks for the same chat', async () => {
@@ -2069,7 +1952,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastEditedText(maxClient)).toContain('✍️ Добавьте контент');
     expect(getLastEditedText(maxClient)).toContain(
-      '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
+      '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
     );
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
@@ -2136,9 +2019,72 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         token: 'cdt-suggest-token-2',
         text: '',
-        imageBase64: expect.any(String),
-        imageMimeType: expect.stringMatching(/^image\//),
-        imageFileName: expect.stringContaining('channel-suggestion'),
+        mediaType: 'image',
+        mediaPayload: { token: 'upload-token-1' },
+        mediaMimeType: expect.stringMatching(/^image\//),
+        mediaFileName: expect.stringContaining('channel-suggestion'),
+      }),
+    );
+    expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+  });
+
+  it('accepts a video-only suggestion in the bot flow after explicit send', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-3');
+    const videoBuffer = Buffer.from('video-binary');
+    const originalFetch = global.fetch;
+
+    Object.defineProperty(global, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: jest.fn().mockResolvedValue({
+        ok: true,
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'content-type' ? 'video/mp4' : null),
+        },
+        arrayBuffer: async () =>
+          videoBuffer.buffer.slice(
+            videoBuffer.byteOffset,
+            videoBuffer.byteOffset + videoBuffer.byteLength,
+          ),
+      }),
+    });
+
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleUpdate(createPrivateVideoUpdate());
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+    } finally {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
+
+    expect(maxClient.uploadVideo).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'channel-suggestion-video.mp4',
+      'video/mp4',
+    );
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        token: 'cdt-suggest-token-3',
+        text: '',
+        mediaType: 'video',
+        mediaPayload: { token: 'upload-video-token-1' },
+        mediaMimeType: 'video/mp4',
+        mediaFileName: 'channel-suggestion-video.mp4',
+      }),
+    );
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('msg-video-'),
+      null,
+      expect.objectContaining({
+        buttons: expect.any(Array),
       }),
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
@@ -2324,7 +2270,7 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('Опубликовать');
+    expect(buttonTexts).toContain('🚀 Опубликовать');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
@@ -2480,7 +2426,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('Bad Request Exception');
   });
 
-  it('hands off giveaway from miniapp into private bot management flow', async () => {
+  it('hands off giveaway from miniapp into a mini app return screen in private bot', async () => {
     const { service, maxClient, chats, managedGiveawayService } = createHarness();
     const actor = {
       userId: 'user-1',
@@ -2511,15 +2457,26 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'chat',
     );
+    expect(getLastSentText(maxClient)).toContain('Розыгрыши перенесены в mini app');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Разыгрываем подписку.');
-    expect(getLastSentText(maxClient)).toContain('Пришлите новый текст или фото.');
+    expect(getLastSentText(maxClient)).toContain(
+      'Черновики, публикация, итоги и reroll розыгрышей теперь доступны только в приложении.',
+    );
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual(['Опубликовать', 'В приложение']);
-    expect(buttonTexts).not.toContain('Открыть приложение');
-    expect(buttonTexts).not.toContain('Поддержка');
+    expect(buttonTexts).toContain('📱 Открыть в приложении');
+    expect(buttonTexts).toContain('↩️ Назад');
+    expect(buttonTexts).toContain('🆘 Поддержка');
+
+    const launchButton = getLastButtons(maxClient)
+      .flat()
+      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
+      | { url?: string }
+      | undefined;
+    expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
+      `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
+    );
   });
 
   it('hands off chat member profile from miniapp and sends a markdown mention in private chat', async () => {
@@ -2666,7 +2623,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.answerCallback).not.toHaveBeenCalled();
   });
 
-  it('proactively delivers giveaway handoff into a known private chat and skips duplicate bot_started reply', async () => {
+  it('proactively delivers giveaway handoff screen into a known private chat and skips duplicate bot_started reply', async () => {
     const { service, maxClient, chats } = createHarness();
     const actor = {
       userId: 'user-1',
@@ -2691,7 +2648,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Разыгрываем подписку.'),
+      expect.stringContaining('Розыгрыши перенесены в mini app'),
       expect.anything(),
       expect.objectContaining({ immediate: true }),
     );
@@ -2703,382 +2660,67 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('starts a new giveaway draft in private bot when there is no current giveaway', async () => {
+  it('redirects giveaway callbacks to mini app instead of mutating private drafts', async () => {
     const { service, maxClient, chats, managedGiveawayService } = createHarness({
       managedGiveaway: null,
     });
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-
-    expect(getLastEditedText(maxClient)).toContain('Черновик не создан.');
-    expect(
-      getLastButtons(maxClient)
-        .flat()
-        .some(
-          (button) =>
-            typeof button === 'object' &&
-            button !== null &&
-            'text' in button &&
-            button.text === 'Создать черновик',
-        ),
-    ).toBe(true);
+    expect(getLastEditedText(maxClient)).toContain('Розыгрыши перенесены в mini app');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_create'));
+    expect(getLastEditedText(maxClient)).toContain('Розыгрыши перенесены в mini app');
 
-    expect(managedGiveawayService.createManagedGiveaway).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        title: 'Новый розыгрыш',
-        prizes: [{ position: 1, title: 'Приз 1' }],
-      }),
-      'chat',
-      'private_bot',
-    );
-    expect(getLastEditedText(maxClient)).toContain('Пришлите текст или фото.');
-  });
-
-  it('updates giveaway title from private bot input prompt', async () => {
-    const { service, chats, managedGiveawayService } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|title'));
-    await service.handleUpdate(createPrivateTextUpdate('Розыгрыш апреля'));
+    expect(getLastEditedText(maxClient)).toContain('Розыгрыши перенесены в mini app');
 
-    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
-      chats[0].id,
-      'giveaway-draft-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        title: 'Розыгрыш апреля',
-      }),
-      'chat',
-      'private_bot',
-    );
-  });
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_reroll|winner-1'));
+    expect(getLastEditedText(maxClient)).toContain('Розыгрыши перенесены в mini app');
 
-  it('shows only essential draft actions on the giveaway screen', async () => {
-    const { service, maxClient, chats } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_deliver|winner-1'));
+    expect(getLastEditedText(maxClient)).toContain('Розыгрыши перенесены в mini app');
 
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+    expect(managedGiveawayService.getCurrentManagedGiveawayForEntity).not.toHaveBeenCalled();
+    expect(managedGiveawayService.createManagedGiveaway).not.toHaveBeenCalled();
+    expect(managedGiveawayService.updateManagedGiveaway).not.toHaveBeenCalled();
+    expect(managedGiveawayService.rerollManagedGiveawayWinner).not.toHaveBeenCalled();
+    expect(managedGiveawayService.markManagedGiveawayWinnerDelivered).not.toHaveBeenCalled();
 
-    const buttonTexts = getLastButtons(maxClient)
+    const launchButton = getLastEditedButtons(maxClient)
       .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual(['Опубликовать', 'В приложение']);
-    expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastUiText(maxClient)).toContain('Разыгрываем подписку.');
-    expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-    expect(getLastUiText(maxClient)).not.toContain(
-      'Остальные настройки редактируются в приложении.',
-    );
-    expect(getLastUiText(maxClient)).not.toContain('Подтверждение:');
-
-    const returnButton = getLastButtons(maxClient)
-      .flat()
-      .find((button) => String((button as { text?: string }).text ?? '') === 'В приложение') as
+      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
       | { url?: string }
       | undefined;
-    expect(decodeStartAppRoute(String(returnButton?.url ?? ''))).toBe(
+    expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
     );
   });
 
-  it('updates giveaway content when user sends text and then photo without another tap', async () => {
-    const { service, maxClient, chats, managedGiveawayService } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        description: '',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-    const { restore } = mockImageFetch(TINY_PNG, 'image/png');
-
-    try {
-      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
-      await service.handleUpdate(createPrivateTextUpdate('Текст перед фото'));
-
-      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
-        1,
-        chats[0].id,
-        'giveaway-draft-1',
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          description: 'Текст перед фото',
-          imageEnabled: false,
-          imageBase64: '',
-          imageMimeType: '',
-          imageFileName: '',
-        }),
-        'chat',
-        'private_bot',
-      );
-      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-      expect(getLastUiText(maxClient)).toContain('Текст перед фото');
-      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-      expect(
-        getLastButtons(maxClient)
-          .flat()
-          .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Опубликовать', 'В приложение']);
-      expect(maxClient.uploadImage).not.toHaveBeenCalled();
-
-      await service.handleUpdate(createPrivatePhotoUpdate());
-
-      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
-        2,
-        chats[0].id,
-        'giveaway-draft-1',
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          description: 'Текст перед фото',
-          imageEnabled: true,
-          imageBase64: TINY_PNG.toString('base64'),
-          imageMimeType: 'image/png',
-          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
-        }),
-        'chat',
-        'private_bot',
-      );
-      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-      expect(getLastUiText(maxClient)).toContain('Текст перед фото');
-      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
-      expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
-    } finally {
-      restore();
-    }
-  });
-
-  it('updates giveaway content when user sends photo and then text without another tap', async () => {
-    const { service, maxClient, chats, managedGiveawayService } = createHarness({
-      managedGiveaway: createGiveaway({
-        id: 'giveaway-draft-1',
-        status: 'DRAFT',
-        description: '',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        publicationMessageId: null,
-        publicationUrl: null,
-        publishedAt: null,
-      }),
-    });
-    const { restore } = mockImageFetch(TINY_PNG, 'image/png');
-
-    try {
-      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-      await service.handleUpdate(createPrivatePhotoUpdate());
-
-      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
-        1,
-        chats[0].id,
-        'giveaway-draft-1',
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          description: '',
-          imageEnabled: true,
-          imageBase64: TINY_PNG.toString('base64'),
-          imageMimeType: 'image/png',
-          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
-        }),
-        'chat',
-        'private_bot',
-      );
-      expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
-      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
-      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-      expect(getLastUiText(maxClient)).toContain('Весенний розыгрыш');
-      expect(getLastUiText(maxClient)).toContain('Пришлите новый текст или фото.');
-      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-      expect(
-        getLastButtons(maxClient)
-          .flat()
-          .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Опубликовать', 'В приложение']);
-
-      await service.handleUpdate(createPrivateTextUpdate('Текст после фото'));
-
-      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
-        2,
-        chats[0].id,
-        'giveaway-draft-1',
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          description: 'Текст после фото',
-          imageEnabled: true,
-          imageBase64: TINY_PNG.toString('base64'),
-          imageMimeType: 'image/png',
-          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
-        }),
-        'chat',
-        'private_bot',
-      );
-      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-      expect(getLastUiText(maxClient)).toContain('Текст после фото');
-      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-      expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
-      expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
-      expect(
-        getLastButtons(maxClient)
-          .flat()
-          .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Опубликовать', 'В приложение']);
-    } finally {
-      restore();
-    }
-  });
-
-  it('opens the poll screen and publishes a poll from private control', async () => {
-    const { service, maxClient, adminService, chats } = createHarness({
-      adminService: {
-        getChatPoll: jest.fn().mockResolvedValue(createPoll()),
-        updateChatPoll: jest.fn().mockImplementation(async (_chatId, _actor, draft) =>
-          createPoll({
-            question: draft.question,
-            options: draft.options,
-          }),
-        ),
-        publishChatPoll: jest.fn().mockResolvedValue(
-          createPoll({
-            question: 'Выбираем режим?',
-            status: 'ACTIVE',
-            activeVersion: 1,
-            publishedMessageId: 'mid-poll-1',
-            publishedUrl: 'https://max.ru/chats/chat-1/message/1',
-          }),
-        ),
-      },
-    });
+  it('redirects poll callbacks to mini app instead of opening the private poll flow', async () => {
+    const { service, maxClient, adminService, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_poll'));
+    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
+
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_input_prompt|question'));
-    await service.handleUpdate(createPrivateTextUpdate('Выбираем режим?'));
+    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
+
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_publish'));
+    expect(getLastEditedText(maxClient)).toContain('Опросы перенесены в mini app');
 
-    expect(adminService.getChatPoll).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-    );
-    expect(adminService.updateChatPoll).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      {
-        question: 'Выбираем режим?',
-        options: ['', ''],
-      },
-      'private_bot',
-    );
-    expect(adminService.publishChatPoll).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      'private_bot',
-    );
-    expect(maxClient.answerCallback).toHaveBeenCalledWith(
-      'callback-1',
-      'Опрос опубликован',
-      expect.objectContaining({
-        text: expect.stringContaining('Статус: Активен'),
-      }),
-    );
-  });
+    expect(adminService.getChatPoll).not.toHaveBeenCalled();
+    expect(adminService.updateChatPoll).not.toHaveBeenCalled();
+    expect(adminService.publishChatPoll).not.toHaveBeenCalled();
 
-  it('opens giveaway screen from private control and shows current giveaway', async () => {
-    const { service, maxClient, chats, managedGiveawayService } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-
-    expect(managedGiveawayService.getCurrentManagedGiveawayForEntity).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      'chat',
-    );
-    expect(maxClient.answerCallback).toHaveBeenCalledWith(
-      'callback-1',
-      'Открываю розыгрыши',
-      expect.objectContaining({
-        text: expect.stringContaining('Название: Весенний розыгрыш'),
-      }),
-    );
-  });
-
-  it('rerolls a giveaway winner from private control', async () => {
-    const { service, chats, managedGiveawayService } = createHarness();
-    managedGiveawayService.getCurrentManagedGiveawayForEntity.mockResolvedValue(
-      createGiveaway({
-        status: 'COMPLETED',
-        winnersCount: 1,
-        winners: [createGiveawayWinner({ status: 'EXPIRED' })],
-      }),
-    );
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_reroll|winner-1'));
-
-    expect(managedGiveawayService.rerollManagedGiveawayWinner).toHaveBeenCalledWith(
-      chats[0].id,
-      'giveaway-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      { winnerId: 'winner-1' },
-      'chat',
-      'private_bot',
-    );
-  });
-
-  it('marks giveaway prize as delivered from private control', async () => {
-    const { service, chats, managedGiveawayService } = createHarness();
-    managedGiveawayService.getCurrentManagedGiveawayForEntity.mockResolvedValue(
-      createGiveaway({
-        status: 'COMPLETED',
-        winnersCount: 1,
-        winners: [createGiveawayWinner({ status: 'CLAIMED', claimedAt: new Date().toISOString() })],
-      }),
-    );
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_deliver|winner-1'));
-
-    expect(managedGiveawayService.markManagedGiveawayWinnerDelivered).toHaveBeenCalledWith(
-      chats[0].id,
-      'giveaway-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      { winnerId: 'winner-1' },
-      'chat',
-      'private_bot',
+    const launchButton = getLastEditedButtons(maxClient)
+      .flat()
+      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
+      | { url?: string }
+      | undefined;
+    expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
+      `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=poll&handoff=1`,
     );
   });
 

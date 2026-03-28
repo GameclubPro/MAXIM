@@ -8,10 +8,17 @@ const CHAT_SETTINGS_FOCUS = new Set([
   'broadcast',
   'comments',
   'giveaway',
+  'poll',
   'requiredSubscription',
   'rules',
 ]);
-const CHANNEL_SETTINGS_FOCUS = new Set(['broadcast', 'giveaway']);
+const CHANNEL_SETTINGS_FOCUS = new Set([
+  'broadcast',
+  'comments',
+  'giveaway',
+  'poll',
+  'postSuggestions',
+]);
 
 type ChannelDialogLaunchPayload = {
   v: 1;

@@ -142,10 +142,19 @@ type PrivatePollDraft = {
   options: string[];
 };
 
+type PrivateSuggestionMediaDraft = {
+  kind: 'image' | 'video';
+  mimeType: string;
+  fileName: string;
+  payload: Record<string, unknown>;
+};
+
 type PrivateSuggestionDraft = {
   chatId: string;
   token: string;
   text: string;
+  media: PrivateSuggestionMediaDraft | null;
+  // Legacy fields keep older persisted drafts readable until they are replaced.
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
@@ -303,8 +312,19 @@ type ParsedFileAttachment = {
   payloadKeys: string[];
 };
 
+type ParsedVideoSourceAttachment = ParsedFileAttachment & {
+  url: string;
+  mimeType: string;
+};
+
 type DownloadedImageAsset = {
   base64: string;
+  mimeType: string;
+  fileName: string;
+};
+
+type DownloadedBinaryAsset = {
+  buffer: Buffer;
   mimeType: string;
   fileName: string;
 };
@@ -383,10 +403,6 @@ const MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'domain_add_prompt',
   'domain_remove',
   'domain_schedule_prompt',
-  'open_channel_section',
-  'toggle_channel',
-  'set_channel_input',
-  'publish_channel_engagement',
 ]);
 const MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'open_events',
@@ -397,6 +413,41 @@ const MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'manual_users_page',
   'manual_select_user',
   'manual_action',
+]);
+const MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS = new Set<string>([
+  'open_channel_section',
+  'toggle_channel',
+  'set_channel_input',
+  'publish_channel_engagement',
+]);
+const MINIAPP_POLL_ONLY_CALLBACK_ACTIONS = new Set<string>([
+  'open_poll',
+  'poll_input_prompt',
+  'poll_add_option',
+  'poll_remove_option',
+  'poll_publish',
+  'poll_close',
+]);
+const MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS = new Set<string>([
+  'open_giveaway',
+  'refresh_giveaway',
+  'giveaway_create',
+  'giveaway_input_prompt',
+  'giveaway_clear_start',
+  'giveaway_clear_photo',
+  'giveaway_add_prize',
+  'giveaway_remove_last_prize',
+  'giveaway_publish',
+  'giveaway_close',
+  'giveaway_cancel',
+  'giveaway_reroll',
+  'giveaway_deliver',
+]);
+const MINIAPP_RULES_ONLY_CALLBACK_ACTIONS = new Set<string>(['rules_toggle_attach']);
+const MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS = new Set<string>([
+  'broadcast_view',
+  'broadcast_toggle',
+  'broadcast_clear_timer',
 ]);
 
 const CHAT_ONLY_CALLBACK_ACTIONS = new Set<string>([
@@ -1193,7 +1244,7 @@ export class PrivateControlService {
     }
     session.screen =
       session.selectedChatId === null
-        ? 'chat_select'
+        ? 'home'
         : session.screen === 'chat_select'
           ? this.resolvePrimaryScreen(session)
           : session.screen;
@@ -1629,9 +1680,7 @@ export class PrivateControlService {
     }
 
     if (context.text.trim().startsWith('/')) {
-      const view = session.selectedChatId
-        ? await this.renderPrimaryScreen(context, session)
-        : await this.renderChatSelection(context, session);
+      const view = await this.renderPrimaryScreen(context, session);
 
       await this.respond(context, session, view, {
         callbackId: null,
@@ -1640,9 +1689,7 @@ export class PrivateControlService {
       return;
     }
 
-    const view = session.selectedChatId
-      ? await this.renderPrimaryScreen(context, session)
-      : await this.renderChatSelection(context, session);
+    const view = await this.renderPrimaryScreen(context, session);
 
     await this.respond(context, session, view, {
       callbackId: null,
@@ -2115,13 +2162,20 @@ export class PrivateControlService {
       result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
         token: draft.token,
         text: draft.text,
-        ...(draft.imageBase64
+        ...(draft.media
           ? {
-              imageBase64: draft.imageBase64,
-              imageMimeType: draft.imageMimeType || null,
-              imageFileName: draft.imageFileName || null,
+              mediaType: draft.media.kind,
+              mediaPayload: draft.media.payload,
+              mediaMimeType: draft.media.mimeType || null,
+              mediaFileName: draft.media.fileName || null,
             }
-          : {}),
+          : draft.imageBase64
+            ? {
+                imageBase64: draft.imageBase64,
+                imageMimeType: draft.imageMimeType || null,
+                imageFileName: draft.imageFileName || null,
+              }
+            : {}),
       });
     } catch (error: unknown) {
       await this.sendChannelSuggestionDraftPreview(context, session);
@@ -2186,7 +2240,7 @@ export class PrivateControlService {
       text: [
         this.markdownTitle('✍️ Добавьте контент'),
         '',
-        '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
+        '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
       ].join('\n'),
       options: {
         buttons: [[await this.buildChannelSuggestionReturnButton(chatId)]],
@@ -2194,7 +2248,7 @@ export class PrivateControlService {
     };
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
-      notification: 'Жду текст или фото',
+      notification: 'Жду текст, фото или видео',
     });
   }
 
@@ -2357,12 +2411,31 @@ export class PrivateControlService {
       this.assertSelectedEntityType(session, 'channel');
     }
 
-    if (ENTITY_CALLBACK_ACTIONS.has(callback.action) && !session.selectedChatId) {
-      throw new BadRequestException('Сначала выберите чат или канал.');
+    if (
+      !session.selectedChatId &&
+      (CHAT_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        CHANNEL_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        ENTITY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_POLL_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_RULES_ONLY_CALLBACK_ACTIONS.has(callback.action) ||
+        MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS.has(callback.action))
+    ) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = this.renderLauncherHomeView(
+        'Контекст чата не сохранён. Откройте нужный чат или канал в приложении и запустите действие ещё раз.',
+      );
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Откройте нужный чат в приложении',
+      });
+      return;
     }
 
     if (MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
-      this.assertChatSelected(session);
       this.resetSessionToPrimaryScreen(session);
       const view = await this.renderEntitySettingsMovedToMiniappScreen(context, session);
       await this.respond(context, session, view, {
@@ -2373,12 +2446,65 @@ export class PrivateControlService {
     }
 
     if (MINIAPP_ACTIVITY_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
-      this.assertChatSelected(session);
       this.resetSessionToPrimaryScreen(session);
       const view = await this.renderEntityActivityMovedToMiniappScreen(context, session);
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
         notification: 'Открывайте активность в mini app',
+      });
+      return;
+    }
+
+    if (MINIAPP_CHANNEL_SETTINGS_CALLBACK_ACTIONS.has(callback.action)) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = await this.renderEntityChannelSettingsMovedToMiniappScreen(
+        context,
+        session,
+        callback.args[0],
+      );
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Открывайте настройки канала в mini app',
+      });
+      return;
+    }
+
+    if (MINIAPP_POLL_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = await this.renderEntityPollMovedToMiniappScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Опросы перенесены в mini app',
+      });
+      return;
+    }
+
+    if (MINIAPP_GIVEAWAY_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = await this.renderEntityGiveawayMovedToMiniappScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Розыгрыши открываются в mini app',
+      });
+      return;
+    }
+
+    if (MINIAPP_RULES_ONLY_CALLBACK_ACTIONS.has(callback.action)) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = await this.renderEntityRulesMovedToMiniappScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Дополнительные настройки правил перенесены в mini app',
+      });
+      return;
+    }
+
+    if (MINIAPP_BROADCAST_SETTINGS_CALLBACK_ACTIONS.has(callback.action)) {
+      this.resetSessionToPrimaryScreen(session);
+      const view = await this.renderEntityBroadcastMovedToMiniappScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Параметры рассылки открываются в mini app',
       });
       return;
     }
@@ -2440,39 +2566,41 @@ export class PrivateControlService {
       }
 
       case 'chat_page': {
-        const requestedPage = this.toPositiveInt(callback.args[0], 1);
-        session.chatPage = requestedPage;
-        session.screen = 'chat_select';
-        const view = await this.renderChatSelection(context, session);
+        session.chatPage = this.toPositiveInt(callback.args[0], 1);
+        session.screen = 'home';
+        const view = this.renderLauncherHomeView(
+          'Выбор чатов и каналов перенесён в mini app.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification:
-            session.entityTab === 'channel' ? 'Показываю список каналов' : 'Показываю список чатов',
+          notification: 'Выбор доступен в mini app',
         });
         return;
       }
 
       case 'entity_tab': {
-        const requestedTab = callback.args[0] === 'channel' ? 'channel' : 'chat';
-        session.entityTab = requestedTab;
+        session.entityTab = callback.args[0] === 'channel' ? 'channel' : 'chat';
         session.chatPage = 1;
-        session.screen = 'chat_select';
-        const view = await this.renderChatSelection(context, session);
+        session.screen = 'home';
+        const view = this.renderLauncherHomeView(
+          'Переключение между чатами и каналами теперь доступно в приложении.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: requestedTab === 'channel' ? 'Показываю каналы' : 'Показываю чаты',
+          notification: 'Откройте приложение',
         });
         return;
       }
 
       case 'chat_refresh': {
         session.chatPage = 1;
-        session.screen = 'chat_select';
-        const view = await this.renderChatSelection(context, session, { refresh: true });
+        session.screen = 'home';
+        const view = this.renderLauncherHomeView(
+          'Список управляемых сущностей обновляется в mini app.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification:
-            session.entityTab === 'channel' ? 'Список каналов обновлён' : 'Список чатов обновлён',
+          notification: 'Обновляйте список в mini app',
         });
         return;
       }
@@ -2508,16 +2636,19 @@ export class PrivateControlService {
           options: [...DEFAULT_POLL_DRAFT.options],
         };
 
-        const view = await this.renderPrimaryScreen(context, session);
+        const view = await this.renderEntitySettingsMovedToMiniappScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: selectedEntityType === 'channel' ? 'Канал выбран' : 'Чат выбран',
+          notification:
+            selectedEntityType === 'channel' ? 'Канал открыт в mini app' : 'Чат открыт в mini app',
         });
         return;
       }
 
       case 'change_chat': {
-        session.screen = 'chat_select';
+        session.screen = 'home';
+        session.selectedChatId = null;
+        session.selectedEntityType = null;
         session.managedGiveawayId = null;
         session.chatPage = 1;
         session.pendingInput = null;
@@ -2529,10 +2660,12 @@ export class PrivateControlService {
           ...DEFAULT_POLL_DRAFT,
           options: [...DEFAULT_POLL_DRAFT.options],
         };
-        const view = await this.renderChatSelection(context, session, { refresh: true });
+        const view = this.renderLauncherHomeView(
+          'Выбор чата и канала перенесён в mini app.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: session.entityTab === 'channel' ? 'Выберите канал' : 'Выберите чат',
+          notification: 'Откройте приложение',
         });
         return;
       }
@@ -3614,7 +3747,26 @@ export class PrivateControlService {
 
       case 'broadcast_input_prompt': {
         this.assertChatSelected(session);
-        const pendingInput = this.buildBroadcastPendingInput(callback.args[0] ?? '');
+        const flag = callback.args[0] ?? '';
+        if (
+          flag === 'button_url' ||
+          flag === 'button_text' ||
+          flag === 'send_at' ||
+          flag === 'cycle_hours' ||
+          flag === 'cycle_count'
+        ) {
+          this.resetSessionToPrimaryScreen(session);
+          const view = await this.renderEntityBroadcastMovedToMiniappScreen(context, session);
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Дополнительные параметры открываются в mini app',
+          });
+          return;
+        }
+
+        const pendingInput = this.buildBroadcastPendingInput(
+          flag === 'text' || flag === 'photo' ? 'content' : flag,
+        );
         if (!pendingInput) {
           throw new BadRequestException('Неизвестный шаг настройки');
         }
@@ -4470,30 +4622,39 @@ export class PrivateControlService {
 
       case 'channel_suggestion': {
         const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
         const fileAttachment = this.extractFirstFileAttachment(context.update);
-        const hasVideoAttachment = this.hasVideoAttachment(context.update);
 
-        if (hasVideoAttachment || (fileAttachment && !imageSourceAttachment)) {
+        if (fileAttachment && !imageSourceAttachment && !videoSourceAttachment) {
           throw new BadRequestException(
-            'Сейчас через предложку можно отправить текст, фото или фото с подписью. Видео и произвольные файлы не поддерживаются.',
+            'Сейчас через предложку можно отправить текст, фото, видео или подпись к медиа. Произвольные файлы не поддерживаются.',
           );
         }
 
-        if (!rawText && !imageSourceAttachment) {
-          throw new BadRequestException('Пришлите текст поста, фото или фото с подписью.');
+        if (!rawText && !imageSourceAttachment && !videoSourceAttachment) {
+          throw new BadRequestException('Пришлите текст поста, фото, видео или подпись к медиа.');
         }
 
-        const downloadedImage = imageSourceAttachment
-          ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'channel-suggestion')
-          : null;
+        const media = imageSourceAttachment
+          ? await this.buildSuggestionMediaDraftFromImage(
+              imageSourceAttachment,
+              'channel-suggestion',
+            )
+          : videoSourceAttachment
+            ? await this.buildSuggestionMediaDraftFromVideo(
+                videoSourceAttachment,
+                'channel-suggestion',
+              )
+            : null;
         session.pendingInput = null;
         session.suggestionDraft = {
           chatId: pendingInput.chatId,
           token: pendingInput.token,
           text: rawText,
-          imageBase64: downloadedImage?.base64 ?? '',
-          imageMimeType: downloadedImage?.mimeType ?? '',
-          imageFileName: downloadedImage?.fileName ?? '',
+          media,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
           sourceMessageId: context.update.message?.messageId ?? null,
           previewMessageId: null,
         };
@@ -5599,94 +5760,17 @@ export class PrivateControlService {
   }
 
   private async renderChatSelection(
-    context: PrivateContext,
-    session: PrivateSession,
-    options: { refresh?: boolean } = {},
+    _context: PrivateContext,
+    _session: PrivateSession,
+    _options: { refresh?: boolean } = {},
   ): Promise<PrivateView> {
-    const entityType = session.entityTab;
-    const entities = await this.adminService.listManagedEntities(context.actor, entityType, {
-      refresh: options.refresh === true,
-    });
-    const singleEntityWord = entityType === 'channel' ? 'канал' : 'чат';
-    const pluralEntityWord = entityType === 'channel' ? 'каналы' : 'чаты';
-
-    if (entities.length === 0) {
-      return {
-        text: [
-          this.markdownTitle(entityType === 'channel' ? 'Каналы не найдены' : 'Чаты не найдены'),
-          '',
-          'Добавьте бота админом и обновите экран.',
-        ].join('\n'),
-        options: {
-          buttons: [
-            [
-              this.callbackButton(
-                `${session.entityTab === 'chat' ? '✅' : '◻️'} Чаты`,
-                this.cb('entity_tab', 'chat'),
-              ),
-              this.callbackButton(
-                `${session.entityTab === 'channel' ? '✅' : '◻️'} Каналы`,
-                this.cb('entity_tab', 'channel'),
-              ),
-            ],
-            [this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive')],
-            ...this.buildFooterButtons(),
-          ],
-        },
-      };
-    }
-
-    const pageInfo = this.paginate(entities, session.chatPage, PAGE_SIZE_CHATS);
-    session.chatPage = pageInfo.page;
-
-    const lines = [
-      this.markdownTitle(`Выбор: ${singleEntityWord}`),
-      '',
-      `${pageInfo.start + 1}-${pageInfo.end} из ${entities.length} (${pluralEntityWord})`,
-      `Нажмите на нужный ${singleEntityWord}.`,
-    ];
-
-    const rows: MaxMessageButton[][] = pageInfo.items.map((chat, index) => [
-      this.callbackButton(
-        `${pageInfo.start + index + 1}. ${this.compactText(chat.title, 34)}`,
-        this.cb('chat_select', entityType, chat.id),
-      ),
-    ]);
-
-    rows.push([
-      this.callbackButton(
-        `${session.entityTab === 'chat' ? '✅' : '◻️'} Чаты`,
-        this.cb('entity_tab', 'chat'),
-      ),
-      this.callbackButton(
-        `${session.entityTab === 'channel' ? '✅' : '◻️'} Каналы`,
-        this.cb('entity_tab', 'channel'),
-      ),
-      this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive'),
-    ]);
-    rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
-    rows.push(...this.buildFooterButtons());
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
+    return this.renderLauncherHomeView('Выбор чата и канала перенесён в mini app.');
   }
 
   private async renderPrimaryScreen(
     context: PrivateContext,
     session: PrivateSession,
   ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
-    if (session.selectedEntityType === 'channel') {
-      return this.renderChannelHomeScreen(context, session);
-    }
-
     return this.renderHomeScreen(context, session);
   }
 
@@ -5694,14 +5778,13 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
   ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
     if (session.screen === 'chat_select') {
-      return this.renderChatSelection(context, session);
+      return this.renderHomeScreen(context, session);
     }
     if (session.screen === 'home') {
+      return this.renderHomeScreen(context, session);
+    }
+    if (!session.selectedChatId) {
       return this.renderHomeScreen(context, session);
     }
     if (
@@ -5721,13 +5804,12 @@ export class PrivateControlService {
       return this.renderBroadcastScreen(context, session);
     }
     if (session.screen === 'poll') {
-      return this.renderPollScreen(context, session);
+      this.resetSessionToPrimaryScreen(session);
+      return this.renderEntityPollMovedToMiniappScreen(context, session);
     }
     if (session.screen === 'giveaway') {
-      if (session.pendingInput?.kind === 'giveaway_content') {
-        return this.renderGiveawayContentPrompt(context, session);
-      }
-      return this.renderGiveawayScreen(context, session);
+      this.resetSessionToPrimaryScreen(session);
+      return this.renderEntityGiveawayMovedToMiniappScreen(context, session);
     }
     if (
       session.screen === 'events' ||
@@ -5883,67 +5965,10 @@ export class PrivateControlService {
     session: PrivateSession,
   ): Promise<PrivateView> {
     if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
+      return this.renderHomeScreen(context, session);
     }
 
-    const channels = await this.adminService.listManagedEntities(context.actor, 'channel');
-    const selectedChannel = channels.find((chat) => chat.id === session.selectedChatId) ?? null;
-    if (!selectedChannel) {
-      session.selectedChatId = null;
-      session.selectedEntityType = null;
-      session.screen = 'chat_select';
-      session.entityTab = 'channel';
-      return this.renderChatSelection(context, session);
-    }
-    session.selectedEntityType = 'channel';
-    const settings = await this.adminService.getChannelSettings(selectedChannel.id, context.actor);
-    const settingsMiniappUrl = this.buildEntitySettingsMiniappUrl(selectedChannel.id, 'channel');
-    const settingsMiniappRoute = this.buildEntitySettingsMiniappRoute(
-      selectedChannel.id,
-      'channel',
-    );
-    const activityMiniappUrl = this.buildEntityActivityMiniappUrl(selectedChannel.id, 'channel');
-    const activityMiniappRoute = this.buildEntityActivityMiniappRoute(
-      selectedChannel.id,
-      'channel',
-    );
-
-    const lines: string[] = [
-      this.markdownTitle('Панель канала'),
-      '',
-      `Канал: ${this.escapeMarkdown(selectedChannel.title)}`,
-      `Статус: предложка ${settings.postSuggestionsEnabled ? 'вкл' : 'выкл'} • обсуждение ${settings.commentsEnabled ? 'вкл' : 'выкл'}`,
-      '',
-      'В боте оставлены только базовые действия: принять контент и подтвердить публикацию.',
-      'Настройки канала, обсуждение, предложка, розыгрыши и аналитика перенесены в mini app.',
-    ];
-
-    const rows: MaxMessageButton[][] = [
-      [
-        this.buildMiniappLaunchButton(
-          'Открыть управление',
-          settingsMiniappRoute,
-          settingsMiniappUrl,
-        ),
-      ],
-      [this.callbackButton('Опубликовать контент', this.cb('open_broadcast'), 'positive')],
-      [
-        this.buildMiniappLaunchButton(
-          'Статистика канала',
-          activityMiniappRoute,
-          activityMiniappUrl,
-        ),
-      ],
-      [this.callbackButton('Сменить канал', this.cb('change_chat'))],
-      ...this.buildFooterButtons({ includeMiniapp: false }),
-    ];
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session);
   }
 
   private async renderChannelSectionScreen(
@@ -5982,68 +6007,10 @@ export class PrivateControlService {
   }
 
   private async renderHomeScreen(
-    context: PrivateContext,
-    session: PrivateSession,
+    _context: PrivateContext,
+    _session: PrivateSession,
   ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
-    if (session.selectedEntityType === 'channel') {
-      return this.renderChannelHomeScreen(context, session);
-    }
-
-    const chats = await this.adminService.listChats(context.actor);
-    const selectedChat = chats.find((chat) => chat.id === session.selectedChatId) ?? null;
-    if (!selectedChat) {
-      session.selectedChatId = null;
-      session.selectedEntityType = null;
-      session.screen = 'chat_select';
-      return this.renderChatSelection(context, session);
-    }
-    session.selectedEntityType = 'chat';
-    const settings = await this.adminService.getSettings(selectedChat.id, context.actor);
-    const settingsMiniappUrl = this.buildEntitySettingsMiniappUrl(selectedChat.id, 'chat');
-    const settingsMiniappRoute = this.buildEntitySettingsMiniappRoute(selectedChat.id, 'chat');
-    const activityMiniappUrl = this.buildEntityActivityMiniappUrl(selectedChat.id, 'chat');
-    const activityMiniappRoute = this.buildEntityActivityMiniappRoute(selectedChat.id, 'chat');
-
-    const lines: string[] = [
-      this.markdownTitle('Панель чата'),
-      '',
-      `Чат: ${this.escapeMarkdown(selectedChat.title)}`,
-      `Статус: ссылки ${this.describeLinkPolicy(settings.linkPolicy)} • приветствие ${settings.greetingEnabled ? 'вкл' : 'выкл'}`,
-      '',
-      'В боте оставлены только базовые действия: принять контент и подтвердить публикацию.',
-      'Настройки, правила, события и ручная модерация перенесены в mini app.',
-    ];
-
-    const rows: MaxMessageButton[][] = [
-      [
-        this.buildMiniappLaunchButton(
-          'Открыть управление',
-          settingsMiniappRoute,
-          settingsMiniappUrl,
-        ),
-      ],
-      [this.callbackButton('Опубликовать контент', this.cb('open_broadcast'), 'positive')],
-      [
-        this.buildMiniappLaunchButton(
-          'Активность и модерация',
-          activityMiniappRoute,
-          activityMiniappUrl,
-        ),
-      ],
-      [this.callbackButton('Сменить чат', this.cb('change_chat'))],
-      ...this.buildFooterButtons({ includeMiniapp: false }),
-    ];
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
+    return this.renderLauncherHomeView();
   }
 
   private async renderSettingsHubScreen(
@@ -6144,73 +6111,7 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
   ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
-    if (session.selectedEntityType === 'channel') {
-      return this.renderChannelHomeScreen(context, session);
-    }
-
-    const chats = await this.adminService.listChats(context.actor);
-    const selectedChat = chats.find((chat) => chat.id === session.selectedChatId) ?? null;
-    if (!selectedChat) {
-      session.selectedChatId = null;
-      session.selectedEntityType = null;
-      session.screen = 'chat_select';
-      return this.renderChatSelection(context, session);
-    }
-    session.selectedEntityType = 'chat';
-
-    const text = [
-      'Панель управления (классический вид)',
-      '',
-      `Текущий чат: ${selectedChat.title}`,
-      'Для нового интерфейса нажмите «Новый вид».',
-    ].join('\n');
-
-    const rows: MaxMessageButton[][] = [
-      [
-        this.callbackButton('Ссылки', this.cb('open_section', 'links')),
-        this.callbackButton('Новички', this.cb('open_section', 'greeting')),
-      ],
-      [
-        this.callbackButton('Нецензура', this.cb('open_section', 'profanityFilter')),
-        this.callbackButton('Реклама', this.cb('open_section', 'commercialFilter')),
-      ],
-      [
-        this.callbackButton('Темы', this.cb('open_section', 'thematicFilters')),
-        this.callbackButton('Дубли', this.cb('open_section', 'duplicates')),
-      ],
-      [
-        this.callbackButton('Лимиты', this.cb('open_section', 'limits')),
-        this.callbackButton('Тихие часы', this.cb('open_section', 'night')),
-      ],
-      [
-        this.callbackButton('Ещё', this.cb('open_section', 'extra')),
-        this.callbackButton('Правила', this.cb('open_rules')),
-      ],
-      [
-        this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Опрос', this.cb('open_poll')),
-      ],
-      [
-        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
-        this.callbackButton('Нарушения', this.cb('open_events')),
-      ],
-      [this.callbackButton('Статистика', this.cb('open_logs'))],
-      [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
-      [this.callbackButton('Другой чат', this.cb('change_chat'))],
-      [this.callbackButton('Новый вид', this.cb('home'))],
-      ...this.buildFooterButtons(),
-    ];
-
-    return {
-      text,
-      options: {
-        buttons: rows,
-      },
-    };
+    return this.renderHomeScreen(context, session);
   }
 
   private async renderSection(
@@ -6368,11 +6269,13 @@ export class PrivateControlService {
     notice: string | null = null,
   ): Promise<PrivateView> {
     if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
+      return this.renderLauncherHomeView(
+        'Откройте нужный чат в приложении и запустите быстрый редактор правил ещё раз.',
+      );
     }
 
     if (session.selectedEntityType === 'channel') {
-      return this.renderChannelHomeScreen(context, session);
+      return this.renderEntityRulesMovedToMiniappScreen(context, session);
     }
 
     const [rules, chatTitle] = await Promise.all([
@@ -6426,42 +6329,44 @@ export class PrivateControlService {
     }
 
     const rows: MaxMessageButton[][] = [
-      [this.callbackButton('Изменить текст', this.cb('rules_input_prompt', 'text'))],
+      [this.callbackButton('✏️ Изменить', this.cb('rules_input_prompt', 'text'))],
       [
         this.callbackButton(
-          hasImage ? 'Обновить фото' : 'Добавить фото',
+          hasImage ? '✏️ Изменить фото' : '✍️ Добавить фото',
           this.cb('rules_input_prompt', 'photo'),
         ),
       ],
     ];
 
     if (hasImage) {
-      rows.push([this.callbackButton('Убрать фото', this.cb('rules_clear_photo'), 'negative')]);
+      rows.push([this.callbackButton('🗑️ Убрать фото', this.cb('rules_clear_photo'), 'negative')]);
     }
 
-    rows.push([this.callbackButton('Опубликовать', this.cb('rules_publish'), 'positive')]);
+    rows.push([this.callbackButton('🚀 Опубликовать', this.cb('rules_publish'), 'positive')]);
 
     if (rules.publishedMessageId || rules.publishedUrl) {
       const publicationRow: MaxMessageButton[] = [];
       if (rules.publishedUrl) {
         publicationRow.push({
           type: 'link',
-          text: 'Открыть пост',
+          text: '📨 Открыть пост',
           url: rules.publishedUrl,
         });
       }
       publicationRow.push(
-        this.callbackButton('Сбросить публикацию', this.cb('rules_reset_publication'), 'negative'),
+        this.callbackButton(
+          '🗑️ Сбросить публикацию',
+          this.cb('rules_reset_publication'),
+          'negative',
+        ),
       );
       rows.push(publicationRow);
     }
 
-    rows.push([
-      this.callbackButton('⬅️ Назад', this.cb('back')),
-      this.callbackButton('Главный экран', this.cb('home')),
-    ]);
+    rows.push([this.callbackButton('↩️ Назад', this.cb('back'))]);
     rows.push(
       ...this.buildFooterButtons({
+        miniappText: '📱 В приложение',
         miniappRoute: rulesSettingsMiniappRoute,
         miniappUrl: rulesSettingsMiniappUrl,
       }),
@@ -6482,7 +6387,9 @@ export class PrivateControlService {
     notice: string | null = null,
   ): Promise<PrivateView> {
     if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
+      return this.renderLauncherHomeView(
+        'Откройте нужный чат или канал в приложении и запустите быстрый пост ещё раз.',
+      );
     }
 
     const draft = session.broadcastDraft;
@@ -6529,11 +6436,22 @@ export class PrivateControlService {
         });
     const rows: MaxMessageButton[][] = [];
 
-    if (hasContent) {
-      rows.push([this.callbackButton('Опубликовать', this.cb('broadcast_send'), 'positive')]);
+    rows.push([
+      this.callbackButton(
+        hasContent ? '✏️ Изменить' : '✍️ Добавить',
+        this.cb('broadcast_input_prompt', 'content'),
+      ),
+    ]);
+
+    if (hasContent && draft.imageEnabled) {
+      rows.push([this.callbackButton('🗑️ Убрать', this.cb('broadcast_clear_photo'), 'negative')]);
     }
 
-    rows.push([this.buildMiniappLaunchButton('В приложение', plannerRoute, plannerUrl)]);
+    if (hasContent) {
+      rows.push([this.callbackButton('🚀 Опубликовать', this.cb('broadcast_send'), 'positive')]);
+    }
+
+    rows.push([this.buildMiniappLaunchButton('📱 В приложение', plannerRoute, plannerUrl)]);
 
     return {
       text: textPayload.text,
@@ -7862,16 +7780,15 @@ export class PrivateControlService {
       ...(prefix ? [this.escapeMarkdown(prefix), ''] : []),
       this.markdownTitle('Быстрый старт'),
       '',
-      'Управление через кнопки.',
-      'Выберите чат и действие.',
+      '📱 Все настройки, розыгрыши, опросы и аналитика открываются в mini app.',
+      'В боте остались только быстрые сценарии: прислать контент, проверить превью и подтвердить публикацию.',
     ];
 
     return {
       text: lines.join('\n'),
       options: {
         buttons: [
-          [this.callbackButton('Главный экран', this.cb('home'))],
-          [this.callbackButton('Сменить чат', this.cb('change_chat'))],
+          [this.callbackButton('↩️ Главный экран', this.cb('home'))],
           ...this.buildFooterButtons(),
         ],
       },
@@ -8053,10 +7970,10 @@ export class PrivateControlService {
   private buildDefaultChannelSuggestionRequirementsText(): string {
     return [
       '1. Готовый текст поста или короткий черновик.',
-      '2. Фото, если оно важно для публикации.',
+      '2. Фото или видео, если оно важно для публикации.',
       '3. Ссылку и 1-2 строки контекста, если нужен источник.',
       '',
-      'Фото без текста тоже подойдёт.',
+      'Фото или видео без текста тоже подойдут.',
     ].join('\n');
   }
 
@@ -8300,7 +8217,7 @@ export class PrivateControlService {
         return {
           title: 'Требования для предложки',
           description:
-            'Сначала прочитайте требования, затем пришлите следующим сообщением текст, фото или фото с подписью. Для выхода используйте `Отмена`.',
+            'Сначала прочитайте требования, затем пришлите следующим сообщением текст, фото, видео или подпись к медиа. Для выхода используйте `Отмена`.',
         };
       case 'giveaway_title':
         return {
@@ -9307,7 +9224,7 @@ export class PrivateControlService {
     const includeSupport = config?.includeSupport !== false;
     const miniappRoute = config?.miniappRoute?.trim() || '/';
     const miniappUrl = config?.miniappUrl ?? this.resolveMiniappUrl();
-    const miniappText = config?.miniappText?.trim() || 'Мини-апп';
+    const miniappText = config?.miniappText?.trim() || '📱 Приложение';
     const miniappLaunchUrl = this.buildMiniappRouteLaunchUrl(miniappRoute);
 
     if (includeMiniapp && (miniappLaunchUrl || miniappUrl)) {
@@ -9317,7 +9234,7 @@ export class PrivateControlService {
     if (includeSupport) {
       row.push({
         type: 'link',
-        text: 'Поддержка',
+        text: '🆘 Поддержка',
         url: SUPPORT_CHAT_URL,
       });
     }
@@ -9472,6 +9389,31 @@ export class PrivateControlService {
     return `/chat/${encodeURIComponent(chatId)}/settings?focus=rules&handoff=1`;
   }
 
+  private buildEntitySettingsHandoffMiniappUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+    focus?: string | null,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    return `${this.appBaseUrl}/app${this.buildEntitySettingsHandoffMiniappRoute(
+      chatId,
+      entityType,
+      focus,
+    )}`;
+  }
+
+  private buildEntitySettingsHandoffMiniappRoute(
+    chatId: string,
+    entityType: ManagedEntityType,
+    focus?: string | null,
+  ): string {
+    const baseRoute = this.buildEntitySettingsMiniappRoute(chatId, entityType, focus);
+    return baseRoute.includes('?') ? `${baseRoute}&handoff=1` : `${baseRoute}?handoff=1`;
+  }
+
   private resetSessionToPrimaryScreen(session: PrivateSession): void {
     session.screen = this.resolvePrimaryScreen(session);
     session.section = null;
@@ -9491,6 +9433,7 @@ export class PrivateControlService {
       buttonText: string;
       miniappRoute: string;
       miniappUrl: string | null;
+      includeBackButton?: boolean;
     },
   ): Promise<PrivateView> {
     const entityType = session.selectedEntityType ?? 'chat';
@@ -9503,7 +9446,7 @@ export class PrivateControlService {
       '',
       ...(entityTitle ? [`${entityLabel}: ${this.escapeMarkdown(entityTitle)}`] : []),
       config.description,
-      'В боте оставлены только базовые действия: принять текст/фото и подтвердить публикацию.',
+      'В боте оставлены только базовые действия: принять текст, фото или видео и подтвердить публикацию.',
     ];
 
     return {
@@ -9517,13 +9460,9 @@ export class PrivateControlService {
               config.miniappUrl,
             ),
           ],
-          [
-            this.callbackButton('Главный экран', this.cb('home')),
-            this.callbackButton(
-              entityType === 'channel' ? 'Сменить канал' : 'Сменить чат',
-              this.cb('change_chat'),
-            ),
-          ],
+          ...(config.includeBackButton === false
+            ? []
+            : [[this.callbackButton('↩️ Назад', this.cb('back'))]]),
           ...this.buildFooterButtons({ includeMiniapp: false }),
         ],
         textFormat: 'markdown',
@@ -9534,16 +9473,23 @@ export class PrivateControlService {
   private async renderEntitySettingsMovedToMiniappScreen(
     context: PrivateContext,
     session: PrivateSession,
+    focus?: string | null,
+    config?: {
+      title?: string;
+      description?: string;
+      buttonText?: string;
+    },
   ): Promise<PrivateView> {
     const entityType = session.selectedEntityType ?? 'chat';
     const chatId = session.selectedChatId ?? context.chatId;
     return this.renderMiniappMovedScreen(context, session, {
-      title: 'Настройки перенесены в mini app',
+      title: config?.title ?? 'Настройки перенесены в mini app',
       description:
+        config?.description ??
         'Основные настройки и rich-сценарии больше не управляются inline-кнопками в боте.',
-      buttonText: 'Открыть управление',
-      miniappRoute: this.buildEntitySettingsMiniappRoute(chatId, entityType),
-      miniappUrl: this.buildEntitySettingsMiniappUrl(chatId, entityType),
+      buttonText: config?.buttonText ?? '📱 Открыть в приложении',
+      miniappRoute: this.buildEntitySettingsHandoffMiniappRoute(chatId, entityType, focus),
+      miniappUrl: this.buildEntitySettingsHandoffMiniappUrl(chatId, entityType, focus),
     });
   }
 
@@ -9556,9 +9502,95 @@ export class PrivateControlService {
     return this.renderMiniappMovedScreen(context, session, {
       title: 'Активность открывается в mini app',
       description: 'События, логи и ручная модерация теперь доступны в экране активности mini app.',
-      buttonText: entityType === 'channel' ? 'Открыть статистику' : 'Открыть активность',
+      buttonText: entityType === 'channel' ? '📱 Открыть статистику' : '📱 Открыть активность',
       miniappRoute: this.buildEntityActivityMiniappRoute(chatId, entityType),
       miniappUrl: this.buildEntityActivityMiniappUrl(chatId, entityType),
+    });
+  }
+
+  private renderLauncherHomeView(notice: string | null = null): PrivateView {
+    const lines = [
+      this.markdownTitle('MAXIM'),
+      '',
+      '📱 Открывайте приложение для настроек, розыгрышей, опросов, модерации и аналитики.',
+      'В боте остались только быстрые сценарии: прислать текст, фото или видео и подтвердить публикацию.',
+      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
+    ];
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: this.buildFooterButtons(),
+        textFormat: 'markdown',
+      },
+    };
+  }
+
+  private async renderEntityBroadcastMovedToMiniappScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'broadcast', {
+      title: 'Параметры рассылки в mini app',
+      description:
+        'В боте остался только быстрый composer: пришлите контент, проверьте превью и подтвердите публикацию.',
+    });
+  }
+
+  private async renderEntityRulesMovedToMiniappScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'rules', {
+      title: 'Настройки правил в mini app',
+      description:
+        'В боте можно только быстро обновить текст или фото правил и опубликовать результат.',
+    });
+  }
+
+  private async renderEntityPollMovedToMiniappScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'poll', {
+      title: 'Опросы перенесены в mini app',
+      description:
+        'Создание, редактирование, публикация и закрытие опросов теперь выполняются только в приложении.',
+    });
+  }
+
+  private async renderEntityGiveawayMovedToMiniappScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'giveaway', {
+      title: 'Розыгрыши перенесены в mini app',
+      description:
+        'Черновики, публикация, итоги и reroll розыгрышей теперь доступны только в приложении.',
+    });
+  }
+
+  private async renderEntityChannelSettingsMovedToMiniappScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+    rawSection: string | undefined,
+  ): Promise<PrivateView> {
+    const focus =
+      rawSection === 'comments'
+        ? 'comments'
+        : rawSection === 'post_suggestions'
+          ? 'postSuggestions'
+          : null;
+    const description =
+      focus === 'comments'
+        ? 'Комментарии и реакции канала теперь настраиваются только в приложении.'
+        : focus === 'postSuggestions'
+          ? 'Кнопка предложки, лимиты и сценарии публикации теперь настраиваются только в приложении.'
+          : 'Настройки канала перенесены в mini app.';
+
+    return this.renderEntitySettingsMovedToMiniappScreen(context, session, focus, {
+      title: 'Настройки канала в mini app',
+      description,
     });
   }
 
@@ -10122,6 +10154,64 @@ export class PrivateControlService {
     return null;
   }
 
+  private extractFirstVideoSourceAttachment(update: MaxUpdate): ParsedVideoSourceAttachment | null {
+    for (const row of this.collectMessageAttachments(update)) {
+      const type = this.readLowerString(row.type);
+      const payload = this.asRecord(row.payload);
+
+      if (type === 'video' && payload) {
+        const url = this.readString(payload.url);
+        const mimeType = this.resolveVideoMimeType(
+          this.readLowerString(payload.mime_type ?? payload.mimeType),
+          this.readString(payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName),
+          url,
+        );
+        if (!url || !mimeType) {
+          continue;
+        }
+
+        return {
+          url,
+          token: this.readString(payload.token) ?? null,
+          fileId:
+            this.readString(payload.video_id ?? payload.videoId ?? payload.file_id ?? payload.fileId) ??
+            null,
+          fileName:
+            this.readString(
+              payload.file_name ??
+                payload.fileName ??
+                row.file_name ??
+                row.fileName ??
+                row.filename ??
+                row.name,
+            ) ?? null,
+          size: this.readOptionalInteger(payload.size ?? row.size),
+          mimeType,
+          mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
+          payloadKeys: Object.keys(payload).sort(),
+        };
+      }
+
+      const parsed = this.parseFileAttachment(row);
+      if (!parsed?.url) {
+        continue;
+      }
+
+      const mimeType = this.resolveVideoMimeType(parsed.mimeType, parsed.fileName, parsed.url);
+      if (!mimeType) {
+        continue;
+      }
+
+      return {
+        ...parsed,
+        url: parsed.url,
+        mimeType,
+      };
+    }
+
+    return null;
+  }
+
   private parseAttachmentUrlMetadata(url: string | null): {
     host: string | null;
     path: string | null;
@@ -10223,6 +10313,104 @@ export class PrivateControlService {
     return this.downloadImageFileAttachment(imageSourceAttachment.attachment, filePrefix);
   }
 
+  private async downloadVideoSourceAttachment(
+    videoSourceAttachment: ParsedVideoSourceAttachment,
+    filePrefix = 'channel-suggestion',
+  ): Promise<DownloadedBinaryAsset> {
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 10_000);
+    const controller = new AbortController();
+
+    try {
+      const response = await fetch(videoSourceAttachment.url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new BadRequestException(`Не удалось загрузить видео (${response.status}).`);
+      }
+
+      const mimeTypeHeader = response.headers.get('content-type') ?? '';
+      const mimeType = this.resolveVideoMimeType(
+        mimeTypeHeader.toLowerCase().startsWith('video/')
+          ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
+          : videoSourceAttachment.mimeType,
+        videoSourceAttachment.fileName,
+        videoSourceAttachment.url,
+      );
+      if (!mimeType) {
+        throw new BadRequestException('Файл должен быть видео.');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      if (buffer.length === 0) {
+        throw new BadRequestException('Видео оказалось пустым.');
+      }
+
+      const fileName = this.buildDownloadedFileName(
+        filePrefix,
+        videoSourceAttachment.fileName ?? this.fileNameFromUrl(videoSourceAttachment.url),
+        videoSourceAttachment.fileId,
+        mimeType,
+      );
+
+      return {
+        buffer,
+        mimeType,
+        fileName,
+      };
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException('Не удалось загрузить видео из сообщения.');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async buildSuggestionMediaDraftFromImage(
+    imageSourceAttachment: ParsedImageSourceAttachment,
+    filePrefix = 'channel-suggestion',
+  ): Promise<PrivateSuggestionMediaDraft> {
+    const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment, filePrefix);
+    const payload = await this.maxClient.uploadImage(
+      Buffer.from(downloaded.base64, 'base64'),
+      downloaded.fileName,
+      downloaded.mimeType,
+    );
+
+    return {
+      kind: 'image',
+      mimeType: downloaded.mimeType,
+      fileName: downloaded.fileName,
+      payload,
+    };
+  }
+
+  private async buildSuggestionMediaDraftFromVideo(
+    videoSourceAttachment: ParsedVideoSourceAttachment,
+    filePrefix = 'channel-suggestion',
+  ): Promise<PrivateSuggestionMediaDraft> {
+    const downloaded = await this.downloadVideoSourceAttachment(videoSourceAttachment, filePrefix);
+    const payload = await this.maxClient.uploadVideo(
+      downloaded.buffer,
+      downloaded.fileName,
+      downloaded.mimeType,
+    );
+
+    return {
+      kind: 'video',
+      mimeType: downloaded.mimeType,
+      fileName: downloaded.fileName,
+      payload,
+    };
+  }
+
   private async downloadImageFileAttachment(
     imageFileAttachment: ParsedImageFileAttachment,
     filePrefix = 'private-broadcast',
@@ -10296,6 +10484,21 @@ export class PrivateControlService {
     if (mimeType === 'image/heic') {
       return 'heic';
     }
+    if (mimeType === 'video/mp4') {
+      return 'mp4';
+    }
+    if (mimeType === 'video/quicktime') {
+      return 'mov';
+    }
+    if (mimeType === 'video/webm') {
+      return 'webm';
+    }
+    if (mimeType === 'video/x-msvideo') {
+      return 'avi';
+    }
+    if (mimeType === 'video/x-m4v') {
+      return 'm4v';
+    }
 
     return 'jpg';
   }
@@ -10346,6 +10549,21 @@ export class PrivateControlService {
     );
   }
 
+  private resolveVideoMimeType(
+    mimeType: string | null,
+    fileName: string | null,
+    url: string | null,
+  ): string | null {
+    if (mimeType?.startsWith('video/')) {
+      return mimeType;
+    }
+
+    return (
+      this.inferVideoMimeTypeFromFileName(fileName) ??
+      this.inferVideoMimeTypeFromFileName(this.fileNameFromUrl(url))
+    );
+  }
+
   private inferImageMimeTypeFromFileName(fileName: string | null): string | null {
     if (!fileName) {
       return null;
@@ -10366,6 +10584,31 @@ export class PrivateControlService {
     }
     if (normalized.endsWith('.heic')) {
       return 'image/heic';
+    }
+
+    return null;
+  }
+
+  private inferVideoMimeTypeFromFileName(fileName: string | null): string | null {
+    if (!fileName) {
+      return null;
+    }
+
+    const normalized = fileName.trim().toLowerCase();
+    if (normalized.endsWith('.mp4')) {
+      return 'video/mp4';
+    }
+    if (normalized.endsWith('.mov')) {
+      return 'video/quicktime';
+    }
+    if (normalized.endsWith('.webm')) {
+      return 'video/webm';
+    }
+    if (normalized.endsWith('.avi')) {
+      return 'video/x-msvideo';
+    }
+    if (normalized.endsWith('.m4v')) {
+      return 'video/x-m4v';
     }
 
     return null;
@@ -10419,7 +10662,7 @@ export class PrivateControlService {
   }
 
   private resolvePrimaryScreen(session: PrivateSession): PrivateScreen {
-    return session.selectedChatId ? 'home' : 'chat_select';
+    return 'home';
   }
 
   private assertChatSelected(
@@ -10704,7 +10947,7 @@ export class PrivateControlService {
       managedGiveawayId: null,
       entityTab: 'chat',
       uiMode: 'modern',
-      screen: 'chat_select',
+      screen: 'home',
       homeTab: 'quick',
       sectionView: 'basic',
       searchQuery: null,
@@ -11087,6 +11330,7 @@ export class PrivateControlService {
       chatId,
       token,
       text: typeof row.text === 'string' ? row.text : '',
+      media: this.normalizeSuggestionMediaDraft((row as Record<string, unknown>).media),
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
       imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
       imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
@@ -11098,6 +11342,32 @@ export class PrivateControlService {
         typeof row.previewMessageId === 'string' && row.previewMessageId.trim().length > 0
           ? row.previewMessageId.trim()
           : null,
+    };
+  }
+
+  private normalizeSuggestionMediaDraft(raw: unknown): PrivateSuggestionMediaDraft | null {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return null;
+    }
+
+    const row = raw as Record<string, unknown>;
+    const kind = row.kind === 'video' ? 'video' : row.kind === 'image' ? 'image' : null;
+    const mimeType = typeof row.mimeType === 'string' ? row.mimeType.trim() : '';
+    const fileName = typeof row.fileName === 'string' ? row.fileName.trim() : '';
+    const payload =
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : null;
+
+    if (!kind || !mimeType || !fileName || !payload || Object.keys(payload).length === 0) {
+      return null;
+    }
+
+    return {
+      kind,
+      mimeType,
+      fileName,
+      payload,
     };
   }
 
@@ -11126,7 +11396,7 @@ export class PrivateControlService {
       return 'home';
     }
 
-    return 'chat_select';
+    return 'home';
   }
 
   private parseEntityType(value: unknown): ManagedEntityType | null {

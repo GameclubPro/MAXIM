@@ -156,6 +156,11 @@ export type MaxReplyMessageLink = {
 };
 
 export type MaxTextFormat = 'markdown' | 'html';
+export type MaxMediaAttachmentType = 'image' | 'video' | 'audio' | 'file';
+export type MaxAttachmentPayload = {
+  type: MaxMediaAttachmentType;
+  payload: Record<string, unknown>;
+};
 
 export type MaxMessageButton =
   | MaxLinkButton
@@ -169,6 +174,7 @@ export type MaxSendMessageOptions = {
   button?: MaxLinkButton;
   buttons?: MaxMessageButton[][];
   imagePayload?: Record<string, unknown>;
+  attachments?: MaxAttachmentPayload[];
   messageLink?: MaxReplyMessageLink | null;
   textFormat?: MaxTextFormat;
   debugContext?: {
@@ -806,6 +812,14 @@ export class MaxClientService implements OnModuleDestroy {
     return this.uploadBinary('image', data, fileName, mimeType);
   }
 
+  async uploadVideo(
+    data: Buffer,
+    fileName = 'video.mp4',
+    mimeType = 'video/mp4',
+  ): Promise<Record<string, unknown>> {
+    return this.uploadBinary('video', data, fileName, mimeType);
+  }
+
   async uploadFile(
     data: Buffer,
     fileName = 'asset.bin',
@@ -815,7 +829,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async uploadBinary(
-    uploadType: 'image' | 'file',
+    uploadType: MaxMediaAttachmentType,
     data: Buffer,
     fileName: string,
     mimeType: string,
@@ -2142,6 +2156,9 @@ export class MaxClientService implements OnModuleDestroy {
     if (imageAttachment) {
       attachments.push(imageAttachment);
     }
+    if (Array.isArray(options?.attachments) && options.attachments.length > 0) {
+      attachments.push(...this.buildMediaAttachments(options.attachments));
+    }
     const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
     if (keyboardAttachment) {
       attachments.push(keyboardAttachment);
@@ -2478,6 +2495,38 @@ export class MaxClientService implements OnModuleDestroy {
       type: 'image',
       payload: imagePayload,
     };
+  }
+
+  private buildMediaAttachments(attachments: MaxAttachmentPayload[]): Record<string, unknown>[] {
+    const normalizedAttachments: Record<string, unknown>[] = [];
+
+    for (const attachment of attachments) {
+      if (!attachment || typeof attachment !== 'object') {
+        continue;
+      }
+
+      const type = this.readLowerString(attachment.type);
+      if (type !== 'image' && type !== 'video' && type !== 'audio' && type !== 'file') {
+        continue;
+      }
+
+      const payload =
+        attachment.payload &&
+        typeof attachment.payload === 'object' &&
+        !Array.isArray(attachment.payload)
+          ? attachment.payload
+          : null;
+      if (!payload || Object.keys(payload).length === 0) {
+        continue;
+      }
+
+      normalizedAttachments.push({
+        type,
+        payload,
+      });
+    }
+
+    return normalizedAttachments;
   }
 
   private buildMessageLinkData(link?: MaxReplyMessageLink | null): Record<string, unknown> | null {

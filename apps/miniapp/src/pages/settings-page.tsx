@@ -1803,6 +1803,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       focusSection !== 'links' &&
       focusSection !== 'rules' &&
       focusSection !== 'comments' &&
+      focusSection !== 'poll' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'broadcast' &&
       focusSection !== 'requiredSubscription'
@@ -1818,6 +1819,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? { rules: true }
           : focusSection === 'comments'
             ? { comments: true }
+            : focusSection === 'poll'
+              ? { poll: true }
             : focusSection === 'giveaway'
               ? { giveaway: true }
               : focusSection === 'requiredSubscription'

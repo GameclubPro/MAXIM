@@ -118,6 +118,7 @@ import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
+  type MaxAttachmentPayload,
   type MaxBotChat,
   type MaxChatMemberAccess,
   type MaxMessageButton,
@@ -488,6 +489,10 @@ type ChannelSuggestionFromBotPayload = {
   imageBase64: string | null;
   imageMimeType: string | null;
   imageFileName: string | null;
+  mediaType: 'image' | 'video' | null;
+  mediaPayload: Record<string, unknown> | null;
+  mediaMimeType: string | null;
+  mediaFileName: string | null;
 };
 
 type ChannelSuggestionReviewAction = 'publish' | 'cancel';
@@ -2443,6 +2448,10 @@ export class AdminService {
       imageBase64: parsed.imageBase64,
       imageMimeType: parsed.imageMimeType,
       imageFileName: parsed.imageFileName,
+      mediaType: parsed.mediaType,
+      mediaPayload: parsed.mediaPayload,
+      mediaMimeType: parsed.mediaMimeType,
+      mediaFileName: parsed.mediaFileName,
     });
 
     return {
@@ -6029,13 +6038,13 @@ export class AdminService {
     chatId: string,
     text: string,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined,
   ): Promise<string> {
     let lastError: unknown = null;
     const attempts =
       Math.max(
-        options?.imagePayload ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
+        this.hasRetriableMaxAttachment(options) ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
       ) + 1;
 
@@ -6063,7 +6072,7 @@ export class AdminService {
     chatId: string,
     text: string,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
@@ -6092,10 +6101,10 @@ export class AdminService {
     error: unknown,
     attempt: number,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined,
   ): number | null {
-    if (options?.imagePayload && this.isAttachmentNotReadyError(error)) {
+    if (this.hasRetriableMaxAttachment(options) && this.isAttachmentNotReadyError(error)) {
       return BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? null;
     }
 
@@ -6104,6 +6113,14 @@ export class AdminService {
     }
 
     return null;
+  }
+
+  private hasRetriableMaxAttachment(
+    options:
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | undefined,
+  ): boolean {
+    return Boolean(options?.imagePayload) || Boolean(options?.attachments?.length);
   }
 
   private isAttachmentNotReadyError(error: unknown): boolean {
@@ -6409,7 +6426,9 @@ export class AdminService {
   private async publishMessageWithRetry(
     chatId: string,
     text: string,
-    options: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> | undefined,
+    options:
+      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | undefined,
   ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
@@ -6420,7 +6439,7 @@ export class AdminService {
       } catch (error: unknown) {
         lastError = error;
         if (
-          !options?.imagePayload ||
+          !this.hasRetriableMaxAttachment(options) ||
           !this.isAttachmentNotReadyError(error) ||
           attempt >= attempts
         ) {
@@ -9899,6 +9918,10 @@ export class AdminService {
     const hasImage =
       payload.hasImage === true || Boolean(this.readTrimmedString(payload.imageBase64));
     const imageFileName = this.readTrimmedString(payload.imageFileName);
+    const hasVideo = payload.hasVideo === true || this.readChannelSuggestionMediaType(payload.mediaType) === 'video';
+    const videoFileName =
+      this.readTrimmedString(payload.videoFileName) ??
+      this.readTrimmedString(payload.mediaFileName);
 
     return {
       id: row.id,
@@ -9920,6 +9943,8 @@ export class AdminService {
             publishedUrl: publishedUrl ?? null,
             hasImage,
             imageFileName: imageFileName ?? null,
+            hasVideo,
+            videoFileName: videoFileName ?? null,
           }
         : {}),
     };
@@ -10294,6 +10319,14 @@ export class AdminService {
     return value as Record<string, unknown>;
   }
 
+  private readObjectPayloadOrNull(value: unknown): Record<string, unknown> | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    return value as Record<string, unknown>;
+  }
+
   private readTrimmedString(value: unknown): string | null {
     if (typeof value !== 'string') {
       return null;
@@ -10548,6 +10581,10 @@ export class AdminService {
     imageBase64?: string | null;
     imageMimeType?: string | null;
     imageFileName?: string | null;
+    mediaType?: 'image' | 'video' | null;
+    mediaPayload?: Record<string, unknown> | null;
+    mediaMimeType?: string | null;
+    mediaFileName?: string | null;
   }): Promise<{
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date };
     delivered: boolean;
@@ -10575,10 +10612,15 @@ export class AdminService {
           deliveries: [],
           source: params.source,
           reviewStatus: 'pending',
-          hasImage: Boolean(params.imageBase64),
+          hasImage: params.mediaType === 'image' || Boolean(params.imageBase64),
+          hasVideo: params.mediaType === 'video',
           imageBase64: params.imageBase64 ?? null,
           imageMimeType: params.imageMimeType ?? null,
           imageFileName: params.imageFileName ?? null,
+          mediaType: params.mediaType ?? null,
+          mediaPayload: (params.mediaPayload ?? null) as Prisma.InputJsonValue | null,
+          mediaMimeType: params.mediaMimeType ?? null,
+          mediaFileName: params.mediaFileName ?? null,
         },
       },
       select: {
@@ -10598,6 +10640,10 @@ export class AdminService {
         imageBase64: params.imageBase64,
         imageMimeType: params.imageMimeType,
         imageFileName: params.imageFileName,
+        mediaType: params.mediaType,
+        mediaPayload: params.mediaPayload,
+        mediaMimeType: params.mediaMimeType,
+        mediaFileName: params.mediaFileName,
       },
     );
     const createdPayload = this.readObjectPayload(created.payload);
@@ -10662,6 +10708,10 @@ export class AdminService {
       imageBase64?: string | null;
       imageMimeType?: string | null;
       imageFileName?: string | null;
+      mediaType?: 'image' | 'video' | null;
+      mediaPayload?: Record<string, unknown> | null;
+      mediaMimeType?: string | null;
+      mediaFileName?: string | null;
     },
   ): Promise<{
     delivered: boolean;
@@ -10692,8 +10742,8 @@ export class AdminService {
 
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorName = user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
-    const uploadedImagePayload = await this.uploadChannelSuggestionImage(suggestion);
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
+    const messageOptions = await this.buildChannelSuggestionMessageOptions(suggestion, buttons);
     const message = this.buildChannelSuggestionAdminMessage({
       status: 'pending',
       channelTitle,
@@ -10710,17 +10760,12 @@ export class AdminService {
       let privateChatId: string | null = null;
       try {
         privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
-        const published = privateChatId
-          ? await this.maxClient.sendMessageImmediateWithId(privateChatId, message, {
-              ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
-              buttons,
-              textFormat: 'markdown',
-            })
-          : await this.maxClient.sendMessageImmediateToUser(adminUserId, message, {
-              ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
-              buttons,
-              textFormat: 'markdown',
-            });
+        const published = await this.sendChannelSuggestionAdminMessageWithRetry({
+          adminUserId,
+          privateChatId,
+          message,
+          options: messageOptions,
+        });
 
         deliveredAdminUserIds.push(adminUserId);
         privateChatId =
@@ -10834,7 +10879,7 @@ export class AdminService {
       this.markdownTitle('Контент публикации'),
       ...(normalizedText
         ? [this.escapeMarkdown(normalizedText)]
-        : ['_Фото без подписи. Смотрите вложение выше._']),
+        : ['_Медиа без подписи. Смотрите вложение выше._']),
     ].join('\n');
   }
 
@@ -10851,47 +10896,32 @@ export class AdminService {
     autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
   }> {
     const text = this.readTrimmedString(payload.text) ?? '';
-    const imageBase64 = this.readTrimmedString(payload.imageBase64);
-    const imageMimeType = this.readTrimmedString(payload.imageMimeType);
-    const imageFileName = this.readTrimmedString(payload.imageFileName);
+    const media = await this.resolveChannelSuggestionAttachments({
+      imageBase64: this.readTrimmedString(payload.imageBase64),
+      imageMimeType: this.readTrimmedString(payload.imageMimeType),
+      imageFileName: this.readTrimmedString(payload.imageFileName),
+      mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
+      mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
+      mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
+      mediaFileName: this.readTrimmedString(payload.mediaFileName),
+    });
     const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
     const messageText = this.buildPublishedChannelSuggestionMessageText(payload, text);
 
-    if (!text && !imageBase64) {
-      throw new BadRequestException('В предложке нет текста или фото для публикации.');
+    if (!text && !media.imagePayload && !media.attachments?.length) {
+      throw new BadRequestException('В предложке нет текста или медиа для публикации.');
     }
 
-    const messageOptions: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> = {
+    const messageOptions: Pick<
+      MaxSendMessageOptions,
+      'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+    > = {
       ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
+      ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
+      ...(media.attachments?.length ? { attachments: media.attachments } : {}),
       textFormat: 'markdown',
     };
-
-    if (!imageBase64) {
-      const published = await this.publishMessageWithRetry(chatId, messageText, messageOptions);
-      return {
-        messageId: published.messageId,
-        url: published.url,
-        threadId: buttonContext.threadId,
-        includeCommentsButton: buttonContext.includeCommentsButton,
-        includeSuggestButton: buttonContext.includeSuggestButton,
-        suggestButtonText: buttonContext.suggestButtonText,
-        autoPostButtonsMode: buttonContext.autoPostButtonsMode,
-      };
-    }
-
-    const uploadedImagePayload = await this.uploadChannelSuggestionImage({
-      imageBase64,
-      imageMimeType,
-      imageFileName,
-    });
-    if (!uploadedImagePayload) {
-      throw new BadRequestException('Не удалось подготовить фото предложки для публикации.');
-    }
-
-    const published = await this.publishMessageWithRetry(chatId, messageText, {
-      ...messageOptions,
-      imagePayload: uploadedImagePayload,
-    });
+    const published = await this.publishMessageWithRetry(chatId, messageText, messageOptions);
 
     return {
       messageId: published.messageId,
@@ -11085,13 +11115,29 @@ export class AdminService {
     const imageBase64 = this.readTrimmedString(row.imageBase64);
     const imageMimeType = this.readTrimmedString(row.imageMimeType);
     const imageFileName = this.readTrimmedString(row.imageFileName);
+    const mediaType = this.readChannelSuggestionMediaType(row.mediaType);
+    const mediaPayload = this.readObjectPayloadOrNull(row.mediaPayload);
+    const mediaMimeType = this.readTrimmedString(row.mediaMimeType);
+    const mediaFileName = this.readTrimmedString(row.mediaFileName);
 
-    if (!text && !imageBase64) {
-      throw new BadRequestException('Пришлите текст, фото или фото с подписью.');
+    if (!text && !imageBase64 && !mediaPayload) {
+      throw new BadRequestException('Пришлите текст, фото, видео или подпись к медиа.');
     }
 
     if (imageBase64 && (!imageMimeType || !imageMimeType.toLowerCase().startsWith('image/'))) {
       throw new BadRequestException('Фото предложки передано в неверном формате.');
+    }
+
+    if ((mediaType && !mediaPayload) || (!mediaType && mediaPayload)) {
+      throw new BadRequestException('Медиа предложки передано в неполном формате.');
+    }
+
+    if (mediaType === 'image' && mediaMimeType && !mediaMimeType.toLowerCase().startsWith('image/')) {
+      throw new BadRequestException('Фото предложки передано в неверном формате.');
+    }
+
+    if (mediaType === 'video' && mediaMimeType && !mediaMimeType.toLowerCase().startsWith('video/')) {
+      throw new BadRequestException('Видео предложки передано в неверном формате.');
     }
 
     return {
@@ -11100,6 +11146,10 @@ export class AdminService {
       imageBase64,
       imageMimeType,
       imageFileName,
+      mediaType,
+      mediaPayload,
+      mediaMimeType,
+      mediaFileName,
     };
   }
 
@@ -11145,6 +11195,121 @@ export class AdminService {
       );
       throw new BadRequestException('Не удалось загрузить фото предложки.');
     }
+  }
+
+  private async resolveChannelSuggestionAttachments(suggestion: {
+    imageBase64?: string | null;
+    imageMimeType?: string | null;
+    imageFileName?: string | null;
+    mediaType?: 'image' | 'video' | null;
+    mediaPayload?: Record<string, unknown> | null;
+    mediaMimeType?: string | null;
+    mediaFileName?: string | null;
+  }): Promise<{
+    imagePayload?: Record<string, unknown>;
+    attachments?: MaxAttachmentPayload[];
+  }> {
+    if (suggestion.mediaType && suggestion.mediaPayload) {
+      return suggestion.mediaType === 'image'
+        ? {
+            imagePayload: suggestion.mediaPayload,
+          }
+        : {
+            attachments: [
+              {
+                type: suggestion.mediaType,
+                payload: suggestion.mediaPayload,
+              },
+            ],
+          };
+    }
+
+    const uploadedImagePayload = await this.uploadChannelSuggestionImage({
+      imageBase64: suggestion.imageBase64,
+      imageMimeType: suggestion.imageMimeType,
+      imageFileName: suggestion.imageFileName,
+    });
+
+    return uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {};
+  }
+
+  private async buildChannelSuggestionMessageOptions(
+    suggestion: {
+      imageBase64?: string | null;
+      imageMimeType?: string | null;
+      imageFileName?: string | null;
+      mediaType?: 'image' | 'video' | null;
+      mediaPayload?: Record<string, unknown> | null;
+      mediaMimeType?: string | null;
+      mediaFileName?: string | null;
+    },
+    buttons: MaxMessageButton[][],
+  ): Promise<Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>> {
+    const media = await this.resolveChannelSuggestionAttachments(suggestion);
+    return {
+      buttons,
+      ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
+      ...(media.attachments?.length ? { attachments: media.attachments } : {}),
+      textFormat: 'markdown',
+    };
+  }
+
+  private async sendChannelSuggestionAdminMessageWithRetry(params: {
+    adminUserId: string;
+    privateChatId: string | null;
+    message: string;
+    options: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>;
+  }) {
+    let lastError: unknown = null;
+    const attempts =
+      Math.max(
+        this.hasRetriableMaxAttachment(params.options)
+          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
+          : 0,
+        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
+      ) + 1;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return params.privateChatId
+          ? await this.maxClient.sendMessageImmediateWithId(
+              params.privateChatId,
+              params.message,
+              params.options,
+            )
+          : await this.maxClient.sendMessageImmediateToUser(
+              params.adminUserId,
+              params.message,
+              params.options,
+            );
+      } catch (error: unknown) {
+        lastError = error;
+        const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
+          error,
+          attempt,
+          params.options,
+        );
+        if (retryDelayMs === null) {
+          throw error;
+        }
+        await this.sleep(retryDelayMs);
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    throw new Error('Suggestion admin delivery failed without error details.');
+  }
+
+  private readChannelSuggestionMediaType(value: unknown): 'image' | 'video' | null {
+    const normalized = this.readLowerString(value);
+    if (normalized === 'image' || normalized === 'video') {
+      return normalized;
+    }
+
+    return null;
   }
 
   private async findLatestPrivateChatIdForUser(userId: string): Promise<string | null> {

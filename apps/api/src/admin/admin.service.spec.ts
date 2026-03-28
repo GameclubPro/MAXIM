@@ -10354,6 +10354,110 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('delivers bot-submitted video suggestions to admins with attachment retry', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-video-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:12:30.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-7', url: null }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockRejectedValueOnce({
+          response: {
+            status: 400,
+            data: {
+              code: 'attachment.not.ready',
+            },
+          },
+        })
+        .mockResolvedValueOnce({ messageId: 'mid-suggestion-admin-video-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: '',
+        mediaType: 'video',
+        mediaPayload: { token: 'uploaded-video-1' },
+        mediaMimeType: 'video/mp4',
+        mediaFileName: 'suggestion.mp4',
+      },
+    );
+
+    expect(sleepSpy).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenLastCalledWith(
+      '555001',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        attachments: [{ type: 'video', payload: { token: 'uploaded-video-1' } }],
+        textFormat: 'markdown',
+        buttons: [
+          [
+            expect.objectContaining({ text: '📰 В публикацию', type: 'callback' }),
+            expect.objectContaining({ text: '✖️ Отклонить', type: 'callback' }),
+          ],
+        ],
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            source: 'private_bot',
+            hasVideo: true,
+            mediaType: 'video',
+            mediaMimeType: 'video/mp4',
+            mediaFileName: 'suggestion.mp4',
+            mediaPayload: { token: 'uploaded-video-1' },
+          }),
+        }),
+      }),
+    );
+  });
+
   it('skips bot numeric admin id from chat members/me when MAX_BOT_CONTACT_ID is not configured', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -10754,6 +10858,133 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           }),
         }),
       }),
+    );
+  });
+
+  it('publishes a reviewed video suggestion with retry when attachment is not ready', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: 'Предложить пост',
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-video-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-9',
+        authorDisplayName: 'Видеограф',
+        text: 'Видео с подписью',
+        threadId: '33333333-3333-4333-8333-333333333333',
+        reviewStatus: 'pending',
+        mediaType: 'video',
+        mediaPayload: {
+          token: 'video-upload-1',
+        },
+        mediaMimeType: 'video/mp4',
+        mediaFileName: 'suggestion.mp4',
+        deliveries: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            messageId: 'mid-admin-review-video-1',
+          },
+        ],
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockRejectedValueOnce({
+          response: {
+            status: 400,
+            data: {
+              code: 'attachment.not.ready',
+            },
+          },
+        })
+        .mockResolvedValueOnce({
+          messageId: 'mid-channel-video-post-1',
+          url: 'https://max.ru/chats/channel-1/message/102',
+        }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const sleepSpy = jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
+
+    const result = await service.reviewChannelSuggestionByAdmin(
+      'suggestion-review-video-1',
+      {
+        userId: 'admin-1',
+        username: 'chief',
+        displayName: 'Главный редактор',
+        chatTitle: null,
+      },
+      'publish',
+    );
+
+    expect(result).toEqual({
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/102',
+    });
+    expect(sleepSpy).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
+      'channel-1',
+      'От подписчика [Видеограф](max://user/user-9)\n\nВидео с подписью',
+      expect.objectContaining({
+        textFormat: 'markdown',
+        attachments: [{ type: 'video', payload: { token: 'video-upload-1' } }],
+        buttons: [
+          [
+            expect.objectContaining({
+              text: '💬 Комментарии · 0',
+            }),
+          ],
+          [
+            expect.objectContaining({
+              text: 'Предложить пост',
+            }),
+          ],
+        ],
+      }),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      '555001',
+      'mid-admin-review-video-1',
+      expect.stringContaining('**Контент публикации**'),
+      { buttons: [], textFormat: 'markdown' },
     );
   });
 

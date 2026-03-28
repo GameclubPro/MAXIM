@@ -2153,6 +2153,8 @@ export const channelDialogMessageSchema = z.object({
   publishedUrl: z.string().trim().max(2_048).nullable().optional(),
   hasImage: z.boolean().optional(),
   imageFileName: z.string().trim().max(128).nullable().optional(),
+  hasVideo: z.boolean().optional(),
+  videoFileName: z.string().trim().max(128).nullable().optional(),
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 

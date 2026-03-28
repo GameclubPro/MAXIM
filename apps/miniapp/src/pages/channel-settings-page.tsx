@@ -490,13 +490,27 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    if (focusSection !== 'giveaway' && focusSection !== 'broadcast') {
+    if (
+      focusSection !== 'broadcast' &&
+      focusSection !== 'comments' &&
+      focusSection !== 'giveaway' &&
+      focusSection !== 'poll' &&
+      focusSection !== 'postSuggestions'
+    ) {
       return;
     }
 
     setExpandedSections((current) => ({
       ...current,
-      ...(focusSection === 'giveaway' ? { giveaway: true } : { broadcast: true }),
+      ...(focusSection === 'comments'
+        ? { comments: true }
+        : focusSection === 'postSuggestions'
+          ? { postSuggestions: true }
+          : focusSection === 'poll'
+            ? { poll: true }
+            : focusSection === 'giveaway'
+              ? { giveaway: true }
+              : { broadcast: true }),
     }));
   }, [focusSection]);
 
@@ -648,6 +662,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   function closeSection(section: ChannelSettingsSectionKey) {
     if (
       (section === 'broadcast' && focusSection === 'broadcast') ||
+      (section === 'comments' && focusSection === 'comments') ||
+      (section === 'postSuggestions' && focusSection === 'postSuggestions') ||
+      (section === 'poll' && focusSection === 'poll') ||
       (section === 'giveaway' && focusSection === 'giveaway')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
