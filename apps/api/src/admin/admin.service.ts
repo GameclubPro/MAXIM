@@ -478,6 +478,14 @@ const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
 const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
 const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
+const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
+const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
+const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
+  'message_created',
+  'message_callback',
+  'bot_started',
+  'bot_added',
+] as const;
 type ChannelDialogTokenPayload = {
   v: 1;
   d: string;
@@ -705,7 +713,7 @@ export class AdminService {
           items: await this.hydrateManagedEntities(initial),
           refresh:
             options.includeRefreshState === true
-              ? await this.readManagedEntitiesRefreshState(user.userId, entityType)
+              ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
               : null,
         };
       }
@@ -719,12 +727,10 @@ export class AdminService {
       });
     }
 
-    const discovered = await this.discoverManagedEntities(user, entityType, {
+    const discovered = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
       respectCooldown: false,
       fullScan: true,
       includeRefreshState: true,
-      bypassRemoteCache: options.bypassRemoteCache === true,
-      resetRefreshCursor: options.resetRefreshCursor === true,
     });
     if (discovered.items.length > 0 || discovered.refresh?.complete === true) {
       return {
@@ -784,6 +790,201 @@ export class AdminService {
     return merged;
   }
 
+  private mergeManagedEntitiesDiscoverySnapshots(
+    ...groups: readonly ManagedEntitiesDiscoverySnapshot[]
+  ): ManagedEntitiesDiscoverySnapshot {
+    const merged: ManagedEntitiesDiscoverySnapshot = [];
+    const seen = new Set<string>();
+
+    for (const group of groups) {
+      for (const chat of group) {
+        if (!chat.chatId || seen.has(chat.chatId)) {
+          continue;
+        }
+
+        seen.add(chat.chatId);
+        merged.push(chat);
+      }
+    }
+
+    return merged;
+  }
+
+  private toManagedEntitiesDiscoveryCandidate(chat: ChatSummary): MaxBotChat {
+    return {
+      chatId: chat.id,
+      title: chat.title,
+      lastEventTime: Date.parse(chat.createdAt) || 0,
+      entityType: chat.entityType,
+      link: chat.link ?? null,
+      avatarUrl: chat.avatarUrl ?? null,
+    };
+  }
+
+  private buildCurrentContextDiscoveryCandidates(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): ManagedEntitiesDiscoverySnapshot {
+    if (!user.chatId) {
+      return [];
+    }
+
+    const currentContextEntityType = this.resolveCurrentContextManagedEntityType(user);
+    if (!currentContextEntityType) {
+      return [];
+    }
+    if (entityType !== 'all' && currentContextEntityType !== entityType) {
+      return [];
+    }
+    if (currentContextEntityType === 'chat' && this.isPrivateDirectChat(user.chatId)) {
+      return [];
+    }
+
+    return [
+      {
+        chatId: user.chatId,
+        title: this.readTrimmedString(user.chatTitle) ?? user.chatId,
+        lastEventTime: Date.now(),
+        entityType: currentContextEntityType,
+        link: null,
+        avatarUrl: null,
+      },
+    ];
+  }
+
+  private async readLocalManagedEntitiesRefreshState(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: { backoffActiveOverride?: boolean } = {},
+  ): Promise<ManagedEntitiesRefreshState> {
+    const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
+    const backoffActive =
+      options.backoffActiveOverride ??
+      (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshCooldownKey));
+    const nextPollAfterMs = backoffActive
+      ? await this.getManagedEntitiesRefreshBackoffRemainingMs(userId, entityType, refreshCooldownKey)
+      : 0;
+
+    return this.createManagedEntitiesRefreshState(
+      backoffActive ? null : MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+      backoffActive,
+      nextPollAfterMs,
+    );
+  }
+
+  private async loadManagedEntitiesLocalDiscoverySnapshot(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: { limit: number },
+  ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    const normalizedUserId = user.userId.trim();
+    if (!normalizedUserId) {
+      return [];
+    }
+
+    const lookbackFrom = new Date(Date.now() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        chat_type: string | null;
+        created_at: Date;
+      }>
+    >`
+      WITH local_candidates AS (
+        SELECT DISTINCT ON (chat_id)
+          chat_id,
+          chat_title,
+          chat_type,
+          created_at
+        FROM (
+          SELECT
+            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
+            NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
+            LOWER(
+              COALESCE(
+                NULLIF(BTRIM(normalized_payload->'raw'->>'chat_type'), ''),
+                NULLIF(BTRIM(normalized_payload->'raw'->>'chatType'), ''),
+                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chat_type'), ''),
+                NULLIF(BTRIM(normalized_payload->'raw'->'chat'->>'chatType'), ''),
+                CASE
+                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'true'
+                    THEN 'channel'
+                  WHEN NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') = 'false'
+                    THEN 'chat'
+                  ELSE NULL
+                END
+              )
+            ) AS chat_type,
+            created_at
+          FROM webhook_events
+          WHERE NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') IS NOT NULL
+            AND normalized_payload->>'type' IN (${Prisma.join(
+              MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
+            )})
+            AND created_at >= ${lookbackFrom}
+        ) ranked
+        WHERE chat_id IS NOT NULL
+        ORDER BY chat_id, created_at DESC
+      )
+      SELECT
+        local_candidates.chat_id,
+        COALESCE(local_candidates.chat_title, chats.title) AS chat_title,
+        COALESCE(
+          local_candidates.chat_type,
+          CASE chats.entity_type
+            WHEN 'CHANNEL' THEN 'channel'
+            ELSE 'chat'
+          END
+        ) AS chat_type,
+        local_candidates.created_at
+      FROM local_candidates
+      LEFT JOIN chats ON chats.id = local_candidates.chat_id
+      ORDER BY local_candidates.created_at DESC
+      LIMIT ${Math.max(1, options.limit)}
+    `;
+
+    const snapshot: ManagedEntitiesDiscoverySnapshot = [];
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const chatId = this.readTrimmedString(row.chat_id);
+      if (!chatId) {
+        continue;
+      }
+
+      const hintedEntityType = this.normalizeManagedEntityTypeHint(row.chat_type) ?? 'chat';
+      if (hintedEntityType === 'chat' && this.isPrivateDirectChat(chatId)) {
+        continue;
+      }
+      if (entityType !== 'all' && hintedEntityType !== entityType) {
+        continue;
+      }
+
+      snapshot.push({
+        chatId,
+        title: this.readTrimmedString(row.chat_title) ?? chatId,
+        lastEventTime: row.created_at instanceof Date ? row.created_at.getTime() : 0,
+        entityType: hintedEntityType,
+        link: null,
+        avatarUrl: null,
+      });
+    }
+
+    return snapshot;
+  }
+
+  private normalizeManagedEntityTypeHint(value: unknown): ManagedEntityType | null {
+    const normalized = this.readLowerString(value);
+    if (normalized === 'channel') {
+      return 'channel';
+    }
+    if (normalized === 'chat') {
+      return 'chat';
+    }
+
+    return null;
+  }
+
   private async collectManagedEntitiesForMassAction(
     user: AuthUser,
     entityType: ManagedEntityType,
@@ -817,8 +1018,9 @@ export class AdminService {
       attemptedPasses = pass + 1;
       let result: ManagedEntitiesListResult;
       try {
-        result = await this.listManagedEntitiesDetailed(user, entityType, {
-          refresh: true,
+        result = await this.discoverManagedEntities(user, entityType, {
+          respectCooldown: false,
+          fullScan: true,
           includeRefreshState: true,
           bypassRemoteCache: pass === 0,
         });
@@ -1011,6 +1213,264 @@ export class AdminService {
     }
 
     return filtered.filter((chat): chat is ChatSummary => chat !== null);
+  }
+
+  private async discoverManagedEntitiesFromLocalCatalog(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      respectCooldown: boolean;
+      fullScan: boolean;
+      includeRefreshState?: boolean;
+    },
+  ): Promise<ManagedEntitiesListResult> {
+    const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
+    const backoffActive = await this.isManagedEntitiesRefreshBackoffActive(
+      user.userId,
+      entityType,
+      refreshCooldownKey,
+    );
+    const cooldownActive =
+      options.respectCooldown &&
+      (await this.isManagedEntitiesRefreshCooldownActive(
+        user.userId,
+        entityType,
+        refreshCooldownKey,
+      ));
+
+    if (backoffActive || cooldownActive) {
+      return {
+        items: [],
+        refresh:
+          options.includeRefreshState === true
+            ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType, {
+                backoffActiveOverride: backoffActive,
+              })
+            : null,
+      };
+    }
+
+    const discoveryKey = [user.userId, entityType, 'local', options.fullScan ? 'full' : 'delta'].join(
+      ':',
+    );
+    const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
+    const pending =
+      inFlight ??
+      this.runManagedEntitiesLocalDiscovery(user, entityType, refreshCooldownKey, options);
+
+    if (!inFlight) {
+      this.managedEntitiesDiscoveryChecks.set(discoveryKey, pending);
+    }
+
+    try {
+      return await pending;
+    } finally {
+      if (!inFlight) {
+        this.managedEntitiesDiscoveryChecks.delete(discoveryKey);
+      }
+    }
+  }
+
+  private async runManagedEntitiesLocalDiscovery(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    refreshCooldownKey: string,
+    options: {
+      respectCooldown: boolean;
+      fullScan: boolean;
+      includeRefreshState?: boolean;
+    },
+  ): Promise<ManagedEntitiesListResult> {
+    const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
+    const cachedIds = new Set(cachedChats.map((chat) => chat.id));
+    const cachedAccessStates = await Promise.all(
+      cachedChats.map(async (chat) => ({
+        chat,
+        cachedAccess: (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null,
+      })),
+    );
+    const staleDeniedCachedCandidates = cachedAccessStates
+      .filter(
+        (entry) => entry.cachedAccess === 'user_denied' || entry.cachedAccess === 'bot_denied',
+      )
+      .map((entry) => this.toManagedEntitiesDiscoveryCandidate(entry.chat));
+    const currentContextCandidates = this.buildCurrentContextDiscoveryCandidates(user, entityType);
+    const prioritizedCandidateIds = new Set(
+      [...currentContextCandidates, ...staleDeniedCachedCandidates].map((chat) => chat.chatId),
+    );
+    const candidateChats = this.mergeManagedEntitiesDiscoverySnapshots(
+      currentContextCandidates,
+      staleDeniedCachedCandidates,
+      await this.loadManagedEntitiesLocalDiscoverySnapshot(user, entityType, {
+        limit: options.fullScan
+          ? MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT
+          : MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT,
+      }),
+    );
+
+    const candidateSlice = options.fullScan
+      ? candidateChats
+      : candidateChats.filter(
+          (chat) => !cachedIds.has(chat.chatId) || prioritizedCandidateIds.has(chat.chatId),
+        );
+
+    try {
+      const resolvedChats = await this.mapWithConcurrencyLimit(
+        candidateSlice,
+        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+        async (candidate) => {
+          const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
+            bypassNegativeCache: true,
+            trafficClass: 'interactive',
+          });
+          if (access.status === 'throttled') {
+            throw new ManagedEntitiesRefreshThrottledError(access.error);
+          }
+          if (access.status !== 'granted') {
+            return {
+              kind: 'remove' as const,
+              chatId: candidate.chatId,
+            };
+          }
+
+          const persistedChat = await this.upsertUserChatAccess(
+            candidate.chatId,
+            user.userId,
+            candidate.title,
+            candidate.entityType,
+            { updateEntityType: true },
+          );
+
+          const chat: ChatSummary = {
+            id: persistedChat.id,
+            title: persistedChat.title,
+            createdAt: persistedChat.createdAt.toISOString(),
+            entityType: this.fromPrismaEntityType(persistedChat.entityType),
+            link: candidate.link,
+            ...(candidate.avatarUrl?.trim()
+              ? { avatarUrl: candidate.avatarUrl.trim() }
+              : {}),
+            channelOverview: null,
+          };
+
+          if (this.isFallbackTitle(chat.id, chat.title)) {
+            await this.refreshChatTitle(chat);
+          }
+
+          return {
+            kind: 'include' as const,
+            chat,
+            lastEventTime: candidate.lastEventTime ?? 0,
+          };
+        },
+      );
+
+      await this.activateManagedEntitiesRefreshCooldown(
+        user.userId,
+        entityType,
+        refreshCooldownKey,
+      );
+
+      const removedChatIds = new Set(
+        resolvedChats
+          .filter(
+            (
+              item,
+            ): item is {
+              kind: 'remove';
+              chatId: string;
+            } => item !== null && item.kind === 'remove',
+          )
+          .map((item) => item.chatId),
+      );
+      const grantedById = new Map(
+        resolvedChats
+          .filter(
+            (
+              item,
+            ): item is {
+              kind: 'include';
+              chat: ChatSummary;
+              lastEventTime: number;
+            } => item !== null && item.kind === 'include',
+          )
+          .map((item) => [item.chat.id, item]),
+      );
+      const verifiedCached = cachedChats.filter((chat) => {
+        if (grantedById.has(chat.id)) {
+          return false;
+        }
+        if (removedChatIds.has(chat.id)) {
+          return false;
+        }
+
+        return true;
+      });
+      const mergedChats = [
+        ...grantedById.values(),
+        ...verifiedCached.map((chat) => ({
+          chat,
+          lastEventTime: 0,
+        })),
+      ]
+        .sort((left, right) => right.lastEventTime - left.lastEventTime)
+        .map((item) => item.chat);
+      const hydratedItems = await this.attachChannelOverview(
+        await this.attachManagedEntityAvatars(mergedChats, { skipRemoteFetch: true }),
+      );
+
+      return {
+        items: hydratedItems,
+        refresh:
+          options.includeRefreshState === true
+            ? this.createManagedEntitiesRefreshState(
+                MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+                false,
+                0,
+              )
+            : null,
+      };
+    } catch (error: unknown) {
+      if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
+        const rootError =
+          error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
+        const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
+          user.userId,
+          entityType,
+          refreshCooldownKey,
+        );
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            backoffMs,
+            err: rootError instanceof Error ? rootError.message : String(rootError),
+          },
+          'Paused local managed entity discovery after MAX API throttling',
+        );
+      } else {
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to discover managed entities from local catalog',
+        );
+      }
+
+      return {
+        items: [],
+        refresh:
+          options.includeRefreshState === true
+            ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType, {
+                backoffActiveOverride:
+                  this.isManagedEntitiesRefreshThrottledError(error) ||
+                  this.isMaxApiThrottleError(error),
+              })
+            : null,
+      };
+    }
   }
 
   private async discoverManagedEntities(

@@ -298,6 +298,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
+  const immediateOpenHint =
+    activeTab === 'chat'
+      ? 'Если нужен новый чат сразу, откройте приложение из этого чата.'
+      : 'Если нужен новый канал сразу, откройте приложение из этого канала.';
   const refreshButtonLabel = isFetching
     ? 'Обновляем список'
     : isRefreshTemporarilyBlocked
@@ -399,11 +403,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <GlassCard>
           <StatusState
             tone="neutral"
-            title="Список обновится автоматически"
+            title="Каталог обновляется в фоне"
             description={
               backoffDelayLabel === null
-                ? `MAX временно замедлил частые проверки. Уже найденные ${tabLabel.toLowerCase()} остаются доступны.`
-                : `MAX временно замедлил частые проверки. Уже найденные ${tabLabel.toLowerCase()} остаются доступны, следующая попытка пройдет автоматически примерно через ${backoffDelayLabel}`
+                ? `Уже найденные ${tabLabel.toLowerCase()} остаются доступны. MAX временно ограничил частоту проверок, а каталог продолжит обновляться автоматически. ${immediateOpenHint}`
+                : `Уже найденные ${tabLabel.toLowerCase()} остаются доступны. MAX временно ограничил частоту проверок, следующая попытка пройдет автоматически примерно через ${backoffDelayLabel}. ${immediateOpenHint}`
             }
           />
         </GlassCard>
@@ -414,7 +418,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="neutral"
             title={`Синхронизируем ${tabLabel.toLowerCase()}`}
-            description="Проверяем права администратора и обновляем список из MAX."
+            description="Обновляем локальный каталог и проверяем текущие права администратора в MAX."
           />
         </GlassCard>
       ) : null}
@@ -423,11 +427,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <GlassCard>
           <StatusState
             tone="neutral"
-            title="Проверка списка на паузе"
+            title="Каталог обновляется в фоне"
             description={
               backoffDelayLabel === null
-                ? 'MAX временно замедлил частые проверки. Как только окно запросов освободится, мы продолжим автоматически.'
-                : `MAX временно замедлил частые проверки. Как только окно запросов освободится, мы продолжим автоматически примерно через ${backoffDelayLabel}`
+                ? `MAX временно ограничил частоту проверок. Как только окно запросов освободится, каталог продолжит обновляться автоматически. ${immediateOpenHint}`
+                : `MAX временно ограничил частоту проверок. Как только окно запросов освободится, каталог продолжит обновляться автоматически примерно через ${backoffDelayLabel}. ${immediateOpenHint}`
             }
           />
         </GlassCard>
@@ -446,7 +450,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <h1>Нет доступных чатов</h1>
               <p>
                 Чтобы увидеть чат в «Майор Максимов», добавьте бота в чат и выдайте ему права
-                администратора.
+                администратора. После этого быстрее всего открыть приложение прямо из нужного
+                чата.
               </p>
             </div>
           </GlassCard>
@@ -519,7 +524,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="neutral"
             title="Каналы не найдены"
-            description="Добавьте бота в канал с правами администратора, и он появится в этом списке."
+            description="Добавьте бота в канал с правами администратора. Чтобы он появился сразу, откройте приложение прямо из этого канала."
             action={
               <button
                 type="button"
