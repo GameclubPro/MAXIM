@@ -87,15 +87,6 @@ export class WebhookService {
       return null;
     }
 
-    await this.prisma.webhookEvent.updateMany({
-      where: {
-        dedupKey: updateId,
-      },
-      data: {
-        status: WebhookStatus.DUPLICATE,
-      },
-    });
-
     return { accepted: true, duplicate: true };
   }
 

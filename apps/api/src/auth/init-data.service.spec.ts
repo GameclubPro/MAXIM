@@ -15,7 +15,10 @@ function sign(params: URLSearchParams, token = botToken): string {
   return createHmac('sha256', secretKey).update(rows).digest('hex');
 }
 
-function createConfigMock(previousToken?: string): ConfigService {
+function createConfigMock(
+  previousToken?: string,
+  overrides: Partial<Record<string, string | number>> = {},
+): ConfigService {
   return {
     getOrThrow: jest.fn((key: string) => {
       const values: Record<string, string> = {
@@ -26,6 +29,9 @@ function createConfigMock(previousToken?: string): ConfigService {
     get: jest.fn((key: string) => {
       if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
         return previousToken;
+      }
+      if (key in overrides) {
+        return overrides[key];
       }
       return undefined;
     }),
@@ -45,7 +51,7 @@ describe('InitDataService', () => {
         photo_url: 'https://cdn.max.ru/u/42/avatar.jpg',
       }),
     );
-    params.set('auth_date', '1700000000');
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params));
 
     const user = service.validate(params.toString());
@@ -64,7 +70,7 @@ describe('InitDataService', () => {
         url: 'https://max.ru/designer',
       }),
     );
-    params.set('auth_date', '1700000000');
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params));
 
     const user = service.validate(params.toString());
@@ -86,7 +92,7 @@ describe('InitDataService', () => {
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '100' }));
-    params.set('auth_date', '1700000001');
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params));
 
     const encoded = encodeURIComponent(params.toString());
@@ -100,7 +106,7 @@ describe('InitDataService', () => {
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '777' }));
     params.set('chat', JSON.stringify({ id: '152517912', title: 'MAXIM Chat' }));
-    params.set('auth_date', '1700000002');
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params));
 
     const user = service.validate(params.toString());
@@ -113,10 +119,20 @@ describe('InitDataService', () => {
     const service = new InitDataService(createConfigMock(previousBotToken));
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '555' }));
-    params.set('auth_date', '1700000003');
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params, previousBotToken));
 
     const user = service.validate(params.toString());
     expect(user.userId).toBe('555');
+  });
+
+  it('rejects expired init data', () => {
+    const service = new InitDataService(createConfigMock(undefined, { INIT_DATA_MAX_AGE_SEC: 300 }));
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '42' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000) - 301));
+    params.set('hash', sign(params));
+
+    expect(() => service.validate(params.toString())).toThrow('Init data has expired');
   });
 });

@@ -34,6 +34,7 @@ import { WebhookModule } from './webhook/webhook.module';
           'req.headers.authorization',
           'req.headers.x-max-secret',
           'req.headers.x-max-bot-api-secret',
+          'req.url',
         ],
       },
     }),

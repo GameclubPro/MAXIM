@@ -1,4 +1,3 @@
-import { WebhookStatus } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
@@ -27,7 +26,7 @@ describe('WebhookService', () => {
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
   });
 
-  it('marks duplicate events', async () => {
+  it('accepts duplicate events without mutating the original webhook state', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockRejectedValue({ code: 'P2002' }),
@@ -49,10 +48,7 @@ describe('WebhookService', () => {
     );
 
     expect(result).toEqual({ accepted: true, duplicate: true });
-    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith({
-      where: { dedupKey: 'u-1' },
-      data: { status: WebhookStatus.DUPLICATE },
-    });
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
   });
 
   it('retries webhook storage with sanitized payload when Prisma rejects malformed JSON input', async () => {

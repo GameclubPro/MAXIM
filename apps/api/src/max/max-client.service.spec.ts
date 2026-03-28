@@ -5,25 +5,50 @@ import Redis from 'ioredis';
 jest.mock('ioredis', () => {
   const store = new Map<string, string>();
   const RedisMock = Object.assign(
-    jest.fn().mockImplementation(() => ({
-      incr: jest.fn().mockResolvedValue(1),
-      expire: jest.fn().mockResolvedValue(1),
-      get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
-      set: jest.fn().mockImplementation(async (key: string, value: string) => {
-        store.set(key, value);
-        return 'OK';
-      }),
-      del: jest.fn().mockImplementation(async (...keys: string[]) => {
-        let deleted = 0;
-        for (const key of keys) {
-          if (store.delete(key)) {
-            deleted += 1;
+    jest.fn().mockImplementation(() => {
+      const instance = {
+        incr: jest.fn().mockResolvedValue(1),
+        expire: jest.fn().mockResolvedValue(1),
+        get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+        set: jest.fn().mockImplementation(async (key: string, value: string) => {
+          store.set(key, value);
+          return 'OK';
+        }),
+        del: jest.fn().mockImplementation(async (...keys: string[]) => {
+          let deleted = 0;
+          for (const key of keys) {
+            if (store.delete(key)) {
+              deleted += 1;
+            }
           }
-        }
-        return deleted;
-      }),
-      quit: jest.fn().mockResolvedValue(undefined),
-    })),
+          return deleted;
+        }),
+        quit: jest.fn().mockResolvedValue(undefined),
+        multi: jest.fn().mockImplementation(() => {
+          const operations: Array<['incr' | 'expire', ...unknown[]]> = [];
+          const pipeline = {
+            incr: (key: string) => {
+              operations.push(['incr', key]);
+              return pipeline;
+            },
+            expire: (key: string, ttlSec: number) => {
+              operations.push(['expire', key, ttlSec]);
+              return pipeline;
+            },
+            exec: jest.fn().mockImplementation(async () => {
+              const results: Array<[null, unknown]> = [];
+              for (const [method, ...args] of operations) {
+                results.push([null, await (instance[method] as (...values: unknown[]) => Promise<unknown>)(...args)]);
+              }
+              return results;
+            }),
+          };
+          return pipeline;
+        }),
+      };
+
+      return instance;
+    }),
     {
       __store: store,
     },

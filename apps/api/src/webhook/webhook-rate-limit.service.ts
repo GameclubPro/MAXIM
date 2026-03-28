@@ -19,19 +19,27 @@ export class WebhookRateLimitService {
     const secKey = `webhook:rps:global:${nowSec}`;
     const avgWindowKey = `webhook:rps:avg:${Math.floor(nowSec / 20)}`;
 
-    const secCount = await this.redis.incr(secKey);
-    if (secCount === 1) {
-      await this.redis.expire(secKey, 2);
-    }
+    const secCount = await this.incrementCounterWithTtl(secKey, 2);
     if (secCount > this.burstLimit) {
       return false;
     }
 
-    const avgWindowCount = await this.redis.incr(avgWindowKey);
-    if (avgWindowCount === 1) {
-      await this.redis.expire(avgWindowKey, 21);
-    }
+    const avgWindowCount = await this.incrementCounterWithTtl(avgWindowKey, 21);
 
     return avgWindowCount <= this.globalLimit * 20;
+  }
+
+  private async incrementCounterWithTtl(key: string, ttlSec: number): Promise<number> {
+    const pipeline = this.redis.multi();
+    pipeline.incr(key);
+    pipeline.expire(key, ttlSec);
+    const result = await pipeline.exec();
+    const count = result?.[0]?.[1];
+
+    if (typeof count !== 'number') {
+      throw new Error(`Failed to increment webhook rate limit counter for ${key}`);
+    }
+
+    return count;
   }
 }

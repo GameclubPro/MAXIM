@@ -4,9 +4,12 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 
+const INIT_DATA_ALLOWED_CLOCK_SKEW_SEC = 30;
+
 @Injectable()
 export class InitDataService {
   private readonly botTokens: readonly string[];
+  private readonly maxAgeSec: number;
 
   constructor(configService: ConfigService) {
     const configuredBotTokens = collectBotTokenSecrets(
@@ -15,6 +18,7 @@ export class InitDataService {
     );
     const currentBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.botTokens = configuredBotTokens.length > 0 ? configuredBotTokens : [currentBotToken];
+    this.maxAgeSec = configService.get<number>('INIT_DATA_MAX_AGE_SEC', 300);
   }
 
   validate(initData: string): AuthUser {
@@ -44,6 +48,8 @@ export class InitDataService {
     if (!valid) {
       throw new UnauthorizedException('Invalid init data signature');
     }
+
+    this.assertFreshAuthDate(params.get('auth_date'));
 
     const userPayload = params.get('user');
     if (!userPayload) {
@@ -108,6 +114,31 @@ export class InitDataService {
     }
 
     return current;
+  }
+
+  private assertFreshAuthDate(rawAuthDate: string | null) {
+    if (!rawAuthDate) {
+      throw new UnauthorizedException('Missing auth_date in init data');
+    }
+
+    const normalized = rawAuthDate.trim();
+    if (!/^\d+$/u.test(normalized)) {
+      throw new UnauthorizedException('Invalid auth_date in init data');
+    }
+
+    const authDateSec = Number.parseInt(normalized, 10);
+    if (!Number.isFinite(authDateSec) || authDateSec <= 0) {
+      throw new UnauthorizedException('Invalid auth_date in init data');
+    }
+
+    const nowSec = Math.floor(Date.now() / 1_000);
+    if (authDateSec > nowSec + INIT_DATA_ALLOWED_CLOCK_SKEW_SEC) {
+      throw new UnauthorizedException('Init data auth_date is in the future');
+    }
+
+    if (nowSec - authDateSec > this.maxAgeSec) {
+      throw new UnauthorizedException('Init data has expired');
+    }
   }
 
   private calculateInitDataHash(sortedPairs: string, botToken: string): string {

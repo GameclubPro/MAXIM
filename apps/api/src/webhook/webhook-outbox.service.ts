@@ -143,11 +143,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     });
 
     for (const event of prioritizedCandidates) {
+      const queueName = resolveWebhookQueueName(event.normalizedPayload);
       await this.enqueueOne(
         event.id,
         event.enqueueAttempts,
         resolveWebhookJobPriority(event.normalizedPayload),
-        resolveWebhookQueueName(event.normalizedPayload),
+        queueName,
       );
     }
   }
@@ -163,7 +164,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const existingJob = await this.findExistingJob(webhookEventId);
+    const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (existingJob) {
       await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob.job);
       return;
@@ -186,7 +187,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyExistsError(message)) {
-        await this.handleAlreadyExists(webhookEventId, enqueueAttempts);
+        await this.handleAlreadyExists(webhookEventId, enqueueAttempts, queueName);
         return;
       }
 
@@ -194,8 +195,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleAlreadyExists(webhookEventId: string, enqueueAttempts: number) {
-    const existingJob = await this.findExistingJob(webhookEventId);
+  private async handleAlreadyExists(
+    webhookEventId: string,
+    enqueueAttempts: number,
+    queueName: AnyWebhookQueueName,
+  ) {
+    const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (!existingJob) {
       await this.markFailedWithBackoff(
         webhookEventId,
@@ -360,12 +365,28 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return message.toLowerCase().includes('already exists');
   }
 
-  private async findExistingJob(webhookEventId: string): Promise<{
+  private async findExistingJob(
+    webhookEventId: string,
+    preferredQueueName?: AnyWebhookQueueName,
+  ): Promise<{
     queueName: AnyWebhookQueueName;
     job: Job<ProcessWebhookJob>;
   } | null> {
+    if (preferredQueueName) {
+      const preferredJob = await this.queuesByName[preferredQueueName].getJob(webhookEventId);
+      if (preferredJob) {
+        return {
+          queueName: preferredQueueName,
+          job: preferredJob,
+        };
+      }
+    }
+
+    const queueNames = preferredQueueName
+      ? ALL_WEBHOOK_QUEUE_NAMES.filter((queueName) => queueName !== preferredQueueName)
+      : ALL_WEBHOOK_QUEUE_NAMES;
     const jobs = await Promise.all(
-      ALL_WEBHOOK_QUEUE_NAMES.map(async (queueName) => ({
+      queueNames.map(async (queueName) => ({
         queueName,
         job: await this.queuesByName[queueName].getJob(webhookEventId),
       })),
@@ -389,7 +410,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    for (const queueName of ALL_WEBHOOK_QUEUE_NAMES) {
+    for (const queueName of queueNames) {
       const match = matches.find((item) => item.queueName === queueName);
       if (match) {
         return match;

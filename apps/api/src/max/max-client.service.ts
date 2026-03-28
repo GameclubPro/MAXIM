@@ -2991,18 +2991,14 @@ export class MaxClientService implements OnModuleDestroy {
   private async enforceRateLimit(chatId: string | null, trafficClass: MaxApiTrafficClass) {
     const nowSec = Math.floor(Date.now() / 1_000);
     const globalKey = `maxapi:rps:global:${nowSec}`;
-    const globalCount = await this.limiterRedis.incr(globalKey);
-    if (globalCount === 1) {
-      await this.limiterRedis.expire(globalKey, 2);
-    }
+    const trafficKey = `maxapi:rps:global:${trafficClass}:${nowSec}`;
+    const [globalCount, trafficCount] = await this.incrementRateLimitCounters([
+      { key: globalKey, ttlSec: 2 },
+      { key: trafficKey, ttlSec: 2 },
+    ]);
+
     if (globalCount > this.globalRpsLimit) {
       throw new Error('MAX API global rate limit exceeded');
-    }
-
-    const trafficKey = `maxapi:rps:global:${trafficClass}:${nowSec}`;
-    const trafficCount = await this.limiterRedis.incr(trafficKey);
-    if (trafficCount === 1) {
-      await this.limiterRedis.expire(trafficKey, 2);
     }
     if (trafficCount > this.resolveTrafficClassGlobalRpsLimit(trafficClass)) {
       throw new Error(`MAX API ${trafficClass} rate limit exceeded`);
@@ -3013,13 +3009,36 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const chatKey = `maxapi:rps:chat:${chatId}:${nowSec}`;
-    const chatCount = await this.limiterRedis.incr(chatKey);
-    if (chatCount === 1) {
-      await this.limiterRedis.expire(chatKey, 2);
-    }
+    const [chatCount] = await this.incrementRateLimitCounters([{ key: chatKey, ttlSec: 2 }]);
     if (chatCount > this.chatRpsLimit) {
       throw new Error(`MAX API per-chat rate limit exceeded for chat ${chatId}`);
     }
+  }
+
+  private async incrementRateLimitCounters(
+    counters: Array<{ key: string; ttlSec: number }>,
+  ): Promise<number[]> {
+    const pipeline = this.limiterRedis.multi();
+    for (const counter of counters) {
+      pipeline.incr(counter.key);
+      pipeline.expire(counter.key, counter.ttlSec);
+    }
+
+    const result = await pipeline.exec();
+    if (!result) {
+      throw new Error('Failed to execute MAX API rate limit pipeline');
+    }
+
+    const counts: number[] = [];
+    for (let index = 0; index < counters.length; index += 1) {
+      const value = result[index * 2]?.[1];
+      if (typeof value !== 'number') {
+        throw new Error(`Failed to increment MAX API rate limit counter for ${counters[index].key}`);
+      }
+      counts.push(value);
+    }
+
+    return counts;
   }
 
   private resolveTrafficClassGlobalRpsLimit(trafficClass: MaxApiTrafficClass): number {
