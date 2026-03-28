@@ -656,7 +656,7 @@ function createHarness(
       userId: 'user-77',
       muteDurationHours: null,
       unbanScheduledAt: null,
-      message: 'Участник забанен в чате.',
+      message: 'Бан включён.',
     }),
     getChatPoll: jest.fn().mockResolvedValue(createPoll()),
     updateChatPoll: jest.fn().mockImplementation(async (_chatId, _actor, draft) =>
@@ -1161,7 +1161,7 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Участник забанен в чате.');
+    expect(getLastSentText(maxClient)).toContain('Бан включён.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
@@ -1174,7 +1174,7 @@ describe('PrivateControlService', () => {
       userId: 'user-77',
       muteDurationHours: 6,
       muteExpiresAt: '2026-03-26T12:00:00.000Z',
-      message: 'Участник замьючен на 6ч. Новые сообщения будут удаляться до конца срока.',
+      message: 'Мут на 6ч.',
     });
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут'));
@@ -1193,7 +1193,7 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Участник замьючен на 6ч.');
+    expect(getLastSentText(maxClient)).toContain('Мут на 6ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
@@ -1206,7 +1206,7 @@ describe('PrivateControlService', () => {
       userId: 'user-77',
       muteDurationHours: 12,
       muteExpiresAt: '2026-03-26T18:00:00.000Z',
-      message: 'Участник замьючен на 12ч. Новые сообщения будут удаляться до конца срока.',
+      message: 'Мут на 12ч.',
     });
 
     await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 12'));
@@ -1225,7 +1225,7 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Участник замьючен на 12ч.');
+    expect(getLastSentText(maxClient)).toContain('Мут на 12ч.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });

@@ -2621,7 +2621,107 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-2',
       muteDurationHours: 6,
       muteExpiresAt: expect.any(String),
-      message: 'Участник замьючен на 6ч. Новые сообщения будут удаляться до конца срока.',
+      message: 'Мут на 6ч.',
+    });
+  });
+
+  it('fans out manual mute from command to other chats of the admin and clears recent messages in source chat', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'MUTE', muteDurationHours: 6 },
+      'group_command',
+    );
+
+    expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
+      immediate: true,
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+          metadata: expect.objectContaining({
+            muteDurationHours: 6,
+            sourceMessageCleanup: expect.objectContaining({
+              candidateCount: 1,
+              deletedCount: 1,
+              failedCount: 0,
+            }),
+            crossChatMuteFanout: expect.objectContaining({
+              mutedChatsCount: 1,
+              mutedChatIds: ['chat-2'],
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-2',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+          metadata: expect.objectContaining({
+            fanout: true,
+            sourceChatId: 'chat-1',
+            muteDurationHours: 6,
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-2',
+      muteDurationHours: 6,
+      muteExpiresAt: expect.any(String),
+      message: 'Мут на 6ч.',
     });
   });
 
@@ -2681,7 +2781,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Участник забанен в чате.',
+      message: 'Бан включён.',
     });
   });
 
@@ -2753,7 +2853,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.',
+      message: 'Пользователь удалён.',
     });
   });
 
@@ -2889,7 +2989,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-rollback',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Участник забанен в чате.',
+      message: 'Бан включён.',
     });
   });
 
@@ -3129,7 +3229,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Участник забанен в чате.',
+      message: 'Бан включён.',
     });
   });
 
@@ -3228,8 +3328,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'user-3',
       }),
     );
-    expect(result.message).toContain('Сообщения за последние 24 часа удалены: 2.');
-    expect(result.message).toContain('Дополнительно удалён из других групп администратора: 1.');
+    expect(result.message).toBe('Бан включён.');
   });
 
   it('still bans permanently when cancelling a stale scheduled unban fails', async () => {
@@ -3274,7 +3373,7 @@ describe('AdminService.applyManualSystemBan', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         ok: true,
-        message: 'Участник забанен в чате.',
+        message: 'Бан включён.',
       }),
     );
 

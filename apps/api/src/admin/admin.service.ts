@@ -7215,6 +7215,7 @@ export class AdminService {
       source,
       initiatedByUserId: user.userId,
     } as const;
+    const shouldFanoutCommandMute = source === 'group_command' || source === 'private_command';
 
     if (parsed.data.action === 'MUTE') {
       const muteDurationHours = parsed.data.muteDurationHours;
@@ -7224,6 +7225,56 @@ export class AdminService {
 
       await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'MUTE');
       const muteExpiresAt = new Date(Date.now() + muteDurationHours * ONE_HOUR_MS);
+      let sourceCleanup = {
+        candidateMessageIds: [] as string[],
+        deletedMessageIds: [] as string[],
+        failedMessageIds: [] as string[],
+      };
+      if (shouldFanoutCommandMute) {
+        try {
+          sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              targetUserId,
+              actorUserId: user.userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to run recent message cleanup after manual mute',
+          );
+        }
+      }
+
+      let fanout = {
+        mutedChatIds: [] as string[],
+        skippedChatIds: [] as string[],
+        failedChatIds: [] as string[],
+      };
+      if (shouldFanoutCommandMute) {
+        try {
+          fanout = await this.applyManualMuteFanout({
+            sourceChatId: chatId,
+            targetUserId,
+            actor: user,
+            muteDurationHours,
+            muteExpiresAt,
+            source,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              targetUserId,
+              actorUserId: user.userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to run manual mute fanout after source chat mute',
+          );
+        }
+      }
+      const sourceMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
+      const crossChatMuteFanout = this.summarizeManualMuteFanout(fanout);
 
       await this.recordManualModerationAction({
         chatId,
@@ -7237,12 +7288,24 @@ export class AdminService {
           reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
           muteDurationHours,
           muteExpiresAt: muteExpiresAt.toISOString(),
+          ...(shouldFanoutCommandMute
+            ? {
+                sourceMessageCleanup,
+                crossChatMuteFanout,
+              }
+            : {}),
         },
         auditPayload: {
           userId: targetUserId,
           source,
           muteDurationHours,
           muteExpiresAt: muteExpiresAt.toISOString(),
+          ...(shouldFanoutCommandMute
+            ? {
+                sourceMessageCleanup,
+                crossChatMuteFanout,
+              }
+            : {}),
         },
       });
 
@@ -7252,7 +7315,7 @@ export class AdminService {
         userId: targetUserId,
         muteDurationHours,
         muteExpiresAt: muteExpiresAt.toISOString(),
-        message: `Участник замьючен на ${muteDurationHours}ч. Новые сообщения будут удаляться до конца срока.`,
+        message: `Мут на ${muteDurationHours}ч.`,
       });
     }
 
@@ -7318,10 +7381,7 @@ export class AdminService {
         userId: targetUserId,
         muteDurationHours: null,
         muteExpiresAt: null,
-        message:
-          executionMode === 'MAX_REMOVE_ONLY'
-            ? 'MAX-блокировка для этого типа чата недоступна, поэтому участник удалён из чата.'
-            : 'Участник забанен в чате.',
+        message: executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Бан включён.',
       });
     }
 
@@ -7461,7 +7521,7 @@ export class AdminService {
       failedMessageIds: [] as string[],
     };
     try {
-      sourceCleanup = await this.deleteRecentTrackedMessagesForManualBan(chatId, targetUserId);
+      sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -7498,13 +7558,8 @@ export class AdminService {
         'Failed to run manual system ban fanout after source chat ban',
       );
     }
-    const recentMessageCleanup = this.summarizeManualBanCleanup(sourceCleanup);
+    const recentMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
     const crossChatFanout = this.summarizeManualBanFanout(fanout);
-    const resultMessage = this.buildManualSystemBanResultMessage(
-      'Участник забанен в чате.',
-      recentMessageCleanup,
-      crossChatFanout,
-    );
 
     await this.recordManualModerationAction({
       chatId,
@@ -7539,8 +7594,79 @@ export class AdminService {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: resultMessage,
+      message: 'Бан включён.',
     });
+  }
+
+  private async applyManualMuteFanout(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    muteDurationHours: number;
+    muteExpiresAt: Date;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }): Promise<{
+    mutedChatIds: string[];
+    skippedChatIds: string[];
+    failedChatIds: string[];
+  }> {
+    const { sourceChatId, targetUserId, actor, muteDurationHours, muteExpiresAt, source } = params;
+    const result = {
+      mutedChatIds: [] as string[],
+      skippedChatIds: [] as string[],
+      failedChatIds: [] as string[],
+    };
+    const chats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
+
+    for (const chat of chats) {
+      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId);
+      if (targetState !== 'present') {
+        result.skippedChatIds.push(chat.id);
+        continue;
+      }
+
+      try {
+        await this.recordManualModerationAction({
+          chatId: chat.id,
+          targetUserId,
+          actorUserId: actor.userId,
+          ruleCode: 'MANUAL_MUTE',
+          sanctionAction: SanctionAction.MUTE,
+          auditAction: 'MANUAL_MUTE_MEMBER',
+          metadata: {
+            source,
+            initiatedByUserId: actor.userId,
+            reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
+            muteDurationHours,
+            muteExpiresAt: muteExpiresAt.toISOString(),
+            sourceChatId,
+            fanout: true,
+          },
+          auditPayload: {
+            userId: targetUserId,
+            source,
+            muteDurationHours,
+            muteExpiresAt: muteExpiresAt.toISOString(),
+            sourceChatId,
+            fanout: true,
+          },
+        });
+        result.mutedChatIds.push(chat.id);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: chat.id,
+            targetUserId,
+            actorUserId: actor.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to apply manual mute fanout in managed chat',
+        );
+        result.failedChatIds.push(chat.id);
+      }
+    }
+
+    return result;
   }
 
   private async applyManualSystemBanFanout(params: {
@@ -7562,7 +7688,7 @@ export class AdminService {
       deletedMessageCount: 0,
       failedMessageDeleteCount: 0,
     };
-    const chats = await this.resolveManualBanFanoutChats(actor, sourceChatId);
+    const chats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
 
     for (const chat of chats) {
       try {
@@ -7624,7 +7750,7 @@ export class AdminService {
         continue;
       }
 
-      const cleanup = await this.deleteRecentTrackedMessagesForManualBan(chat.id, targetUserId);
+      const cleanup = await this.deleteRecentTrackedMessagesForManualAction(chat.id, targetUserId);
       result.removedChatIds.push(chat.id);
       result.deletedMessageCount += cleanup.deletedMessageIds.length;
       result.failedMessageDeleteCount += cleanup.failedMessageIds.length;
@@ -7633,7 +7759,7 @@ export class AdminService {
     return result;
   }
 
-  private async resolveManualBanFanoutChats(
+  private async resolveManualCommandFanoutChats(
     actor: AuthUser,
     sourceChatId: string,
   ): Promise<ChatSummary[]> {
@@ -7654,7 +7780,7 @@ export class AdminService {
           sourceChatId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to resolve manual ban fanout chats; falling back to allowlist cache',
+        'Failed to resolve manual command fanout chats; falling back to allowlist cache',
       );
       const cached = await this.listChatsFromAllowlist(actor.userId, 'chat');
       return cached.filter((chat) => chat.id !== sourceChatId);
@@ -7691,13 +7817,13 @@ export class AdminService {
           targetUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to resolve target state for manual ban fanout; will attempt removal anyway',
+        'Failed to resolve target state for manual command fanout; will attempt action anyway',
       );
       return 'present';
     }
   }
 
-  private async deleteRecentTrackedMessagesForManualBan(
+  private async deleteRecentTrackedMessagesForManualAction(
     chatId: string,
     targetUserId: string,
   ): Promise<{
@@ -7730,7 +7856,7 @@ export class AdminService {
               this.extractHttpErrorMessage(error) ||
               String(error),
           },
-          'Failed to delete tracked recent message during manual ban cleanup',
+          'Failed to delete tracked recent message during manual moderation cleanup',
         );
       }
     }
@@ -7782,7 +7908,7 @@ export class AdminService {
     );
   }
 
-  private summarizeManualBanCleanup(result: {
+  private summarizeManualModerationCleanup(result: {
     candidateMessageIds: string[];
     deletedMessageIds: string[];
     failedMessageIds: string[];
@@ -7813,45 +7939,19 @@ export class AdminService {
     };
   }
 
-  private buildManualSystemBanResultMessage(
-    baseMessage: string,
-    cleanup: {
-      candidateCount: number;
-      deletedCount: number;
-      failedCount: number;
-    },
-    fanout: {
-      removedChatsCount: number;
-      failedChatsCount: number;
-      deletedMessageCount: number;
-      failedMessageDeleteCount: number;
-    },
-  ): string {
-    const details: string[] = [];
-
-    if (cleanup.deletedCount > 0) {
-      details.push(`Сообщения за последние 24 часа удалены: ${cleanup.deletedCount}.`);
-    } else if (cleanup.candidateCount > 0 && cleanup.failedCount > 0) {
-      details.push(`Сообщения за последние 24 часа удалить не удалось: ${cleanup.failedCount}.`);
-    }
-
-    if (fanout.removedChatsCount > 0) {
-      details.push(
-        `Дополнительно удалён из других групп администратора: ${fanout.removedChatsCount}.`,
-      );
-    }
-
-    const totalFailedDeletes = cleanup.failedCount + fanout.failedMessageDeleteCount;
-    const totalDeletedMessages = cleanup.deletedCount + fanout.deletedMessageCount;
-    if (totalFailedDeletes > 0 && totalDeletedMessages > 0) {
-      details.push(`Часть сообщений удалить не удалось: ${totalFailedDeletes}.`);
-    }
-
-    if (fanout.failedChatsCount > 0) {
-      details.push(`В других группах с ошибкой: ${fanout.failedChatsCount}.`);
-    }
-
-    return details.length > 0 ? `${baseMessage} ${details.join(' ')}` : baseMessage;
+  private summarizeManualMuteFanout(result: {
+    mutedChatIds: string[];
+    skippedChatIds: string[];
+    failedChatIds: string[];
+  }) {
+    return {
+      mutedChatsCount: result.mutedChatIds.length,
+      mutedChatIds: result.mutedChatIds,
+      skippedChatsCount: result.skippedChatIds.length,
+      skippedChatIds: result.skippedChatIds,
+      failedChatsCount: result.failedChatIds.length,
+      failedChatIds: result.failedChatIds,
+    };
   }
 
   private async prepareManualModerationTarget(

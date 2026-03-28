@@ -6279,7 +6279,7 @@ describe('ModerationService', () => {
         userId: 'user-2',
         muteDurationHours: null,
         unbanScheduledAt: null,
-        message: 'Участник забанен в чате.',
+        message: 'Бан включён.',
       }),
     };
 
@@ -6314,7 +6314,7 @@ describe('ModerationService', () => {
       immediate: true,
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Участник забанен в чате.'))).toBe(true);
+    expect(sentTexts.some((text) => text.includes('Бан включён.'))).toBe(true);
     expect(
       sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
     ).toBe(true);
@@ -6365,7 +6365,7 @@ describe('ModerationService', () => {
         userId: 'user-2',
         muteDurationHours: 6,
         muteExpiresAt: '2026-03-27T01:00:00.000Z',
-        message: 'Участник замьючен на 6ч. Новые сообщения будут удаляться до конца срока.',
+        message: 'Мут на 6ч.',
       }),
     };
 
@@ -6405,7 +6405,7 @@ describe('ModerationService', () => {
       immediate: true,
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Участник замьючен на 6ч.'))).toBe(true);
+    expect(sentTexts.some((text) => text.includes('Мут на 6ч.'))).toBe(true);
     expect(
       sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
     ).toBe(true);
@@ -6456,7 +6456,7 @@ describe('ModerationService', () => {
         userId: 'user-2',
         muteDurationHours: 12,
         muteExpiresAt: '2026-03-27T07:00:00.000Z',
-        message: 'Участник замьючен на 12ч. Новые сообщения будут удаляться до конца срока.',
+        message: 'Мут на 12ч.',
       }),
     };
 
@@ -6490,7 +6490,7 @@ describe('ModerationService', () => {
     );
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Участник замьючен на 12ч.'))).toBe(true);
+    expect(sentTexts.some((text) => text.includes('Мут на 12ч.'))).toBe(true);
   });
 
   it('rejects duration suffix for the group ban command', async () => {
