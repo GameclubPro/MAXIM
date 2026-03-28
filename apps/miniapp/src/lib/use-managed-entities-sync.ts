@@ -12,6 +12,10 @@ const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
 
 type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
+type ManagedEntitiesRefreshRequestOptions = {
+  bypassRemoteCache?: boolean;
+  resetRefreshCursor?: boolean;
+};
 
 type ManagedEntitiesSyncState = {
   data: ChatSummary[] | null;
@@ -85,10 +89,21 @@ async function loadManagedEntities(
 async function refreshManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
+  options: ManagedEntitiesRefreshRequestOptions = {},
 ): Promise<ManagedEntitiesListResponse> {
   return entityType === 'chat'
-    ? getChats(api, { refresh: true, includeRefreshState: true })
-    : getChannels(api, { refresh: true, includeRefreshState: true });
+    ? getChats(api, {
+        refresh: true,
+        includeRefreshState: true,
+        bypassRemoteCache: options.bypassRemoteCache,
+        resetRefreshCursor: options.resetRefreshCursor,
+      })
+    : getChannels(api, {
+        refresh: true,
+        includeRefreshState: true,
+        bypassRemoteCache: options.bypassRemoteCache,
+        resetRefreshCursor: options.resetRefreshCursor,
+      });
 }
 
 export function useManagedEntitiesSync({
@@ -117,6 +132,7 @@ export function useManagedEntitiesSync({
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(state.data);
   const skippedInitialSyncRef = useRef(false);
+  const handledReloadNonceRef = useRef(reloadNonce);
 
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
@@ -180,6 +196,8 @@ export function useManagedEntitiesSync({
     skippedInitialSyncRef.current = true;
 
     let cancelled = false;
+    const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
+    handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
     setState((current) => ({
       ...current,
@@ -189,6 +207,7 @@ export function useManagedEntitiesSync({
 
     const syncEntities = async () => {
       try {
+        let forceRefreshPending = forceRefreshSession;
         const initial = await loadManagedEntities(api, entityType);
         if (cancelled) {
           return;
@@ -222,7 +241,11 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          const next = await refreshManagedEntities(api, entityType);
+          const next = await refreshManagedEntities(api, entityType, {
+            bypassRemoteCache: forceRefreshPending,
+            resetRefreshCursor: forceRefreshPending,
+          });
+          forceRefreshPending = false;
           if (cancelled) {
             return;
           }

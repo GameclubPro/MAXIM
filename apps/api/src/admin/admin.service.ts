@@ -151,6 +151,15 @@ type ManagedEntitiesListResult = {
   refresh: ManagedEntitiesRefreshState | null;
 };
 
+type ManagedEntitiesListOptions = {
+  refresh?: boolean;
+  includeRefreshState?: boolean;
+  bypassRemoteCache?: boolean;
+  resetRefreshCursor?: boolean;
+};
+
+type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+
 type AdminAccessResolution =
   | {
       status: 'granted';
@@ -263,6 +272,7 @@ const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 40;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
+const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
@@ -611,7 +621,7 @@ export class AdminService {
     }
   }
 
-  async listChats(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
+  async listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'chat', options);
     return result.items;
   }
@@ -620,14 +630,17 @@ export class AdminService {
     return this.collectManagedEntitiesForMassAction(user, 'chat');
   }
 
-  async listChannels(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
+  async listChannels(
+    user: AuthUser,
+    options: ManagedEntitiesListOptions = {},
+  ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'channel', options);
     return result.items;
   }
 
   async listChatsWithRefreshState(
     user: AuthUser,
-    options: { refresh?: boolean } = {},
+    options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
     const result = await this.listManagedEntitiesDetailed(user, 'chat', {
       ...options,
@@ -641,7 +654,7 @@ export class AdminService {
 
   async listChannelsWithRefreshState(
     user: AuthUser,
-    options: { refresh?: boolean } = {},
+    options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResponse> {
     const result = await this.listManagedEntitiesDetailed(user, 'channel', {
       ...options,
@@ -656,7 +669,7 @@ export class AdminService {
   async listManagedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter = 'all',
-    options: { refresh?: boolean } = {},
+    options: ManagedEntitiesListOptions = {},
   ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, entityType, options);
     return result.items;
@@ -673,7 +686,7 @@ export class AdminService {
   private async listManagedEntitiesDetailed(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter = 'all',
-    options: { refresh?: boolean; includeRefreshState?: boolean } = {},
+    options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
     if (options.refresh !== true) {
       const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
@@ -701,6 +714,8 @@ export class AdminService {
         respectCooldown: true,
         fullScan: false,
         includeRefreshState: options.includeRefreshState === true,
+        bypassRemoteCache: options.bypassRemoteCache === true,
+        resetRefreshCursor: options.resetRefreshCursor === true,
       });
     }
 
@@ -708,6 +723,8 @@ export class AdminService {
       respectCooldown: false,
       fullScan: true,
       includeRefreshState: options.includeRefreshState === true,
+      bypassRemoteCache: options.bypassRemoteCache === true,
+      resetRefreshCursor: options.resetRefreshCursor === true,
     });
     if (discovered.items.length > 0) {
       return {
@@ -803,6 +820,7 @@ export class AdminService {
         result = await this.listManagedEntitiesDetailed(user, entityType, {
           refresh: true,
           includeRefreshState: true,
+          bypassRemoteCache: pass === 0,
         });
       } catch (error: unknown) {
         if (collected.size > 0 && this.isMaxApiThrottleError(error)) {
@@ -998,7 +1016,13 @@ export class AdminService {
   private async discoverManagedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
-    options: { respectCooldown: boolean; fullScan: boolean; includeRefreshState?: boolean },
+    options: {
+      respectCooldown: boolean;
+      fullScan: boolean;
+      includeRefreshState?: boolean;
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    },
   ): Promise<ManagedEntitiesListResult> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
     const backoffActive = await this.isManagedEntitiesRefreshBackoffActive(
@@ -1015,13 +1039,21 @@ export class AdminService {
       ));
 
     if (!backoffActive && !cooldownActive) {
-      const discoveryKey = `${user.userId}:${entityType}:${options.fullScan ? 'full' : 'delta'}`;
+      const discoveryKey = [
+        user.userId,
+        entityType,
+        options.fullScan ? 'full' : 'delta',
+        options.bypassRemoteCache === true ? 'bypass' : 'cache',
+        options.resetRefreshCursor === true ? 'reset' : 'resume',
+      ].join(':');
       const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
       const pending =
         inFlight ??
         this.runManagedEntitiesDiscovery(user, entityType, refreshCooldownKey, {
           fullScan: options.fullScan,
           includeRefreshState: options.includeRefreshState === true,
+          bypassRemoteCache: options.bypassRemoteCache === true,
+          resetRefreshCursor: options.resetRefreshCursor === true,
         });
 
       if (!inFlight) {
@@ -1052,41 +1084,80 @@ export class AdminService {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
     refreshCooldownKey: string,
-    options: { fullScan: boolean; includeRefreshState?: boolean },
+    options: {
+      fullScan: boolean;
+      includeRefreshState?: boolean;
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    },
   ): Promise<ManagedEntitiesListResult> {
     try {
       const discoveryTrafficClass = 'interactive';
       const adminCheckSpacingMs = options.fullScan
         ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
         : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;
-      const remoteChats = await this.maxClient.listBotChats({
-        trafficClass: discoveryTrafficClass,
-      });
       const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
       const cachedIds = new Set(cachedChats.map((chat) => chat.id));
       const cachedById = new Map(cachedChats.map((chat) => [chat.id, chat]));
-      const candidateChats =
-        entityType === 'all'
-          ? remoteChats
-          : remoteChats.filter((chat) => chat.entityType === entityType);
-      const supportedCandidateChats = candidateChats.filter(
-        (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
-      );
-      const remoteIndexByChatId = new Map(
-        supportedCandidateChats.map((chat, index) => [chat.chatId, index]),
-      );
-      const storedCursor =
+      let storedCursor =
         options.fullScan === true
           ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(
               user.userId,
               entityType,
             )) ?? 0)
           : null;
-      const fullScanAlreadyCompleted = storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
+      let supportedCandidateChats: ManagedEntitiesDiscoverySnapshot;
+
+      if (options.fullScan === true) {
+        if (options.resetRefreshCursor === true) {
+          storedCursor = 0;
+          await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+          await this.chatContextCache.clearManagedEntitiesDiscoverySnapshot?.(
+            user.userId,
+            entityType,
+          );
+        }
+
+        const startNewFullScan =
+          options.resetRefreshCursor === true ||
+          storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
+        const cachedSnapshot =
+          startNewFullScan !== true
+            ? ((await this.chatContextCache.getManagedEntitiesDiscoverySnapshot?.(
+                user.userId,
+                entityType,
+              )) ?? null)
+            : null;
+
+        if (cachedSnapshot) {
+          supportedCandidateChats = cachedSnapshot;
+        } else {
+          supportedCandidateChats = await this.loadManagedEntitiesDiscoverySnapshot(entityType, {
+            trafficClass: discoveryTrafficClass,
+            bypassCache: options.bypassRemoteCache === true,
+          });
+          storedCursor = 0;
+          await this.chatContextCache.setManagedEntitiesDiscoverySnapshot?.(
+            user.userId,
+            entityType,
+            supportedCandidateChats,
+            MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC,
+          );
+        }
+      } else {
+        supportedCandidateChats = await this.loadManagedEntitiesDiscoverySnapshot(entityType, {
+          trafficClass: discoveryTrafficClass,
+          bypassCache: options.bypassRemoteCache === true,
+        });
+      }
+
+      const remoteIndexByChatId = new Map(
+        supportedCandidateChats.map((chat, index) => [chat.chatId, index]),
+      );
       const fullScanStartIndex =
-        options.fullScan === true && fullScanAlreadyCompleted !== true
+        options.fullScan === true
           ? Math.max(0, Math.min(storedCursor ?? 0, supportedCandidateChats.length))
-          : supportedCandidateChats.length;
+          : 0;
       const fullScanEndIndex =
         options.fullScan === true
           ? Math.min(
@@ -1121,9 +1192,7 @@ export class AdminService {
       );
       const candidateSlice =
         options.fullScan === true
-          ? fullScanAlreadyCompleted
-            ? []
-            : supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
+          ? supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
           : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
@@ -1192,13 +1261,17 @@ export class AdminService {
       let nextCursor: number | null = null;
 
       if (options.fullScan === true) {
-        if (fullScanAlreadyCompleted || fullScanEndIndex >= supportedCandidateChats.length) {
+        if (fullScanEndIndex >= supportedCandidateChats.length) {
           nextCursor = MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
           await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
             user.userId,
             entityType,
             MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
             MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC,
+          );
+          await this.chatContextCache.clearManagedEntitiesDiscoverySnapshot?.(
+            user.userId,
+            entityType,
           );
         } else {
           nextCursor = fullScanEndIndex;
@@ -1276,6 +1349,26 @@ export class AdminService {
             : null,
       };
     }
+  }
+
+  private async loadManagedEntitiesDiscoverySnapshot(
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      trafficClass: 'critical' | 'interactive' | 'background';
+      bypassCache?: boolean;
+    },
+  ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    const remoteChats = await this.maxClient.listBotChats({
+      trafficClass: options.trafficClass,
+      ...(options.bypassCache === true ? { bypassCache: true } : {}),
+    });
+
+    const candidateChats =
+      entityType === 'all'
+        ? remoteChats
+        : remoteChats.filter((chat) => chat.entityType === entityType);
+
+    return candidateChats.filter((chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType));
   }
 
   async getChannelStats(
@@ -12015,12 +12108,61 @@ export class AdminService {
     options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
   ): Promise<AdminAccessResolution> {
     try {
+      const requestOptions =
+        options.trafficClass === undefined ? undefined : { trafficClass: options.trafficClass };
+      const normalizedUserId = userId.trim();
+      const botContactId = this.resolveBotContactId();
+
+      if (typeof this.maxClient.getChatMembersAccess === 'function') {
+        const lookupIds =
+          botContactId && botContactId !== normalizedUserId
+            ? [normalizedUserId, botContactId]
+            : [normalizedUserId];
+        const accessByUserId = await this.maxClient.getChatMembersAccess(
+          chatId,
+          lookupIds,
+          requestOptions ?? {},
+        );
+        const botAccess =
+          (botContactId ? accessByUserId.get(botContactId) ?? null : null) ??
+          (await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions ?? {}));
+
+        if (!botAccess.isAdmin && !botAccess.isOwner) {
+          await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
+          await this.prunePersistedChatAccess(chatId, userId);
+          return {
+            status: 'denied',
+            source: 'remote',
+            reason: 'bot_not_admin',
+          };
+        }
+
+        const userAccess =
+          accessByUserId.get(normalizedUserId) ??
+          (botContactId === normalizedUserId ? botAccess : null);
+        const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
+        const cacheState: ChatAdminAccessState = hasUserAccess ? 'granted' : 'user_denied';
+        await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
+
+        if (!hasUserAccess) {
+          await this.prunePersistedChatAccess(chatId, userId);
+          return {
+            status: 'denied',
+            source: 'remote',
+            reason: 'user_not_admin',
+          };
+        }
+
+        return {
+          status: 'granted',
+          source: 'remote',
+        };
+      }
+
       const adminIds =
-        options.trafficClass === undefined
+        requestOptions === undefined
           ? await this.maxClient.getChatAdminIds(chatId)
-          : await this.maxClient.getChatAdminIds(chatId, {
-              trafficClass: options.trafficClass,
-            });
+          : await this.maxClient.getChatAdminIds(chatId, requestOptions);
       const hasAccess = adminIds.includes(userId);
       const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
       await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);

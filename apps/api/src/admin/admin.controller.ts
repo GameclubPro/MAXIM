@@ -40,12 +40,19 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('refresh') refresh: string | undefined,
     @Query('includeRefreshState') includeRefreshState: string | undefined,
+    @Query('bypassCache') bypassCache: string | undefined,
+    @Query('resetCursor') resetCursor: string | undefined,
   ) {
+    const options = {
+      refresh: refresh === '1',
+      bypassRemoteCache: bypassCache === '1',
+      resetRefreshCursor: resetCursor === '1',
+    };
     if (includeRefreshState === '1') {
-      return this.adminService.listChatsWithRefreshState(user, { refresh: refresh === '1' });
+      return this.adminService.listChatsWithRefreshState(user, options);
     }
 
-    return this.adminService.listChats(user, { refresh: refresh === '1' });
+    return this.adminService.listChats(user, options);
   }
 
   @Get('chats/:chatId/header')
@@ -58,12 +65,19 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
     @Query('refresh') refresh: string | undefined,
     @Query('includeRefreshState') includeRefreshState: string | undefined,
+    @Query('bypassCache') bypassCache: string | undefined,
+    @Query('resetCursor') resetCursor: string | undefined,
   ) {
+    const options = {
+      refresh: refresh === '1',
+      bypassRemoteCache: bypassCache === '1',
+      resetRefreshCursor: resetCursor === '1',
+    };
     if (includeRefreshState === '1') {
-      return this.adminService.listChannelsWithRefreshState(user, { refresh: refresh === '1' });
+      return this.adminService.listChannelsWithRefreshState(user, options);
     }
 
-    return this.adminService.listChannels(user, { refresh: refresh === '1' });
+    return this.adminService.listChannels(user, options);
   }
 
   @Get('channels/:chatId/header')

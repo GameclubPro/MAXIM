@@ -77,13 +77,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isLoading = activeEntitiesState.isLoading;
   const isFetching = activeEntitiesState.isRefreshing;
   const queryError = activeEntitiesState.error;
+  const refreshState = activeEntitiesState.refreshState;
   const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
+  const backoffDelaySeconds =
+    refreshState?.backoffActive && typeof refreshState.nextPollAfterMs === 'number'
+      ? Math.max(1, Math.ceil(refreshState.nextPollAfterMs / 1000))
+      : null;
+  const isBackoffWithoutEntities =
+    !isLoading &&
+    !queryError &&
+    activeEntitiesState.isBackoffActive &&
+    Array.isArray(activeEntities) &&
+    activeEntities.length === 0;
+  const showBackoffNotice =
+    !isLoading &&
+    !queryError &&
+    activeEntitiesState.isBackoffActive &&
+    Array.isArray(activeEntities) &&
+    activeEntities.length > 0;
 
   const isNoEntitiesForTab =
     !isLoading &&
     !queryError &&
     isSyncSettled &&
+    !activeEntitiesState.isBackoffActive &&
     Array.isArray(activeEntities) &&
     activeEntities.length === 0;
 
@@ -318,12 +336,50 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
+      {showBackoffNotice ? (
+        <GlassCard>
+          <StatusState
+            tone="warning"
+            title="Обновление списка временно ограничено"
+            description={
+              backoffDelaySeconds === null
+                ? 'MAX API временно ограничил обновление. Показан последний сохраненный список.'
+                : `MAX API временно ограничил обновление. Показан последний сохраненный список, повторная попытка будет доступна примерно через ${backoffDelaySeconds} сек.`
+            }
+          />
+        </GlassCard>
+      ) : null}
+
       {isSyncPending && Array.isArray(activeEntities) && activeEntities.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"
             title={`Синхронизируем ${tabLabel.toLowerCase()}`}
             description="Проверяем права администратора и обновляем список из MAX."
+          />
+        </GlassCard>
+      ) : null}
+
+      {isBackoffWithoutEntities ? (
+        <GlassCard>
+          <StatusState
+            tone="warning"
+            title="Не удалось обновить список прямо сейчас"
+            description={
+              backoffDelaySeconds === null
+                ? 'MAX API временно ограничил обновление списка. Повторите попытку чуть позже.'
+                : `MAX API временно ограничил обновление списка. Повторите попытку примерно через ${backoffDelaySeconds} сек.`
+            }
+            action={
+              <button
+                type="button"
+                className="button button--accent"
+                onClick={handleRefresh}
+                disabled={isFetching}
+              >
+                {isFetching ? 'Обновляем...' : 'Повторить'}
+              </button>
+            }
           />
         </GlassCard>
       ) : null}

@@ -4,6 +4,8 @@ import type { ApiTransport } from './transport';
 type ManagedEntitiesFetchOptions = {
   refresh?: boolean;
   includeRefreshState?: boolean;
+  bypassRemoteCache?: boolean;
+  resetRefreshCursor?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -119,6 +121,12 @@ function buildManagedEntitiesPath(
   }
   if (options.includeRefreshState) {
     query.set('includeRefreshState', '1');
+  }
+  if (options.bypassRemoteCache) {
+    query.set('bypassCache', '1');
+  }
+  if (options.resetRefreshCursor) {
+    query.set('resetCursor', '1');
   }
 
   const basePath = entityType === 'chat' ? '/chats' : '/channels';

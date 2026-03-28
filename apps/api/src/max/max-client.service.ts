@@ -1178,12 +1178,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async getChatAdminIds(chatId: string, options: MaxApiRequestOptions = {}): Promise<string[]> {
-    const data = await this.executeChatRequest(
-      chatId,
-      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
-      options,
-    );
-    const members = Array.isArray(data.members) ? data.members : [];
+    const members = await this.listChatAdminMembers(chatId, options);
 
     return members
       .map((member) => {
@@ -1209,12 +1204,7 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     options: MaxApiRequestOptions = {},
   ): Promise<string[]> {
-    const data = await this.executeChatRequest(
-      chatId,
-      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
-      options,
-    );
-    const members = Array.isArray(data.members) ? data.members : [];
+    const members = await this.listChatAdminMembers(chatId, options);
 
     return members
       .map((member) => {
@@ -1257,25 +1247,59 @@ export class MaxClientService implements OnModuleDestroy {
     if (!normalizedUserId) {
       return null;
     }
+    const accessByUserId = await this.getChatMembersAccess(chatId, [normalizedUserId], options);
+    return accessByUserId.get(normalizedUserId) ?? null;
+  }
 
-    const data = await this.executeChatRequest(
-      chatId,
-      async () =>
-        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
-          params: {
-            user_ids: normalizedUserId,
-          },
-        }),
-      options,
+  async getChatMembersAccess(
+    chatId: string,
+    userIds: readonly string[],
+    options: MaxApiRequestOptions = {},
+  ): Promise<Map<string, MaxChatMemberAccess>> {
+    const normalizedUserIds = Array.from(
+      new Set(
+        userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
+      ),
     );
-    const members = Array.isArray(data.members)
-      ? data.members
-      : Array.isArray(data.users)
-        ? data.users
-        : [];
-    const member = members.find((value) => this.readMemberUserId(value) === normalizedUserId);
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
 
-    return member ? this.parseChatMemberAccess(member) : null;
+    const accessByUserId = new Map<string, MaxChatMemberAccess>();
+
+    for (let index = 0; index < normalizedUserIds.length; index += 100) {
+      const chunk = normalizedUserIds.slice(index, index + 100);
+      const query = new URLSearchParams();
+      for (const requestedUserId of chunk) {
+        query.append('user_ids', requestedUserId);
+      }
+
+      const data = await this.executeChatRequest(
+        chatId,
+        async () =>
+          this.request<Record<string, unknown>>(
+            'get',
+            `/chats/${chatId}/members?${query.toString()}`,
+          ),
+        options,
+      );
+      const members = Array.isArray(data.members)
+        ? data.members
+        : Array.isArray(data.users)
+          ? data.users
+          : [];
+
+      for (const member of members) {
+        const access = this.parseChatMemberAccess(member);
+        if (!access.userId) {
+          continue;
+        }
+
+        accessByUserId.set(access.userId, access);
+      }
+    }
+
+    return accessByUserId;
   }
 
   async hasChatMember(
@@ -1634,6 +1658,49 @@ export class MaxClientService implements OnModuleDestroy {
       isOwner,
       permissions: row ? this.readChatAdminPermissions(row) : [],
     };
+  }
+
+  private async listChatAdminMembers(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<unknown[]> {
+    const members: unknown[] = [];
+    const seenMarkers = new Set<string>();
+    let marker: string | number | null = null;
+
+    for (let i = 0; i < 20; i += 1) {
+      const data = await this.executeChatRequest(
+        chatId,
+        async () =>
+          this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`, {
+            params: {
+              ...(marker !== null ? { marker } : {}),
+            },
+          }),
+        options,
+      );
+      const pageMembers = Array.isArray(data.members) ? data.members : [];
+      members.push(...pageMembers);
+
+      const nextMarker = data.marker;
+      if (
+        nextMarker === null ||
+        nextMarker === undefined ||
+        (typeof nextMarker !== 'string' && typeof nextMarker !== 'number')
+      ) {
+        break;
+      }
+
+      const markerKey = String(nextMarker);
+      if (seenMarkers.has(markerKey)) {
+        break;
+      }
+
+      seenMarkers.add(markerKey);
+      marker = nextMarker;
+    }
+
+    return members;
   }
 
   private parseChatMemberProfile(value: unknown): MaxChatMemberProfile | null {

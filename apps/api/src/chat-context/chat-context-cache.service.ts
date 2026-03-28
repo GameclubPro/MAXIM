@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import { Prisma, type ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
+import type { MaxBotChat } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type ChatAdminAccessState = 'granted' | 'user_denied' | 'bot_denied';
@@ -16,6 +17,8 @@ export type ChatContext = {
   rulesPublishedUrl: string | null;
   rulesPublishedMessageId: string | null;
 };
+
+type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
@@ -67,6 +70,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     entityType: ManagedEntityType | 'all',
   ): string {
     return `chat:managed-refresh-cursor:v1:${entityType}:${userId}`;
+  }
+
+  static managedEntitiesDiscoverySnapshotKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-snapshot:v1:${entityType}:${userId}`;
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
@@ -255,6 +265,52 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType));
   }
 
+  async getManagedEntitiesDiscoverySnapshot(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<ManagedEntitiesDiscoverySnapshot | null> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesDiscoverySnapshotKey(userId, entityType),
+    );
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesDiscoverySnapshot(parsed) ? parsed : null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { userId, entityType, err: error instanceof Error ? error.message : String(error) },
+        'Failed to parse managed entities discovery snapshot cache',
+      );
+      return null;
+    }
+  }
+
+  async setManagedEntitiesDiscoverySnapshot(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    snapshot: ManagedEntitiesDiscoverySnapshot,
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesDiscoverySnapshotKey(userId, entityType),
+      JSON.stringify(snapshot),
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async clearManagedEntitiesDiscoverySnapshot(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<void> {
+    await this.redis.del(
+      ChatContextCacheService.managedEntitiesDiscoverySnapshotKey(userId, entityType),
+    );
+  }
+
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const title = chatTitle?.trim();
     await this.ensureChatInitialized(chatId, title);
@@ -368,5 +424,28 @@ export class ChatContextCacheService implements OnModuleDestroy {
     }
 
     return (error as { code?: string } | null)?.code === code;
+  }
+
+  private isManagedEntitiesDiscoverySnapshot(
+    value: unknown,
+  ): value is ManagedEntitiesDiscoverySnapshot {
+    return (
+      Array.isArray(value) &&
+      value.every((item) => {
+        if (!item || typeof item !== 'object') {
+          return false;
+        }
+
+        const row = item as Record<string, unknown>;
+        return (
+          typeof row.chatId === 'string' &&
+          (row.title === null || typeof row.title === 'string') &&
+          (row.lastEventTime === null || typeof row.lastEventTime === 'number') &&
+          (row.entityType === 'chat' || row.entityType === 'channel') &&
+          (row.link === null || typeof row.link === 'string') &&
+          (row.avatarUrl === null || typeof row.avatarUrl === 'string')
+        );
+      })
+    );
   }
 }

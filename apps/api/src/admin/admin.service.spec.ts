@@ -660,6 +660,10 @@ function createConfigMock(
 }
 
 function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
+  const refreshCursorByScope = new Map<string, number | null>();
+  const discoverySnapshotByScope = new Map<string, unknown[] | null>();
+  const buildScopeKey = (userId: string, entityType: string) => `${userId}:${entityType}`;
+
   return {
     invalidate: jest.fn().mockResolvedValue(undefined),
     getAdminAccess: jest.fn().mockResolvedValue(null),
@@ -671,9 +675,36 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     activateManagedEntitiesRefreshCooldown: jest.fn().mockResolvedValue(undefined),
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
-    getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(null),
-    setManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(undefined),
-    clearManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(undefined),
+    getManagedEntitiesRefreshCursor: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string) =>
+        refreshCursorByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      ),
+    setManagedEntitiesRefreshCursor: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string, cursor: number) => {
+        refreshCursorByScope.set(buildScopeKey(userId, entityType), cursor);
+      }),
+    clearManagedEntitiesRefreshCursor: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string) => {
+        refreshCursorByScope.delete(buildScopeKey(userId, entityType));
+      }),
+    getManagedEntitiesDiscoverySnapshot: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string) =>
+        discoverySnapshotByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      ),
+    setManagedEntitiesDiscoverySnapshot: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string, snapshot: unknown[]) => {
+        discoverySnapshotByScope.set(buildScopeKey(userId, entityType), snapshot);
+      }),
+    clearManagedEntitiesDiscoverySnapshot: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string) => {
+        discoverySnapshotByScope.delete(buildScopeKey(userId, entityType));
+      }),
     ...overrides,
   };
 }
@@ -4167,14 +4198,6 @@ describe('AdminService.listChannels', () => {
     prisma.channelSettings.findMany.mockResolvedValue([]);
 
     let storedCursor: number | null = 120;
-    const chatContextCache = createChatContextCacheMock({
-      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
-      setManagedEntitiesRefreshCursor: jest
-        .fn()
-        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
-          storedCursor = cursor;
-        }),
-    });
     const remoteChannels = Array.from({ length: 121 }, (_, index) => ({
       chatId: `channel-${index + 1}`,
       title: index === 120 ? 'Финальный канал' : `Канал ${index + 1}`,
@@ -4182,6 +4205,15 @@ describe('AdminService.listChannels', () => {
       entityType: 'channel' as const,
       link: `https://max.ru/channel-${index + 1}`,
     }));
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
+      setManagedEntitiesRefreshCursor: jest
+        .fn()
+        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
+          storedCursor = cursor;
+        }),
+      getManagedEntitiesDiscoverySnapshot: jest.fn().mockResolvedValue(remoteChannels),
+    });
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue(remoteChannels),
       getChatAdminIds: jest
@@ -7378,7 +7410,7 @@ describe('AdminService.sendBroadcast', () => {
       'admin-1',
       'chat',
     );
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(4);
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       1,
