@@ -1478,6 +1478,55 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 
+  it('builds rules text for alert-only links and anti-spam defaults in the private bot', async () => {
+    const generatedSettings = chatSettingsSchema.parse({
+      linkPolicy: 'ALERT_ONLY',
+      antiSpamEnabled: true,
+      antiDuplicateEnabled: false,
+      russianProfanityFilterEnabled: false,
+      commercialAdsFilterEnabled: false,
+      thematicCodewordEnabled: false,
+      messageCountLimitEnabled: false,
+      maxMessageLengthEnabled: false,
+      photoMessageCooldownEnabled: false,
+      stickerMessageCooldownEnabled: false,
+      videoMessagesEnabled: true,
+      fileMessagesEnabled: true,
+      voiceMessagesEnabled: true,
+      nightModeEnabled: false,
+    });
+    const { service, adminService, chats } = createHarness({
+      settings: generatedSettings,
+      rules: createRules({
+        text: '',
+        autoTextEnabled: false,
+      }),
+      adminService: {
+        getChatSettingsScreen: jest.fn().mockResolvedValue({
+          settings: generatedSettings,
+          rules: createRules({
+            text: '',
+            autoTextEnabled: false,
+          }),
+          header: { id: '-70000000000001', title: 'Тестовый чат 1' },
+          requiredSubscriptionChannels: [],
+          domains: [],
+          managedBroadcasts: [],
+        }),
+      },
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
+
+    const updatePayload = adminService.updateRules.mock.calls.at(-1)?.[2];
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Ссылки бот проверяет, но не удаляет автоматически.',
+    );
+    expect(String(updatePayload?.text ?? '')).toContain('Пожалуйста, не флудите и не спамьте.');
+  });
+
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
     const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({

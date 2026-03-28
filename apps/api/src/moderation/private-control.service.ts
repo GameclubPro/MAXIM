@@ -6465,6 +6465,8 @@ export class PrivateControlService {
           ? 'Можно отправлять только ссылки из разрешённого списка.'
           : 'Ссылки здесь ограничены: если нужно, сначала согласуйте их с администраторами.',
       );
+    } else if (settings.linkPolicy === 'ALERT_ONLY') {
+      items.push('Ссылки бот проверяет, но не удаляет автоматически.');
     }
 
     if (settings.requiredSubscriptionEnabled) {
@@ -6502,6 +6504,10 @@ export class PrivateControlService {
           ? 'Не повторяйте одно и то же сообщение несколько раз.'
           : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
       );
+    }
+
+    if (settings.antiSpamEnabled) {
+      items.push('Пожалуйста, не флудите и не спамьте.');
     }
 
     if (settings.messageCountLimitEnabled) {
