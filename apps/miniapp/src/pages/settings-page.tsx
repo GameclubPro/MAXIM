@@ -10110,8 +10110,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {openHintKey === 'deleteSpammers' ? (
                           <p id="delete-spammers-hint" className="settings-native-toggle__hint">
-                            База спаммеров ведется глобально. Когда тумблер включен, бот удаляет
-                            сообщение спаммера и удаляет участника из текущего чата.
+                            Глобальная база: после 5 чатов за 2 минуты бот предупреждает, после 6
+                            добавляет в базу и удаляет из текущего чата.
                           </p>
                         ) : null}
                       </div>

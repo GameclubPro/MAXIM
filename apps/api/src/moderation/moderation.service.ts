@@ -180,8 +180,8 @@ const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
 const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
-const GLOBAL_SPAMMER_WARN_MIN_CHATS = 4;
-const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 5;
+const GLOBAL_SPAMMER_WARN_MIN_CHATS = 5;
+const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 6;
 const GLOBAL_SPAMMER_WARN_THRESHOLD = 2;
 const GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC = 7 * 24 * 60 * 60;
 const GREETING_BURST_WINDOW_SEC = 60;
@@ -2110,6 +2110,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const normalized = typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
     const safe = normalized.length > 0 ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
     return `**${safe}**`;
+  }
+
+  private formatUserMentionFromLabel(userLabel: string, userId: string): string {
+    const normalizedLabel =
+      userLabel.startsWith('**') && userLabel.endsWith('**') && userLabel.length > 4
+        ? userLabel.slice(2, -2)
+        : userLabel;
+    return `[${normalizedLabel}](max://user/${encodeURIComponent(userId)})`;
   }
 
   private async applySanctionAction(params: {
@@ -4847,7 +4855,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.upsertGlobalSpammerEntry({
           userId,
           sourceChatId: chatId,
-          reason: 'HIGH_FANOUT_5_CHATS_2M',
+          reason: 'HIGH_FANOUT_6_CHATS_2M',
           evidence: {
             uniqueChats: uniqueChatsState.size,
             windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
@@ -4859,7 +4867,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId,
             messageId,
             text,
-            reason: 'Detected in 5 unique chats within 2 minutes',
+            reason: 'Detected in 6 unique chats within 2 minutes',
           });
           return {
             handled: true,
@@ -4884,6 +4892,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (deleteSpammersEnabled) {
         await this.sendGlobalSpammerFanoutWarning({
           chatId,
+          userId,
           userLabel,
           warningCount,
         });
@@ -4893,7 +4902,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.upsertGlobalSpammerEntry({
           userId,
           sourceChatId: chatId,
-          reason: 'HIGH_FANOUT_4_CHATS_WARN_THRESHOLD',
+          reason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
           evidence: {
             uniqueChats: uniqueChatsState.size,
             windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
@@ -4922,14 +4931,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async sendGlobalSpammerFanoutWarning(params: {
     chatId: string;
+    userId: string;
     userLabel: string;
     warningCount: number;
   }): Promise<void> {
-    const { chatId, userLabel, warningCount } = params;
+    const { chatId, userId, userLabel, warningCount } = params;
     const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
-    const warningText = `Товарищ ${userLabel}, фиксирую предупреждение за массовую активность по чатам (${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}).`;
+    const warningText = `${this.formatUserMentionFromLabel(
+      userLabel,
+      userId,
+    )}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
     try {
-      await this.maxClient.sendMessage(chatId, warningText);
+      await this.maxClient.sendMessage(chatId, warningText, { textFormat: 'markdown' });
     } catch (error: unknown) {
       this.logger.warn(
         {
