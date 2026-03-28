@@ -1313,12 +1313,14 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('Собрать из настроек 🤖');
     expect(buttonTexts).toContain('✏️ Изменить текст');
     expect(buttonTexts).toContain('✍️ Добавить фото');
     expect(buttonTexts).toContain('🚀 Опубликовать');
     expect(buttonTexts.some((text) => text.startsWith('📱 В прилож'))).toBe(true);
     expect(buttonTexts).not.toContain('Сбросить публикацию');
     expect(buttonTexts).not.toContain('✅ Кнопка "Правила" в нарушениях');
+    expect(buttonTexts).not.toContain('↩️ Назад');
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.textFormat).toBe('markdown');
 
     const miniappButton = getLastButtons(maxClient)

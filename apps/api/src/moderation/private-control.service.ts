@@ -6376,9 +6376,7 @@ export class PrivateControlService {
     }
 
     const rows: MaxMessageButton[][] = [
-      ...(!showStoredText
-        ? [[this.callbackButton('Собрать из настроек 🤖', this.cb('rules_autofill'))]]
-        : []),
+      [this.callbackButton('Собрать из настроек 🤖', this.cb('rules_autofill'))],
       [this.callbackButton('✏️ Изменить текст', this.cb('rules_input_prompt', 'text'))],
       [
         this.callbackButton(
@@ -6413,7 +6411,6 @@ export class PrivateControlService {
       rows.push(publicationRow);
     }
 
-    rows.push([this.callbackButton('↩️ Назад', this.cb('back'))]);
     rows.push(
       ...this.buildFooterButtons({
         miniappText: '📱 В приложение',
