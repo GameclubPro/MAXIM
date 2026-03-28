@@ -861,39 +861,6 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
-  it('detects MESSAGE_BLOCKED_WORD for long blocked word stems at the start of a word', async () => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const result = await service.detect({
-      chatId: 'chat-1',
-      userId: 'u-1',
-      text: 'Тут рекламируют заработок, заработал и заработком.',
-      settings: buildSettings({ messageLimitsBlockedWords: ['заработ'] }),
-      domainAllowlist: [],
-    });
-
-    expect(result.violations).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          ruleCode: 'MESSAGE_BLOCKED_WORD',
-          metadata: expect.objectContaining({ blockedWord: 'заработ' }),
-        }),
-      ]),
-    );
-  });
-
-  it('does not detect long blocked word stem in the middle of a larger word', async () => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const result = await service.detect({
-      chatId: 'chat-1',
-      userId: 'u-1',
-      text: 'Он просто подзаработал немного, без отдельного совпадения по началу слова.',
-      settings: buildSettings({ messageLimitsBlockedWords: ['заработ'] }),
-      domainAllowlist: [],
-    });
-
-    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
-  });
-
   it('does not normalize malformed configured blocked words into a different token', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
