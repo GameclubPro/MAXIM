@@ -3983,10 +3983,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
+  const hasRulesDraftText = Boolean(rulesDraft?.text.trim());
+  const rulesHeroStatusLabel = hasPublishedRules
+    ? 'Опубликовано'
+    : hasRulesDraftText
+      ? 'Черновик'
+      : 'Пусто';
+  const rulesHeroTitle = hasPublishedRules
+    ? 'Правила опубликованы'
+    : hasRulesDraftText
+      ? 'Черновик готов к публикации'
+      : 'Правила ещё не опубликованы';
+  const rulesHeroMeta = hasPublishedRules
+    ? rulesPublishedAtLabel
+      ? `Последняя публикация · ${rulesPublishedAtLabel}`
+      : 'Пост опубликован'
+    : hasRulesDraftText
+      ? `${rulesDraft?.text.trim().length ?? 0}/${MAX_CHAT_RULES_TEXT_LENGTH} символов`
+      : 'Редактирование через бота';
   const rulesButtonPreviewText =
     rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
   const rulesButtonPreviewUrl = rulesDraft?.buttonUrl.trim() ?? '';
   const hasRulesButtonPreviewUrl = isValidHttpUrl(rulesButtonPreviewUrl);
+  const rulesPostButtonSummary = rulesDraft?.buttonEnabled ? rulesButtonPreviewText : 'Выключена';
+  const rulesViolationButtonSummary = draft?.rulesAttachViolationsEnabled
+    ? 'Включена'
+    : 'Выключена';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled
@@ -5394,256 +5416,45 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
                           <>
-                            <div className="rules-panel__header">
-                              <div className="rules-panel__title-wrap">
-                                <h4>Пост с правилами</h4>
-                              </div>
-                              <span
-                                className={cn(
-                                  'chip',
-                                  hasPublishedRules
-                                    ? 'chip--success'
-                                    : rulesDraft.text.trim()
-                                      ? 'chip--warning'
-                                      : undefined,
-                                )}
-                              >
-                                {hasPublishedRules
-                                  ? 'Опубликовано'
-                                  : rulesDraft.text.trim()
-                                    ? 'Черновик'
-                                    : 'Пусто'}
-                              </span>
-                            </div>
-
-                            <div className="rules-link-row">
-                              <span>
-                                {hasPublishedRules
-                                  ? rulesPublishedAtLabel
-                                    ? `Опубликовано · ${rulesPublishedAtLabel}`
-                                    : 'Опубликовано'
-                                  : 'Черновик не опубликован'}
-                              </span>
-                              <div className="rules-link-row__actions">
-                                {rulesPublishedUrl ? (
-                                  <a
-                                    href={rulesPublishedUrl}
-                                    target="_blank"
-                                    rel="noreferrer"
-                                    className="rules-published-link"
+                            <div className="rules-studio">
+                              <div className="rules-studio__hero rules-hero-card">
+                                <div className="rules-hero-card__head">
+                                  <div className="rules-hero-card__copy">
+                                    <span className="rules-studio__eyebrow">Пост с правилами</span>
+                                    <h4>{rulesHeroTitle}</h4>
+                                    <p>{rulesHeroMeta}</p>
+                                  </div>
+                                  <span
+                                    className={cn(
+                                      'chip',
+                                      hasPublishedRules
+                                        ? 'chip--success'
+                                        : hasRulesDraftText
+                                          ? 'chip--warning'
+                                          : undefined,
+                                    )}
                                   >
-                                    Открыть пост
-                                  </a>
-                                ) : null}
-                              </div>
-                            </div>
-
-                            <div
-                              className={cn(
-                                'rules-media-card',
-                                Boolean(rulesDraft.imageBase64) && 'is-enabled',
-                              )}
-                            >
-                              <div className="rules-media-card__head">
-                                <div className="rules-media-card__title-wrap">
-                                  <span className="rules-media-card__title">Контур правил</span>
-                                </div>
-                              </div>
-
-                              <div className="rules-status-grid">
-                                <div className="rules-status-pill is-accent">
-                                  <span>Бот</span>
-                                  <strong>Текст и фото</strong>
-                                </div>
-                                <div className="rules-status-pill">
-                                  <span>Mini App</span>
-                                  <strong>Публикация и кнопки</strong>
-                                </div>
-                                <div
-                                  className={cn(
-                                    'rules-status-pill',
-                                    rulesDraft.text.trim() && 'is-active',
-                                  )}
-                                >
-                                  <span>Текст</span>
-                                  <strong>
-                                    {rulesDraft.text.trim()
-                                      ? `${rulesDraft.text.length} симв.`
-                                      : 'Пусто'}
-                                  </strong>
-                                </div>
-                                <div
-                                  className={cn(
-                                    'rules-status-pill',
-                                    rulesDraft.imageBase64 && 'is-active',
-                                  )}
-                                >
-                                  <span>Фото</span>
-                                  <strong>
-                                    {rulesDraft.imageBase64 ? 'Включено' : 'Выключено'}
-                                  </strong>
-                                </div>
-                                <div
-                                  className={cn(
-                                    'rules-status-pill',
-                                    rulesDraft.buttonEnabled && 'is-active',
-                                  )}
-                                >
-                                  <span>Кнопка поста</span>
-                                  <strong>{rulesDraft.buttonEnabled ? 'Включена' : 'Выключена'}</strong>
-                                </div>
-                                <div
-                                  className={cn(
-                                    'rules-status-pill',
-                                    draft?.rulesAttachViolationsEnabled && 'is-active',
-                                  )}
-                                >
-                                  <span>Кнопка «Правила»</span>
-                                  <strong>
-                                    {draft?.rulesAttachViolationsEnabled ? 'Включена' : 'Выключена'}
-                                  </strong>
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="settings-native-toggle">
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Пользовательская кнопка в посте правил
+                                    {rulesHeroStatusLabel}
                                   </span>
                                 </div>
 
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить пользовательскую кнопку в посте правил"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={rulesDraft.buttonEnabled}
-                                    onChange={(event) => {
-                                      setRulesButtonFieldsTouched(false);
-                                      setRulesButtonUrlError('');
-                                      setRulesButtonTextError('');
-                                      setRulesDraft((current) =>
-                                        current
-                                          ? {
-                                              ...current,
-                                              buttonEnabled: event.target.checked,
-                                              buttonText:
-                                                current.buttonText ||
-                                                DEFAULT_RULES_POST_BUTTON_TEXT,
-                                            }
-                                          : current,
-                                      );
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            {rulesDraft.buttonEnabled ? (
-                              <>
-                                <div className="rules-button-preview">
-                                  {hasRulesButtonPreviewUrl ? (
+                                <div className="rules-hero-card__meta">
+                                  {rulesPublishedUrl ? (
                                     <a
-                                      href={rulesButtonPreviewUrl}
+                                      href={rulesPublishedUrl}
                                       target="_blank"
                                       rel="noreferrer"
-                                      className="rules-button-preview__button"
+                                      className="rules-published-link"
                                     >
-                                      {rulesButtonPreviewText}
+                                      Открыть пост
                                     </a>
-                                  ) : (
-                                    <span
-                                      className="rules-button-preview__button is-disabled"
-                                      aria-disabled="true"
-                                    >
-                                      {rulesButtonPreviewText}
-                                    </span>
-                                  )}
-                                </div>
-                                <ManagedLinkButtonFieldsSlot
-                                  api={api}
-                                  urlValue={rulesDraft.buttonUrl}
-                                  onUrlChange={(nextValue) => {
-                                    setRulesButtonFieldsTouched(true);
-                                    if (rulesButtonUrlError) {
-                                      setRulesButtonUrlError('');
-                                    }
-                                    setRulesDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            buttonUrl: nextValue,
-                                          }
-                                        : current,
-                                    );
-                                  }}
-                                  textValue={rulesDraft.buttonText}
-                                  onTextChange={(nextValue) => {
-                                    setRulesButtonFieldsTouched(true);
-                                    if (rulesButtonTextError) {
-                                      setRulesButtonTextError('');
-                                    }
-                                    setRulesDraft((current) =>
-                                      current
-                                        ? {
-                                            ...current,
-                                            buttonText: nextValue,
-                                          }
-                                        : current,
-                                    );
-                                  }}
-                                  urlError={rulesButtonUrlError || undefined}
-                                  textError={rulesButtonTextError || undefined}
-                                  urlPlaceholder="https://max.ru/channel/rules"
-                                  textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
-                                  urlHint={null}
-                                  textHint={null}
-                                />
-                              </>
-                            ) : null}
-
-                            <div className="settings-native-toggle">
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Кнопка «Правила» в сообщениях о нарушениях
-                                  </span>
+                                  ) : null}
                                 </div>
 
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить кнопку Правила в сообщениях о нарушениях"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={Boolean(draft?.rulesAttachViolationsEnabled)}
-                                    disabled={updateRulesAttachMutation.isPending}
-                                    onChange={(event) =>
-                                      updateRulesAttachMutation.mutate(event.target.checked)
-                                    }
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            <div className="rules-action-panel">
-                              <div className="rules-action-panel__content">
-                                <div className="rules-action-panel__draft-chip">
-                                  <span className="chip chip--warning">Текст и фото через бота</span>
-                                </div>
-                                <div className="rules-link-row__actions">
+                                <div className="rules-hero-card__actions">
                                   <button
                                     type="button"
-                                    className="button button--accent"
+                                    className="button button--ghost rules-hero-card__secondary"
                                     onClick={() => handoffRulesMutation.mutate()}
                                     disabled={
                                       rulesQuery.isLoading ||
@@ -5658,7 +5469,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                                   <button
                                     type="button"
-                                    className="button button--accent"
+                                    className="button button--accent rules-hero-card__primary"
                                     onClick={() => void handlePublishRules()}
                                     disabled={
                                       rulesQuery.isLoading ||
@@ -5673,19 +5484,160 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ? 'Переопубликовать'
                                         : 'Опубликовать'}
                                   </button>
+                                </div>
 
-                                  {hasPublishedRules ? (
-                                    <button
-                                      type="button"
-                                      className="button button--ghost"
-                                      onClick={handleResetPublishedRules}
-                                      disabled={isResettingPublishedRules}
+                                {hasPublishedRules ? (
+                                  <button
+                                    type="button"
+                                    className="button button--ghost rules-hero-card__reset"
+                                    onClick={handleResetPublishedRules}
+                                    disabled={isResettingPublishedRules}
+                                  >
+                                    {isResettingPublishedRules
+                                      ? 'Сбрасываем...'
+                                      : 'Сбросить публикацию'}
+                                  </button>
+                                ) : null}
+                              </div>
+
+                              <div className="rules-settings-stack">
+                                <div className="settings-native-toggle rules-native-card">
+                                  <div className="settings-native-toggle__row">
+                                    <div className="settings-native-toggle__title-wrap">
+                                      <div className="rules-native-card__copy">
+                                        <span className="settings-native-toggle__title">
+                                          Пользовательская кнопка в посте
+                                        </span>
+                                        <span className="rules-native-card__meta">
+                                          {rulesPostButtonSummary}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <label
+                                      className="settings-native-switch"
+                                      aria-label="Включить пользовательскую кнопку в посте правил"
                                     >
-                                      {isResettingPublishedRules
-                                        ? 'Сбрасываем...'
-                                        : 'Сбросить публикацию'}
-                                    </button>
+                                      <input
+                                        type="checkbox"
+                                        checked={rulesDraft.buttonEnabled}
+                                        onChange={(event) => {
+                                          setRulesButtonFieldsTouched(false);
+                                          setRulesButtonUrlError('');
+                                          setRulesButtonTextError('');
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  buttonEnabled: event.target.checked,
+                                                  buttonText:
+                                                    current.buttonText ||
+                                                    DEFAULT_RULES_POST_BUTTON_TEXT,
+                                                }
+                                              : current,
+                                          );
+                                        }}
+                                      />
+                                      <span className="toggle-switch" aria-hidden>
+                                        <span className="toggle-switch__thumb" />
+                                      </span>
+                                    </label>
+                                  </div>
+
+                                  {rulesDraft.buttonEnabled ? (
+                                    <div className="rules-native-card__body">
+                                      <div className="rules-button-preview">
+                                        {hasRulesButtonPreviewUrl ? (
+                                          <a
+                                            href={rulesButtonPreviewUrl}
+                                            target="_blank"
+                                            rel="noreferrer"
+                                            className="rules-button-preview__button"
+                                          >
+                                            {rulesButtonPreviewText}
+                                          </a>
+                                        ) : (
+                                          <span
+                                            className="rules-button-preview__button is-disabled"
+                                            aria-disabled="true"
+                                          >
+                                            {rulesButtonPreviewText}
+                                          </span>
+                                        )}
+                                      </div>
+                                      <ManagedLinkButtonFieldsSlot
+                                        api={api}
+                                        urlValue={rulesDraft.buttonUrl}
+                                        onUrlChange={(nextValue) => {
+                                          setRulesButtonFieldsTouched(true);
+                                          if (rulesButtonUrlError) {
+                                            setRulesButtonUrlError('');
+                                          }
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  buttonUrl: nextValue,
+                                                }
+                                              : current,
+                                          );
+                                        }}
+                                        textValue={rulesDraft.buttonText}
+                                        onTextChange={(nextValue) => {
+                                          setRulesButtonFieldsTouched(true);
+                                          if (rulesButtonTextError) {
+                                            setRulesButtonTextError('');
+                                          }
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  buttonText: nextValue,
+                                                }
+                                              : current,
+                                          );
+                                        }}
+                                        urlError={rulesButtonUrlError || undefined}
+                                        textError={rulesButtonTextError || undefined}
+                                        urlPlaceholder="https://max.ru/channel/rules"
+                                        textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
+                                        urlHint={null}
+                                        textHint={null}
+                                      />
+                                    </div>
                                   ) : null}
+                                </div>
+
+                                <div className="settings-native-toggle rules-native-card">
+                                  <div className="settings-native-toggle__row">
+                                    <div className="settings-native-toggle__title-wrap">
+                                      <div className="rules-native-card__copy">
+                                        <span className="settings-native-toggle__title">
+                                          Кнопка «Правила» в нарушениях
+                                        </span>
+                                        <span className="rules-native-card__meta">
+                                          {rulesViolationButtonSummary}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <label
+                                      className="settings-native-switch"
+                                      aria-label="Включить кнопку Правила в сообщениях о нарушениях"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(draft?.rulesAttachViolationsEnabled)}
+                                        disabled={updateRulesAttachMutation.isPending}
+                                        onChange={(event) =>
+                                          updateRulesAttachMutation.mutate(event.target.checked)
+                                        }
+                                      />
+                                      <span className="toggle-switch" aria-hidden>
+                                        <span className="toggle-switch__thumb" />
+                                      </span>
+                                    </label>
+                                  </div>
                                 </div>
                               </div>
                             </div>
