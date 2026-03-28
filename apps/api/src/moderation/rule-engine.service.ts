@@ -87,6 +87,8 @@ type BlockedWordDetection = {
   blockedWord: string;
 };
 
+const MESSAGE_LIMITS_BLOCKED_WORD_STEM_MIN_LENGTH = 7;
+
 const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^бля(?:[дт][а-я0-9]*)?$/u,
   /^пизд[а-я0-9]*$/u,
@@ -1212,8 +1214,16 @@ export class RuleEngineService {
 
   private buildMessageLimitsBlockedWordPattern(value: string): RegExp {
     const joinerPattern = String.raw`[^\p{L}\p{N}]*`;
+    const suffixJoinerPattern = String.raw`[^\p{L}\p{N}\s]*`;
     const tokenPattern = [...value].map((char) => this.escapeRegExp(char)).join(joinerPattern);
-    return new RegExp(String.raw`(?<![\p{L}\p{N}])${tokenPattern}(?![\p{L}\p{N}])`, 'iu');
+    const suffixPattern =
+      value.length >= MESSAGE_LIMITS_BLOCKED_WORD_STEM_MIN_LENGTH
+        ? String.raw`(?:${suffixJoinerPattern}[\p{L}\p{N}]+)*`
+        : '';
+    return new RegExp(
+      String.raw`(?<![\p{L}\p{N}])${tokenPattern}${suffixPattern}(?![\p{L}\p{N}])`,
+      'iu',
+    );
   }
 
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
