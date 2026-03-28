@@ -1302,7 +1302,13 @@ describe('PrivateControlService', () => {
     });
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    const sentBeforeOpenRules = maxClient.sendMessage.mock.calls.length;
+    const callbackAnswersBeforeOpenRules = maxClient.answerCallback.mock.calls.length;
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeOpenRules + 1);
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(callbackAnswersBeforeOpenRules + 1);
+    expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]).toBeUndefined();
 
     expect(getLastUiText(maxClient)).toContain('Правила');
     expect(getLastUiText(maxClient)).toContain('Соблюдайте **правила** чата.');
@@ -1321,7 +1327,7 @@ describe('PrivateControlService', () => {
     expect(buttonTexts).not.toContain('Сбросить публикацию');
     expect(buttonTexts).not.toContain('✅ Кнопка "Правила" в нарушениях');
     expect(buttonTexts).not.toContain('↩️ Назад');
-    expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.textFormat).toBe('markdown');
+    expect(getLastSendOptions(maxClient)?.textFormat).toBe('markdown');
 
     const miniappButton = getLastButtons(maxClient)
       .flat()
@@ -1472,10 +1478,10 @@ describe('PrivateControlService', () => {
       'Ночью чат работает тише: ограничения действуют с 23:00 до 08:00.',
     );
     expect(String(updatePayload?.text ?? '')).not.toContain('Europe/Moscow');
-    expect(getLastEditedText(maxClient)).toContain(
+    expect(getLastUiText(maxClient)).toContain(
       'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
     );
-    expect(getLastEditedText(maxClient)).toContain('Текст собран из текущих настроек.');
+    expect(getLastUiText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 
   it('builds rules text for alert-only links and anti-spam defaults in the private bot', async () => {
@@ -1642,10 +1648,10 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
 
-    expect(getLastEditedText(maxClient)).toContain('Правила');
-    expect(getLastEditedText(maxClient)).toContain('Отправьте новый текст одним сообщением.');
+    expect(getLastUiText(maxClient)).toContain('Правила');
+    expect(getLastUiText(maxClient)).toContain('Отправьте новый текст одним сообщением.');
 
-    const buttonTexts = getLastEditedButtons(maxClient)
+    const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(buttonTexts).toContain('✏️ Изменить текст');
@@ -1758,7 +1764,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Публикация правил сброшена.');
+    expect(getLastUiText(maxClient)).toContain('Публикация правил сброшена.');
   });
 
   it('surfaces publish error when rules text is empty', async () => {

@@ -2724,7 +2724,7 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.pendingMassAction = null;
         const view = await this.renderRulesScreen(context, session);
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Правила чата',
         });
@@ -3274,7 +3274,7 @@ export class PrivateControlService {
 
         session.screen = 'rules';
         const view = await this.renderRulesScreen(context, session);
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: mode === 'photo' ? 'Жду фото правил' : 'Жду текст правил',
         });
@@ -3311,7 +3311,7 @@ export class PrivateControlService {
           session,
           'Текст собран из текущих настроек.',
         );
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Текст собран',
         });
@@ -3338,7 +3338,7 @@ export class PrivateControlService {
         );
         session.screen = 'rules';
         const view = await this.renderRulesScreen(context, session, 'Фото правил убрано.');
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Фото убрано',
         });
@@ -3380,7 +3380,7 @@ export class PrivateControlService {
         await this.adminService.publishRules(session.selectedChatId!, context.actor, 'private_bot');
         session.screen = 'rules';
         const view = await this.renderRulesScreen(context, session, '✅ Правила опубликованы.');
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: '✅ Правила опубликованы',
         });
@@ -3396,7 +3396,7 @@ export class PrivateControlService {
         );
         session.screen = 'rules';
         const view = await this.renderRulesScreen(context, session, 'Публикация правил сброшена.');
-        await this.respond(context, session, view, {
+        await this.respondWithFreshMessage(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Публикация сброшена',
         });
@@ -9011,6 +9011,22 @@ export class PrivateControlService {
     }
 
     await this.sendImmediate(context.chatId, text, options);
+  }
+
+  private async respondWithFreshMessage(
+    context: PrivateContext,
+    session: PrivateSession,
+    view: PrivateView,
+    callback: { callbackId: string | null; notification: string | null },
+  ): Promise<void> {
+    if (callback.callbackId) {
+      await this.answerCallbackQuiet(callback.callbackId, callback.notification ?? 'Готово');
+    }
+
+    await this.respond(context, session, view, {
+      callbackId: null,
+      notification: null,
+    });
   }
 
   private async sendImmediate(
