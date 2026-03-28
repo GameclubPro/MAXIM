@@ -149,6 +149,7 @@ const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
+const MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT = 9;
 const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const DESKTOP_TOGGLE_ROW_BLOCKERS = [
@@ -1716,6 +1717,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
   const [domainInputError, setDomainInputError] = useState('');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
+  const [messageLimitsBlockedWordsExpanded, setMessageLimitsBlockedWordsExpanded] = useState(false);
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
@@ -3904,11 +3906,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showMessageLimitsBotButtonErrors = Boolean(
     draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
   );
+  const messageLimitsBlockedWords = draft?.messageLimitsBlockedWords ?? [];
   const messageLimitsBlockedWordsError = fieldErrors.messageLimitsBlockedWords;
   const messageLimitsBlockedWordsRemaining = Math.max(
     0,
-    MESSAGE_LIMITS_BLOCKED_WORDS_MAX - (draft?.messageLimitsBlockedWords.length ?? 0),
+    MESSAGE_LIMITS_BLOCKED_WORDS_MAX - messageLimitsBlockedWords.length,
   );
+  const hasMessageLimitsBlockedWordsOverflow =
+    messageLimitsBlockedWords.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
+  const visibleMessageLimitsBlockedWords =
+    hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
+      ? messageLimitsBlockedWords.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
+      : messageLimitsBlockedWords;
   const messageLimitsBotButtonUrlError = showMessageLimitsBotButtonErrors
     ? fieldErrors.messageLimitsBotButtonUrl
     : undefined;
@@ -3918,6 +3927,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const hasMessageLimitsBotButtonError = Boolean(
     messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
   );
+
+  useEffect(() => {
+    if (!hasMessageLimitsBlockedWordsOverflow && messageLimitsBlockedWordsExpanded) {
+      setMessageLimitsBlockedWordsExpanded(false);
+    }
+  }, [hasMessageLimitsBlockedWordsOverflow, messageLimitsBlockedWordsExpanded]);
   const showTextFiltersBotButtonErrors = Boolean(
     draft?.textFiltersBotMessageEnabled && draft?.textFiltersBotButtonEnabled,
   );
@@ -7930,9 +7945,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       >
                         <div className="settings-word-banlist__head">
                           <span className="settings-native-toggle__title">Стоп-слова</span>
-                          {draft.messageLimitsBlockedWords.length > 0 ? (
+                          {messageLimitsBlockedWords.length > 0 ? (
                             <span className="chip chip--danger">
-                              {draft.messageLimitsBlockedWords.length}
+                              {messageLimitsBlockedWords.length}
                             </span>
                           ) : null}
                         </div>
@@ -7961,10 +7976,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             }}
                             placeholder="Введите слово"
                             maxLength={240}
-                            disabled={
-                              draft.messageLimitsBlockedWords.length >=
-                              MESSAGE_LIMITS_BLOCKED_WORDS_MAX
-                            }
+                            disabled={messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX}
                             aria-label="Добавить стоп-слово"
                           />
                           <button
@@ -7973,29 +7985,57 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onClick={addMessageLimitsBlockedWords}
                             disabled={
                               !messageLimitsBlockedWordsInput.trim() ||
-                              draft.messageLimitsBlockedWords.length >=
-                                MESSAGE_LIMITS_BLOCKED_WORDS_MAX
+                              messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
                             }
                           >
                             Добавить
                           </button>
                         </div>
 
-                        {draft.messageLimitsBlockedWords.length > 0 ? (
-                          <div className="settings-word-banlist__chips" aria-label="Стоп-слова">
-                            {draft.messageLimitsBlockedWords.map((word) => (
-                              <button
-                                key={word}
-                                type="button"
-                                className="settings-word-banlist__chip"
-                                onClick={() => removeMessageLimitsBlockedWord(word)}
-                                aria-label={`Удалить слово ${word}`}
-                              >
-                                <span>{word}</span>
-                                <span aria-hidden>+</span>
-                              </button>
-                            ))}
-                          </div>
+                        {messageLimitsBlockedWords.length > 0 ? (
+                          <>
+                            <div className="settings-word-banlist__chips-head">
+                              <small className="settings-word-banlist__chips-caption">
+                                {hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
+                                  ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${messageLimitsBlockedWords.length}`
+                                  : `Все ${messageLimitsBlockedWords.length} слов`}
+                              </small>
+                              {hasMessageLimitsBlockedWordsOverflow ? (
+                                <button
+                                  type="button"
+                                  className="settings-word-banlist__toggle"
+                                  onClick={() =>
+                                    setMessageLimitsBlockedWordsExpanded((current) => !current)
+                                  }
+                                  aria-expanded={messageLimitsBlockedWordsExpanded}
+                                  aria-controls="settings-message-limits-blocked-words"
+                                >
+                                  {messageLimitsBlockedWordsExpanded
+                                    ? 'Свернуть'
+                                    : `Показать все ${messageLimitsBlockedWords.length}`}
+                                </button>
+                              ) : null}
+                            </div>
+
+                            <div
+                              className="settings-word-banlist__chips"
+                              id="settings-message-limits-blocked-words"
+                              aria-label="Стоп-слова"
+                            >
+                              {visibleMessageLimitsBlockedWords.map((word) => (
+                                <button
+                                  key={word}
+                                  type="button"
+                                  className="settings-word-banlist__chip"
+                                  onClick={() => removeMessageLimitsBlockedWord(word)}
+                                  aria-label={`Удалить слово ${word}`}
+                                >
+                                  <span>{word}</span>
+                                  <span aria-hidden>+</span>
+                                </button>
+                              ))}
+                            </div>
+                          </>
                         ) : null}
 
                         {messageLimitsBlockedWordsError ? (
