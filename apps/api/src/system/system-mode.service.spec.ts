@@ -143,4 +143,76 @@ describe('SystemModeService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('does not degrade for action error rate below the minimum sample size', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 58,
+        success: 52,
+        failure: 6,
+        critical: 0,
+        errorRate: 6 / 58,
+        criticalRate: 0,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'normal',
+        reason: 'system healthy',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('degrades for action error rate once the minimum sample size is reached', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 150,
+        success: 143,
+        failure: 7,
+        critical: 0,
+        errorRate: 7 / 150,
+        criticalRate: 0,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        reason: expect.stringContaining('action error rate'),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
 });

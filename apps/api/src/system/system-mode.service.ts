@@ -20,6 +20,8 @@ export type SystemModeSnapshot = {
 
 const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
+const ACTION_ERROR_RATE_MIN_TOTAL = 100;
+const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 
 @Injectable()
 export class SystemModeService implements OnModuleInit, OnModuleDestroy {
@@ -103,9 +105,10 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       const queue = await this.queueMetricsService.getSnapshot();
       this.lastQueueLagSec = queue.effectiveLagSec;
       const action = this.actionHealthService.getSnapshot(60);
+      const actionErrorRateDegraded = this.shouldDegradeForActionErrorRate(action);
       const shouldDegrade =
         queue.effectiveLagSec > this.queueLagThresholdSec ||
-        action.errorRate > this.actionErrorThreshold ||
+        actionErrorRateDegraded ||
         action.criticalRate > this.actionCriticalThreshold;
 
       if (shouldDegrade) {
@@ -114,7 +117,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         if (queue.effectiveLagSec > this.queueLagThresholdSec) {
           reasons.push(`queue lag ${queue.effectiveLagSec.toFixed(1)}s`);
         }
-        if (action.errorRate > this.actionErrorThreshold) {
+        if (actionErrorRateDegraded) {
           reasons.push(`action error rate ${(action.errorRate * 100).toFixed(2)}%`);
         }
         if (action.criticalRate > this.actionCriticalThreshold) {
@@ -199,6 +202,14 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
+  }
+
+  private shouldDegradeForActionErrorRate(action: ActionHealthSnapshot): boolean {
+    return (
+      action.errorRate > this.actionErrorThreshold &&
+      action.total >= ACTION_ERROR_RATE_MIN_TOTAL &&
+      action.failure >= ACTION_ERROR_RATE_MIN_FAILURES
+    );
   }
 
   private async persistSnapshot(action?: ActionHealthSnapshot) {
