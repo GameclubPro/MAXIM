@@ -6473,6 +6473,7 @@ export class AdminService {
       where: { chatId },
       create: {
         chatId,
+        autoTextEnabled: true,
       },
       update: {},
     });

@@ -956,7 +956,7 @@ function createInitialState(): PreviewState {
   });
   const chatRules = chatRulesSchema.parse({
     text: '1. Без рекламы.\n2. Без токсичности.\n3. Без повторов.\n4. Уважайте соседей.',
-    autoTextEnabled: false,
+    autoTextEnabled: true,
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',

@@ -765,6 +765,7 @@ function serializeRulesDraftPayload(
         | 'imageBase64'
         | 'imageMimeType'
         | 'imageFileName'
+        | 'autoTextEnabled'
         | 'buttonEnabled'
         | 'buttonUrl'
         | 'buttonText'
@@ -775,6 +776,7 @@ function serializeRulesDraftPayload(
         | 'imageBase64'
         | 'imageMimeType'
         | 'imageFileName'
+        | 'autoTextEnabled'
         | 'buttonEnabled'
         | 'buttonUrl'
         | 'buttonText'
@@ -785,6 +787,7 @@ function serializeRulesDraftPayload(
     imageBase64: value.imageBase64,
     imageMimeType: value.imageMimeType,
     imageFileName: value.imageFileName,
+    autoTextEnabled: value.autoTextEnabled,
     buttonEnabled: value.buttonEnabled,
     buttonUrl: value.buttonUrl,
     buttonText: value.buttonText,
@@ -1711,7 +1714,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
-  const [, setRulesAutoFillEnabled] = useState(false);
   const [rulesAutoFillSeedText, setRulesAutoFillSeedText] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [, setRulesTextError] = useState('');
@@ -1832,7 +1834,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setRulesDraft(null);
-    setRulesAutoFillEnabled(false);
     setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
@@ -2105,7 +2106,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     setRulesDraft(chatRulesSchema.parse(rulesQuery.data));
-    setRulesAutoFillEnabled(false);
     setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
@@ -2960,7 +2960,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     return {
-      autoTextEnabled: false,
+      autoTextEnabled: value.autoTextEnabled,
       text: value.text,
       imageBase64: value.imageBase64,
       imageMimeType: value.imageMimeType,
@@ -3358,6 +3358,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       domain,
       removeAfterAt: null,
     });
+  }
+
+  async function handleHandoffRules() {
+    if (!chatId) {
+      return;
+    }
+
+    if (hasRulesChanges) {
+      const saved = await saveRulesDraftNow({ forceButtonErrors: true });
+      if (!saved) {
+        return;
+      }
+    }
+
+    handoffRulesMutation.mutate();
   }
 
   async function handlePublishRules() {
@@ -4005,6 +4020,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
   const rulesButtonPreviewUrl = rulesDraft?.buttonUrl.trim() ?? '';
   const hasRulesButtonPreviewUrl = isValidHttpUrl(rulesButtonPreviewUrl);
+  const rulesAutoFillSummary = rulesDraft?.autoTextEnabled ? 'Включено' : 'Выключено';
   const rulesPostButtonSummary = rulesDraft?.buttonEnabled ? rulesButtonPreviewText : 'Выключена';
   const rulesViolationButtonSummary = draft?.rulesAttachViolationsEnabled
     ? 'Включена'
@@ -5455,7 +5471,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <button
                                     type="button"
                                     className="button button--ghost rules-hero-card__secondary"
-                                    onClick={() => handoffRulesMutation.mutate()}
+                                    onClick={() => void handleHandoffRules()}
                                     disabled={
                                       rulesQuery.isLoading ||
                                       Boolean(rulesQuery.error) ||
@@ -5501,6 +5517,44 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               <div className="rules-settings-stack">
+                                <div className="settings-native-toggle rules-native-card">
+                                  <div className="settings-native-toggle__row">
+                                    <div className="settings-native-toggle__title-wrap">
+                                      <div className="rules-native-card__copy">
+                                        <span className="settings-native-toggle__title">
+                                          Автозаполнять правила из настроек
+                                        </span>
+                                        <span className="rules-native-card__meta">
+                                          {rulesAutoFillSummary}
+                                        </span>
+                                      </div>
+                                    </div>
+
+                                    <label
+                                      className="settings-native-switch"
+                                      aria-label="Включить автозаполнение правил из настроек"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={Boolean(rulesDraft.autoTextEnabled)}
+                                        onChange={(event) =>
+                                          setRulesDraft((current) =>
+                                            current
+                                              ? {
+                                                  ...current,
+                                                  autoTextEnabled: event.target.checked,
+                                                }
+                                              : current,
+                                          )
+                                        }
+                                      />
+                                      <span className="toggle-switch" aria-hidden>
+                                        <span className="toggle-switch__thumb" />
+                                      </span>
+                                    </label>
+                                  </div>
+                                </div>
+
                                 <div className="settings-native-toggle rules-native-card">
                                   <div className="settings-native-toggle__row">
                                     <div className="settings-native-toggle__title-wrap">

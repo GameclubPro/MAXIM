@@ -6381,6 +6381,7 @@ export class PrivateControlService {
     ]);
 
     const hasText = rules.text.trim().length > 0;
+    const showStoredText = rules.autoTextEnabled && hasText;
     const hasImage = rules.imageBase64.trim().length > 0;
     const rulesSettingsMiniappUrl = this.buildRulesSettingsMiniappUrl(session.selectedChatId);
     const rulesSettingsMiniappRoute = this.buildRulesSettingsMiniappRoute(session.selectedChatId);
@@ -6396,7 +6397,11 @@ export class PrivateControlService {
       '',
       `Чат: ${this.escapeMarkdown(chatTitle)}`,
       '',
-      hasText ? rules.text : '_Текст правила пока не задан._',
+      showStoredText
+        ? rules.text
+        : hasText
+          ? '_Автозаполнение текста выключено._'
+          : '_Текст правила пока не задан._',
     ];
 
     if (waitingHint) {

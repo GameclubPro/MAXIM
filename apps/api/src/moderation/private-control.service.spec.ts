@@ -1250,6 +1250,7 @@ describe('PrivateControlService', () => {
     const { service, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Соблюдайте **правила** чата.',
+        autoTextEnabled: true,
       }),
     });
 
@@ -1291,10 +1292,27 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('does not autofill stored rules text in bot when autofill is disabled', async () => {
+    const { service, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: 'Старый текст правил.',
+        autoTextEnabled: false,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+
+    expect(getLastUiText(maxClient)).toContain('Правила');
+    expect(getLastUiText(maxClient)).toContain('Автозаполнение текста выключено.');
+    expect(getLastUiText(maxClient)).not.toContain('Старый текст правил.');
+  });
+
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
     const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила из handoff.',
+        autoTextEnabled: true,
       }),
     });
     const actor = {
