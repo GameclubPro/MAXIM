@@ -1456,22 +1456,25 @@ describe('PrivateControlService', () => {
       buttonText: 'Подробнее',
     });
     expect(String(updatePayload?.text ?? '')).toContain('Правила чата:');
-    expect(String(updatePayload?.text ?? '')).toContain('Любые ссылки в этом чате удаляются.');
     expect(String(updatePayload?.text ?? '')).toContain(
-      'Для сообщений нужна подписка на: Новости MAX, Клуб MAX.',
-    );
-    expect(String(updatePayload?.text ?? '')).toContain('Мат и грубая лексика запрещены.');
-    expect(String(updatePayload?.text ?? '')).toContain(
-      'Длина одного сообщения — до 500 символов.',
+      'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
     );
     expect(String(updatePayload?.text ?? '')).toContain(
-      'Запрещены стоп-слова: спам, капс.',
+      'Чтобы писать в чат, сначала подпишитесь на: Новости MAX, Клуб MAX.',
     );
-    expect(String(updatePayload?.text ?? '')).toContain('Видео в этом чате запрещены.');
+    expect(String(updatePayload?.text ?? '')).toContain('Пожалуйста, без мата и грубой лексики.');
     expect(String(updatePayload?.text ?? '')).toContain(
-      'Ночной режим действует с 23:00 до 08:00 (Europe/Moscow).',
+      'Старайтесь писать короче: до 500 символов в одном сообщении.',
     );
-    expect(getLastEditedText(maxClient)).toContain('Любые ссылки в этом чате удаляются.');
+    expect(String(updatePayload?.text ?? '')).not.toContain('спам, капс');
+    expect(String(updatePayload?.text ?? '')).toContain('Видео сюда отправлять нельзя.');
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Ночью чат работает тише: ограничения действуют с 23:00 до 08:00.',
+    );
+    expect(String(updatePayload?.text ?? '')).not.toContain('Europe/Moscow');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Пожалуйста, не отправляйте ссылки: бот их удаляет.',
+    );
     expect(getLastEditedText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 

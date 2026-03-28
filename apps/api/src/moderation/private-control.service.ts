@@ -6458,12 +6458,12 @@ export class PrivateControlService {
     const items: string[] = [];
 
     if (settings.linkPolicy === 'BLOCKLIST_ONLY') {
-      items.push('Любые ссылки в этом чате удаляются.');
+      items.push('Пожалуйста, не отправляйте ссылки: бот их удаляет.');
     } else if (settings.linkPolicy === 'ALLOWLIST_ONLY') {
       items.push(
         domains.length > 0
-          ? 'Ссылки разрешены только из одобренного списка администраторов.'
-          : 'Ссылки в этом чате ограничены: разрешены только ссылки, которые одобрят администраторы.',
+          ? 'Можно отправлять только ссылки из разрешённого списка.'
+          : 'Ссылки здесь ограничены: если нужно, сначала согласуйте их с администраторами.',
       );
     }
 
@@ -6473,25 +6473,25 @@ export class PrivateControlService {
         .filter(Boolean);
       items.push(
         channelTitles.length > 0
-          ? `Для сообщений нужна подписка на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
-          : 'Для сообщений нужна подписка на обязательные каналы.',
+          ? `Чтобы писать в чат, сначала подпишитесь на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
+          : 'Чтобы писать в чат, сначала подпишитесь на обязательные каналы.',
       );
     }
 
     if (settings.russianProfanityFilterEnabled) {
-      items.push('Мат и грубая лексика запрещены.');
+      items.push('Пожалуйста, без мата и грубой лексики.');
     }
 
     if (settings.commercialAdsFilterEnabled) {
-      items.push('Реклама и коммерческие предложения без согласования запрещены.');
+      items.push('Рекламу и коммерческие предложения публикуйте только по согласованию с администраторами.');
     }
 
     if (settings.thematicCodewordEnabled) {
       const codeword = settings.thematicCodeword.trim();
       items.push(
         codeword
-          ? `Сообщения по теме должны начинаться с кодового слова "${codeword}".`
-          : 'Сообщения должны проходить тематический фильтр.',
+          ? `Если пишете по теме, начинайте сообщение со слова "${codeword}".`
+          : 'Если включён тематический фильтр, придерживайтесь темы чата.',
       );
     }
 
@@ -6499,25 +6499,19 @@ export class PrivateControlService {
       const allowedCount = this.resolveDuplicateAllowedCount(settings);
       items.push(
         allowedCount === 0
-          ? 'Повтор одинаковых сообщений запрещён сразу.'
-          : `Повтор одинаковых сообщений запрещён ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
+          ? 'Не повторяйте одно и то же сообщение несколько раз.'
+          : `Не повторяйте одно и то же сообщение: бот среагирует ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
       );
     }
 
     if (settings.messageCountLimitEnabled) {
       items.push(
-        `Не более ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${this.formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
+        `Пожалуйста, не отправляйте больше ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${this.formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
       );
     }
 
     if (settings.maxMessageLengthEnabled) {
-      items.push(`Длина одного сообщения — до ${settings.maxMessageLength} символов.`);
-    }
-
-    if (settings.messageLimitsBlockedWords.length > 0) {
-      items.push(
-        `Запрещены стоп-слова: ${this.formatRulesPreviewList(settings.messageLimitsBlockedWords, 5)}.`,
-      );
+      items.push(`Старайтесь писать короче: до ${settings.maxMessageLength} символов в одном сообщении.`);
     }
 
     if (settings.photoMessageCooldownEnabled) {
@@ -6533,20 +6527,20 @@ export class PrivateControlService {
     }
 
     if (!settings.videoMessagesEnabled) {
-      items.push('Видео в этом чате запрещены.');
+      items.push('Видео сюда отправлять нельзя.');
     }
 
     if (!settings.fileMessagesEnabled) {
-      items.push('Файлы в этом чате запрещены.');
+      items.push('Файлы сюда отправлять нельзя.');
     }
 
     if (!settings.voiceMessagesEnabled) {
-      items.push('Голосовые сообщения в этом чате запрещены.');
+      items.push('Голосовые сообщения сюда отправлять нельзя.');
     }
 
     if (settings.nightModeEnabled) {
       items.push(
-        `Ночной режим действует с ${this.formatTime(settings.nightModeStartTimeMinutes)} до ${this.formatTime(settings.nightModeEndTimeMinutes)} (${settings.nightModeTimezone}).`,
+        `Ночью чат работает тише: ограничения действуют с ${this.formatTime(settings.nightModeStartTimeMinutes)} до ${this.formatTime(settings.nightModeEndTimeMinutes)}.`,
       );
     }
 
@@ -6591,7 +6585,7 @@ export class PrivateControlService {
       settings.messageLimitsWarnEnabled ||
       settings.duplicateWarnEnabled
     ) {
-      sanctions.add('предупреждение');
+      sanctions.add('предупредить');
     }
 
     if (
@@ -6602,7 +6596,7 @@ export class PrivateControlService {
       settings.messageLimitsMuteEnabled ||
       settings.duplicateMuteEnabled
     ) {
-      sanctions.add('мут');
+      sanctions.add('временно ограничить сообщения');
     }
 
     if (
@@ -6613,14 +6607,14 @@ export class PrivateControlService {
       settings.messageLimitsBanEnabled ||
       settings.duplicateBanEnabled
     ) {
-      sanctions.add('бан');
+      sanctions.add('заблокировать');
     }
 
     if (sanctions.size === 0) {
       return null;
     }
 
-    return `За повторные нарушения бот может вынести ${this.formatRulesConjunctionList([...sanctions])}.`;
+    return `За повторные нарушения бот может ${this.formatRulesConjunctionList([...sanctions])}.`;
   }
 
   private formatDuplicateAllowanceLabel(count: number): string {
