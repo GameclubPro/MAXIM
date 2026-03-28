@@ -674,6 +674,7 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     isManagedEntitiesRefreshCooldownActive: jest.fn().mockResolvedValue(false),
     activateManagedEntitiesRefreshCooldown: jest.fn().mockResolvedValue(undefined),
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
+    getManagedEntitiesRefreshBackoffRemainingMs: jest.fn().mockResolvedValue(0),
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesRefreshCursor: jest
       .fn()
@@ -4444,17 +4445,17 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    await expect(
-      service.listChannelsWithRefreshState(
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        { refresh: true },
-      ),
-    ).resolves.toEqual({
+    const result = await service.listChannelsWithRefreshState(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { refresh: true },
+    );
+
+    expect(result).toEqual({
       items: [
         {
           id: 'cached-channel-1',
@@ -4474,9 +4475,11 @@ describe('AdminService.listChannels', () => {
         complete: false,
         cursor: null,
         backoffActive: true,
-        nextPollAfterMs: 60000,
+        nextPollAfterMs: expect.any(Number),
       },
     });
+    expect(result.refresh.nextPollAfterMs).toBeGreaterThan(0);
+    expect(result.refresh.nextPollAfterMs).toBeLessThanOrEqual(60_000);
 
     expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
       'admin-1',

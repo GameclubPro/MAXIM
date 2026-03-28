@@ -36,6 +36,24 @@ function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
 }
 
+function formatDelayLabel(totalSeconds: number | null): string | null {
+  if (totalSeconds === null) {
+    return null;
+  }
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds} сек.`;
+  }
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (seconds === 0) {
+    return `${minutes} мин.`;
+  }
+
+  return `${minutes} мин. ${seconds} сек.`;
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -44,6 +62,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     chat: 0,
     channel: 0,
   });
+  const [backoffCountdownMs, setBackoffCountdownMs] = useState<number | null>(null);
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
   const deferredQuery = useDeferredValue(query);
@@ -80,10 +99,20 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const refreshState = activeEntitiesState.refreshState;
   const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
-  const backoffDelaySeconds =
-    refreshState?.backoffActive && typeof refreshState.nextPollAfterMs === 'number'
-      ? Math.max(1, Math.ceil(refreshState.nextPollAfterMs / 1000))
+  const rawBackoffCountdownMs =
+    refreshState?.backoffActive === true
+      ? backoffCountdownMs ??
+        (typeof refreshState.nextPollAfterMs === 'number' ? refreshState.nextPollAfterMs : 0)
       : null;
+  const backoffDelaySeconds =
+    refreshState?.backoffActive === true
+      ? Math.max(1, Math.ceil((rawBackoffCountdownMs ?? 0) / 1000))
+      : null;
+  const backoffDelayLabel = formatDelayLabel(backoffDelaySeconds);
+  const isRefreshTemporarilyBlocked =
+    activeEntitiesState.isBackoffActive &&
+    rawBackoffCountdownMs !== null &&
+    rawBackoffCountdownMs > 0;
   const isBackoffWithoutEntities =
     !isLoading &&
     !queryError &&
@@ -96,6 +125,25 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     activeEntitiesState.isBackoffActive &&
     Array.isArray(activeEntities) &&
     activeEntities.length > 0;
+
+  useEffect(() => {
+    if (!refreshState?.backoffActive || typeof window === 'undefined') {
+      setBackoffCountdownMs(null);
+      return;
+    }
+
+    const resumeAtMs = Date.now() + (refreshState.nextPollAfterMs ?? 0);
+    const updateCountdown = () => {
+      setBackoffCountdownMs(Math.max(0, resumeAtMs - Date.now()));
+    };
+
+    updateCountdown();
+    const intervalId = window.setInterval(updateCountdown, 1000);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [refreshState?.backoffActive, refreshState?.nextPollAfterMs]);
 
   const isNoEntitiesForTab =
     !isLoading &&
@@ -125,6 +173,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
 
   function handleRefresh() {
+    if (isRefreshTemporarilyBlocked) {
+      return;
+    }
+
     lastRefreshAtRef.current = Date.now();
     awaitingReturnRefreshRef.current = false;
     startTransition(() => {
@@ -246,6 +298,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
+  const refreshButtonLabel = isFetching
+    ? 'Обновляем список'
+    : isRefreshTemporarilyBlocked
+      ? backoffDelayLabel
+        ? `Продолжим автоматически через ${backoffDelayLabel}`
+        : 'Продолжим автоматически чуть позже'
+      : 'Обновить список';
 
   return (
     <div className="page-stack page-enter">
@@ -260,9 +319,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     type="button"
                     className="button button--ghost chats-search-card__refresh"
                     onClick={handleRefresh}
-                    disabled={isFetching}
-                    aria-label={isFetching ? 'Обновляем список' : 'Обновить список'}
-                    title={isFetching ? 'Обновляем список' : 'Обновить список'}
+                    disabled={isFetching || isRefreshTemporarilyBlocked}
+                    aria-label={refreshButtonLabel}
+                    title={refreshButtonLabel}
                   >
                     <svg
                       viewBox="0 0 24 24"
@@ -339,12 +398,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {showBackoffNotice ? (
         <GlassCard>
           <StatusState
-            tone="warning"
-            title="Обновление списка временно ограничено"
+            tone="neutral"
+            title="Список обновится автоматически"
             description={
-              backoffDelaySeconds === null
-                ? 'MAX API временно ограничил обновление. Показан последний сохраненный список.'
-                : `MAX API временно ограничил обновление. Показан последний сохраненный список, повторная попытка будет доступна примерно через ${backoffDelaySeconds} сек.`
+              backoffDelayLabel === null
+                ? `MAX временно замедлил частые проверки. Уже найденные ${tabLabel.toLowerCase()} остаются доступны.`
+                : `MAX временно замедлил частые проверки. Уже найденные ${tabLabel.toLowerCase()} остаются доступны, следующая попытка пройдет автоматически примерно через ${backoffDelayLabel}`
             }
           />
         </GlassCard>
@@ -363,22 +422,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {isBackoffWithoutEntities ? (
         <GlassCard>
           <StatusState
-            tone="warning"
-            title="Не удалось обновить список прямо сейчас"
+            tone="neutral"
+            title="Проверка списка на паузе"
             description={
-              backoffDelaySeconds === null
-                ? 'MAX API временно ограничил обновление списка. Повторите попытку чуть позже.'
-                : `MAX API временно ограничил обновление списка. Повторите попытку примерно через ${backoffDelaySeconds} сек.`
-            }
-            action={
-              <button
-                type="button"
-                className="button button--accent"
-                onClick={handleRefresh}
-                disabled={isFetching}
-              >
-                {isFetching ? 'Обновляем...' : 'Повторить'}
-              </button>
+              backoffDelayLabel === null
+                ? 'MAX временно замедлил частые проверки. Как только окно запросов освободится, мы продолжим автоматически.'
+                : `MAX временно замедлил частые проверки. Как только окно запросов освободится, мы продолжим автоматически примерно через ${backoffDelayLabel}`
             }
           />
         </GlassCard>
@@ -452,9 +501,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             type="button"
             className="button button--accent onboarding-refresh"
             onClick={handleRefresh}
-            disabled={isFetching}
+            disabled={isFetching || isRefreshTemporarilyBlocked}
           >
-            {isFetching ? 'Обновляем...' : 'Я добавил бота, обновить'}
+            {isFetching
+              ? 'Обновляем...'
+              : isRefreshTemporarilyBlocked
+                ? backoffDelayLabel
+                  ? `Продолжим через ${backoffDelayLabel}`
+                  : 'Продолжим автоматически'
+                : 'Я добавил бота, обновить'}
           </button>
         </section>
       ) : null}
@@ -470,9 +525,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 type="button"
                 className="button button--accent"
                 onClick={handleRefresh}
-                disabled={isFetching}
+                disabled={isFetching || isRefreshTemporarilyBlocked}
               >
-                {isFetching ? 'Обновляем...' : 'Обновить'}
+                {isFetching
+                  ? 'Обновляем...'
+                  : isRefreshTemporarilyBlocked
+                    ? backoffDelayLabel
+                      ? `Продолжим через ${backoffDelayLabel}`
+                      : 'Продолжим автоматически'
+                    : 'Обновить'}
               </button>
             }
           />

@@ -216,6 +216,16 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return typeof raw === 'string' && raw.length > 0;
   }
 
+  async getManagedEntitiesRefreshBackoffRemainingMs(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<number> {
+    const ttlMs = await this.redis.pttl(
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey(userId, entityType),
+    );
+    return ttlMs > 0 ? ttlMs : 0;
+  }
+
   async activateManagedEntitiesRefreshBackoff(
     userId: string,
     entityType: ManagedEntityType | 'all',

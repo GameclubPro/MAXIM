@@ -12491,21 +12491,50 @@ export class AdminService {
     return backoffMs;
   }
 
+  private async getManagedEntitiesRefreshBackoffRemainingMs(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<number> {
+    const untilMs = this.managedEntitiesRefreshBackoffUntilMs.get(key) ?? 0;
+    const memoryRemainingMs = Math.max(0, untilMs - Date.now());
+    if (memoryRemainingMs === 0 && untilMs > 0) {
+      this.managedEntitiesRefreshBackoffUntilMs.delete(key);
+    }
+
+    try {
+      const persistedRemainingMs =
+        (await this.chatContextCache.getManagedEntitiesRefreshBackoffRemainingMs?.(
+          userId,
+          entityType,
+        )) ?? 0;
+      return Math.max(memoryRemainingMs, persistedRemainingMs);
+    } catch {
+      return memoryRemainingMs;
+    }
+  }
+
   private createManagedEntitiesRefreshState(
     cursor: number | null,
     backoffActive: boolean,
+    nextPollAfterMsOverride?: number,
   ): ManagedEntitiesRefreshState {
+    const normalizedNextPollAfterMs =
+      typeof nextPollAfterMsOverride === 'number'
+        ? Math.max(0, Math.ceil(nextPollAfterMsOverride))
+        : backoffActive
+          ? MANAGED_ENTITIES_REFRESH_BACKOFF_MS
+          : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+            ? 0
+            : cursor === null
+              ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
+              : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS;
+
     return {
       complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
       cursor,
       backoffActive,
-      nextPollAfterMs: backoffActive
-        ? MANAGED_ENTITIES_REFRESH_BACKOFF_MS
-        : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-          ? 0
-          : cursor === null
-            ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
-            : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
+      nextPollAfterMs: normalizedNextPollAfterMs,
     };
   }
 
@@ -12514,6 +12543,7 @@ export class AdminService {
     entityType: ManagedEntityTypeFilter,
     options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
   ): Promise<ManagedEntitiesRefreshState> {
+    const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
     let cursor = options.cursorOverride;
     if (cursor === undefined) {
       try {
@@ -12530,10 +12560,18 @@ export class AdminService {
       (await this.isManagedEntitiesRefreshBackoffActive(
         userId,
         entityType,
-        this.buildManagedEntitiesRefreshCooldownKey(userId, entityType),
+        refreshCooldownKey,
       ));
 
-    return this.createManagedEntitiesRefreshState(cursor, backoffActive);
+    const nextPollAfterMs = backoffActive
+      ? await this.getManagedEntitiesRefreshBackoffRemainingMs(
+          userId,
+          entityType,
+          refreshCooldownKey,
+        )
+      : undefined;
+
+    return this.createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs);
   }
 
   private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {

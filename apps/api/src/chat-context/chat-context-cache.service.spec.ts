@@ -1,6 +1,7 @@
 jest.mock('ioredis', () =>
   jest.fn().mockImplementation(() => ({
     get: jest.fn(),
+    pttl: jest.fn().mockResolvedValue(-2),
     set: jest.fn().mockResolvedValue('OK'),
     del: jest.fn().mockResolvedValue(1),
     quit: jest.fn().mockResolvedValue(undefined),
@@ -217,6 +218,7 @@ describe('ChatContextCacheService', () => {
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       set: jest.Mock;
       get: jest.Mock;
+      pttl: jest.Mock;
     };
 
     await service.setAdminAccess('chat-1', 'user-1', 'granted');
@@ -278,6 +280,7 @@ describe('ChatContextCacheService', () => {
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       set: jest.Mock;
       get: jest.Mock;
+      pttl: jest.Mock;
     };
 
     await service.activateManagedEntitiesRefreshCooldown('user-1', 'channel', 30);
@@ -305,5 +308,10 @@ describe('ChatContextCacheService', () => {
     await expect(service.isManagedEntitiesRefreshBackoffActive('user-1', 'channel')).resolves.toBe(
       true,
     );
+
+    redisInstance.pttl.mockResolvedValueOnce(45_000);
+    await expect(
+      service.getManagedEntitiesRefreshBackoffRemainingMs('user-1', 'channel'),
+    ).resolves.toBe(45_000);
   });
 });

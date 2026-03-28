@@ -133,10 +133,22 @@ export function useManagedEntitiesSync({
   const latestDataRef = useRef<ChatSummary[] | null>(state.data);
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
+  const backoffResumeAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
   }, [cacheKey, queryClient, state]);
+
+  useEffect(() => {
+    if (!state.refreshState?.backoffActive) {
+      backoffResumeAtRef.current = null;
+      return;
+    }
+
+    backoffResumeAtRef.current =
+      Date.now() +
+      (state.refreshState.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS);
+  }, [state.refreshState?.backoffActive, state.refreshState?.nextPollAfterMs]);
 
   useEffect(() => {
     if (!enabled || !resumeOnVisibilityReturn || typeof document === 'undefined') {
@@ -147,10 +159,17 @@ export function useManagedEntitiesSync({
       if (document.visibilityState !== 'visible') {
         return;
       }
-      if (state.phase !== 'idle' || state.data === null) {
+      if ((state.phase !== 'idle' && state.phase !== 'backoff') || state.data === null) {
         return;
       }
-      if (state.refreshState?.complete || state.refreshState?.backoffActive) {
+      if (state.refreshState?.complete) {
+        return;
+      }
+      if (
+        state.refreshState?.backoffActive &&
+        typeof backoffResumeAtRef.current === 'number' &&
+        Date.now() < backoffResumeAtRef.current
+      ) {
         return;
       }
 
@@ -168,7 +187,32 @@ export function useManagedEntitiesSync({
     state.phase,
     state.refreshState?.backoffActive,
     state.refreshState?.complete,
+    state.refreshState?.nextPollAfterMs,
   ]);
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      state.refreshState?.backoffActive !== true ||
+      typeof window === 'undefined' ||
+      (typeof document !== 'undefined' && document.visibilityState !== 'visible')
+    ) {
+      return;
+    }
+
+    const resumeAtMs =
+      backoffResumeAtRef.current ??
+      Date.now() +
+        (state.refreshState.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS);
+    const delayMs = Math.max(0, resumeAtMs - Date.now());
+    const timeoutId = window.setTimeout(() => {
+      setVisibilityResumeNonce((current) => current + 1);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [enabled, state.refreshState?.backoffActive, state.refreshState?.nextPollAfterMs]);
 
   useEffect(() => {
     if (!enabled) {
