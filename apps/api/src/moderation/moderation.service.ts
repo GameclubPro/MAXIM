@@ -430,7 +430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const userLabel = this.formatUserLabel(senderName);
+    const userLabel = this.formatUserLabel(senderName, senderId);
     const mode = await this.resolveSystemModeSnapshot();
     const degradeMode = mode.mode === 'degrade';
     const chat = await this.loadChatContext(chatId, chatTitle);
@@ -2106,18 +2106,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
   }
 
-  private formatUserLabel(senderName?: string): string {
+  private formatUserLabel(senderName?: string, userId?: string): string {
     const normalized = typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
     const safe = normalized.length > 0 ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
+    if (typeof userId === 'string' && userId.trim().length > 0) {
+      return `[${safe}](max://user/${encodeURIComponent(userId)})`;
+    }
     return `**${safe}**`;
-  }
-
-  private formatUserMentionFromLabel(userLabel: string, userId: string): string {
-    const normalizedLabel =
-      userLabel.startsWith('**') && userLabel.endsWith('**') && userLabel.length > 4
-        ? userLabel.slice(2, -2)
-        : userLabel;
-    return `[${normalizedLabel}](max://user/${encodeURIComponent(userId)})`;
   }
 
   private async applySanctionAction(params: {
@@ -3762,7 +3757,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: `${result.message}\nПользователь: ${this.formatUserLabel(target.senderName ?? undefined)}`,
+        text: `${result.message}\nПользователь: ${this.formatUserLabel(
+          target.senderName ?? undefined,
+          target.userId,
+        )}`,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -4569,7 +4567,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      const userLabel = this.formatUserLabel(this.readDisplayNameFromEntity(row) ?? undefined);
+      const userLabel = this.formatUserLabel(this.readDisplayNameFromEntity(row) ?? undefined, userId);
       members.set(userId, { userId, userLabel });
     }
 
@@ -4892,7 +4890,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (deleteSpammersEnabled) {
         await this.sendGlobalSpammerFanoutWarning({
           chatId,
-          userId,
           userLabel,
           warningCount,
         });
@@ -4931,16 +4928,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async sendGlobalSpammerFanoutWarning(params: {
     chatId: string;
-    userId: string;
     userLabel: string;
     warningCount: number;
   }): Promise<void> {
-    const { chatId, userId, userLabel, warningCount } = params;
+    const { chatId, userLabel, warningCount } = params;
     const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
-    const warningText = `${this.formatUserMentionFromLabel(
-      userLabel,
-      userId,
-    )}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
+    const warningText = `${userLabel}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
     try {
       await this.maxClient.sendMessage(chatId, warningText, { textFormat: 'markdown' });
     } catch (error: unknown) {

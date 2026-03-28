@@ -31,8 +31,8 @@ function escapeMaxMarkdown(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
 }
 
-function boldUser(name: string): string {
-  return `**${escapeMaxMarkdown(name)}**`;
+function userMention(name: string, userId = 'user-1'): string {
+  return `[${escapeMaxMarkdown(name)}](max://user/${encodeURIComponent(userId)})`;
 }
 
 function majorExplanation(
@@ -44,11 +44,11 @@ function majorExplanation(
   void messageStatus;
 
   if (reason === 'в этом чате ссылки не проходят, без ссылок') {
-    return `Товарищ ${boldUser(name)}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.`;
+    return `Товарищ ${userMention(name)}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.`;
   }
 
   if (subject === 'Объявление') {
-    return `Товарищ ${boldUser(name)}, объявление завернул 👮‍♂️ Причина: ${reason}. Поправьте по форме и возвращайтесь.`;
+    return `Товарищ ${userMention(name)}, объявление завернул 👮‍♂️ Причина: ${reason}. Поправьте по форме и возвращайтесь.`;
   }
 
   if (
@@ -60,42 +60,42 @@ function majorExplanation(
     reason.includes('голосовые сообщения в этом чате отключены') ||
     reason.includes('слишком частая отправка')
   ) {
-    return `Товарищ ${boldUser(name)}, сообщение завернул 👮‍♂️ Причина: ${reason}. Подправьте и подавайте заново.`;
+    return `Товарищ ${userMention(name)}, сообщение завернул 👮‍♂️ Причина: ${reason}. Подправьте и подавайте заново.`;
   }
 
-  return `Товарищ ${boldUser(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и разъедемся красиво.`;
+  return `Товарищ ${userMention(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и разъедемся красиво.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
-  return `Товарищ ${boldUser(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
+  return `Товарищ ${userMention(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
 }
 
 function muteNotice(name: string, duration: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю мут на ${duration}. До конца срока новые сообщения будут скрываться.`;
+  return `Товарищ ${userMention(name)}, оформляю мут на ${duration}. До конца срока новые сообщения будут скрываться.`;
 }
 
 function permanentBanNotice(name: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю бан до ручного разбана.`;
+  return `Товарищ ${userMention(name)}, оформляю бан до ручного разбана.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, предупреждение на карандаш занёс 👮‍♂️ Причина: ${reason}. Дальше держим порядок.`;
+  return `Товарищ ${userMention(name)}, предупреждение на карандаш занёс 👮‍♂️ Причина: ${reason}. Дальше держим порядок.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `Товарищ ${boldUser(name)}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.`;
+  return `Товарищ ${userMention(name)}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
+  return `Товарищ ${userMention(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю бан до ручного разбана 👮‍♂️ Причина: ${reason}.`;
+  return `Товарищ ${userMention(name)}, оформляю бан до ручного разбана 👮‍♂️ Причина: ${reason}.`;
 }
 
 function topicFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
+  return `Товарищ ${userMention(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
 function nightModeNotice(window: string, timezone: string): string {
@@ -2777,7 +2777,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${boldUser('Новый участник')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -2920,7 +2920,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       'chat-1',
-      `Добро пожаловать, ${boldUser('Новый участник')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
       expect.objectContaining({
         textFormat: 'markdown',
       }),
@@ -2994,7 +2994,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${boldUser('Новый участник из data')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMention('Новый участник из data', 'user-envelope-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3060,7 +3060,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${boldUser('Новый участник без sender')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMention('Новый участник без sender', 'user-no-sender-2')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3126,7 +3126,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      `Добро пожаловать, ${boldUser('Новый участник user_added')}! добро пожаловать в чат.`,
+      `Добро пожаловать, ${userMention('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -6315,7 +6315,9 @@ describe('ModerationService', () => {
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(sentTexts.some((text) => text.includes('Участник забанен в чате.'))).toBe(true);
-    expect(sentTexts.some((text) => text.includes('Пользователь: **Нарушитель**'))).toBe(true);
+    expect(
+      sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
+    ).toBe(true);
   });
 
   it('lets chat admins mute a replied sender with the default duration', async () => {
@@ -6404,7 +6406,9 @@ describe('ModerationService', () => {
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(sentTexts.some((text) => text.includes('Участник замьючен на 6ч.'))).toBe(true);
-    expect(sentTexts.some((text) => text.includes('Пользователь: **Нарушитель**'))).toBe(true);
+    expect(
+      sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
+    ).toBe(true);
   });
 
   it('lets chat admins mute a replied sender for an explicit duration', async () => {
@@ -8218,7 +8222,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, оформляю бан до ручного разбана 👮‍♂️ Причина: объявление должно начинаться с кодового слова "недвижимость".',
+      `Товарищ ${userMention('Алексей')}, оформляю бан до ручного разбана 👮‍♂️ Причина: объявление должно начинаться с кодового слова "недвижимость".`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
