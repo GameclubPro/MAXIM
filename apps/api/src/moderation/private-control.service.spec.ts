@@ -1142,7 +1142,7 @@ describe('PrivateControlService', () => {
   });
 
   it('bans a forwarded sender from private chat with the permanent ban command', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       settings: {
         ...defaultSettings,
         muteDurationHours: 12,
@@ -1402,7 +1402,7 @@ describe('PrivateControlService', () => {
       nightModeEndTimeMinutes: 8 * 60,
       nightModeTimezone: 'Europe/Moscow',
     });
-    const { service, adminService, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       settings: generatedSettings,
       rules: createRules({
         text: 'Текущий текст правил.',
@@ -1534,7 +1534,7 @@ describe('PrivateControlService', () => {
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
-    const { service, adminService, chats } = createHarness({
+    const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила из handoff.',
         autoTextEnabled: true,

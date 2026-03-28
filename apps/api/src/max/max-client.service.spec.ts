@@ -1,5 +1,5 @@
 import { MaxClientService } from './max-client.service';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import Redis from 'ioredis';
 
 jest.mock('ioredis', () => {
@@ -840,6 +840,39 @@ describe('MaxClientService inline keyboard guardrails', () => {
       url: 'https://max.ru/chats/chat-1/message/456',
     });
     expect(httpService.request).toHaveBeenCalledTimes(1);
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not count ignored terminal send failures in action health metrics', async () => {
+    const error = {
+      response: {
+        status: 404,
+        data: {
+          code: 'chat.not.found',
+          message: 'Chat not found',
+        },
+      },
+    };
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(throwError(() => error)),
+    };
+    const service = createService(httpService);
+    const actionHealthService = (service as unknown as {
+      actionHealthService: {
+        recordSuccess: jest.Mock;
+        recordFailure: jest.Mock;
+      };
+    }).actionHealthService;
+
+    await expect(
+      service.sendMessageImmediateWithId('chat-1', 'Правила', undefined, {
+        ignoreFailureMetricStatuses: [404],
+      }),
+    ).rejects.toBe(error);
+
+    expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
+    expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

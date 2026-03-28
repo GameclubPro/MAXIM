@@ -128,6 +128,7 @@ const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
+const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
@@ -7540,7 +7541,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let closedNoticeDeleted = false;
       if (closedNoticeMessageId) {
         try {
-          await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId);
+          await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId, {
+            immediate: true,
+            ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+          });
           closedNoticeDeleted = true;
         } catch (error: unknown) {
           if (
@@ -9825,6 +9829,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.chatId,
         params.text,
         options,
+        {
+          ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+        },
       );
 
       return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
@@ -9837,6 +9844,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.chatId,
         params.text,
         options,
+        {
+          ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+        },
       );
 
       return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0

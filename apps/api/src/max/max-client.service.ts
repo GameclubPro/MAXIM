@@ -211,6 +211,7 @@ export type MaxActionJob = {
   text?: string;
   options?: MaxSendMessageOptions;
   autoDeleteDelayMs?: number;
+  ignoreFailureMetricStatuses?: number[];
   attempt: number;
   idempotencyKey: string;
   createdAt: string;
@@ -220,6 +221,7 @@ export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
   autoDeleteDelayMs?: number;
+  ignoreFailureMetricStatuses?: readonly number[];
 };
 
 type MaxApiRequestOptions = {
@@ -371,22 +373,27 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     text: string,
     options?: MaxSendMessageOptions,
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
-    const sendResponse = await this.executeMutation(chatId, async () => {
-      return this.request<Record<string, unknown>>('post', '/messages', {
-        params: {
-          chat_id: chatId,
-        },
-        data: {
-          text,
-          ...(options?.textFormat ? { format: options.textFormat } : {}),
-          ...(messageLink ? { link: messageLink } : {}),
-          ...(attachments.length > 0 ? { attachments } : {}),
-        },
-      });
-    });
+    const sendResponse = await this.executeMutation(
+      chatId,
+      async () => {
+        return this.request<Record<string, unknown>>('post', '/messages', {
+          params: {
+            chat_id: chatId,
+          },
+          data: {
+            text,
+            ...(options?.textFormat ? { format: options.textFormat } : {}),
+            ...(messageLink ? { link: messageLink } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+          },
+        });
+      },
+      requestOptions,
+    );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
@@ -439,12 +446,13 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     text: string,
     options?: MaxSendMessageOptions,
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const {
       messageId,
       url: directUrl,
       chatId: resolvedChatId,
-    } = await this.sendMessageImmediateWithId(chatId, text, options);
+    } = await this.sendMessageImmediateWithId(chatId, text, options, requestOptions);
     if (directUrl) {
       return {
         messageId,
@@ -962,20 +970,25 @@ export class MaxClientService implements OnModuleDestroy {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
     };
+    const mutationOptions = this.buildQueuedActionMutationOptions(action);
 
     switch (action.actionType) {
       case 'DELETE_MESSAGE':
         if (!action.messageId) {
           throw new Error('messageId is required for DELETE_MESSAGE');
         }
-        await this.executeMutation(action.chatId, async () => {
-          await this.request('delete', '/messages', {
-            params: {
-              message_id: action.messageId,
-              chat_id: action.chatId,
-            },
-          });
-        });
+        await this.executeMutation(
+          action.chatId,
+          async () => {
+            await this.request('delete', '/messages', {
+              params: {
+                message_id: action.messageId,
+                chat_id: action.chatId,
+              },
+            });
+          },
+          mutationOptions,
+        );
         return;
 
       case 'SEND_MESSAGE': {
@@ -983,20 +996,24 @@ export class MaxClientService implements OnModuleDestroy {
           throw new Error('text is required for SEND_MESSAGE');
         }
         const attachments = this.buildMessageAttachments(action.options);
-        const sendResponse = await this.executeMutation(action.chatId, async () => {
-          const messageLink = this.buildMessageLinkData(action.options?.messageLink);
-          return this.request<Record<string, unknown>>('post', '/messages', {
-            params: {
-              chat_id: action.chatId,
-            },
-            data: {
-              text: action.text,
-              ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
-              ...(messageLink ? { link: messageLink } : {}),
-              ...(attachments.length > 0 ? { attachments } : {}),
-            },
-          });
-        });
+        const sendResponse = await this.executeMutation(
+          action.chatId,
+          async () => {
+            const messageLink = this.buildMessageLinkData(action.options?.messageLink);
+            return this.request<Record<string, unknown>>('post', '/messages', {
+              params: {
+                chat_id: action.chatId,
+              },
+              data: {
+                text: action.text,
+                ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
+                ...(messageLink ? { link: messageLink } : {}),
+                ...(attachments.length > 0 ? { attachments } : {}),
+              },
+            });
+          },
+          mutationOptions,
+        );
         const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
         if (autoDeleteDelayMs > 0) {
           const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
@@ -1042,40 +1059,52 @@ export class MaxClientService implements OnModuleDestroy {
         if (!action.userId) {
           throw new Error('userId is required for KICK_MEMBER');
         }
-        await this.executeMutation(action.chatId, async () => {
-          await this.request('delete', `/chats/${action.chatId}/members`, {
-            params: {
-              user_id: action.userId,
-            },
-          });
-        });
+        await this.executeMutation(
+          action.chatId,
+          async () => {
+            await this.request('delete', `/chats/${action.chatId}/members`, {
+              params: {
+                user_id: action.userId,
+              },
+            });
+          },
+          mutationOptions,
+        );
         return;
 
       case 'BAN_MEMBER':
         if (!action.userId) {
           throw new Error('userId is required for BAN_MEMBER');
         }
-        await this.executeMutation(action.chatId, async () => {
-          await this.request('delete', `/chats/${action.chatId}/members`, {
-            params: {
-              user_id: action.userId,
-              block: true,
-            },
-          });
-        });
+        await this.executeMutation(
+          action.chatId,
+          async () => {
+            await this.request('delete', `/chats/${action.chatId}/members`, {
+              params: {
+                user_id: action.userId,
+                block: true,
+              },
+            });
+          },
+          mutationOptions,
+        );
         return;
 
       case 'UNBAN_MEMBER': {
         if (!action.userId) {
           throw new Error('userId is required for UNBAN_MEMBER');
         }
-        await this.executeMutation(action.chatId, async () => {
-          await this.request('post', `/chats/${action.chatId}/members`, {
-            data: {
-              user_ids: [action.userId],
-            },
-          });
-        });
+        await this.executeMutation(
+          action.chatId,
+          async () => {
+            await this.request('post', `/chats/${action.chatId}/members`, {
+              data: {
+                user_ids: [action.userId],
+              },
+            });
+          },
+          mutationOptions,
+        );
         return;
       }
 
@@ -2041,6 +2070,9 @@ export class MaxClientService implements OnModuleDestroy {
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const delayMs = this.normalizeDelayMs(options?.delayMs);
     const immediate = options?.immediate === true;
+    const ignoreFailureMetricStatuses = this.normalizeFailureMetricStatuses(
+      options?.ignoreFailureMetricStatuses,
+    );
     const scheduledJobId =
       delayMs > 0
         ? this.buildScheduledMemberActionJobId(payload.actionType, payload.chatId, payload.userId)
@@ -2050,6 +2082,7 @@ export class MaxClientService implements OnModuleDestroy {
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
+      ...(ignoreFailureMetricStatuses ? { ignoreFailureMetricStatuses } : {}),
       attempt: 1,
       idempotencyKey: scheduledJobId ?? randomUUID(),
       createdAt: new Date().toISOString(),
@@ -2798,9 +2831,14 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeMutation<T>(
     chatId: string | null,
     operation: () => Promise<T>,
-    trafficClass: MaxApiTrafficClass = 'critical',
+    options: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
   ): Promise<T> {
-    return this.executeReadRequest(operation, { chatId, trafficClass });
+    const normalizedOptions = this.normalizeReadRequestOptions(options);
+    return this.executeReadRequest(operation, {
+      chatId,
+      trafficClass: normalizedOptions.trafficClass ?? 'critical',
+      ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
+    });
   }
 
   private normalizeReadRequestOptions(
@@ -2815,8 +2853,31 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       trafficClass: options.trafficClass,
-      ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
+      ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
+        options.ignoreFailureMetricStatuses,
+      ),
     };
+  }
+
+  private buildQueuedActionMutationOptions(action: MaxActionJob): MaxApiRequestOptions {
+    return {
+      ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
+        action.ignoreFailureMetricStatuses,
+      ),
+    };
+  }
+
+  private normalizeFailureMetricStatuses(
+    statuses: readonly number[] | undefined,
+  ): number[] | undefined {
+    if (!Array.isArray(statuses)) {
+      return undefined;
+    }
+
+    const normalized = Array.from(
+      new Set(statuses.filter((status): status is number => Number.isInteger(status) && status > 0)),
+    );
+    return normalized.length > 0 ? normalized : undefined;
   }
 
   private extractMessageIdFromSendResponse(payload: unknown): string | null {

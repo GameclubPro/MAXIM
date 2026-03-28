@@ -5119,6 +5119,9 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
@@ -5470,8 +5473,18 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-night-close-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-night-close-1',
+      expect.objectContaining({
+        immediate: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -5679,8 +5692,18 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-night-close-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-night-close-1',
+      expect.objectContaining({
+        immediate: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -5909,8 +5932,18 @@ describe('ModerationService', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-night-close-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-night-close-1',
+      expect.objectContaining({
+        immediate: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
