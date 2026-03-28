@@ -115,6 +115,9 @@ type ManagedBroadcastCardTone = 'active' | 'warning' | 'danger' | 'muted';
 type MailingWorkspaceView = 'compose' | 'active';
 
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
+const LazyMessageLimitsBlockedWordPresets = lazy(
+  () => import('../components/message-limits-blocked-word-presets'),
+);
 
 const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
@@ -3145,6 +3148,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       if (nextWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX || existingWords.has(candidate)) {
         continue;
       }
+
       existingWords.add(candidate);
       nextWords.push(candidate);
     }
@@ -3161,6 +3165,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : current,
     );
     setMessageLimitsBlockedWordsInput('');
+  }
+
+  function applyMessageLimitsBlockedWords(nextWords: string[]) {
+    clearFieldError('messageLimitsBlockedWords');
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            messageLimitsBlockedWords: nextWords,
+            messageLimitsBotMessageEnabled: true,
+          }
+        : current,
+    );
   }
 
   function removeMessageLimitsBlockedWord(wordToRemove: string) {
@@ -3888,6 +3905,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
   );
   const messageLimitsBlockedWordsError = fieldErrors.messageLimitsBlockedWords;
+  const messageLimitsBlockedWordsRemaining = Math.max(
+    0,
+    MESSAGE_LIMITS_BLOCKED_WORDS_MAX - (draft?.messageLimitsBlockedWords.length ?? 0),
+  );
   const messageLimitsBotButtonUrlError = showMessageLimitsBotButtonErrors
     ? fieldErrors.messageLimitsBotButtonUrl
     : undefined;
@@ -7915,6 +7936,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           ) : null}
                         </div>
+
+                        <Suspense fallback={null}>
+                          <LazyMessageLimitsBlockedWordPresets
+                            selectedWords={draft.messageLimitsBlockedWords}
+                            remainingSlots={messageLimitsBlockedWordsRemaining}
+                            onApplyWords={applyMessageLimitsBlockedWords}
+                          />
+                        </Suspense>
 
                         <div className="settings-word-banlist__add-row">
                           <input
