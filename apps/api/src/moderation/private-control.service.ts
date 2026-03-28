@@ -14,6 +14,7 @@ import {
   type BroadcastScheduleMode,
   type ChannelSettings,
   type ChatSettings,
+  type ChatSettingsScreenResponse,
   type LogsDashboardRange,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
@@ -3282,23 +3283,24 @@ export class PrivateControlService {
 
       case 'rules_autofill': {
         this.assertSelectedEntityType(session, 'chat');
-        const rules = await this.adminService.getRules(session.selectedChatId!, context.actor);
-        if (!rules.text.trim()) {
-          throw new BadRequestException('Сначала сохраните текст правил.');
-        }
+        const settingsScreen = await this.adminService.getChatSettingsScreen(
+          session.selectedChatId!,
+          context.actor,
+        );
+        const generatedText = this.buildRulesTextFromSettings(settingsScreen);
 
         await this.adminService.updateRules(
           session.selectedChatId!,
           context.actor,
           {
-            text: rules.text,
-            imageBase64: rules.imageBase64,
-            imageMimeType: rules.imageMimeType,
-            imageFileName: rules.imageFileName,
+            text: generatedText,
+            imageBase64: settingsScreen.rules.imageBase64,
+            imageMimeType: settingsScreen.rules.imageMimeType,
+            imageFileName: settingsScreen.rules.imageFileName,
             autoTextEnabled: true,
-            buttonEnabled: rules.buttonEnabled,
-            buttonUrl: rules.buttonUrl,
-            buttonText: rules.buttonText,
+            buttonEnabled: settingsScreen.rules.buttonEnabled,
+            buttonUrl: settingsScreen.rules.buttonUrl,
+            buttonText: settingsScreen.rules.buttonText,
           },
           'private_bot',
         );
@@ -3307,11 +3309,11 @@ export class PrivateControlService {
         const view = await this.renderRulesScreen(
           context,
           session,
-          'Текст из настроек снова подставляется.',
+          'Текст собран из текущих настроек.',
         );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Текст подставлен',
+          notification: 'Текст собран',
         });
         return;
       }
@@ -6374,8 +6376,8 @@ export class PrivateControlService {
     }
 
     const rows: MaxMessageButton[][] = [
-      ...(hasText && !showStoredText
-        ? [[this.callbackButton('🤖 Подставить текст', this.cb('rules_autofill'))]]
+      ...(!showStoredText
+        ? [[this.callbackButton('Собрать из настроек 🤖', this.cb('rules_autofill'))]]
         : []),
       [this.callbackButton('✏️ Изменить текст', this.cb('rules_input_prompt', 'text'))],
       [
@@ -6427,6 +6429,268 @@ export class PrivateControlService {
         textFormat: 'markdown',
       },
     };
+  }
+
+  private buildRulesTextFromSettings(screen: ChatSettingsScreenResponse): string {
+    const items = this.buildRulesTextItemsFromSettings(screen);
+    if (items.length === 0) {
+      throw new BadRequestException('Нет активных настроек, из которых можно собрать правила.');
+    }
+
+    const lines = ['Правила чата:', ''];
+    const numberedItems: string[] = [];
+
+    for (const [index, item] of items.entries()) {
+      const numberedItem = `${index + 1}. ${item}`;
+      const candidate = [...lines, ...numberedItems, numberedItem].join('\n');
+      if (candidate.length > 2_000) {
+        break;
+      }
+      numberedItems.push(numberedItem);
+    }
+
+    if (numberedItems.length === 0) {
+      throw new BadRequestException('Не удалось собрать короткий текст правил из текущих настроек.');
+    }
+
+    return [...lines, ...numberedItems].join('\n');
+  }
+
+  private buildRulesTextItemsFromSettings(screen: ChatSettingsScreenResponse): string[] {
+    const { settings, requiredSubscriptionChannels, domains } = screen;
+    const items: string[] = [];
+
+    if (settings.linkPolicy === 'BLOCKLIST_ONLY') {
+      items.push('Любые ссылки в этом чате удаляются.');
+    } else if (settings.linkPolicy === 'ALLOWLIST_ONLY') {
+      items.push(
+        domains.length > 0
+          ? 'Ссылки разрешены только из одобренного списка администраторов.'
+          : 'Ссылки в этом чате ограничены: разрешены только ссылки, которые одобрят администраторы.',
+      );
+    }
+
+    if (settings.requiredSubscriptionEnabled) {
+      const channelTitles = requiredSubscriptionChannels
+        .map((channel) => channel.title.trim())
+        .filter(Boolean);
+      items.push(
+        channelTitles.length > 0
+          ? `Для сообщений нужна подписка на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
+          : 'Для сообщений нужна подписка на обязательные каналы.',
+      );
+    }
+
+    if (settings.russianProfanityFilterEnabled) {
+      items.push('Мат и грубая лексика запрещены.');
+    }
+
+    if (settings.commercialAdsFilterEnabled) {
+      items.push('Реклама и коммерческие предложения без согласования запрещены.');
+    }
+
+    if (settings.thematicCodewordEnabled) {
+      const codeword = settings.thematicCodeword.trim();
+      items.push(
+        codeword
+          ? `Сообщения по теме должны начинаться с кодового слова "${codeword}".`
+          : 'Сообщения должны проходить тематический фильтр.',
+      );
+    }
+
+    if (settings.antiDuplicateEnabled) {
+      const allowedCount = this.resolveDuplicateAllowedCount(settings);
+      items.push(
+        allowedCount === 0
+          ? 'Повтор одинаковых сообщений запрещён сразу.'
+          : `Повтор одинаковых сообщений запрещён ${this.formatDuplicateAllowanceLabel(allowedCount)}.`,
+      );
+    }
+
+    if (settings.messageCountLimitEnabled) {
+      items.push(
+        `Не более ${settings.messageCountLimitMessages} сообщений за ${settings.messageCountLimitWindowHours} ${this.formatRulesHoursLabel(settings.messageCountLimitWindowHours)}.`,
+      );
+    }
+
+    if (settings.maxMessageLengthEnabled) {
+      items.push(`Длина одного сообщения — до ${settings.maxMessageLength} символов.`);
+    }
+
+    if (settings.messageLimitsBlockedWords.length > 0) {
+      items.push(
+        `Запрещены стоп-слова: ${this.formatRulesPreviewList(settings.messageLimitsBlockedWords, 5)}.`,
+      );
+    }
+
+    if (settings.photoMessageCooldownEnabled) {
+      items.push(
+        `Фото можно отправлять не чаще одного раза в ${settings.photoMessageCooldownHours} ${this.formatRulesHoursLabel(settings.photoMessageCooldownHours)}.`,
+      );
+    }
+
+    if (settings.stickerMessageCooldownEnabled) {
+      items.push(
+        `Стикеры можно отправлять не чаще одного раза в ${settings.stickerMessageCooldownMinutes} ${this.formatRulesMinutesLabel(settings.stickerMessageCooldownMinutes)}.`,
+      );
+    }
+
+    if (!settings.videoMessagesEnabled) {
+      items.push('Видео в этом чате запрещены.');
+    }
+
+    if (!settings.fileMessagesEnabled) {
+      items.push('Файлы в этом чате запрещены.');
+    }
+
+    if (!settings.voiceMessagesEnabled) {
+      items.push('Голосовые сообщения в этом чате запрещены.');
+    }
+
+    if (settings.nightModeEnabled) {
+      items.push(
+        `Ночной режим действует с ${this.formatTime(settings.nightModeStartTimeMinutes)} до ${this.formatTime(settings.nightModeEndTimeMinutes)} (${settings.nightModeTimezone}).`,
+      );
+    }
+
+    const sanctionsSummary = this.buildRulesSanctionsSummary(settings);
+    if (sanctionsSummary) {
+      items.push(sanctionsSummary);
+    }
+
+    return items;
+  }
+
+  private buildRulesSanctionsSummary(
+    settings: Pick<
+      ChatSettings,
+      | 'linkWarnEnabled'
+      | 'requiredSubscriptionWarnEnabled'
+      | 'textFiltersWarnEnabled'
+      | 'thematicFiltersWarnEnabled'
+      | 'messageLimitsWarnEnabled'
+      | 'duplicateWarnEnabled'
+      | 'linkMuteEnabled'
+      | 'requiredSubscriptionMuteEnabled'
+      | 'textFiltersMuteEnabled'
+      | 'thematicFiltersMuteEnabled'
+      | 'messageLimitsMuteEnabled'
+      | 'duplicateMuteEnabled'
+      | 'linkBanEnabled'
+      | 'requiredSubscriptionBanEnabled'
+      | 'textFiltersBanEnabled'
+      | 'thematicFiltersBanEnabled'
+      | 'messageLimitsBanEnabled'
+      | 'duplicateBanEnabled'
+    >,
+  ): string | null {
+    const sanctions = new Set<string>();
+
+    if (
+      settings.linkWarnEnabled ||
+      settings.requiredSubscriptionWarnEnabled ||
+      settings.textFiltersWarnEnabled ||
+      settings.thematicFiltersWarnEnabled ||
+      settings.messageLimitsWarnEnabled ||
+      settings.duplicateWarnEnabled
+    ) {
+      sanctions.add('предупреждение');
+    }
+
+    if (
+      settings.linkMuteEnabled ||
+      settings.requiredSubscriptionMuteEnabled ||
+      settings.textFiltersMuteEnabled ||
+      settings.thematicFiltersMuteEnabled ||
+      settings.messageLimitsMuteEnabled ||
+      settings.duplicateMuteEnabled
+    ) {
+      sanctions.add('мут');
+    }
+
+    if (
+      settings.linkBanEnabled ||
+      settings.requiredSubscriptionBanEnabled ||
+      settings.textFiltersBanEnabled ||
+      settings.thematicFiltersBanEnabled ||
+      settings.messageLimitsBanEnabled ||
+      settings.duplicateBanEnabled
+    ) {
+      sanctions.add('бан');
+    }
+
+    if (sanctions.size === 0) {
+      return null;
+    }
+
+    return `За повторные нарушения бот может вынести ${this.formatRulesConjunctionList([...sanctions])}.`;
+  }
+
+  private formatDuplicateAllowanceLabel(count: number): string {
+    if (count === 0) {
+      return 'с первого дубля';
+    }
+
+    if (count === 1) {
+      return 'после 1 дубля';
+    }
+
+    return `после ${count} дублей`;
+  }
+
+  private formatRulesPreviewList(values: readonly string[], limit: number): string {
+    const uniqueValues = Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+    const visible = uniqueValues.slice(0, limit);
+    const remaining = uniqueValues.length - visible.length;
+    if (remaining <= 0) {
+      return visible.join(', ');
+    }
+
+    return `${visible.join(', ')} и ещё ${remaining}`;
+  }
+
+  private formatRulesConjunctionList(values: readonly string[]): string {
+    if (values.length <= 1) {
+      return values[0] ?? '';
+    }
+
+    if (values.length === 2) {
+      return `${values[0]} и ${values[1]}`;
+    }
+
+    return `${values.slice(0, -1).join(', ')} и ${values[values.length - 1]}`;
+  }
+
+  private formatRulesHoursLabel(value: number): string {
+    const normalized = Math.abs(Math.trunc(value));
+    const mod10 = normalized % 10;
+    const mod100 = normalized % 100;
+
+    if (mod10 === 1 && mod100 !== 11) {
+      return 'час';
+    }
+
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return 'часа';
+    }
+
+    return 'часов';
+  }
+
+  private formatRulesMinutesLabel(value: number): string {
+    const normalized = Math.abs(Math.trunc(value));
+    const mod10 = normalized % 10;
+    const mod100 = normalized % 100;
+
+    if (mod10 === 1 && mod100 !== 11) {
+      return 'минуту';
+    }
+
+    if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+      return 'минуты';
+    }
+
+    return 'минут';
   }
 
   private async renderBroadcastScreen(

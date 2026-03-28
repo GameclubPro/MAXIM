@@ -583,6 +583,14 @@ function createHarness(
     getChatHeader: jest.fn().mockResolvedValue({ id: chats[0].id, title: chats[0].title }),
     getChannelHeader: jest.fn().mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
     getSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
+    getChatSettingsScreen: jest.fn().mockImplementation(async () => ({
+      settings: overrides.settings ?? defaultSettings,
+      rules: currentRules,
+      header: { id: chats[0].id, title: chats[0].title },
+      requiredSubscriptionChannels: [],
+      domains: [],
+      managedBroadcasts: [],
+    })),
     updateSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     applySettingsToAllChats: jest.fn().mockResolvedValue({
       sourceChatId: chats[0].id,
@@ -1351,12 +1359,43 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('🤖 Подставить текст');
+    expect(buttonTexts).toContain('Собрать из настроек 🤖');
     expect(buttonTexts).toContain('✏️ Изменить текст');
   });
 
-  it('reenables rules autofill from the private bot with a dedicated button', async () => {
+  it('shows the assemble-from-settings button when rules text is empty', async () => {
+    const { service, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: '',
+        autoTextEnabled: false,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('Собрать из настроек 🤖');
+  });
+
+  it('builds rules text from current settings in the private bot', async () => {
+    const generatedSettings = chatSettingsSchema.parse({
+      linkPolicy: 'BLOCKLIST_ONLY',
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1', 'channel-2'],
+      maxMessageLengthEnabled: true,
+      maxMessageLength: 500,
+      messageLimitsBlockedWords: ['спам', 'капс'],
+      videoMessagesEnabled: false,
+      nightModeEnabled: true,
+      nightModeStartTimeMinutes: 23 * 60,
+      nightModeEndTimeMinutes: 8 * 60,
+      nightModeTimezone: 'Europe/Moscow',
+    });
     const { service, adminService, maxClient, chats } = createHarness({
+      settings: generatedSettings,
       rules: createRules({
         text: 'Текущий текст правил.',
         autoTextEnabled: false,
@@ -1367,28 +1406,71 @@ describe('PrivateControlService', () => {
         buttonUrl: 'https://max.ru/help',
         buttonText: 'Подробнее',
       }),
+      adminService: {
+        getChatSettingsScreen: jest.fn().mockResolvedValue({
+          settings: generatedSettings,
+          rules: createRules({
+            text: 'Текущий текст правил.',
+            autoTextEnabled: false,
+            imageBase64: TINY_PNG.toString('base64'),
+            imageMimeType: 'image/png',
+            imageFileName: 'rules.png',
+            buttonEnabled: true,
+            buttonUrl: 'https://max.ru/help',
+            buttonText: 'Подробнее',
+          }),
+          header: { id: '-70000000000001', title: 'Тестовый чат 1' },
+          requiredSubscriptionChannels: [
+            {
+              id: 'channel-1',
+              title: 'Новости MAX',
+              createdAt: new Date().toISOString(),
+              entityType: 'channel',
+            },
+            {
+              id: 'channel-2',
+              title: 'Клуб MAX',
+              createdAt: new Date().toISOString(),
+              entityType: 'channel',
+            },
+          ],
+          domains: [],
+          managedBroadcasts: [],
+        }),
+      },
     });
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_autofill'));
 
-    expect(adminService.updateRules).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({
-        text: 'Текущий текст правил.',
-        imageMimeType: 'image/png',
-        imageFileName: 'rules.png',
-        autoTextEnabled: true,
-        buttonEnabled: true,
-        buttonUrl: 'https://max.ru/help',
-        buttonText: 'Подробнее',
-      }),
-      'private_bot',
+    const updatePayload = adminService.updateRules.mock.calls.at(-1)?.[2];
+    expect(updatePayload).toMatchObject({
+      imageMimeType: 'image/png',
+      imageFileName: 'rules.png',
+      autoTextEnabled: true,
+      buttonEnabled: true,
+      buttonUrl: 'https://max.ru/help',
+      buttonText: 'Подробнее',
+    });
+    expect(String(updatePayload?.text ?? '')).toContain('Правила чата:');
+    expect(String(updatePayload?.text ?? '')).toContain('Любые ссылки в этом чате удаляются.');
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Для сообщений нужна подписка на: Новости MAX, Клуб MAX.',
     );
-    expect(getLastEditedText(maxClient)).toContain('Текущий текст правил.');
-    expect(getLastEditedText(maxClient)).toContain('Текст из настроек снова подставляется.');
+    expect(String(updatePayload?.text ?? '')).toContain('Мат и грубая лексика запрещены.');
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Длина одного сообщения — до 500 символов.',
+    );
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Запрещены стоп-слова: спам, капс.',
+    );
+    expect(String(updatePayload?.text ?? '')).toContain('Видео в этом чате запрещены.');
+    expect(String(updatePayload?.text ?? '')).toContain(
+      'Ночной режим действует с 23:00 до 08:00 (Europe/Moscow).',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Любые ссылки в этом чате удаляются.');
+    expect(getLastEditedText(maxClient)).toContain('Текст собран из текущих настроек.');
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
