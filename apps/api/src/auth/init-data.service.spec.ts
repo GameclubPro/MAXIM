@@ -105,7 +105,7 @@ describe('InitDataService', () => {
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '777' }));
-    params.set('chat', JSON.stringify({ id: '152517912', title: 'MAXIM Chat' }));
+    params.set('chat', JSON.stringify({ id: '152517912', title: 'MAXIM Chat', type: 'channel' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));
     params.set('hash', sign(params));
 
@@ -113,6 +113,19 @@ describe('InitDataService', () => {
     expect(user.userId).toBe('777');
     expect(user.chatId).toBe('152517912');
     expect(user.chatTitle).toBe('MAXIM Chat');
+    expect(user.chatType).toBe('channel');
+  });
+
+  it('accepts init data wrapped as WebAppData from the MAX launch fragment', () => {
+    const service = new InitDataService(createConfigMock());
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '701' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
+    params.set('hash', sign(params));
+
+    const wrapped = `#WebAppData=${encodeURIComponent(params.toString())}&WebAppVersion=26.2.8`;
+    const user = service.validate(wrapped);
+    expect(user.userId).toBe('701');
   });
 
   it('accepts init data signed with the previous bot token', () => {
@@ -134,5 +147,16 @@ describe('InitDataService', () => {
     params.set('hash', sign(params));
 
     expect(() => service.validate(params.toString())).toThrow('Init data has expired');
+  });
+
+  it('rejects duplicated launch parameters before signature verification', () => {
+    const service = new InitDataService(createConfigMock());
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '42' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000)));
+    params.set('hash', sign(params));
+
+    const duplicated = `${params.toString()}&auth_date=${params.get('auth_date')}`;
+    expect(() => service.validate(duplicated)).toThrow('Duplicate init data parameter: auth_date');
   });
 });

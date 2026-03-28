@@ -182,8 +182,8 @@ export function App() {
             <p>Проверьте:</p>
             <ul>
               <li>Запуск идет из MAX, а не по прямой ссылке.</li>
-              <li>В URL сохраняется query-параметр `init_data`.</li>
-              <li>Редирект на `/app/` не теряет query-параметры.</li>
+              <li>В URL сохраняется `WebAppData` во фрагменте `#...` или bridge `window.WebApp.initData`.</li>
+              <li>Редирект на `/app/` не теряет hash-фрагмент и параметры запуска MAX.</li>
               <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
             </ul>
           </div>

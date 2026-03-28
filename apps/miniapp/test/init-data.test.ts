@@ -44,13 +44,21 @@ test('prefers fresh bridge initData over stale query init_data', () => {
 });
 
 test('falls back to query init_data when bridge initData is missing', () => {
-  assignWindow('https://maxim.play-team.ru/app/?init_data=query-hash%3Dnew');
+  assignWindow('https://maxim.play-team.ru/app/?WebAppData=query-hash%3Dnew');
 
   assert.equal(getInitData(), 'query-hash=new');
 });
 
-test('falls back to hash init_data when neither bridge nor query values exist', () => {
-  assignWindow('https://maxim.play-team.ru/app/#init_data=hash-hash%3Dnew');
+test('falls back to hash WebAppData when neither bridge nor query values exist', () => {
+  assignWindow('https://maxim.play-team.ru/app/#WebAppData=hash-hash%3Dnew');
 
   assert.equal(getInitData(), 'hash-hash=new');
+});
+
+test('prefers hash WebAppData over stale query init_data when bridge initData is missing', () => {
+  assignWindow(
+    'https://maxim.play-team.ru/app/?init_data=query-hash%3Dstale#WebAppData=hash-hash%3Dfresh',
+  );
+
+  assert.equal(getInitData(), 'hash-hash=fresh');
 });

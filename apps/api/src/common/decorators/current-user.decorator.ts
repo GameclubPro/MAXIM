@@ -8,6 +8,7 @@ export type AuthUser = {
   profileUrl?: string | null;
   chatId?: string;
   chatTitle?: string | null;
+  chatType?: 'chat' | 'channel' | 'dialog' | null;
 };
 
 export const CurrentUser = createParamDecorator((_data: unknown, ctx: ExecutionContext): AuthUser => {

@@ -1,12 +1,17 @@
 import { getPreviewDevicePreset, type PreviewDevice } from './preview-device';
 
-export type MaxSharePayload = {
-  mid: string;
-  chatType?: 'DIALOG' | 'CHAT';
-};
+export type MaxSharePayload =
+  | {
+      text?: string;
+      link?: string;
+    }
+  | {
+      mid: string;
+      chatType?: 'DIALOG' | 'CHAT';
+    };
 
 type MaxBackButtonHandler = () => void;
-export type MaxPlatform = 'ios' | 'android' | 'unknown';
+export type MaxPlatform = 'ios' | 'android' | 'desktop' | 'web' | 'unknown';
 
 function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
@@ -34,6 +39,12 @@ function normalizePlatform(
   }
   if (normalized === 'android') {
     return 'android';
+  }
+  if (normalized === 'desktop') {
+    return 'desktop';
+  }
+  if (normalized === 'web') {
+    return 'web';
   }
 
   return 'unknown';

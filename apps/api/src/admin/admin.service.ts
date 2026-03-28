@@ -722,11 +722,11 @@ export class AdminService {
     const discovered = await this.discoverManagedEntities(user, entityType, {
       respectCooldown: false,
       fullScan: true,
-      includeRefreshState: options.includeRefreshState === true,
+      includeRefreshState: true,
       bypassRemoteCache: options.bypassRemoteCache === true,
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
-    if (discovered.items.length > 0) {
+    if (discovered.items.length > 0 || discovered.refresh?.complete === true) {
       return {
         items: discovered.items,
         refresh: discovered.refresh,
@@ -1171,6 +1171,14 @@ export class AdminService {
           return [];
         }
 
+        const deferCachedChatToCurrentScanWindow =
+          options.fullScan === true &&
+          remoteIndex >= fullScanStartIndex &&
+          remoteIndex < fullScanEndIndex;
+        if (deferCachedChatToCurrentScanWindow) {
+          return [];
+        }
+
         cachedById.delete(remoteChat.chatId);
         return [
           {
@@ -1198,7 +1206,9 @@ export class AdminService {
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
-          if (cachedIds.has(remoteChat.chatId)) {
+          const cachedChat = cachedById.get(remoteChat.chatId) ?? null;
+          const shouldRevalidateCachedChat = options.fullScan === true && cachedChat !== null;
+          if (!shouldRevalidateCachedChat && cachedIds.has(remoteChat.chatId)) {
             return null;
           }
           if (adminCheckSpacingMs > 0) {
@@ -1213,7 +1223,17 @@ export class AdminService {
           }
 
           if (access.status !== 'granted') {
-            return null;
+            if (shouldRevalidateCachedChat) {
+              cachedById.delete(remoteChat.chatId);
+            }
+            return {
+              kind: 'remove' as const,
+              chatId: remoteChat.chatId,
+            };
+          }
+
+          if (shouldRevalidateCachedChat) {
+            cachedById.delete(remoteChat.chatId);
           }
 
           const persistedChat = await this.upsertUserChatAccess(
@@ -1241,6 +1261,7 @@ export class AdminService {
           }
 
           return {
+            kind: 'include' as const,
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
             remoteIndex: remoteIndexByChatId.get(remoteChat.chatId) ?? Number.MAX_SAFE_INTEGER,
@@ -1248,16 +1269,41 @@ export class AdminService {
         },
       );
 
-      const filtered = resolvedChats.filter(
-        (item): item is { chat: ChatSummary; lastEventTime: number; remoteIndex: number } =>
-          item !== null,
+      const removedChatIds = new Set(
+        resolvedChats
+          .filter(
+            (
+              item,
+            ): item is {
+              kind: 'remove';
+              chatId: string;
+            } => item !== null && item.kind === 'remove',
+          )
+          .map((item) => item.chatId),
       );
-      const remainingCachedChats = [...cachedById.values()].map((chat) => ({
-        chat,
-        lastEventTime: 0,
-        remoteIndex: Number.MAX_SAFE_INTEGER,
-      }));
-      const mergedChats = [...mergedKnownChats, ...filtered, ...remainingCachedChats];
+      const filtered = resolvedChats.filter(
+        (
+          item,
+        ): item is {
+          kind: 'include';
+          chat: ChatSummary;
+          lastEventTime: number;
+          remoteIndex: number;
+        } => item !== null && item.kind === 'include',
+      );
+      const remainingCachedChats =
+        options.fullScan === true
+          ? []
+          : [...cachedById.values()].map((chat) => ({
+              chat,
+              lastEventTime: 0,
+              remoteIndex: Number.MAX_SAFE_INTEGER,
+            }));
+      const mergedChats = [
+        ...mergedKnownChats.filter((item) => !removedChatIds.has(item.chat.id)),
+        ...filtered,
+        ...remainingCachedChats,
+      ];
       let nextCursor: number | null = null;
 
       if (options.fullScan === true) {
@@ -12913,15 +12959,18 @@ export class AdminService {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
   ): Promise<ChatSummary | null> {
-    if (entityType === 'channel') {
-      return null;
-    }
-
     if (!user.chatId) {
       return null;
     }
 
-    if (this.isPrivateDirectChat(user.chatId)) {
+    const currentContextEntityType = this.resolveCurrentContextManagedEntityType(user);
+    if (!currentContextEntityType) {
+      return null;
+    }
+    if (entityType !== 'all' && currentContextEntityType !== entityType) {
+      return null;
+    }
+    if (currentContextEntityType === 'chat' && this.isPrivateDirectChat(user.chatId)) {
       return null;
     }
 
@@ -12936,7 +12985,7 @@ export class AdminService {
       user.chatId,
       user.userId,
       user.chatTitle ?? null,
-      'chat',
+      currentContextEntityType,
     );
 
     const chat: ChatSummary = {
@@ -12953,6 +13002,17 @@ export class AdminService {
     }
 
     return chat;
+  }
+
+  private resolveCurrentContextManagedEntityType(user: AuthUser): ManagedEntityType | null {
+    if (user.chatType === 'channel') {
+      return 'channel';
+    }
+    if (user.chatType === 'dialog') {
+      return null;
+    }
+
+    return 'chat';
   }
 
   private isPrivateDirectChat(chatId: string): boolean {

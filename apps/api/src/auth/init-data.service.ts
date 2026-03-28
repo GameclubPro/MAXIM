@@ -22,18 +22,7 @@ export class InitDataService {
   }
 
   validate(initData: string): AuthUser {
-    const params = new URLSearchParams(this.normalizeInitData(initData));
-    const receivedHash = params.get('hash');
-
-    if (!receivedHash) {
-      throw new UnauthorizedException('Missing hash in init data');
-    }
-
-    const sortedPairs = [...params.entries()]
-      .filter(([key]) => key !== 'hash')
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, value]) => `${key}=${value}`)
-      .join('\n');
+    const { params, receivedHash, sortedPairs } = this.parseAndPrepareInitData(initData);
 
     if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
       throw new UnauthorizedException('Invalid init data signature');
@@ -94,10 +83,45 @@ export class InitDataService {
     };
   }
 
+  private parseAndPrepareInitData(raw: string): {
+    params: URLSearchParams;
+    receivedHash: string;
+    sortedPairs: string;
+  } {
+    const entries = this.parseInitDataEntries(this.normalizeInitData(raw));
+    const hashEntries = entries.filter(([key]) => key === 'hash');
+    if (hashEntries.length !== 1) {
+      throw new UnauthorizedException('Missing hash in init data');
+    }
+
+    const receivedHash = hashEntries[0][1].trim();
+    const params = new URLSearchParams();
+    for (const [key, value] of entries) {
+      params.append(key, value);
+    }
+
+    const sortedPairs = entries
+      .filter(([key]) => key !== 'hash')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}=${value}`)
+      .join('\n');
+
+    return {
+      params,
+      receivedHash,
+      sortedPairs,
+    };
+  }
+
   private normalizeInitData(raw: string): string {
     let current = raw.trim();
 
-    for (let i = 0; i < 2; i += 1) {
+    for (let i = 0; i < 3; i += 1) {
+      const extracted = this.extractWrappedInitData(current);
+      if (extracted) {
+        current = extracted;
+      }
+
       if (current.includes('hash=')) {
         return current;
       }
@@ -113,7 +137,68 @@ export class InitDataService {
       }
     }
 
-    return current;
+    return this.extractWrappedInitData(current) ?? current;
+  }
+
+  private extractWrappedInitData(raw: string): string | null {
+    const normalized = raw.trim().replace(/^[?#]/u, '');
+    if (
+      !normalized.includes('WebAppData=') &&
+      !normalized.includes('init_data=') &&
+      !normalized.includes('initData=')
+    ) {
+      return null;
+    }
+
+    const params = new URLSearchParams(normalized);
+    for (const key of ['WebAppData', 'init_data', 'initData']) {
+      const candidate = params.get(key);
+      if (candidate?.trim()) {
+        return candidate.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private parseInitDataEntries(value: string): Array<[string, string]> {
+    const normalized = value.trim();
+    if (!normalized) {
+      throw new UnauthorizedException('Init data is empty');
+    }
+
+    const parts = normalized.split('&');
+    const seen = new Set<string>();
+    const entries: Array<[string, string]> = [];
+
+    for (const part of parts) {
+      if (!part) {
+        throw new UnauthorizedException('Invalid init data payload');
+      }
+
+      const separatorIndex = part.indexOf('=');
+      const rawKey = separatorIndex >= 0 ? part.slice(0, separatorIndex) : part;
+      const rawValue = separatorIndex >= 0 ? part.slice(separatorIndex + 1) : '';
+      const key = rawKey.trim();
+      if (!key) {
+        throw new UnauthorizedException('Invalid init data payload');
+      }
+      if (seen.has(key)) {
+        throw new UnauthorizedException(`Duplicate init data parameter: ${key}`);
+      }
+
+      let decodedValue = rawValue;
+      try {
+        decodedValue = decodeURIComponent(rawValue.replace(/\+/g, '%20'));
+      } catch {
+        throw new UnauthorizedException(`Invalid init data parameter encoding: ${key}`);
+      }
+
+      seen.add(key);
+      entries.push([key, decodedValue]);
+    }
+
+    return entries;
   }
 
   private assertFreshAuthDate(rawAuthDate: string | null) {
@@ -153,7 +238,9 @@ export class InitDataService {
     );
   }
 
-  private parseChat(chatPayload: string | null): { chatId?: string; chatTitle?: string | null } | null {
+  private parseChat(
+    chatPayload: string | null,
+  ): { chatId?: string; chatTitle?: string | null; chatType?: AuthUser['chatType'] } | null {
     if (!chatPayload) {
       return null;
     }
@@ -166,13 +253,34 @@ export class InitDataService {
       }
 
       const chatTitle = parsed.title ?? parsed.chat_title;
+      const chatType = this.normalizeChatType(parsed.type ?? parsed.chat_type ?? parsed.chatType);
       return {
         chatId: String(chatId),
         chatTitle: typeof chatTitle === 'string' ? chatTitle : null,
+        chatType,
       };
     } catch {
       return null;
     }
+  }
+
+  private normalizeChatType(value: unknown): AuthUser['chatType'] {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'channel') {
+      return 'channel';
+    }
+    if (normalized === 'chat' || normalized === 'group' || normalized === 'supergroup') {
+      return 'chat';
+    }
+    if (normalized === 'dialog') {
+      return 'dialog';
+    }
+
+    return null;
   }
 
   private readProfileUrl(...candidates: unknown[]): string | null {

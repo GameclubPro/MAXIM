@@ -32,10 +32,17 @@ type MaxWebAppBridge = {
     notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
     selectionChanged?: () => void;
   };
-  shareMaxContent?: (payload: {
-    mid: string;
-    chatType?: 'DIALOG' | 'CHAT';
-  }) => Promise<unknown> | void;
+  shareMaxContent?: (
+    payload:
+      | {
+          text?: string;
+          link?: string;
+        }
+      | {
+          mid: string;
+          chatType?: 'DIALOG' | 'CHAT';
+        },
+  ) => Promise<unknown> | void;
 };
 
 declare global {
