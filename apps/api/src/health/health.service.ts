@@ -3,10 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueMetricsService } from '../system/queue-metrics.service';
+import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 
 export type ReadinessSnapshot = {
   ok: boolean;
   timestamp: string;
+  systemMode: SystemModeSnapshot & {
+    degraded: boolean;
+  };
   checks: {
     database: boolean;
     redis: boolean;
@@ -32,6 +36,7 @@ export class HealthService implements OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly queueMetricsService: QueueMetricsService,
+    private readonly systemModeService: SystemModeService,
     configService: ConfigService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
@@ -70,10 +75,15 @@ export class HealthService implements OnModuleDestroy {
 
     const queueMetrics = await this.queueMetricsService.getSnapshot();
     const queueLagOk = queueMetrics.effectiveLagSec <= this.queueLagThresholdSec;
+    const systemMode = await this.systemModeService.getEffectiveSnapshot();
 
     return {
       ok: database && redis && queueLagOk,
       timestamp: now,
+      systemMode: {
+        ...systemMode,
+        degraded: systemMode.mode === 'degrade',
+      },
       checks: {
         database,
         redis,

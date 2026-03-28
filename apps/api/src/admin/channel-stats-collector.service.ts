@@ -20,6 +20,7 @@ const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY =
   'channel-stats:background-sync-backoff:v1';
 const CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
+const CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES = [404] as const;
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
   'message_callback',
@@ -206,6 +207,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         try {
           const snapshot = await this.maxClient.getChatSnapshot(chatId, {
             trafficClass: 'background',
+            ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
           });
           await this.prisma.$transaction([
             this.prisma.chat.update({
@@ -230,14 +232,16 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           result.audienceSynced = true;
         } catch (error: unknown) {
           result.throttled ||= this.isMaxApiThrottleError(error);
-          this.logger.warn(
-            {
-              chatId,
-              reason: options?.reason ?? 'manual',
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to sync official channel audience snapshot',
-          );
+          const logPayload = {
+            chatId,
+            reason: options?.reason ?? 'manual',
+            err: error instanceof Error ? error.message : String(error),
+          };
+          if (this.isMaxApiNotFoundError(error)) {
+            this.logger.debug(logPayload, 'Skipped official channel audience snapshot after MAX 404');
+          } else {
+            this.logger.warn(logPayload, 'Failed to sync official channel audience snapshot');
+          }
         }
 
         if (!result.throttled) {
@@ -248,6 +252,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               count: 100,
               maxPages: 80,
               trafficClass: 'background',
+              ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
             });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;
@@ -388,6 +393,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         ? error.message.trim().toLowerCase()
         : String(error).trim().toLowerCase();
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  }
+
+  private isMaxApiNotFoundError(error: unknown): boolean {
+    return (error as { response?: { status?: number } })?.response?.status === 404;
   }
 
   private async isBackgroundSyncBackoffActive(): Promise<boolean> {

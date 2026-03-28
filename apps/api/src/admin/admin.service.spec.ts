@@ -1,4 +1,9 @@
-import { channelSettingsSchema, chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
+import {
+  channelSettingsSchema,
+  chatRulesSchema,
+  chatSettingsSchema,
+  type ChannelDialogType,
+} from '@maxim/contracts';
 import {
   BadRequestException,
   ForbiddenException,
@@ -6,6 +11,27 @@ import {
 } from '@nestjs/common';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { AdminService } from './admin.service';
+
+type ManagedEntityType = 'chat' | 'channel';
+
+type AdminServicePrivateAccess = {
+  resolveBroadcastButtons: (
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: Record<string, unknown>,
+  ) => Promise<Array<Array<{ text: string; type: string; url: string }>>>;
+  buildEntityDialogToken: (
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ) => string;
+  resolveChatDialogThreadId: (
+    chatId: string,
+    type: ChannelDialogType,
+    token: string | null | undefined,
+  ) => string | null;
+};
 
 function createPrismaMock() {
   const defaultManagedPoll = {
@@ -7125,7 +7151,7 @@ describe('AdminService.sendBroadcast', () => {
       };
     };
 
-    let allowlistRows: AllowlistRow[] = [];
+    const allowlistRows: AllowlistRow[] = [];
     prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
       id: where.id,
       title: where.id === 'chat-121' ? 'Хвостовой чат' : 'Чат 1',
@@ -7443,7 +7469,7 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     const buttons = await (
-      service as unknown as { resolveBroadcastButtons: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
     ).resolveBroadcastButtons('chat-1', 'chat', {
       buttonEnabled: false,
       buttonUrl: '',
@@ -7506,7 +7532,7 @@ describe('AdminService.sendBroadcast', () => {
 
     const threadId = 'chat-thread-1';
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
     const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
 
@@ -7600,7 +7626,7 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-counter') as string;
 
     await service.createChatDialogMessage(
@@ -7647,10 +7673,10 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     const commentsToken = (
-      legacyService as unknown as { buildEntityDialogToken: Function }
+      legacyService as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-legacy') as string;
     const threadId = (
-      service as unknown as { resolveChatDialogThreadId: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveChatDialogThreadId'>
     ).resolveChatDialogThreadId('chat-1', 'comments', commentsToken) as string | null;
 
     expect(threadId).toBe('chat-thread-legacy');
@@ -7712,7 +7738,7 @@ describe('AdminService.sendBroadcast', () => {
 
     const threadId = 'chat-thread-avatars';
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
 
     const created = await service.createChatDialogMessage(
@@ -7814,7 +7840,7 @@ describe('AdminService.sendBroadcast', () => {
 
     const threadId = 'chat-thread-admin-accent';
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
 
     const created = await service.createChatDialogMessage(
@@ -9475,7 +9501,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken('channel', 'channel-1', 'comments', 'channel-thread-reply') as string;
 
     const result = await service.createChannelDialogMessage(
@@ -9560,7 +9586,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken(
       'channel',
       'channel-1',
@@ -9650,7 +9676,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken(
       'channel',
       'channel-1',
@@ -9733,7 +9759,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken(
       'channel',
       'channel-1',
@@ -9829,7 +9855,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken(
       'channel',
       'channel-1',
@@ -9910,7 +9936,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const commentsToken = (
-      service as unknown as { buildEntityDialogToken: Function }
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
     ).buildEntityDialogToken(
       'channel',
       'channel-1',

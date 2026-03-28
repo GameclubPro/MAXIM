@@ -1,5 +1,16 @@
 import { z } from 'zod';
 
+const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
+const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
+  'change-me',
+  'changeme',
+  'secret-path',
+  'secret-header',
+  'header-secret',
+  'replace-me',
+  'replace-with-random-url-safe-secret',
+]);
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -61,6 +72,23 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       .map((issue) => `${issue.path.join('.')}: ${issue.message}`)
       .join('; ');
     throw new Error(`Environment validation failed: ${details}`);
+  }
+
+  if (parsed.data.NODE_ENV === 'production') {
+    for (const [key, value] of [
+      ['MAX_WEBHOOK_SECRET_PATH', parsed.data.MAX_WEBHOOK_SECRET_PATH],
+      ['MAX_WEBHOOK_HEADER_SECRET', parsed.data.MAX_WEBHOOK_HEADER_SECRET],
+    ] as const) {
+      const normalized = value.trim();
+      if (
+        !PRODUCTION_WEBHOOK_SECRET_PATTERN.test(normalized) ||
+        DISALLOWED_PRODUCTION_WEBHOOK_SECRETS.has(normalized.toLowerCase())
+      ) {
+        throw new Error(
+          `Environment validation failed: ${key} must be a non-default URL-safe secret (16-128 chars, A-Z/a-z/0-9/_/-) in production`,
+        );
+      }
+    }
   }
 
   return parsed.data;

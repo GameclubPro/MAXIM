@@ -359,7 +359,6 @@ const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
-const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
 const PAGE_SIZE_MANUAL_USERS = 8;
@@ -11038,7 +11037,7 @@ export class PrivateControlService {
     return sanitized.length > 0 ? sanitized : null;
   }
 
-  private resolvePrimaryScreen(session: PrivateSession): PrivateScreen {
+  private resolvePrimaryScreen(_session: PrivateSession): PrivateScreen {
     return 'home';
   }
 

@@ -432,10 +432,6 @@ export function parseStoredAllowlistEntry(value: string): {
   };
 }
 
-function isValidAllowlistLink(value: string): boolean {
-  return normalizeAllowlistLink(value) !== null;
-}
-
 function isValidBotButtonText(value: string): boolean {
   const normalized = value.trim();
   return normalized.length > 0 && normalized.length <= 32;

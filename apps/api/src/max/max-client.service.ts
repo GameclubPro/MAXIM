@@ -225,6 +225,7 @@ export type MaxActionDispatchOptions = {
 type MaxApiRequestOptions = {
   trafficClass?: MaxApiTrafficClass;
   bypassCache?: boolean;
+  ignoreFailureMetricStatuses?: readonly number[];
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -622,6 +623,7 @@ export class MaxClientService implements OnModuleDestroy {
           from?: number | string | Date | null;
           to?: number | string | Date | null;
           trafficClass?: MaxApiTrafficClass;
+          ignoreFailureMetricStatuses?: readonly number[];
         } = 10,
   ): Promise<Record<string, unknown>[]> {
     const options =
@@ -632,6 +634,7 @@ export class MaxClientService implements OnModuleDestroy {
             from: countOrOptions.from ?? null,
             to: countOrOptions.to ?? null,
             trafficClass: countOrOptions.trafficClass,
+            ignoreFailureMetricStatuses: countOrOptions.ignoreFailureMetricStatuses,
           };
     const data = await this.executeChatRequest(
       chatId,
@@ -648,7 +651,10 @@ export class MaxClientService implements OnModuleDestroy {
               : {}),
           },
         }),
-      options.trafficClass,
+      {
+        trafficClass: options.trafficClass,
+        ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
+      },
     );
     return this.normalizeMessageRows(data);
   }
@@ -661,6 +667,7 @@ export class MaxClientService implements OnModuleDestroy {
       count?: number;
       maxPages?: number;
       trafficClass?: MaxApiTrafficClass;
+      ignoreFailureMetricStatuses?: readonly number[];
     } = {},
   ): Promise<MaxChannelMessageSnapshot[]> {
     const fromMs = this.normalizeMessageTimestamp(options.from ?? null);
@@ -676,6 +683,7 @@ export class MaxClientService implements OnModuleDestroy {
         count,
         ...(cursorTo !== null ? { to: cursorTo } : {}),
         trafficClass: options.trafficClass,
+        ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
       });
       if (rows.length === 0) {
         break;
@@ -740,7 +748,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<MaxWebhookSubscription[]> {
     const data = await this.executeGlobalRequest(
       () => this.request<Record<string, unknown> | unknown[]>('get', '/subscriptions'),
-      options.trafficClass,
+      options,
     );
     const rows = Array.isArray(data)
       ? data
@@ -1082,7 +1090,7 @@ export class MaxClientService implements OnModuleDestroy {
     const data = await this.executeChatRequest(
       chatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
-      options.trafficClass,
+      options,
     );
     return this.readTrimmedString(data.title ?? data.name);
   }
@@ -1105,7 +1113,7 @@ export class MaxClientService implements OnModuleDestroy {
     const data = await this.executeChatRequest(
       normalizedChatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${normalizedChatId}`),
-      options.trafficClass,
+      options,
     );
     const link = this.parseChatLink(data);
     const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
@@ -1144,7 +1152,7 @@ export class MaxClientService implements OnModuleDestroy {
     const data = await this.executeChatRequest(
       chatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
-      options.trafficClass,
+      options,
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -1175,7 +1183,7 @@ export class MaxClientService implements OnModuleDestroy {
     const data = await this.executeChatRequest(
       chatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
-      options.trafficClass,
+      options,
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -1206,7 +1214,7 @@ export class MaxClientService implements OnModuleDestroy {
     const data = await this.executeChatRequest(
       chatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`),
-      options.trafficClass,
+      options,
     );
     return this.parseChatMemberAccess(data);
   }
@@ -1229,7 +1237,7 @@ export class MaxClientService implements OnModuleDestroy {
             user_ids: normalizedUserId,
           },
         }),
-      options.trafficClass,
+      options,
     );
     const members = Array.isArray(data.members)
       ? data.members
@@ -1259,7 +1267,7 @@ export class MaxClientService implements OnModuleDestroy {
             user_ids: normalizedUserId,
           },
         }),
-      options.trafficClass,
+      options,
     );
     const members = Array.isArray(data.members)
       ? data.members
@@ -1300,7 +1308,7 @@ export class MaxClientService implements OnModuleDestroy {
             'get',
             `/chats/${chatId}/members?${query.toString()}`,
           ),
-        options.trafficClass,
+        options,
       );
       const members = Array.isArray(data.members)
         ? data.members
@@ -1345,7 +1353,7 @@ export class MaxClientService implements OnModuleDestroy {
               ...(marker !== null ? { marker } : {}),
             },
           }),
-        options.trafficClass,
+        options,
       );
 
       const pageChats = Array.isArray(pageData.chats) ? pageData.chats : [];
@@ -2743,6 +2751,7 @@ export class MaxClientService implements OnModuleDestroy {
     options: {
       chatId?: string | null;
       trafficClass?: MaxApiTrafficClass;
+      ignoreFailureMetricStatuses?: readonly number[];
     } = {},
   ): Promise<T> {
     await this.ensureCircuitClosed();
@@ -2754,6 +2763,12 @@ export class MaxClientService implements OnModuleDestroy {
       return result;
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
+      const ignoreFailureMetrics =
+        typeof status === 'number' &&
+        Boolean(options.ignoreFailureMetricStatuses?.includes(status));
+      if (ignoreFailureMetrics) {
+        throw error;
+      }
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
       this.actionHealthService.recordFailure(isCritical);
       if (isCritical) {
@@ -2766,16 +2781,18 @@ export class MaxClientService implements OnModuleDestroy {
   private async executeChatRequest<T>(
     chatId: string,
     operation: () => Promise<T>,
-    trafficClass: MaxApiTrafficClass = 'interactive',
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<T> {
-    return this.executeReadRequest(operation, { chatId, trafficClass });
+    const normalizedOptions = this.normalizeReadRequestOptions(options);
+    return this.executeReadRequest(operation, { chatId, ...normalizedOptions });
   }
 
   private async executeGlobalRequest<T>(
     operation: () => Promise<T>,
-    trafficClass: MaxApiTrafficClass = 'interactive',
+    options: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<T> {
-    return this.executeReadRequest(operation, { trafficClass });
+    const normalizedOptions = this.normalizeReadRequestOptions(options);
+    return this.executeReadRequest(operation, normalizedOptions);
   }
 
   private async executeMutation<T>(
@@ -2784,6 +2801,22 @@ export class MaxClientService implements OnModuleDestroy {
     trafficClass: MaxApiTrafficClass = 'critical',
   ): Promise<T> {
     return this.executeReadRequest(operation, { chatId, trafficClass });
+  }
+
+  private normalizeReadRequestOptions(
+    options: MaxApiRequestOptions | MaxApiTrafficClass,
+  ): {
+    trafficClass?: MaxApiTrafficClass;
+    ignoreFailureMetricStatuses?: readonly number[];
+  } {
+    if (typeof options === 'string') {
+      return { trafficClass: options };
+    }
+
+    return {
+      trafficClass: options.trafficClass,
+      ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
+    };
   }
 
   private extractMessageIdFromSendResponse(payload: unknown): string | null {

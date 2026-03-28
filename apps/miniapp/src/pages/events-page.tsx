@@ -35,7 +35,6 @@ import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
 
-type ViolationAction = LogsDashboardViolation['action'];
 type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
 type EventsFilter = ModerationFeedFilter;

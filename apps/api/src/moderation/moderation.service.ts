@@ -2102,7 +2102,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private escapeMaxMarkdownText(value: string): string {
-    return value.replace(/\\/g, '\\\\').replace(/([*_`\[\]()~+])/g, '\\$1');
+    return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
   }
 
   private formatUserLabel(senderName?: string): string {

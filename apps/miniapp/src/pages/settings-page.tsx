@@ -144,7 +144,6 @@ const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINU
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
-const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
@@ -941,17 +940,6 @@ function isValidHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function clampBroadcastCycleHours(value: number): number {
-  if (!Number.isFinite(value)) {
-    return MIN_BROADCAST_CYCLE_HOURS;
-  }
-
-  return Math.max(
-    MIN_BROADCAST_CYCLE_HOURS,
-    Math.min(MAX_BROADCAST_CYCLE_HOURS, Math.round(value)),
-  );
 }
 
 function normalizeDayMinutes(value: number, fallback = 0): number {
@@ -3930,9 +3918,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const thematicBotButtonTextError = showThematicBotButtonErrors
     ? fieldErrors.thematicFiltersBotButtonText
     : undefined;
-  const hasThematicBotButtonError = Boolean(
-    thematicBotButtonUrlError || thematicBotButtonTextError,
-  );
   const thematicCodewordError = draft?.thematicCodewordEnabled
     ? fieldErrors.thematicCodeword
     : undefined;

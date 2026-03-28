@@ -28,7 +28,7 @@ expect.extend({
 });
 
 function escapeMaxMarkdown(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/([*_`\[\]()~+])/g, '\\$1');
+  return value.replace(/\\/g, '\\\\').replace(/([*_`[\]()~+])/g, '\\$1');
 }
 
 function boldUser(name: string): string {
@@ -88,10 +88,6 @@ function linkWarnNotice(name: string): string {
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
   return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
-}
-
-function messageLimitsMuteNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, ограничения снова решили проверить на прочность. Оформляю мут. Причина: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, reason: string): string {
@@ -4277,36 +4273,43 @@ describe('ModerationService', () => {
   });
 
   it('resets link escalation window after a later manual unban', async () => {
-    const prisma = {
-      violation: {
-        count: jest.fn().mockResolvedValue(1),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue({
-          createdAt: new Date('2026-03-25T10:00:00.000Z'),
-        }),
-      },
-    };
-
-    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
-
-    const result = await (
-      service as unknown as {
-        countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
-      }
-    ).countRecentLinkViolations('chat-1', 'user-1');
-
-    expect(result).toBe(1);
-    expect(prisma.violation.count).toHaveBeenCalledWith({
-      where: {
-        chatId: 'chat-1',
-        userId: 'user-1',
-        ruleCode: 'LINK_BLOCKED',
-        createdAt: {
-          gte: new Date('2026-03-25T10:00:00.000Z'),
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(
+      new Date('2026-03-28T10:00:00.000Z').getTime(),
+    );
+    try {
+      const prisma = {
+        violation: {
+          count: jest.fn().mockResolvedValue(1),
         },
-      },
-    });
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({
+            createdAt: new Date('2026-03-28T02:00:00.000Z'),
+          }),
+        },
+      };
+
+      const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+
+      const result = await (
+        service as unknown as {
+          countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
+        }
+      ).countRecentLinkViolations('chat-1', 'user-1');
+
+      expect(result).toBe(1);
+      expect(prisma.violation.count).toHaveBeenCalledWith({
+        where: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          ruleCode: 'LINK_BLOCKED',
+          createdAt: {
+            gte: new Date('2026-03-28T02:00:00.000Z'),
+          },
+        },
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('suppresses duplicate escalation while a later manual unban is still inside the duplicate window', async () => {

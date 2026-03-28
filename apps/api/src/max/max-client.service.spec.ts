@@ -1017,7 +1017,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   },
                   body: {
                     mid: 'mid.ffffbeba0de977f9019cd37c90d90068',
-                    seq: 116200222364336232,
+                    seq: '116200222364336232',
                   },
                 },
               ],
