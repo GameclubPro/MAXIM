@@ -23,7 +23,6 @@ import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
-import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -972,6 +971,7 @@ export function ManagedGiveawayCard({
     }
 
     try {
+      const { prepareBroadcastImage } = await import('../lib/broadcast-image');
       const prepared = await prepareBroadcastImage(file);
       updateDraft((current) => ({
         ...current,
