@@ -598,6 +598,11 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'greetingBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'greetingBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'greetingBotButtonText', label: 'Текст кнопки', type: 'text' },
+    {
+      key: 'greetingRulesButtonEnabled',
+      label: 'Показывать кнопку правил',
+      type: 'boolean',
+    },
   ],
   profanityFilter: [
     { key: 'russianProfanityFilterEnabled', label: 'Включить фильтр', type: 'boolean' },
@@ -918,6 +923,7 @@ const SECTION_CARD_FIELDS: Record<
       'greetingBotButtonEnabled',
       'greetingBotButtonText',
       'greetingBotButtonUrl',
+      'greetingRulesButtonEnabled',
     ],
   },
   profanityFilter: {
@@ -7748,7 +7754,7 @@ export class PrivateControlService {
       case 'greeting':
         return [
           `Приветствие: ${this.describeBooleanCompact(settings.greetingEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)}`,
+          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)} • правила ${this.describeBooleanCompact(settings.greetingRulesButtonEnabled)}`,
         ];
       case 'profanityFilter':
         return [

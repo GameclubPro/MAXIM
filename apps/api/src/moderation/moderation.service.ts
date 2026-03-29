@@ -514,6 +514,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
           greetingBotButtonUrl: settings.greetingBotButtonUrl,
           greetingBotButtonText: settings.greetingBotButtonText,
+          greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
+          rulesPublishedUrl,
+          rulesPublishedMessageId,
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           excludedUserIds: excludedGreetingUserIds,
@@ -4463,6 +4466,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
+    greetingRulesButtonEnabled: boolean;
+    rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     excludedUserIds: ReadonlySet<string>;
@@ -4478,6 +4484,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      greetingRulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       excludedUserIds,
@@ -4507,6 +4516,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      greetingRulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
     );
 
     for (const member of joinedMembers) {

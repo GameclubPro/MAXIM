@@ -1111,6 +1111,7 @@ function createInitialState(): PreviewState {
     greetingBotMessageEnabled: false,
     greetingDeleteBotMessageEnabled: false,
     greetingBotMessageText: 'Добро пожаловать в чат. Ознакомьтесь с правилами и пишите по делу.',
+    greetingRulesButtonEnabled: false,
     linkPolicy: 'ALLOWLIST_ONLY',
     antiSpamEnabled: true,
     deleteSpammersEnabled: true,

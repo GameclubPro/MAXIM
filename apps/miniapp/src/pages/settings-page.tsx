@@ -417,6 +417,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
     'greetingBotButtonText',
+    'greetingRulesButtonEnabled',
   ],
   profanityFilter: [
     'russianProfanityFilterEnabled',
@@ -4051,8 +4052,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключена';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
-      ? draft?.greetingBotButtonEnabled
-        ? 'Сообщение + кнопка'
+      ? draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
+        ? 'Сообщение + кнопки'
         : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
@@ -5879,6 +5880,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 }
                                 if (!enabled) {
                                   setFieldValue('greetingBotButtonEnabled', false);
+                                  setFieldValue('greetingRulesButtonEnabled', false);
+                                  clearFieldError('greetingRulesButtonEnabled');
                                   clearFieldError('greetingBotButtonUrl');
                                   clearFieldError('greetingBotButtonText');
                                 }
@@ -5940,6 +5943,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     setFieldValue('greetingBotMessageEnabled', enabled);
                                     if (!enabled) {
                                       setFieldValue('greetingBotButtonEnabled', false);
+                                      setFieldValue('greetingRulesButtonEnabled', false);
+                                      clearFieldError('greetingRulesButtonEnabled');
                                       clearFieldError('greetingBotButtonUrl');
                                       clearFieldError('greetingBotButtonText');
                                     }
@@ -6108,6 +6113,49 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Открыть"
                                 />
                               ) : null}
+                            </div>
+                          ) : null}
+
+                          {draft.greetingBotMessageEnabled ? (
+                            <div
+                              className={cn(
+                                'settings-native-toggle',
+                                'settings-native-toggle--nested',
+                              )}
+                            >
+                              <div className="settings-native-toggle__row">
+                                <div className="settings-native-toggle__title-wrap">
+                                  <span className="settings-native-toggle__title">
+                                    Кнопка «Правила»
+                                  </span>
+                                </div>
+
+                                <label
+                                  className="settings-native-switch"
+                                  aria-label="Добавить кнопку Правила в приветственное сообщение"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.greetingRulesButtonEnabled}
+                                    onChange={(event) =>
+                                      setFieldValue(
+                                        'greetingRulesButtonEnabled',
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </label>
+                              </div>
+
+                              <p className="settings-native-toggle__hint">
+                                Кнопка использует опубликованные правила из блока «Правила».
+                                {hasPublishedRules
+                                  ? ' Сейчас публикация найдена.'
+                                  : ' Сейчас публикации нет, поэтому кнопка пока не появится.'}
+                              </p>
                             </div>
                           ) : null}
                         </>

@@ -369,6 +369,7 @@ const SETTINGS_SECTION_KEYS = {
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
     'greetingBotButtonText',
+    'greetingRulesButtonEnabled',
   ],
   profanityFilter: [
     'russianProfanityFilterEnabled',

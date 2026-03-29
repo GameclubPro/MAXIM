@@ -2790,6 +2790,75 @@ describe('ModerationService', () => {
     });
   });
 
+  it('adds the rules button to greeting message when enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+            greetingRulesButtonEnabled: true,
+          }),
+          rules: {
+            publishedUrl: 'https://max.ru/chats/chat-1/message/999',
+            publishedMessageId: '999',
+          },
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
+      {
+        button: {
+          text: 'Правила',
+          url: 'https://max.ru/chats/chat-1/message/999',
+        },
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('auto-deletes greeting message when greeting delete toggle is enabled', async () => {
     const prisma = {
       chat: {
