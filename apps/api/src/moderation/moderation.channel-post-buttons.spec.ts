@@ -442,6 +442,93 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('stores reply message id when forwarded channel post falls back to reply button delivery', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockRejectedValue({
+        response: {
+          status: 400,
+        },
+        message: 'cannot replace forwarded message',
+      }),
+      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-forward-reply-1',
+        url: 'https://max.ru/chats/channel-1/message/forward-reply-1',
+      }),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
+
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-no-sender-1',
+      'Действия к посту',
+      expect.objectContaining({
+        debugContext: {
+          screen: 'channel-auto-post',
+          action: 'attach-buttons-reply-fallback',
+        },
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            deliveryMode: 'reply_message',
+            replyMessageId: 'mid-forward-reply-1',
+            linkType: 'forward',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not auto-attach when the channel mode is off and comments are disabled', async () => {
     const prisma = {
       chat: {

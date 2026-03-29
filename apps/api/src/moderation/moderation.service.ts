@@ -8831,6 +8831,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
       'edit_message';
     let replacementMessageId: string | null = null;
+    let replyMessageId: string | null = null;
     let originalDeleted = false;
 
     try {
@@ -8897,7 +8898,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        await this.maxClient.sendMessageReplyWithInlineKeyboard(
+        const sent = await this.maxClient.sendMessageReplyWithInlineKeyboard(
           chatId,
           messageId,
           CHANNEL_FORWARD_REPLY_TEXT,
@@ -8913,6 +8914,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
         );
         deliveryMode = 'reply_message';
+        replyMessageId = sent?.messageId ?? null;
       } else {
         throw error;
       }
@@ -8934,6 +8936,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deliveryMode,
           linkType,
           replacementMessageId,
+          ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
           source,
         },

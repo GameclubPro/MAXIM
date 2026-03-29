@@ -602,18 +602,18 @@ export class MaxClientService implements OnModuleDestroy {
     messageId: string,
     text: string,
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
-  ) {
+  ): Promise<MaxPublishedMessage | null> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData({
       type: 'reply',
       mid: messageId,
     });
     if (attachments.length === 0 || !messageLink) {
-      return;
+      return null;
     }
 
-    await this.executeMutation(chatId, async () => {
-      await this.request('post', '/messages', {
+    const sendResponse = await this.executeMutation(chatId, async () => {
+      return this.request<Record<string, unknown>>('post', '/messages', {
         params: {
           chat_id: chatId,
         },
@@ -624,6 +624,18 @@ export class MaxClientService implements OnModuleDestroy {
         },
       });
     });
+
+    const replyMessageId = this.extractMessageIdFromSendResponse(sendResponse);
+    if (!replyMessageId) {
+      throw new Error('MAX send response is missing message id');
+    }
+
+    const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
+    return {
+      messageId: replyMessageId,
+      url: this.parseChatLink(sendResponse),
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+    };
   }
 
   async listMessages(

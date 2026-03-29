@@ -10445,6 +10445,168 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('refreshes auto-attached channel buttons on the bot copy instead of the original forwarded post', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.count.mockResolvedValue(5);
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-auto-forward-ref-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          messageId: 'mid-channel-forward-original-1',
+          replacementMessageId: 'mid-channel-forward-copy-1',
+          deliveryMode: 'replace_with_bot_message',
+          threadId: 'channel-thread-forward-counter',
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+          suggestButtonText: 'Предложить пост',
+        },
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-count-forward-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T09:06:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-forward-counter',
+    ) as string;
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Комментарий под пересланным постом',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-copy-1',
+      null,
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 5', type: 'link' })],
+          [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
+        ],
+      }),
+    );
+  });
+
+  it('refreshes auto-attached channel buttons on the reply fallback message', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.count.mockResolvedValue(6);
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-auto-forward-reply-ref-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          messageId: 'mid-channel-forward-original-2',
+          replyMessageId: 'mid-channel-forward-reply-2',
+          deliveryMode: 'reply_message',
+          threadId: 'channel-thread-forward-reply-counter',
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+        },
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-count-forward-2',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T09:07:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-forward-reply-counter',
+    ) as string;
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Комментарий под fallback reply',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-reply-2',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 6', type: 'link' })]],
+      }),
+    );
+  });
+
   it('accepts a suggestion from a thread-scoped button even when auto suggestions are disabled', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

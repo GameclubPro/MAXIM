@@ -11654,7 +11654,7 @@ export class AdminService {
         continue;
       }
 
-      const messageId = this.readTrimmedString(payload.messageId);
+      const messageId = this.resolveChannelCommentsTargetMessageId(payload);
       const includeCommentsButton = payload.includeCommentsButton !== false;
       const includeSuggestButton = payload.includeSuggestButton === true;
       if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
@@ -11687,6 +11687,20 @@ export class AdminService {
 
       await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel');
     }
+  }
+
+  private resolveChannelCommentsTargetMessageId(payload: Record<string, unknown>): string | null {
+    const deliveryMode = this.readTrimmedString(payload.deliveryMode);
+
+    if (deliveryMode === 'replace_with_bot_message') {
+      return this.readTrimmedString(payload.replacementMessageId);
+    }
+
+    if (deliveryMode === 'reply_message') {
+      return this.readTrimmedString(payload.replyMessageId);
+    }
+
+    return this.readTrimmedString(payload.messageId);
   }
 
   private async syncChatCommentsButtonCount(
