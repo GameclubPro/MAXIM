@@ -2862,6 +2862,10 @@ export class MaxClientService implements OnModuleDestroy {
       this.actionHealthService.recordSuccess();
       return result;
     } catch (error: unknown) {
+      if (this.shouldIgnoreActionHealthFailure(error, options)) {
+        throw error;
+      }
+
       const status = this.extractStatusCode(error);
       const ignoreFailureMetrics =
         typeof status === 'number' &&
@@ -2924,6 +2928,29 @@ export class MaxClientService implements OnModuleDestroy {
         options.ignoreFailureMetricStatuses,
       ),
     };
+  }
+
+  private shouldIgnoreActionHealthFailure(
+    error: unknown,
+    options: {
+      trafficClass?: MaxApiTrafficClass;
+      ignoreFailureMetricStatuses?: readonly number[];
+    },
+  ): boolean {
+    const status = this.extractStatusCode(error);
+    if (
+      typeof status === 'number' &&
+      Boolean(options.ignoreFailureMetricStatuses?.includes(status))
+    ) {
+      return true;
+    }
+
+    if (options.trafficClass !== 'interactive') {
+      return false;
+    }
+
+    const message = this.extractErrorMessage(error);
+    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 
   private buildQueuedActionMutationOptions(action: MaxActionJob): MaxApiRequestOptions {

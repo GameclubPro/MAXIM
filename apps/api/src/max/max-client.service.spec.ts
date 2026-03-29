@@ -1505,10 +1505,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
         method: 'get',
-        url: 'https://platform-api.max.ru/chats/chat-1/members',
-        params: {
-          user_ids: 'user-404',
-        },
+        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-404',
       }),
     );
 
@@ -1650,6 +1647,32 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
     expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('does not count interactive throttle errors in action health metrics', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+    });
+    const actionHealthService = (service as unknown as {
+      actionHealthService: {
+        recordSuccess: jest.Mock;
+        recordFailure: jest.Mock;
+      };
+    }).actionHealthService;
+
+    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
+    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+
+    await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
+
+    expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
+    expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });
