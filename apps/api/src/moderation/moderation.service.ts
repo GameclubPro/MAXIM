@@ -173,7 +173,10 @@ const PRIVATE_HELP_TEXT = [
   'Для точной настройки используйте приложение.',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
-const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 5_000;
+const DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 30_000;
+const DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS = 8;
+const DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS = 150;
+const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
@@ -277,10 +280,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
   private channelAutoPostPausedLogAtMs = 0;
+  private channelAutoPostCursor = 0;
   private readonly appBaseUrl: string | null;
   private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
   private readonly maxBotToken: string | null;
+  private readonly channelAutoPostScanIntervalMs: number;
+  private readonly channelAutoPostScanMaxChannels: number;
+  private readonly channelAutoPostInterChannelDelayMs: number;
+  private readonly nightModeScheduledNoticeSpacingMs: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -305,6 +313,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.explicitBotContactId = this.normalizeBotContactId(
       configService?.get<string>('MAX_BOT_CONTACT_ID'),
     );
+    this.channelAutoPostScanIntervalMs = this.readPositiveConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_SCAN_INTERVAL_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS,
+      1_000,
+    );
+    this.channelAutoPostScanMaxChannels = this.readNonNegativeConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS'),
+      DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS,
+    );
+    this.channelAutoPostInterChannelDelayMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS,
+    );
+    this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
+      DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
+    );
   }
 
   onModuleInit() {
@@ -317,10 +342,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }, 30_000);
     void this.processNightModeAnnouncements();
 
-    this.channelAutoPostTimer = setInterval(() => {
+    if (this.channelAutoPostScanMaxChannels > 0) {
+      this.channelAutoPostTimer = setInterval(() => {
+        void this.processChannelAutoPostButtons();
+      }, this.channelAutoPostScanIntervalMs);
       void this.processChannelAutoPostButtons();
-    }, CHANNEL_AUTO_POST_SCAN_INTERVAL_MS);
-    void this.processChannelAutoPostButtons();
+    }
   }
 
   onModuleDestroy() {
@@ -5430,7 +5457,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         nightModeChats.map((settings) => settings.chatId),
       );
 
-      for (const settings of nightModeChats) {
+      for (const [index, settings] of nightModeChats.entries()) {
+        if (index > 0) {
+          await this.sleep(this.nightModeScheduledNoticeSpacingMs);
+        }
+
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
         const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
         const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
@@ -7336,7 +7367,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 'user_denied';
     }
 
-    const requestOptions = { trafficClass: 'critical' as const };
+    const requestOptions = { trafficClass: 'interactive' as const };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
     const botContactId = this.resolveBotContactId();
 
@@ -8578,6 +8609,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (await this.shouldPauseBackgroundWork('channel-auto-post-buttons')) {
       return;
     }
+    if (this.channelAutoPostScanMaxChannels === 0) {
+      return;
+    }
     if (typeof this.prisma.channelSettings?.findMany !== 'function') {
       return;
     }
@@ -8611,9 +8645,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
           },
         },
+        orderBy: {
+          updatedAt: 'desc',
+        },
       });
+      const scanBatch = this.selectChannelAutoPostScanBatch(channels);
 
-      for (const channelSettings of channels) {
+      for (const [index, channelSettings] of scanBatch.entries()) {
+        if (index > 0) {
+          await this.sleep(this.channelAutoPostInterChannelDelayMs);
+        }
+
         try {
           await this.processManagedChannelAutoPostButtons({
             channelSettings,
@@ -10047,6 +10089,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.text,
         options,
         {
+          trafficClass: 'background',
           ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
         },
       );
@@ -10062,6 +10105,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.text,
         options,
         {
+          trafficClass: 'background',
           ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
         },
       );
@@ -10073,6 +10117,61 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     await this.maxClient.sendMessage(params.chatId, params.text, options);
     return null;
+  }
+
+  private selectChannelAutoPostScanBatch<T>(channels: T[]): T[] {
+    if (channels.length <= this.channelAutoPostScanMaxChannels) {
+      this.channelAutoPostCursor = 0;
+      return channels;
+    }
+
+    const startIndex = this.channelAutoPostCursor % channels.length;
+    const batch: T[] = [];
+
+    for (let index = 0; index < this.channelAutoPostScanMaxChannels; index += 1) {
+      batch.push(channels[(startIndex + index) % channels.length]!);
+    }
+
+    this.channelAutoPostCursor = (startIndex + batch.length) % channels.length;
+    return batch;
+  }
+
+  private readPositiveConfigInt(value: unknown, fallback: number, min = 1): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue >= min) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
+  }
+
+  private readNonNegativeConfigInt(value: unknown, fallback: number): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue >= 0) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
+  }
+
+  private async sleep(ms: number): Promise<void> {
+    if (ms <= 0) {
+      return;
+    }
+
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, ms);
+    });
   }
 
   private readStoredMuteDurationHoursFromMetadata(metadata: unknown): number | null {

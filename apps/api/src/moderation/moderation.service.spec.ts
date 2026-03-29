@@ -6337,7 +6337,7 @@ describe('ModerationService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'chat-1',
       ['user-1'],
-      { trafficClass: 'critical' },
+      { trafficClass: 'interactive' },
     );
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
