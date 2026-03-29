@@ -7986,7 +7986,8 @@ export class AdminService {
         userId: targetUserId,
         muteDurationHours: null,
         muteExpiresAt: null,
-        message: executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Бан включён.',
+        message:
+          executionMode === 'MAX_REMOVE_ONLY' ? 'Пользователь удалён.' : 'Пользователь забанен.',
       });
     }
 
@@ -8205,7 +8206,7 @@ export class AdminService {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Бан включён.',
+      message: 'Пользователь забанен.',
     });
   }
 

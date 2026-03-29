@@ -656,7 +656,7 @@ function createHarness(
       userId: 'user-77',
       muteDurationHours: null,
       unbanScheduledAt: null,
-      message: 'Бан включён.',
+      message: 'Пользователь забанен.',
     }),
     getChatPoll: jest.fn().mockResolvedValue(createPoll()),
     updateChatPoll: jest.fn().mockImplementation(async (_chatId, _actor, draft) =>
@@ -1161,9 +1161,8 @@ describe('PrivateControlService', () => {
       'private_command',
     );
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Бан включён.');
+    expect(getLastSentText(maxClient)).toContain('Забанен: Нарушитель (user-77)');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
   it('mutes a forwarded sender from private chat for 6 hours by default', async () => {

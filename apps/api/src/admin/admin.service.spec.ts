@@ -2834,7 +2834,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Бан включён.',
+      message: 'Пользователь забанен.',
     });
   });
 
@@ -3042,7 +3042,7 @@ describe('AdminService.applyManualModerationAction', () => {
       userId: 'user-rollback',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Бан включён.',
+      message: 'Пользователь забанен.',
     });
   });
 
@@ -3282,7 +3282,7 @@ describe('AdminService.applyManualSystemBan', () => {
       userId: 'user-3',
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Бан включён.',
+      message: 'Пользователь забанен.',
     });
   });
 
@@ -3381,7 +3381,7 @@ describe('AdminService.applyManualSystemBan', () => {
         userId: 'user-3',
       }),
     );
-    expect(result.message).toBe('Бан включён.');
+    expect(result.message).toBe('Пользователь забанен.');
   });
 
   it('still bans permanently when cancelling a stale scheduled unban fails', async () => {
@@ -3427,7 +3427,7 @@ describe('AdminService.applyManualSystemBan', () => {
     ).resolves.toEqual(
       expect.objectContaining({
         ok: true,
-        message: 'Бан включён.',
+        message: 'Пользователь забанен.',
       }),
     );
 

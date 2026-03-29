@@ -6279,7 +6279,7 @@ describe('ModerationService', () => {
         userId: 'user-2',
         muteDurationHours: null,
         unbanScheduledAt: null,
-        message: 'Бан включён.',
+        message: 'Пользователь забанен.',
       }),
     };
 
@@ -6314,9 +6314,8 @@ describe('ModerationService', () => {
       immediate: true,
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Бан включён.'))).toBe(true);
     expect(
-      sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
+      sentTexts.some((text) => text.includes(`Пользователь ${userMention('Нарушитель', 'user-2')} забанен.`)),
     ).toBe(true);
   });
 

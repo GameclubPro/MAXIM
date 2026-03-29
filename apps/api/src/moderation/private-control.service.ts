@@ -1750,7 +1750,10 @@ export class PrivateControlService {
       ? `${target.senderName} (${target.userId})`
       : target.userId;
     const chatLabel = target.chatTitle ? target.chatTitle : target.chatId;
-    const lines = [result.message, `Чат: ${chatLabel}`, `Пользователь: ${targetLabel}`];
+    const lines =
+      command.action === 'BAN'
+        ? [`Забанен: ${targetLabel}`, `Чат: ${chatLabel}`]
+        : [result.message, `Чат: ${chatLabel}`, `Пользователь: ${targetLabel}`];
     await this.sendImmediate(context.chatId, lines.join('\n'));
   }
 

@@ -3754,13 +3754,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             );
 
       await this.deleteAdminCommandMessage(chatId, messageId);
+      const targetLabel = this.formatUserLabel(target.senderName ?? undefined, target.userId);
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: `${result.message}\nПользователь: ${this.formatUserLabel(
-          target.senderName ?? undefined,
-          target.userId,
-        )}`,
+        text:
+          command.action === 'BAN'
+            ? `Пользователь ${targetLabel} забанен.`
+            : `${result.message}\nПользователь: ${targetLabel}`,
       });
     } catch (error: unknown) {
       this.logger.warn(
