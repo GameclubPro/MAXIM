@@ -366,7 +366,6 @@ body.settings-home-page-open .bottom-nav__label {
   gap: var(--space-3);
 }
 
-.chat-grid,
 .settings-sections,
 .events-list {
   display: grid;
@@ -381,7 +380,6 @@ body.settings-home-page-open .bottom-nav__label {
   gap: 9px;
 }
 
-.chat-card,
 .settings-section,
 .logs-violation-item {
   display: grid;
@@ -601,10 +599,6 @@ body.settings-home-page-open .bottom-nav__label {
     width: auto;
     min-width: 280px;
     justify-self: start;
-  }
-
-  .chat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .settings-grid {
