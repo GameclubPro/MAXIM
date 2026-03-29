@@ -29,6 +29,16 @@ contains_service() {
   return 1
 }
 
+has_requested_api_service() {
+  local service
+  for service in "${API_SERVICES[@]}"; do
+    if contains_service "$service" "${SERVICES[@]}"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 ensure_service_requested_if_down() {
   local service="$1"
 
@@ -166,6 +176,48 @@ wait_for_postgres() {
   return 1
 }
 
+wait_for_service_running() {
+  local service="$1"
+  local attempts="${2:-120}"
+  local i
+
+  for ((i = 1; i <= attempts; i += 1)); do
+    if docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx "$service"; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Service failed to reach running state: $service"
+  docker compose "${COMPOSE_FILES[@]}" ps "$service" || true
+  docker compose "${COMPOSE_FILES[@]}" logs --tail=120 "$service" || true
+  return 1
+}
+
+recreate_service_wave() {
+  local label="$1"
+  shift
+  local requested_services=()
+  local service
+
+  for service in "$@"; do
+    if contains_service "$service" "${SERVICES[@]}"; then
+      requested_services+=("$service")
+    fi
+  done
+
+  if [[ "${#requested_services[@]}" -eq 0 ]]; then
+    return 0
+  fi
+
+  echo "Recreating $label services: ${requested_services[*]}"
+  docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${requested_services[@]}"
+
+  for service in "${requested_services[@]}"; do
+    wait_for_service_running "$service" 180
+  done
+}
+
 stop_conflicting_stacks() {
   docker compose "${ALTERNATE_COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
 }
@@ -208,6 +260,10 @@ sync_branch
 ensure_compose_env
 stop_conflicting_stacks
 ensure_service_requested_if_down "miniapp-static"
+if has_requested_api_service; then
+  ensure_service_requested_if_down "api-enqueue"
+  ensure_service_requested_if_down "api-ingress"
+fi
 
 BUILD_API_IMAGE=0
 for service in "${API_SERVICES[@]}"; do
@@ -250,7 +306,9 @@ fi
 
 ensure_compose_env
 remove_stale_service_containers "${SERVICES[@]}"
-docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
+recreate_service_wave "worker" "api-enqueue" "api-action" "api-moderation"
+recreate_service_wave "support" "api-admin" "miniapp-static"
+recreate_service_wave "ingress" "api-ingress"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

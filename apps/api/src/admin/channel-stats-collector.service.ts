@@ -27,11 +27,22 @@ type ChannelStatsSyncResult = {
   throttled: boolean;
 };
 
+type ChannelStartupSyncCandidate = {
+  id: string;
+  channelStatsSyncState: {
+    lastAudienceSyncAt: Date | null;
+    lastViewsSyncAt: Date | null;
+  } | null;
+};
+
 @Injectable()
 export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ChannelStatsCollectorService.name);
   private readonly redis: Redis;
   private readonly backgroundEnabled = roleRunsAction(getAppRole());
+  private readonly startupSyncEnabled: boolean;
+  private readonly startupSyncMaxChannels: number;
+  private readonly startupSyncStaleMs: number;
   private readonly syncIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
@@ -46,6 +57,15 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     @Optional() private readonly systemModeService?: SystemModeService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.startupSyncEnabled = configService.get<boolean>('CHANNEL_STATS_STARTUP_SYNC_ENABLED', false);
+    this.startupSyncMaxChannels = Math.max(
+      0,
+      configService.get<number>('CHANNEL_STATS_STARTUP_MAX_CHANNELS', 6),
+    );
+    this.startupSyncStaleMs = Math.max(
+      1,
+      configService.get<number>('CHANNEL_STATS_STARTUP_STALE_MS', 6 * 60 * 60 * 1_000),
+    );
     this.syncIntervalMs = CHANNEL_STATS_SYNC_INTERVAL_MS;
   }
 
@@ -59,7 +79,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }, this.syncIntervalMs);
     this.timer.unref();
 
-    void this.syncAllChannels('startup');
+    void this.syncStartupChannels();
   }
 
   async onModuleDestroy() {
@@ -114,6 +134,43 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   async syncAllChannels(reason: 'startup' | 'scheduled') {
+    await this.syncChannels(reason);
+  }
+
+  private async syncStartupChannels() {
+    if (!this.startupSyncEnabled || this.startupSyncMaxChannels === 0) {
+      return;
+    }
+
+    const channels = await this.prisma.chat.findMany({
+      where: { entityType: ChatEntityType.CHANNEL },
+      select: {
+        id: true,
+        channelStatsSyncState: {
+          select: {
+            lastAudienceSyncAt: true,
+            lastViewsSyncAt: true,
+          },
+        },
+      },
+      orderBy: { updatedAt: 'desc' },
+    });
+    const candidates = channels
+      .filter((channel) => this.shouldSyncChannelOnStartup(channel))
+      .slice(0, this.startupSyncMaxChannels)
+      .map((channel) => ({ id: channel.id }));
+
+    if (candidates.length === 0) {
+      return;
+    }
+
+    await this.syncChannels('startup', candidates);
+  }
+
+  private async syncChannels(
+    reason: 'startup' | 'scheduled',
+    channelsOverride?: Array<{ id: string }>,
+  ) {
     if (
       !this.backgroundEnabled ||
       this.scheduledSyncInFlight ||
@@ -130,11 +187,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         CHANNEL_STATS_ALL_LOCK_TTL_MS,
         async () => {
           await this.ensureWebhookCoverage();
-          const channels = await this.prisma.chat.findMany({
-            where: { entityType: ChatEntityType.CHANNEL },
-            select: { id: true },
-            orderBy: { updatedAt: 'desc' },
-          });
+          const channels =
+            channelsOverride ??
+            (await this.prisma.chat.findMany({
+              where: { entityType: ChatEntityType.CHANNEL },
+              select: { id: true },
+              orderBy: { updatedAt: 'desc' },
+            }));
 
           for (const [index, channel] of channels.entries()) {
             if (index > 0) {
@@ -168,6 +227,21 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     } finally {
       this.scheduledSyncInFlight = false;
     }
+  }
+
+  private shouldSyncChannelOnStartup(channel: ChannelStartupSyncCandidate): boolean {
+    const lastAudienceSyncAt = channel.channelStatsSyncState?.lastAudienceSyncAt ?? null;
+    const lastViewsSyncAt = channel.channelStatsSyncState?.lastViewsSyncAt ?? null;
+
+    if (!lastAudienceSyncAt || !lastViewsSyncAt) {
+      return true;
+    }
+
+    const freshestSyncAtMs = Math.max(
+      lastAudienceSyncAt.getTime(),
+      lastViewsSyncAt.getTime(),
+    );
+    return Date.now() - freshestSyncAtMs >= this.startupSyncStaleMs;
   }
 
   async syncChannel(

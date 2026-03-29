@@ -34,8 +34,26 @@ function createPrismaMock() {
   };
 }
 
-function createConfigMock() {
+function createConfigMock(
+  options: {
+    startupSyncEnabled?: boolean;
+    startupSyncMaxChannels?: number;
+    startupSyncStaleMs?: number;
+  } = {},
+) {
   return {
+    get: jest.fn((key: string, fallback?: unknown) => {
+      if (key === 'CHANNEL_STATS_STARTUP_SYNC_ENABLED') {
+        return options.startupSyncEnabled ?? fallback;
+      }
+      if (key === 'CHANNEL_STATS_STARTUP_MAX_CHANNELS') {
+        return options.startupSyncMaxChannels ?? fallback;
+      }
+      if (key === 'CHANNEL_STATS_STARTUP_STALE_MS') {
+        return options.startupSyncStaleMs ?? fallback;
+      }
+      return fallback;
+    }),
     getOrThrow: jest.fn((key: string) => {
       if (key === 'REDIS_URL') {
         return 'redis://localhost:6379/0';
@@ -239,6 +257,63 @@ describe('ChannelStatsCollectorService', () => {
     await service.syncAllChannels('startup');
     expect(syncSpy).toHaveBeenCalledTimes(2);
     expect(syncSpy).toHaveBeenNthCalledWith(2, 'channel-1', { reason: 'startup' });
+
+    await service.onModuleDestroy();
+  });
+
+  it('limits startup sync to stale channels when warmup is enabled', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      {
+        id: 'channel-stale',
+        channelStatsSyncState: {
+          lastAudienceSyncAt: new Date('2026-03-07T03:00:00.000Z'),
+          lastViewsSyncAt: new Date('2026-03-07T03:30:00.000Z'),
+        },
+      },
+      {
+        id: 'channel-fresh',
+        channelStatsSyncState: {
+          lastAudienceSyncAt: new Date('2026-03-07T11:45:00.000Z'),
+          lastViewsSyncAt: new Date('2026-03-07T11:40:00.000Z'),
+        },
+      },
+      {
+        id: 'channel-missing',
+        channelStatsSyncState: null,
+      },
+    ]);
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock({
+        startupSyncEnabled: true,
+        startupSyncMaxChannels: 2,
+        startupSyncStaleMs: 2 * 60 * 60 * 1_000,
+      }) as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: true,
+      viewsSynced: true,
+      throttled: false,
+    });
+
+    const startupSync = (service as unknown as { syncStartupChannels: () => Promise<void> }).syncStartupChannels();
+    await jest.runAllTimersAsync();
+    await startupSync;
+
+    expect(syncSpy).toHaveBeenCalledTimes(2);
+    expect(syncSpy).toHaveBeenNthCalledWith(1, 'channel-stale', { reason: 'startup' });
+    expect(syncSpy).toHaveBeenNthCalledWith(2, 'channel-missing', { reason: 'startup' });
 
     await service.onModuleDestroy();
   });

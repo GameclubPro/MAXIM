@@ -144,6 +144,68 @@ describe('SystemModeService', () => {
     await service.onModuleDestroy();
   });
 
+  it('loads the shared snapshot for admin role without acting as the ingress leader', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 12,
+        success: 12,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    const redis = redisInstances[0];
+    redis.get.mockResolvedValue(
+      JSON.stringify({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 12.0s',
+        updatedAt: '2026-03-29T18:40:24.000Z',
+        manualMode: null,
+        queueLagSec: 12,
+        action: {
+          windowSec: 60,
+          total: 80,
+          success: 78,
+          failure: 2,
+          critical: 0,
+          errorRate: 0.025,
+          criticalRate: 0,
+        },
+      }),
+    );
+
+    const snapshot = await service.getEffectiveSnapshot();
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 12.0s',
+      }),
+    );
+
+    await service.evaluateAutoMode();
+
+    expect(redis.set).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('does not degrade for action error rate below the minimum sample size', async () => {
     process.env.APP_ROLE = 'ingress';
 

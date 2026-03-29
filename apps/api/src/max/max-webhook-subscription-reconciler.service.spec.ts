@@ -72,7 +72,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
   });
 
   it('stores a disabled snapshot when reconcile is not active on the current app role', async () => {
-    process.env.APP_ROLE = 'action';
+    process.env.APP_ROLE = 'admin';
 
     const statusService = {
       writeSnapshot: jest.fn().mockResolvedValue(undefined),

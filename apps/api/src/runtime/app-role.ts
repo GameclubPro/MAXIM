@@ -1,10 +1,11 @@
-export type AppRole = 'all' | 'ingress' | 'enqueue' | 'moderation' | 'action';
+export type AppRole = 'all' | 'ingress' | 'admin' | 'enqueue' | 'moderation' | 'action';
 
 export function getAppRole(): AppRole {
   const value = String(process.env.APP_ROLE ?? 'all').trim().toLowerCase();
   if (
     value === 'all' ||
     value === 'ingress' ||
+    value === 'admin' ||
     value === 'enqueue' ||
     value === 'moderation' ||
     value === 'action'
@@ -15,6 +16,10 @@ export function getAppRole(): AppRole {
 }
 
 export function roleRunsHttp(role: AppRole): boolean {
+  return role === 'all' || role === 'ingress' || role === 'admin';
+}
+
+export function roleRunsIngress(role: AppRole): boolean {
   return role === 'all' || role === 'ingress';
 }
 

@@ -564,6 +564,8 @@ export class AdminService {
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
   private readonly systemAccessConfig: SystemAccessConfig;
+  private readonly manualFanoutLookupSpacingMs: number;
+  private readonly manualFanoutActionSpacingMs: number;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
   private readonly managedEntitiesDiscoveryChecks = new Map<
     string,
@@ -599,6 +601,14 @@ export class AdminService {
     );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
     this.systemAccessConfig = readSystemAccessConfig(configService);
+    this.manualFanoutLookupSpacingMs = this.readNonNegativeConfigInt(
+      configService.get<number>('MANUAL_FANOUT_LOOKUP_SPACING_MS'),
+      process.env.NODE_ENV === 'test' ? 0 : 180,
+    );
+    this.manualFanoutActionSpacingMs = this.readNonNegativeConfigInt(
+      configService.get<number>('MANUAL_FANOUT_ACTION_SPACING_MS'),
+      process.env.NODE_ENV === 'test' ? 0 : 120,
+    );
   }
 
   async getMe(
@@ -1052,6 +1062,7 @@ export class AdminService {
     let refreshState: ManagedEntitiesRefreshState | null = null;
     let previousCursor: number | null | undefined = undefined;
     let attemptedPasses = 0;
+    const bypassRemoteCacheOnInitialPass = collected.size === 0;
 
     for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
       attemptedPasses = pass + 1;
@@ -1061,7 +1072,7 @@ export class AdminService {
           respectCooldown: false,
           fullScan: true,
           includeRefreshState: true,
-          bypassRemoteCache: pass === 0,
+          bypassRemoteCache: pass === 0 && bypassRemoteCacheOnInitialPass,
         });
       } catch (error: unknown) {
         if (collected.size > 0 && this.isMaxApiThrottleError(error)) {
@@ -6773,6 +6784,29 @@ export class AdminService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private async sleepIfNeeded(ms: number): Promise<void> {
+    if (!Number.isFinite(ms) || ms <= 0) {
+      return;
+    }
+
+    await this.sleep(ms);
+  }
+
+  private readNonNegativeConfigInt(value: unknown, fallback: number): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+
+    if (Number.isFinite(numericValue) && numericValue >= 0) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
+  }
+
   private async safeDeleteManagedBroadcast(broadcastId: string): Promise<void> {
     try {
       await this.prisma.managedBroadcast.delete({
@@ -8642,8 +8676,14 @@ export class AdminService {
     };
     const chats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
 
-    for (const chat of chats) {
-      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId);
+    for (const [index, chat] of chats.entries()) {
+      if (index > 0) {
+        await this.sleepIfNeeded(this.manualFanoutLookupSpacingMs);
+      }
+
+      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId, {
+        trafficClass: 'background',
+      });
       if (targetState !== 'present') {
         result.skippedChatIds.push(chat.id);
         continue;
@@ -8714,7 +8754,11 @@ export class AdminService {
     };
     const chats = await this.resolveManualCommandFanoutChats(actor, sourceChatId);
 
-    for (const chat of chats) {
+    for (const [index, chat] of chats.entries()) {
+      if (index > 0) {
+        await this.sleepIfNeeded(this.manualFanoutLookupSpacingMs);
+      }
+
       try {
         await this.assertBotCanManageMembers(chat.id, 'BAN');
       } catch (error: unknown) {
@@ -8731,7 +8775,9 @@ export class AdminService {
         continue;
       }
 
-      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId);
+      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId, {
+        trafficClass: 'background',
+      });
       if (targetState !== 'present') {
         result.skippedChatIds.push(chat.id);
         continue;
@@ -8751,6 +8797,7 @@ export class AdminService {
       }
 
       try {
+        await this.sleepIfNeeded(this.manualFanoutActionSpacingMs);
         const executionMode = await this.resolveManualBanExecutionMode(chat.id);
         if (executionMode === 'MAX_REMOVE_ONLY') {
           await this.maxClient.kickMember(chat.id, targetUserId, { immediate: true });
@@ -8774,7 +8821,9 @@ export class AdminService {
         continue;
       }
 
-      const cleanup = await this.deleteRecentTrackedMessagesForManualAction(chat.id, targetUserId);
+      const cleanup = await this.deleteRecentTrackedMessagesForManualAction(chat.id, targetUserId, {
+        spacingMs: this.manualFanoutActionSpacingMs,
+      });
       result.removedChatIds.push(chat.id);
       result.deletedMessageCount += cleanup.deletedMessageIds.length;
       result.failedMessageDeleteCount += cleanup.failedMessageIds.length;
@@ -8814,9 +8863,14 @@ export class AdminService {
   private async resolveManualFanoutTargetState(
     chatId: string,
     targetUserId: string,
+    requestOptions: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
   ): Promise<'present' | 'absent' | 'protected'> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
-      getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
+      getChatMemberAccess?: (
+        chatId: string,
+        userId: string,
+        options?: { trafficClass?: 'critical' | 'interactive' | 'background' },
+      ) => Promise<MaxChatMemberAccess | null>;
     };
     if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
       return 'present';
@@ -8826,6 +8880,7 @@ export class AdminService {
       const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
         chatId,
         targetUserId,
+        requestOptions,
       );
       if (!targetAccess) {
         return 'absent';
@@ -8850,6 +8905,7 @@ export class AdminService {
   private async deleteRecentTrackedMessagesForManualAction(
     chatId: string,
     targetUserId: string,
+    options: { spacingMs?: number } = {},
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
@@ -8859,7 +8915,11 @@ export class AdminService {
     const deletedMessageIds: string[] = [];
     const failedMessageIds: string[] = [];
 
-    for (const messageId of candidateMessageIds) {
+    for (const [index, messageId] of candidateMessageIds.entries()) {
+      if (index > 0) {
+        await this.sleepIfNeeded(options.spacingMs ?? 0);
+      }
+
       try {
         await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
         deletedMessageIds.push(messageId);

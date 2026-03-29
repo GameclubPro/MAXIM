@@ -2787,6 +2787,9 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-2', {
+      trafficClass: 'background',
+    });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
     });
@@ -3410,6 +3413,9 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3');
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-3', {
+      trafficClass: 'background',
+    });
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-2', 'user-3', { immediate: true });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {

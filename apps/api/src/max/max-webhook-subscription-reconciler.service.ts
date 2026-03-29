@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { WebhookSubscriptionSnapshot } from '@maxim/contracts';
-import { getAppRole, roleRunsHttp } from '../runtime/app-role';
+import { getAppRole, roleRunsIngress } from '../runtime/app-role';
 import { WebhookSubscriptionStatusService } from '../system/webhook-subscription-status.service';
 import { MaxClientService } from './max-client.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
@@ -12,7 +12,7 @@ const REQUIRED_WEBHOOK_UPDATE_TYPES_SET = new Set<string>(MAX_REQUIRED_WEBHOOK_U
 @Injectable()
 export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MaxWebhookSubscriptionReconcilerService.name);
-  private readonly enabled = roleRunsHttp(getAppRole());
+  private readonly enabled = roleRunsIngress(getAppRole());
   private readonly reconcileIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;

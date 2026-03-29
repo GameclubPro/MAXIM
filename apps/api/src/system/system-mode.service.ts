@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { getAppRole, roleRunsHttp } from '../runtime/app-role';
+import { getAppRole, roleRunsIngress } from '../runtime/app-role';
 import { QueueMetricsService } from './queue-metrics.service';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
 
@@ -50,7 +50,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     private readonly actionHealthService: ActionHealthService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.enabled = roleRunsHttp(getAppRole());
+    this.enabled = roleRunsIngress(getAppRole());
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
     this.stabilizeSec = configService.get<number>('DEGRADE_STABILIZE_SEC', 300);
     this.actionErrorThreshold = 0.02;
