@@ -187,27 +187,44 @@ function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatu
 
   if (message.delivered === false) {
     return {
-      badge: 'Сохраняем',
-      headline: 'Пробуем доставить редактору',
-      note: 'Сообщение сохранено и остаётся в очереди отправки.',
+      badge: 'Не доставлено',
+      headline: 'Редакторы пока не получили материал',
+      note: 'Материал сохранён, но его ещё нужно отправить повторно.',
       tone: 'pending',
     };
   }
 
   return {
     badge: 'На проверке',
-    headline: 'Редактор получил предложку',
-    note: 'Эту карточку видят только админы канала.',
+    headline: 'Материал ушёл редакторам',
+    note: 'Бот уже отправил предложку админам канала в личку.',
     tone: 'pending',
   };
 }
 
 function resolveSuggestionText(message: ChannelDialogMessage): string {
   const normalized = message.text.trim();
-  return normalized || 'Предложение отправлено только с фото.';
+  if (normalized) {
+    return normalized;
+  }
+
+  if (message.hasVideo && !message.hasImage) {
+    return 'Предложение отправлено только с видео.';
+  }
+
+  if (message.hasImage && !message.hasVideo) {
+    return 'Предложение отправлено только с фото.';
+  }
+
+  return 'Предложение отправлено только с медиа.';
 }
 
 function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string {
+  if (message.hasVideo) {
+    const fileName = message.videoFileName?.trim();
+    return fileName ? `Видео · ${fileName}` : 'Видео приложено';
+  }
+
   const fileName = message.imageFileName?.trim();
   return fileName ? `Фото · ${fileName}` : 'Фото приложено';
 }
@@ -1374,8 +1391,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         description:
           dialogType === 'suggest'
             ? result.message.delivered
-              ? 'Идея ушла в очередь редактора.'
-              : 'Идея сохранена и будет отправлена позже.'
+              ? 'Материал отправлен редакторам в личку бота.'
+              : 'Материал сохранён, но редакторам пока не доставлен.'
             : 'Комментарий отправлен.',
       });
       setDraft('');
@@ -1946,11 +1963,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   </strong>
                   <p>
                     {introText ||
-                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице.'}
+                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.'}
                   </p>
                   <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
                     <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
-                    <span style={SUGGEST_BADGE_STYLE}>Можно приложить фото</span>
+                    <span style={SUGGEST_BADGE_STYLE}>Бот пишет редакторам в личку</span>
                   </div>
                 </div>
               ) : null}
@@ -1987,9 +2004,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           {resolveSuggestionText(message)}
                         </p>
 
-                        {message.hasImage ? (
+                        {message.hasImage || message.hasVideo ? (
                           <div style={SUGGEST_CARD_ATTACHMENT_STYLE}>
-                            <span style={SUGGEST_CARD_ATTACHMENT_BADGE_STYLE}>Фото</span>
+                            <span style={SUGGEST_CARD_ATTACHMENT_BADGE_STYLE}>
+                              {message.hasVideo ? 'Видео' : 'Фото'}
+                            </span>
                             <span>{resolveSuggestionAttachmentLabel(message)}</span>
                           </div>
                         ) : null}
@@ -2276,7 +2295,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   dialogType !== 'suggest' && 'channel-dialog-compose__meta--solo',
                 )}
               >
-                {dialogType === 'suggest' ? <span>Увидят только админы канала</span> : null}
+                {dialogType === 'suggest' ? (
+                  <span>После отправки бот передаст материал админам канала в личку</span>
+                ) : null}
                 <span>{draftLength}/2000</span>
               </div>
             ) : null}

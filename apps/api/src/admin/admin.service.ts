@@ -2845,34 +2845,19 @@ export class AdminService {
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
-    const suggestUrl = this.buildBotStartUrl(suggestPayload);
-    const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
-    const botContactId = this.resolveBotContactId();
-    const commentsButton: MaxMessageButton = commentsUrl
-      ? {
-          type: 'link',
-          text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
-          url: commentsUrl,
-        }
-      : commentsWebAppUrl && botContactId
-        ? {
-            type: 'open_app',
-            text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
-            webApp: commentsWebAppUrl,
-            contactId: botContactId,
-          }
-        : {
-            type: 'link',
-            text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
-            url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-          };
-    const suggestButton: MaxMessageButton = suggestUrl
-      ? {
-          type: 'link',
-          text: parsed.data.suggestButtonText,
-          url: suggestUrl,
-        }
-      : this.buildChannelDialogButton(chatId, 'suggest', threadId, parsed.data.suggestButtonText);
+    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+    const commentsButton = this.buildChannelDialogButton(
+      chatId,
+      'comments',
+      threadId,
+      formatCommentsButtonText(parsed.data.commentsButtonText, 0),
+    );
+    const suggestButton = this.buildChannelDialogButton(
+      chatId,
+      'suggest',
+      threadId,
+      parsed.data.suggestButtonText,
+    );
     const buttons: MaxMessageButton[][] = [];
     if (parsed.data.includeCommentsButton) {
       buttons.push([commentsButton]);
@@ -6958,27 +6943,6 @@ export class AdminService {
     threadId: string,
     text: string,
   ): MaxMessageButton {
-    if (type === 'suggest') {
-      const suggestUrl = this.buildBotStartUrl(
-        this.buildChannelSuggestionStartPayload(chatId, threadId),
-      );
-      if (suggestUrl) {
-        return {
-          type: 'link',
-          text,
-          url: suggestUrl,
-        };
-      }
-
-      return {
-        type: 'link',
-        text,
-        url:
-          this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId) ??
-          `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-      };
-    }
-
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();

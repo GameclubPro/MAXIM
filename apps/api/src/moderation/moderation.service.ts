@@ -9267,42 +9267,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
     text: string,
   ): MaxMessageButton {
-    if (type === 'suggest' && this.adminService) {
-      const suggestUrl = this.buildBotStartUrl(
-        this.adminService.buildChannelSuggestionStartPayload(chatId, threadId),
-      );
-      if (suggestUrl) {
-        return {
-          type: 'link',
-          text,
-          url: suggestUrl,
-        };
-      }
-
-      return {
-        type: 'link',
-        text,
-        url:
-          this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId) ??
-          `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-      };
-    }
-
-    const botStartUrl =
-      type === 'suggest'
-        ? this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId))
-        : null;
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
-
-    if (botStartUrl) {
-      return {
-        type: 'link',
-        text,
-        url: botStartUrl,
-      };
-    }
 
     if (launchUrl) {
       return {

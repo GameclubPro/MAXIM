@@ -2206,7 +2206,7 @@ export class PrivateControlService {
       : await this.renderChannelSuggestionQueuedView(draft.chatId, draft.token);
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
-      notification: result.delivered ? 'Отправлено админам' : 'Поставлено в очередь',
+      notification: result.delivered ? 'Отправлено админам' : 'Сохранено без доставки',
     });
   }
 
@@ -8172,9 +8172,9 @@ export class PrivateControlService {
         this.markdownTitle('⏳ Материал сохранён'),
         '',
         'Сейчас не удалось сразу доставить материал редакторам канала.',
-        'Он всё равно останется в очереди на проверку.',
+        'Материал сохранён, но редакторы его ещё не получили.',
         '',
-        'Можно отправить ещё один вариант или вернуться в канал.',
+        'Можно попробовать отправить ещё раз позже или вернуться в канал.',
       ].join('\n'),
       options: {
         buttons: await this.buildChannelSuggestionCompletionButtons(chatId, token),

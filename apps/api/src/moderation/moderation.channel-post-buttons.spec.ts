@@ -189,15 +189,11 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
+              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
             }),
           ],
         ],
       }),
-    );
-    expect(adminService.buildChannelSuggestionStartPayload).toHaveBeenCalledWith(
-      'channel-1',
-      expect.any(String),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -622,7 +618,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
+              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
             }),
           ],
         ],
@@ -744,7 +740,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
+              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
             }),
           ],
         ],

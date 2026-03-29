@@ -782,9 +782,9 @@ async function publishSuggestDialogToken(
 
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const suggestButton = options.buttons?.[0]?.[0];
-  const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
-  const parsed = service.parseChannelSuggestionStartPayload(suggestStartParam);
-  return parsed?.token ?? '';
+  const suggestStartParam = new URL(suggestButton.url).searchParams.get('startapp');
+  const suggestLaunch = decodeBase64UrlJson<{ t: string }>(suggestStartParam!.slice(3));
+  return suggestLaunch.t;
 }
 
 describe('AdminService getMe', () => {
@@ -8704,9 +8704,9 @@ describe('AdminService.sendChannelBroadcast', () => {
       buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],
     });
     const suggestStartParam = new URL(String(options.buttons[0][0].url ?? '')).searchParams.get(
-      'start',
+      'startapp',
     );
-    expect(suggestStartParam).toMatch(/^cds-/u);
+    expect(suggestStartParam).toMatch(/^cd-/u);
   });
 
   it('treats past slots from today as already sent for calendar broadcast scheduling', async () => {
@@ -9559,32 +9559,32 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       text: 'Предложить пост',
     });
     expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
-    expect(suggestButton.url).toContain('https://max.ru/777000_bot?start=');
+    expect(suggestButton.url).toContain('https://max.ru/777000_bot?startapp=');
 
     const commentsUrl = new URL(commentsButton.url);
     const commentsStartParam = commentsUrl.searchParams.get('startapp');
-    const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
+    const suggestStartParam = new URL(suggestButton.url).searchParams.get('startapp');
 
     expect(commentsStartParam).toMatch(/^cd-/u);
-    expect(suggestStartParam).toMatch(/^cds-/u);
-    expect(suggestStartParam!.length).toBeLessThanOrEqual(128);
+    expect(suggestStartParam).toMatch(/^cd-/u);
 
     const commentsLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
       commentsStartParam!.slice(3),
     );
-    const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(commentsLaunch.t.slice(4));
-    const parsedSuggestLaunch = service.parseChannelSuggestionStartPayload(suggestStartParam);
-    const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(
-      parsedSuggestLaunch!.token.slice(4),
+    const suggestLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
+      suggestStartParam!.slice(3),
     );
+    const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(commentsLaunch.t.slice(4));
+    const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(suggestLaunch.t.slice(4));
 
     expect(commentsLaunch).toMatchObject({
       c: 'channel-1',
       m: 'comments',
     });
-    expect(parsedSuggestLaunch).toMatchObject({
-      chatId: 'channel-1',
-      token: expect.stringMatching(/^cdt-/u),
+    expect(suggestLaunch).toMatchObject({
+      c: 'channel-1',
+      m: 'suggest',
+      t: expect.stringMatching(/^cdt-/u),
     });
     expect(commentsLaunch.t).toMatch(/^cdt-/u);
     expect(commentsToken.d).toBe(suggestToken.d);
@@ -11203,7 +11203,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             expect.objectContaining({
               text: '📰 Предложить пост',
               type: 'link',
-              url: expect.stringContaining('start=cds-channel-1.'),
+              url: expect.stringContaining('startapp='),
             }),
           ],
         ],
