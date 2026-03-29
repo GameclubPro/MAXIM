@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE_FILES=(-f "infra/docker-compose.yml")
-ALTERNATE_COMPOSE_FILES=(-f "infra/docker-compose.scale.yml")
+MAIN_PROJECT_NAME="infra"
+SCALE_PROJECT_NAME="infra-scale"
+COMPOSE_FILES=(-p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
+ALTERNATE_COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 

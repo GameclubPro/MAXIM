@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE_FILES=(-f "infra/docker-compose.scale.yml")
-LEGACY_COMPOSE_FILES=(-f "infra/docker-compose.yml")
+SCALE_PROJECT_NAME="infra-scale"
+MAIN_PROJECT_NAME="infra"
+COMPOSE_FILES=(-p "$SCALE_PROJECT_NAME" -f "infra/docker-compose.scale.yml")
+LEGACY_COMPOSE_FILES=(-p "$MAIN_PROJECT_NAME" -f "infra/docker-compose.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 
@@ -77,6 +79,12 @@ ensure_compose_env() {
   local tmp_env
   local container_name
   local restore_candidates=(
+    "infra-scale-api-ingress-1"
+    "infra-scale-api-admin-1"
+    "infra-scale-api-enqueue-1"
+    "infra-scale-api-moderation-1"
+    "infra-scale-api-action-1"
+    "infra-scale-api-1"
     "infra-api-1"
     "infra-api-ingress-1"
     "infra-api-admin-1"
