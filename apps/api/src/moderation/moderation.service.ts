@@ -37,6 +37,7 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
@@ -260,7 +261,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       isMember: boolean;
     }
   >();
-  private readonly requiredSubscriptionMembershipInFlight = new Map<string, Promise<boolean | null>>();
+  private readonly requiredSubscriptionMembershipInFlight = new Map<
+    string,
+    Promise<boolean | null>
+  >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
@@ -289,6 +293,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly privateControlService?: PrivateControlService,
     @Optional() private readonly adminService?: AdminService,
+    @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -4584,7 +4589,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         continue;
       }
 
-      const userLabel = this.formatUserLabel(this.readDisplayNameFromEntity(row) ?? undefined, userId);
+      const userLabel = this.formatUserLabel(
+        this.readDisplayNameFromEntity(row) ?? undefined,
+        userId,
+      );
       members.set(userId, { userId, userLabel });
     }
 
@@ -6046,6 +6054,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     channelId: string,
     userId: string,
   ): Promise<boolean | null> {
+    if (this.membershipLookupService) {
+      return this.membershipLookupService.getMembership(
+        channelId,
+        userId,
+        'moderation_required_subscription',
+      );
+    }
+
     const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(channelId, userId);
     const now = Date.now();
     const memoryCached = this.requiredSubscriptionMembershipCache.get(cacheKey);
@@ -7272,7 +7288,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         requestOptions,
       );
       const botAccess =
-        (botContactId ? accessByUserId.get(botContactId) ?? null : null) ??
+        (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
         (typeof maxClientWithAccess.getCurrentChatMemberAccess === 'function'
           ? await maxClientWithAccess.getCurrentChatMemberAccess.call(
               this.maxClient,

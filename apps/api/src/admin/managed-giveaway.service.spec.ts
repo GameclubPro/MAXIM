@@ -1081,4 +1081,120 @@ describe('ManagedGiveawayService', () => {
       ],
     });
   });
+
+  it('uses shared batch membership lookups during draw when the lookup service is available', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const membershipLookup = {
+      getMemberships: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'source-1' || chatId === 'extra-1') {
+          return new Map([['user-1', true]]);
+        }
+
+        return new Map();
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+      membershipLookup as never,
+    );
+
+    const entry = createEntry({
+      id: 'entry-batch-1',
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const prize = createPrize();
+    const initial = createGiveaway({
+      requiredChannelIds: ['extra-1'],
+      prizes: [prize],
+      entries: [entry],
+      resultsMessageId: 'results-batch-1',
+    });
+    const refreshedEntry = {
+      ...entry,
+      checkedAt: new Date('2026-03-21T13:10:00.000Z'),
+      drawRank: 'draw-rank-batch',
+    };
+    const completed = createGiveaway({
+      ...initial,
+      status: ManagedGiveawayStatus.COMPLETED,
+      drawSeed: 'seed-batch',
+      drawnAt: new Date('2026-03-21T13:10:00.000Z'),
+      completedAt: new Date('2026-03-21T13:10:00.000Z'),
+      entries: [refreshedEntry],
+      winners: [
+        createWinner({
+          prize,
+          prizeId: prize.id,
+          entry: refreshedEntry,
+          entryId: refreshedEntry.id,
+          status: ManagedGiveawayWinnerStatus.CLAIMED,
+          selectedAt: new Date('2026-03-21T13:10:00.000Z'),
+          claimedAt: new Date('2026-03-21T13:10:00.000Z'),
+          claimDeadlineAt: null,
+        }),
+      ],
+    });
+
+    prisma.managedGiveaway.findUnique
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(completed);
+    prisma.managedGiveawayEntry.update = jest.fn().mockImplementation(async ({ data }) => ({
+      ...entry,
+      ...data,
+    }));
+    prisma.$transaction.mockImplementation(async (callback) =>
+      callback({
+        managedGiveaway: {
+          update: jest.fn().mockResolvedValue(undefined),
+          findUniqueOrThrow: jest.fn().mockResolvedValue(completed),
+        },
+        managedGiveawayEntry: {
+          update: jest.fn().mockImplementation(async ({ data }) => ({
+            ...entry,
+            ...data,
+          })),
+        },
+        managedGiveawayWinner: {
+          deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+          createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+      }),
+    );
+    maxClient.editMessageInlineKeyboard.mockResolvedValue(undefined);
+    maxClient.sendMessageImmediateToUser.mockResolvedValue(undefined);
+
+    await (service as any).drawGiveaway('giveaway-1', 'runner');
+
+    expect(membershipLookup.getMemberships).toHaveBeenCalledTimes(2);
+    expect(membershipLookup.getMemberships).toHaveBeenNthCalledWith(
+      1,
+      'source-1',
+      ['user-1'],
+      'giveaway_draw_background',
+      {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      },
+    );
+    expect(membershipLookup.getMemberships).toHaveBeenNthCalledWith(
+      2,
+      'extra-1',
+      ['user-1'],
+      'giveaway_draw_background',
+      {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      },
+    );
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
 });

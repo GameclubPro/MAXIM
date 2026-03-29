@@ -5,8 +5,13 @@ import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { MaxActionProcessor } from './max-action.processor';
 import { MaxClientService } from './max-client.service';
+import { MaxMembershipLookupService } from './max-membership-lookup.service';
 
-const maxProviders = [MaxClientService, ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : [])];
+const maxProviders = [
+  MaxClientService,
+  MaxMembershipLookupService,
+  ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
+];
 
 @Module({
   imports: [
@@ -18,6 +23,6 @@ const maxProviders = [MaxClientService, ...(roleRunsAction(getAppRole()) ? [MaxA
     BullModule.registerQueue({ name: 'moderation-actions' }),
   ],
   providers: maxProviders,
-  exports: [MaxClientService],
+  exports: [MaxClientService, MaxMembershipLookupService],
 })
 export class MaxModule {}

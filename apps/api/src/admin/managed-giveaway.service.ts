@@ -26,7 +26,13 @@ import {
   ManagedGiveawayWinnerStatus,
   Prisma,
 } from '@prisma/client';
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -45,6 +51,10 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import {
+  MaxMembershipLookupService,
+  type MaxMembershipLookupPolicy,
+} from '../max/max-membership-lookup.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
@@ -88,6 +98,12 @@ type GiveawayEligibilityResult = {
   missingChannelIds: string[];
 };
 type GiveawayEntryAuditAction = 'ENTER_GIVEAWAY' | 'RECHECK_GIVEAWAY_ENTRY';
+type GiveawayEligibilityCheckOptions = {
+  strictChannelCheck?: boolean;
+  forceFreshMembership?: boolean;
+  lookupPolicy?: MaxMembershipLookupPolicy;
+  allowStaleMembershipOnError?: boolean;
+};
 
 @Injectable()
 export class ManagedGiveawayService {
@@ -104,6 +120,7 @@ export class ManagedGiveawayService {
     private readonly chatContextCache: ChatContextCacheService,
     private readonly adminService: AdminService,
     configService: ConfigService,
+    @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -114,8 +131,7 @@ export class ManagedGiveawayService {
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
-    this.maxBotToken =
-      configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.maxBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.maxBotTokenValidationSecrets =
       configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
   }
@@ -708,6 +724,9 @@ export class ManagedGiveawayService {
 
     const eligibility = await this.evaluateGiveawayEligibility(giveaway, user.userId, {
       strictChannelCheck: true,
+      forceFreshMembership: true,
+      lookupPolicy: 'giveaway_strict',
+      allowStaleMembershipOnError: false,
     });
     if (eligibility.state !== GiveawayEligibilityState.VERIFIED) {
       throw new BadRequestException(
@@ -1391,7 +1410,10 @@ export class ManagedGiveawayService {
       });
 
     if (!hasPublicationReference && giveaway.title.trim()) {
-      lines.push('', useRichText ? this.escapeMarkdown(giveaway.title.trim()) : giveaway.title.trim());
+      lines.push(
+        '',
+        useRichText ? this.escapeMarkdown(giveaway.title.trim()) : giveaway.title.trim(),
+      );
     }
 
     if (currentWinners.length === 0) {
@@ -1690,15 +1712,36 @@ export class ManagedGiveawayService {
   private async evaluateGiveawayEligibility(
     giveaway: PersistedGiveawayWithRelations,
     userId: string,
-    options: {
-      strictChannelCheck?: boolean;
-    } = {},
+    options: GiveawayEligibilityCheckOptions = {},
   ): Promise<GiveawayEligibilityResult> {
-    const entityType = this.fromPrismaEntityType(giveaway.entityType);
     const additionalRequiredChannels = this.readRequiredChannelIds(
       giveaway.requiredChannelIds,
     ).filter((channelId) => channelId !== giveaway.sourceChatId);
     const missingChannelIds: string[] = [];
+
+    if (this.membershipLookupService) {
+      const lookupPolicy = this.resolveGiveawayLookupPolicy(options);
+
+      for (const channelId of [giveaway.sourceChatId, ...additionalRequiredChannels]) {
+        const membership = await this.membershipLookupService.getMembership(
+          channelId,
+          userId,
+          lookupPolicy,
+          {
+            forceRefresh: options.forceFreshMembership,
+            allowStaleOnError: options.allowStaleMembershipOnError,
+          },
+        );
+        if (membership === null) {
+          return this.resolveGiveawayEligibilityLookupFailure(giveaway, userId, options);
+        }
+        if (!membership) {
+          missingChannelIds.push(channelId);
+        }
+      }
+
+      return this.buildGiveawayEligibilityResult(giveaway, missingChannelIds, options);
+    }
 
     try {
       const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId);
@@ -1713,29 +1756,49 @@ export class ManagedGiveawayService {
         }
       }
 
-      if (missingChannelIds.length === 0) {
-        return {
-          state: GiveawayEligibilityState.VERIFIED,
-          reason: null,
-          missingChannelIds: [],
-        };
-      }
+      return this.buildGiveawayEligibilityResult(giveaway, missingChannelIds, options);
+    } catch (error: unknown) {
+      return this.resolveGiveawayEligibilityLookupFailure(giveaway, userId, options, error);
+    }
+  }
 
-      if (missingChannelIds.includes(giveaway.sourceChatId)) {
-        if (entityType === 'chat' || options.strictChannelCheck) {
-          return {
-            state: GiveawayEligibilityState.REJECTED,
-            reason: 'Участник не найден в исходном чате/канале.',
-            missingChannelIds,
-          };
-        }
+  private resolveGiveawayLookupPolicy(
+    options: GiveawayEligibilityCheckOptions,
+  ): MaxMembershipLookupPolicy {
+    if (options.lookupPolicy) {
+      return options.lookupPolicy;
+    }
 
+    if (options.strictChannelCheck) {
+      return 'giveaway_strict';
+    }
+
+    if (options.forceFreshMembership) {
+      return 'giveaway_draw_interactive';
+    }
+
+    return 'giveaway_interactive';
+  }
+
+  private buildGiveawayEligibilityResult(
+    giveaway: PersistedGiveawayWithRelations,
+    missingChannelIds: string[],
+    options: GiveawayEligibilityCheckOptions = {},
+  ): GiveawayEligibilityResult {
+    const entityType = this.fromPrismaEntityType(giveaway.entityType);
+    if (missingChannelIds.length === 0) {
+      return {
+        state: GiveawayEligibilityState.VERIFIED,
+        reason: null,
+        missingChannelIds: [],
+      };
+    }
+
+    if (missingChannelIds.includes(giveaway.sourceChatId)) {
+      if (entityType === 'chat' || options.strictChannelCheck) {
         return {
           state: GiveawayEligibilityState.REJECTED,
-          reason:
-            missingChannelIds.length > 1
-              ? 'Подписка на источник и обязательные каналы не подтверждена.'
-              : 'Подписка на источник не подтверждена.',
+          reason: 'Участник не найден в исходном чате/канале.',
           missingChannelIds,
         };
       }
@@ -1744,32 +1807,54 @@ export class ManagedGiveawayService {
         state: GiveawayEligibilityState.REJECTED,
         reason:
           missingChannelIds.length > 1
-            ? 'Подписка на обязательные каналы не подтверждена.'
-            : 'Подписка на обязательный канал не подтверждена.',
+            ? 'Подписка на источник и обязательные каналы не подтверждена.'
+            : 'Подписка на источник не подтверждена.',
         missingChannelIds,
       };
-    } catch (error: unknown) {
-      if (entityType === 'chat' || options.strictChannelCheck) {
-        this.logger.warn(
-          {
-            giveawayId: giveaway.id,
-            sourceChatId: giveaway.sourceChatId,
-            userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to verify giveaway participant strictly',
-        );
-        throw new BadRequestException(
-          'Не удалось проверить участие в исходном чате. Повторите позже.',
-        );
-      }
-
-      return {
-        state: GiveawayEligibilityState.PENDING,
-        reason: 'MAX пока не подтвердил участие. Проверим ещё раз при подведении итогов.',
-        missingChannelIds: [],
-      };
     }
+
+    return {
+      state: GiveawayEligibilityState.REJECTED,
+      reason:
+        missingChannelIds.length > 1
+          ? 'Подписка на обязательные каналы не подтверждена.'
+          : 'Подписка на обязательный канал не подтверждена.',
+      missingChannelIds,
+    };
+  }
+
+  private resolveGiveawayEligibilityLookupFailure(
+    giveaway: PersistedGiveawayWithRelations,
+    userId: string,
+    options: GiveawayEligibilityCheckOptions = {},
+    error?: unknown,
+  ): GiveawayEligibilityResult {
+    const entityType = this.fromPrismaEntityType(giveaway.entityType);
+    if (entityType === 'chat' || options.strictChannelCheck) {
+      this.logger.warn(
+        {
+          giveawayId: giveaway.id,
+          sourceChatId: giveaway.sourceChatId,
+          userId,
+          err:
+            error instanceof Error
+              ? error.message
+              : error
+                ? String(error)
+                : 'membership lookup unavailable',
+        },
+        'Failed to verify giveaway participant strictly',
+      );
+      throw new BadRequestException(
+        'Не удалось проверить участие в исходном чате. Повторите позже.',
+      );
+    }
+
+    return {
+      state: GiveawayEligibilityState.PENDING,
+      reason: 'MAX пока не подтвердил участие. Проверим ещё раз при подведении итогов.',
+      missingChannelIds: [],
+    };
   }
 
   private readRequiredChannelIds(value: Prisma.JsonValue): string[] {
@@ -1852,6 +1937,71 @@ export class ManagedGiveawayService {
     return Array.from(
       new Set([row.sourceChatId, ...this.readRequiredChannelIds(row.requiredChannelIds)]),
     );
+  }
+
+  private async evaluateGiveawayEligibilityForDraw(
+    giveaway: PersistedGiveawayWithRelations,
+    entries: PersistedManagedGiveawayEntry[],
+    source: GiveawayActionSource,
+  ): Promise<Map<string, GiveawayEligibilityResult>> {
+    if (!this.membershipLookupService) {
+      const results: Array<[string, GiveawayEligibilityResult]> = await Promise.all(
+        entries.map(async (entry) => [
+          entry.userId,
+          await this.evaluateGiveawayEligibility(giveaway, entry.userId),
+        ]),
+      );
+      return new Map<string, GiveawayEligibilityResult>(results);
+    }
+
+    const userIds = Array.from(new Set(entries.map((entry) => entry.userId)));
+    const mandatoryChannelIds = this.buildGiveawayMandatoryChannelIds(giveaway);
+    const lookupPolicy: MaxMembershipLookupPolicy =
+      source === 'runner' ? 'giveaway_draw_background' : 'giveaway_draw_interactive';
+    const membershipByChannelId = new Map<string, Map<string, boolean | null>>();
+
+    for (const channelId of mandatoryChannelIds) {
+      membershipByChannelId.set(
+        channelId,
+        await this.membershipLookupService.getMemberships(channelId, userIds, lookupPolicy, {
+          forceRefresh: true,
+          allowStaleOnError: false,
+        }),
+      );
+    }
+
+    const results = new Map<string, GiveawayEligibilityResult>();
+    for (const entry of entries) {
+      const missingChannelIds: string[] = [];
+      let lookupFailed = false;
+
+      for (const channelId of mandatoryChannelIds) {
+        const membership = membershipByChannelId.get(channelId)?.get(entry.userId) ?? null;
+        if (membership === null) {
+          lookupFailed = true;
+          break;
+        }
+        if (!membership) {
+          missingChannelIds.push(channelId);
+        }
+      }
+
+      if (lookupFailed) {
+        results.set(
+          entry.userId,
+          this.resolveGiveawayEligibilityLookupFailure(giveaway, entry.userId, {
+            forceFreshMembership: true,
+            lookupPolicy,
+            allowStaleMembershipOnError: false,
+          }),
+        );
+        continue;
+      }
+
+      results.set(entry.userId, this.buildGiveawayEligibilityResult(giveaway, missingChannelIds));
+    }
+
+    return results;
   }
 
   private async activateScheduledGiveawayIfDue(
@@ -1951,6 +2101,14 @@ export class ManagedGiveawayService {
     const giveaway = await this.findGiveawayById(giveawayId);
     const now = new Date();
     const drawSeed = giveaway.drawSeed?.trim() || randomBytes(32).toString('hex');
+    const entriesToRecheck = giveaway.entries.filter(
+      (entry) => entry.eligibilityState !== GiveawayEligibilityState.REJECTED,
+    );
+    const eligibilityByUserId = await this.evaluateGiveawayEligibilityForDraw(
+      giveaway,
+      entriesToRecheck,
+      source,
+    );
 
     const refreshedEntries = await Promise.all(
       giveaway.entries.map(async (entry) => {
@@ -1960,7 +2118,8 @@ export class ManagedGiveawayService {
 
         const result = this.resolveDrawEligibilityResult(
           entry,
-          await this.evaluateGiveawayEligibility(giveaway, entry.userId),
+          eligibilityByUserId.get(entry.userId) ??
+            this.resolveGiveawayEligibilityLookupFailure(giveaway, entry.userId),
         );
 
         return this.prisma.managedGiveawayEntry.update({
