@@ -24,15 +24,22 @@ type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
   private static readonly ADMIN_ACCESS_TTL_SEC = 60;
-  private static readonly MANAGED_ENTITY_HEADER_TTL_SEC = 10 * 60;
+  private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 24 * 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
+  private readonly managedEntityHeaderTtlSec: number;
 
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.managedEntityHeaderTtlSec = this.readPositiveInt(
+      (configService as { get?: (key: string) => unknown }).get?.(
+        'MANAGED_ENTITY_HEADER_CACHE_SEC',
+      ),
+      ChatContextCacheService.DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC,
+    );
   }
 
   async onModuleDestroy() {
@@ -164,7 +171,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       ChatContextCacheService.managedEntityHeaderKey(header.id, header.entityType),
       JSON.stringify(header),
       'EX',
-      ChatContextCacheService.MANAGED_ENTITY_HEADER_TTL_SEC,
+      this.managedEntityHeaderTtlSec,
     );
   }
 
@@ -319,6 +326,20 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(
       ChatContextCacheService.managedEntitiesDiscoverySnapshotKey(userId, entityType),
     );
+  }
+
+  private readPositiveInt(value: unknown, fallback: number): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue >= 1) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
   }
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
