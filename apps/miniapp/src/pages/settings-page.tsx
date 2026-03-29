@@ -50,6 +50,7 @@ import {
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
+import type { PublishedRulesButtonToggleProps } from '../components/published-rules-button-toggle';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
@@ -117,6 +118,9 @@ type MailingWorkspaceView = 'compose' | 'active';
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 const LazyMessageLimitsBlockedWordPresets = lazy(
   () => import('../components/message-limits-blocked-word-presets'),
+);
+const LazyPublishedRulesButtonToggle = lazy(
+  () => import('../components/published-rules-button-toggle'),
 );
 
 const AUTO_SAVE_DELAY_MS = 650;
@@ -257,6 +261,14 @@ function ManagedLinkButtonFieldsSlot(props: ManagedLinkButtonFieldsProps) {
   return (
     <Suspense fallback={null}>
       <LazyManagedLinkButtonFields {...props} />
+    </Suspense>
+  );
+}
+
+function PublishedRulesButtonToggleSlot(props: PublishedRulesButtonToggleProps) {
+  return (
+    <Suspense fallback={null}>
+      <LazyPublishedRulesButtonToggle {...props} />
     </Suspense>
   );
 }
@@ -6117,46 +6129,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
 
                           {draft.greetingBotMessageEnabled ? (
-                            <div
-                              className={cn(
-                                'settings-native-toggle',
-                                'settings-native-toggle--nested',
-                              )}
-                            >
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Кнопка «Правила»
-                                  </span>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Добавить кнопку Правила в приветственное сообщение"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.greetingRulesButtonEnabled}
-                                    onChange={(event) =>
-                                      setFieldValue(
-                                        'greetingRulesButtonEnabled',
-                                        event.target.checked,
-                                      )
-                                    }
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              <p className="settings-native-toggle__hint">
-                                Кнопка использует опубликованные правила из блока «Правила».
-                                {hasPublishedRules
-                                  ? ' Сейчас публикация найдена.'
-                                  : ' Сейчас публикации нет, поэтому кнопка пока не появится.'}
-                              </p>
-                            </div>
+                            <PublishedRulesButtonToggleSlot
+                              ariaLabel="Кнопка Правила в приветствии"
+                              enabled={draft.greetingRulesButtonEnabled}
+                              hasRules={hasPublishedRules}
+                              onChange={(enabled) =>
+                                setFieldValue('greetingRulesButtonEnabled', enabled)
+                              }
+                            />
                           ) : null}
                         </>
                       ) : null}
@@ -8767,46 +8747,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
 
                           {draft.nightModeBotMessageEnabled ? (
-                            <div
-                              className={cn(
-                                'settings-native-toggle',
-                                'settings-native-toggle--nested',
-                              )}
-                            >
-                              <div className="settings-native-toggle__row">
-                                <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Кнопка «Правила»
-                                  </span>
-                                </div>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Добавить кнопку Правила в сообщение ночного режима"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.nightModeRulesButtonEnabled}
-                                    onChange={(event) =>
-                                      setFieldValue(
-                                        'nightModeRulesButtonEnabled',
-                                        event.target.checked,
-                                      )
-                                    }
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-
-                              <p className="settings-native-toggle__hint">
-                                Кнопка использует опубликованные правила из блока «Правила».
-                                {hasPublishedRules
-                                  ? ' Сейчас публикация найдена.'
-                                  : ' Сейчас публикации нет, поэтому кнопка пока не появится.'}
-                              </p>
-                            </div>
+                            <PublishedRulesButtonToggleSlot
+                              ariaLabel="Кнопка Правила в ночном режиме"
+                              enabled={draft.nightModeRulesButtonEnabled}
+                              hasRules={hasPublishedRules}
+                              onChange={(enabled) =>
+                                setFieldValue('nightModeRulesButtonEnabled', enabled)
+                              }
+                            />
                           ) : null}
 
                           <div
