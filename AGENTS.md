@@ -6,6 +6,7 @@
 - Prefer repo scripts over long manual sequences:
   - Local push: `./infra/scripts/local-commit-push.sh "<message>" main`
   - VPS update: `./infra/scripts/vps-pull-build-up.sh main [services...]`
+- `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default so agent-note edits do not get mixed into runtime commits. Use `--include-agents` only when intentionally committing `AGENTS.md`.
 - Rebuild only changed services. In this repo that is usually `api` and/or `miniapp-static`.
 - Prefer workspace-scoped validation before full repo runs:
   - `npm run typecheck --workspace @maxim/api`
@@ -21,8 +22,9 @@
 - Avoid full Docker rebuilds for mini app CSS/TSX iteration unless the task specifically needs container parity.
 
 ## VPS
-- SSH alias: `ssh maxim-vps`
-- `maxim-vps` should use SSH multiplexing: `ControlMaster auto`, `ControlPersist 10m`, `Compression yes`.
+- Primary prod SSH alias: `ssh maxim-vps`
+- Legacy REG.RU fallback alias: `ssh maxim-vps-legacy`
+- `maxim-vps` should point to the Yandex prod VM and use SSH multiplexing: `ControlMaster auto`, `ControlPersist 10m`, `Compression yes`.
 - Use `docker compose` only. Do not use `docker-compose`.
 - Main prod stack: `infra/docker-compose.yml`
 - Split/load-testing stack: `infra/docker-compose.scale.yml`
@@ -35,7 +37,11 @@
   - apply Prisma migrations,
   - rebuild only changed services,
   - recreate containers with `--force-recreate`,
-  - check `live` and `ready` health locally and publicly.
+  - check `live` and `ready` health locally and publicly,
+  - check public mini app availability at `https://maxim.play-team.ru/app/` when the product includes mini app flows.
+- If `/app/` returns `502`, first check `docker compose ps miniapp-static`; API health can stay green while nginx fails on upstream `127.0.0.1:3000`.
+- Deploy scripts `infra/scripts/vps-pull-build-up.sh` and `infra/scripts/vps-pull-build-up-scale.sh` now auto-include `miniapp-static` if it is unexpectedly down during an API deploy, but manual `/app/` verification is still required after incidents.
+- Public `GET /api/v1/system/metrics/queues` is admin-auth protected; anonymous `401` there is expected. For unauthenticated checks use `/api/health/live` and `/api/health/ready`.
 
 ## MAX
 - For MAX Bot API, Mini Apps, `init_data`, webhook, and `open_app`, verify against current official MAX docs instead of memory.
@@ -51,6 +57,8 @@
   - production uses Webhook, development/testing may use Long Polling,
   - Webhook endpoint must return HTTP `200` within `30s`,
   - recommended `platform-api.max.ru` ceiling is `30 rps`.
+- In moderation or other request hot paths, prefer targeted member-access checks (`getChatMembersAccess`, `getCurrentChatMemberAccess`, MAX `GET /chats/{chatId}/members?user_ids=...`) over full admin-list fetches like `getChatAdminIds()` / `GET /members/admins`.
+- After the March 2026 runtime fixes, recurring MAX rate-limit noise is more likely to come from required-subscription membership checks (`hasChatMember`) than from admin bypass lookups.
 - For mini app deep links, keep `startapp` payload within the documented MAX constraints: up to `512` chars, only `A-Z`, `a-z`, `0-9`, `_`, `-`.
 - Use `openMaxLink` only for MAX deep links like `https://max.ru/<botName>?startapp=...`; use `openLink` or normal browser navigation for external URLs.
 - When content already exists as a bot message and the UX is share-first, prefer native `shareMaxContent()` over custom “copy/send” flows.
