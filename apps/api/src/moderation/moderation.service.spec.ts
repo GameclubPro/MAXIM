@@ -6195,6 +6195,9 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      chatAdminAllowlist: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+      },
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
@@ -6206,11 +6209,38 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       deleteMessage: jest.fn(),
-      getChatAdminIds: jest.fn().mockResolvedValue(['user-1']),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+      getChatAdminIds: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
+    };
+    const chatContextCache = {
+      getChatContext: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Chat 1',
+        settings: createSettings(),
+        domainAllowlist: [],
+        adminUserIds: [],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new ModerationService(
@@ -6218,11 +6248,33 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      chatContextCache as never,
     );
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['user-1'],
+      { trafficClass: 'critical' },
+    );
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_userId: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        userId: 'user-1',
+      },
+      update: {},
+    });
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'user-1', 'granted');
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'iduser-1', 'granted');
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -6721,10 +6773,19 @@ describe('ModerationService', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
-    const redisCounter = {
-      getString: jest.fn().mockResolvedValue(JSON.stringify(['user-1', 'iduser-1'])),
-      setStringWithTtl: jest.fn(),
-      addToSetWithTtl: jest.fn(),
+    const chatContextCache = {
+      getChatContext: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Chat 1',
+        settings: createSettings(),
+        domainAllowlist: [],
+        adminUserIds: [],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+      getAdminAccess: jest.fn().mockImplementation(async (_chatId: string, userId: string) =>
+        userId === 'user-1' ? 'granted' : null,
+      ),
     };
 
     const service = new ModerationService(
@@ -6732,15 +6793,12 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
-      undefined,
-      undefined,
-      undefined,
-      redisCounter as never,
+      chatContextCache as never,
     );
 
     await service.handleUpdate(createUpdate());
 
-    expect(redisCounter.getString).toHaveBeenCalledWith('chat-admins:v2:chat-1');
+    expect(chatContextCache.getAdminAccess).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
