@@ -5,16 +5,17 @@ import type {
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
-  BellNotification as IconoirBellNotification,
-  Bookmark as IconoirBookmark,
   BubbleStar as IconoirBubbleStar,
+  Camera as IconoirCamera,
   ChatLines as IconoirChatLines,
+  ClockRotateRight as IconoirClockRotateRight,
   EmojiSatisfied as IconoirEmojiSatisfied,
   Heart as IconoirHeart,
   MessageText as IconoirMessageText,
+  Microphone as IconoirMicrophone,
   MultiBubble as IconoirMultiBubble,
   Pin as IconoirPin,
-  QuoteMessage as IconoirQuoteMessage,
+  SendDiagonal as IconoirSendDiagonal,
   Sparks as IconoirSparks,
   Star as IconoirStar,
 } from 'iconoir-react';
@@ -100,404 +101,129 @@ type CommentBackdropIconName =
   | 'conversation'
   | 'message'
   | 'typing'
-  | 'quotes'
   | 'reaction'
   | 'heart'
   | 'sparkles'
-  | 'bookmark'
-  | 'bell'
   | 'paperclip'
   | 'pin'
   | 'smile'
-  | 'star';
+  | 'star'
+  | 'camera'
+  | 'clock'
+  | 'microphone'
+  | 'send';
 
-type CommentBackdropOrnament = {
+type CommentBackdropTone = 'accent' | 'soft' | 'faint';
+
+type CommentBackdropWallpaperTile = {
   icon: CommentBackdropIconName;
   id: string;
-  style: CSSProperties;
+  offsetY?: number;
+  rotate: number;
+  scale?: number;
+  tone: CommentBackdropTone;
 };
 
-const COMMENT_BACKDROP_STROKE = 1.62;
+type CommentBackdropWallpaperRow = {
+  id: string;
+  shift: 'left' | 'right';
+  tiles: CommentBackdropWallpaperTile[];
+};
 
-const COMMENT_BACKDROP_ORNAMENTS = [
+const COMMENT_BACKDROP_STROKE = 1.46;
+
+const COMMENT_BACKDROP_WALLPAPER_ROWS = [
   {
-    id: 'sparkles-top-left',
-    icon: 'sparkles',
-    style: {
-      top: '5%',
-      left: '-6%',
-      width: 'clamp(70px, 19vw, 92px)',
-      height: 'clamp(70px, 19vw, 92px)',
-      color: 'rgba(109, 168, 246, 0.12)',
-      opacity: 0.58,
-      transform: 'rotate(-6deg)',
-    },
+    id: 'row-1',
+    shift: 'left',
+    tiles: [
+      { id: 'spark-1', icon: 'sparkles', tone: 'soft', rotate: -8, scale: 0.98, offsetY: -3 },
+      { id: 'msg-1', icon: 'message', tone: 'accent', rotate: 6, scale: 1.04, offsetY: 8 },
+      { id: 'heart-1', icon: 'heart', tone: 'soft', rotate: -7, scale: 0.92, offsetY: -6 },
+      { id: 'cam-1', icon: 'camera', tone: 'faint', rotate: 5, scale: 0.98, offsetY: 7 },
+    ],
   },
   {
-    id: 'conversation-left-hero',
-    icon: 'conversation',
-    style: {
-      top: '15%',
-      left: '-12%',
-      width: 'clamp(98px, 27vw, 118px)',
-      height: 'clamp(98px, 27vw, 118px)',
-      color: 'rgba(84, 141, 226, 0.12)',
-      opacity: 0.68,
-      transform: 'rotate(-7deg)',
-    },
+    id: 'row-2',
+    shift: 'right',
+    tiles: [
+      { id: 'paper-1', icon: 'paperclip', tone: 'faint', rotate: -10, scale: 0.96, offsetY: 5 },
+      { id: 'send-1', icon: 'send', tone: 'soft', rotate: 11, scale: 0.98, offsetY: -5 },
+      { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -4, scale: 0.94, offsetY: 4 },
+      { id: 'star-1', icon: 'star', tone: 'faint', rotate: 9, scale: 0.88, offsetY: -7 },
+    ],
   },
   {
-    id: 'star-top-left',
-    icon: 'star',
-    style: {
-      top: '11%',
-      left: '18%',
-      width: 'clamp(24px, 7vw, 32px)',
-      height: 'clamp(24px, 7vw, 32px)',
-      color: 'rgba(99, 156, 240, 0.06)',
-      opacity: 0.34,
-      transform: 'rotate(5deg)',
-    },
+    id: 'row-3',
+    shift: 'left',
+    tiles: [
+      { id: 'conversation-1', icon: 'conversation', tone: 'soft', rotate: -6, scale: 1.04, offsetY: -8 },
+      { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.9, offsetY: 6 },
+      { id: 'typing-1', icon: 'typing', tone: 'accent', rotate: -5, scale: 1, offsetY: -4 },
+      { id: 'pin-1', icon: 'pin', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
+    ],
   },
   {
-    id: 'message-left-mid',
-    icon: 'message',
-    style: {
-      top: '29%',
-      left: '3%',
-      width: 'clamp(48px, 14vw, 60px)',
-      height: 'clamp(48px, 14vw, 60px)',
-      color: 'rgba(95, 150, 235, 0.08)',
-      opacity: 0.5,
-      transform: 'rotate(-4deg)',
-    },
+    id: 'row-4',
+    shift: 'right',
+    tiles: [
+      { id: 'clock-1', icon: 'clock', tone: 'faint', rotate: -6, scale: 0.92, offsetY: 6 },
+      { id: 'heart-2', icon: 'heart', tone: 'soft', rotate: 7, scale: 0.94, offsetY: -5 },
+      { id: 'message-2', icon: 'message', tone: 'soft', rotate: -8, scale: 1, offsetY: 5 },
+      { id: 'camera-2', icon: 'camera', tone: 'faint', rotate: 8, scale: 0.96, offsetY: -6 },
+    ],
   },
   {
-    id: 'quotes-left-hero',
-    icon: 'quotes',
-    style: {
-      top: '46%',
-      left: '-9%',
-      width: 'clamp(72px, 21vw, 90px)',
-      height: 'clamp(72px, 21vw, 90px)',
-      color: 'rgba(86, 141, 225, 0.09)',
-      opacity: 0.62,
-      transform: 'rotate(-12deg)',
-    },
+    id: 'row-5',
+    shift: 'left',
+    tiles: [
+      { id: 'send-2', icon: 'send', tone: 'soft', rotate: -11, scale: 1.02, offsetY: -4 },
+      { id: 'spark-2', icon: 'sparkles', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 8 },
+      { id: 'paper-2', icon: 'paperclip', tone: 'accent', rotate: -9, scale: 0.96, offsetY: -7 },
+      { id: 'smile-2', icon: 'smile', tone: 'soft', rotate: 6, scale: 0.92, offsetY: 4 },
+    ],
   },
   {
-    id: 'bookmark-left-lower',
-    icon: 'bookmark',
-    style: {
-      top: '61%',
-      left: '4%',
-      width: 'clamp(30px, 8vw, 38px)',
-      height: 'clamp(30px, 8vw, 38px)',
-      color: 'rgba(92, 147, 229, 0.06)',
-      opacity: 0.38,
-      transform: 'rotate(-6deg)',
-    },
+    id: 'row-6',
+    shift: 'right',
+    tiles: [
+      { id: 'reaction-1', icon: 'reaction', tone: 'soft', rotate: 8, scale: 1.02, offsetY: 5 },
+      { id: 'microphone-2', icon: 'microphone', tone: 'faint', rotate: -8, scale: 0.92, offsetY: -6 },
+      { id: 'star-2', icon: 'star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      { id: 'conversation-2', icon: 'conversation', tone: 'accent', rotate: -7, scale: 1.02, offsetY: -5 },
+    ],
   },
   {
-    id: 'paperclip-left-low',
-    icon: 'paperclip',
-    style: {
-      bottom: '24%',
-      left: '16%',
-      width: 'clamp(40px, 11vw, 48px)',
-      height: 'clamp(32px, 9vw, 40px)',
-      color: 'rgba(93, 149, 230, 0.06)',
-      opacity: 0.38,
-      transform: 'rotate(-9deg)',
-    },
+    id: 'row-7',
+    shift: 'left',
+    tiles: [
+      { id: 'clock-2', icon: 'clock', tone: 'faint', rotate: 6, scale: 0.94, offsetY: -7 },
+      { id: 'heart-3', icon: 'heart', tone: 'accent', rotate: -7, scale: 0.92, offsetY: 5 },
+      { id: 'typing-2', icon: 'typing', tone: 'soft', rotate: 4, scale: 0.98, offsetY: -3 },
+      { id: 'camera-3', icon: 'camera', tone: 'faint', rotate: -9, scale: 0.96, offsetY: 8 },
+    ],
   },
   {
-    id: 'star-left-low',
-    icon: 'star',
-    style: {
-      top: '73%',
-      left: '7%',
-      width: 'clamp(24px, 7vw, 30px)',
-      height: 'clamp(24px, 7vw, 30px)',
-      color: 'rgba(102, 158, 239, 0.05)',
-      opacity: 0.3,
-      transform: 'rotate(4deg)',
-    },
+    id: 'row-8',
+    shift: 'right',
+    tiles: [
+      { id: 'paper-3', icon: 'paperclip', tone: 'faint', rotate: 10, scale: 0.94, offsetY: 7 },
+      { id: 'send-3', icon: 'send', tone: 'accent', rotate: -11, scale: 1, offsetY: -6 },
+      { id: 'smile-3', icon: 'smile', tone: 'soft', rotate: 5, scale: 0.92, offsetY: 5 },
+      { id: 'reaction-2', icon: 'reaction', tone: 'soft', rotate: -7, scale: 1.04, offsetY: -4 },
+    ],
   },
   {
-    id: 'reaction-left-bottom',
-    icon: 'reaction',
-    style: {
-      bottom: '14%',
-      left: '-6%',
-      width: 'clamp(82px, 23vw, 102px)',
-      height: 'clamp(58px, 16vw, 72px)',
-      color: 'rgba(84, 141, 224, 0.08)',
-      opacity: 0.56,
-      transform: 'rotate(-7deg)',
-    },
+    id: 'row-9',
+    shift: 'left',
+    tiles: [
+      { id: 'message-3', icon: 'message', tone: 'soft', rotate: -6, scale: 1.02, offsetY: 6 },
+      { id: 'spark-3', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.88, offsetY: -8 },
+      { id: 'microphone-3', icon: 'microphone', tone: 'faint', rotate: -9, scale: 0.9, offsetY: 7 },
+      { id: 'pin-2', icon: 'pin', tone: 'soft', rotate: 11, scale: 0.88, offsetY: -5 },
+    ],
   },
-  {
-    id: 'smile-left-bottom',
-    icon: 'smile',
-    style: {
-      bottom: '6%',
-      left: '23%',
-      width: 'clamp(30px, 8vw, 38px)',
-      height: 'clamp(30px, 8vw, 38px)',
-      color: 'rgba(103, 159, 239, 0.05)',
-      opacity: 0.3,
-      transform: 'rotate(-5deg)',
-    },
-  },
-  {
-    id: 'message-top-right',
-    icon: 'message',
-    style: {
-      top: '8%',
-      right: '-5%',
-      width: 'clamp(54px, 15vw, 66px)',
-      height: 'clamp(54px, 15vw, 66px)',
-      color: 'rgba(97, 152, 236, 0.08)',
-      opacity: 0.5,
-      transform: 'rotate(6deg)',
-    },
-  },
-  {
-    id: 'bell-top-right',
-    icon: 'bell',
-    style: {
-      top: '18%',
-      right: '18%',
-      width: 'clamp(32px, 9vw, 40px)',
-      height: 'clamp(32px, 9vw, 40px)',
-      color: 'rgba(88, 144, 227, 0.06)',
-      opacity: 0.36,
-      transform: 'rotate(9deg)',
-    },
-  },
-  {
-    id: 'star-top-right',
-    icon: 'star',
-    style: {
-      top: '13%',
-      right: '35%',
-      width: 'clamp(24px, 7vw, 30px)',
-      height: 'clamp(24px, 7vw, 30px)',
-      color: 'rgba(100, 157, 239, 0.05)',
-      opacity: 0.3,
-      transform: 'rotate(-4deg)',
-    },
-  },
-  {
-    id: 'paperclip-right-upper',
-    icon: 'paperclip',
-    style: {
-      top: '28%',
-      right: '3%',
-      width: 'clamp(42px, 12vw, 50px)',
-      height: 'clamp(34px, 10vw, 40px)',
-      color: 'rgba(89, 146, 229, 0.06)',
-      opacity: 0.38,
-      transform: 'rotate(11deg)',
-    },
-  },
-  {
-    id: 'typing-right-hero',
-    icon: 'typing',
-    style: {
-      top: '38%',
-      right: '-10%',
-      width: 'clamp(96px, 27vw, 116px)',
-      height: 'clamp(96px, 27vw, 116px)',
-      color: 'rgba(88, 143, 228, 0.1)',
-      opacity: 0.66,
-      transform: 'rotate(5deg)',
-    },
-  },
-  {
-    id: 'bookmark-right-mid',
-    icon: 'bookmark',
-    style: {
-      top: '55%',
-      right: '6%',
-      width: 'clamp(30px, 8vw, 38px)',
-      height: 'clamp(30px, 8vw, 38px)',
-      color: 'rgba(95, 151, 234, 0.06)',
-      opacity: 0.34,
-      transform: 'rotate(-7deg)',
-    },
-  },
-  {
-    id: 'heart-right-mid',
-    icon: 'heart',
-    style: {
-      top: '63%',
-      right: '24%',
-      width: 'clamp(36px, 10vw, 44px)',
-      height: 'clamp(36px, 10vw, 44px)',
-      color: 'rgba(101, 156, 237, 0.06)',
-      opacity: 0.36,
-      transform: 'rotate(8deg)',
-    },
-  },
-  {
-    id: 'reaction-right-low',
-    icon: 'reaction',
-    style: {
-      top: '71%',
-      right: '8%',
-      width: 'clamp(62px, 17vw, 74px)',
-      height: 'clamp(44px, 12vw, 54px)',
-      color: 'rgba(83, 139, 224, 0.07)',
-      opacity: 0.48,
-      transform: 'rotate(7deg)',
-    },
-  },
-  {
-    id: 'pin-right-low',
-    icon: 'pin',
-    style: {
-      top: '82%',
-      right: '3%',
-      width: 'clamp(32px, 9vw, 40px)',
-      height: 'clamp(32px, 9vw, 40px)',
-      color: 'rgba(91, 148, 231, 0.06)',
-      opacity: 0.36,
-      transform: 'rotate(10deg)',
-    },
-  },
-  {
-    id: 'heart-right-bottom',
-    icon: 'heart',
-    style: {
-      bottom: '10%',
-      right: '-6%',
-      width: 'clamp(86px, 23vw, 104px)',
-      height: 'clamp(86px, 23vw, 104px)',
-      color: 'rgba(100, 154, 234, 0.08)',
-      opacity: 0.54,
-      transform: 'rotate(8deg)',
-    },
-  },
-  {
-    id: 'smile-right-bottom',
-    icon: 'smile',
-    style: {
-      bottom: '23%',
-      right: '16%',
-      width: 'clamp(30px, 8vw, 38px)',
-      height: 'clamp(30px, 8vw, 38px)',
-      color: 'rgba(102, 159, 239, 0.05)',
-      opacity: 0.3,
-      transform: 'rotate(9deg)',
-    },
-  },
-  {
-    id: 'quotes-top-center',
-    icon: 'quotes',
-    style: {
-      top: '17%',
-      left: '44%',
-      width: 'clamp(26px, 7vw, 34px)',
-      height: 'clamp(26px, 7vw, 34px)',
-      color: 'rgba(104, 161, 240, 0.05)',
-      opacity: 0.3,
-      transform: 'rotate(-8deg)',
-    },
-  },
-  {
-    id: 'bookmark-top-center',
-    icon: 'bookmark',
-    style: {
-      top: '7%',
-      left: '55%',
-      width: 'clamp(26px, 7vw, 34px)',
-      height: 'clamp(26px, 7vw, 34px)',
-      color: 'rgba(103, 159, 239, 0.05)',
-      opacity: 0.28,
-      transform: 'rotate(6deg)',
-    },
-  },
-  {
-    id: 'smile-center-mid',
-    icon: 'smile',
-    style: {
-      top: '41%',
-      left: '38%',
-      width: 'clamp(24px, 6vw, 30px)',
-      height: 'clamp(24px, 6vw, 30px)',
-      color: 'rgba(104, 160, 240, 0.05)',
-      opacity: 0.26,
-      transform: 'rotate(4deg)',
-    },
-  },
-  {
-    id: 'star-center-low',
-    icon: 'star',
-    style: {
-      top: '58%',
-      left: '56%',
-      width: 'clamp(22px, 6vw, 28px)',
-      height: 'clamp(22px, 6vw, 28px)',
-      color: 'rgba(103, 159, 239, 0.05)',
-      opacity: 0.24,
-      transform: 'rotate(-6deg)',
-    },
-  },
-  {
-    id: 'sparkles-center-low',
-    icon: 'sparkles',
-    style: {
-      top: '66%',
-      left: '34%',
-      width: 'clamp(22px, 6vw, 28px)',
-      height: 'clamp(22px, 6vw, 28px)',
-      color: 'rgba(107, 164, 243, 0.05)',
-      opacity: 0.24,
-      transform: 'rotate(7deg)',
-    },
-  },
-  {
-    id: 'bell-lower-center',
-    icon: 'bell',
-    style: {
-      bottom: '30%',
-      left: '35%',
-      width: 'clamp(26px, 7vw, 34px)',
-      height: 'clamp(26px, 7vw, 34px)',
-      color: 'rgba(103, 160, 240, 0.05)',
-      opacity: 0.28,
-      transform: 'rotate(-5deg)',
-    },
-  },
-  {
-    id: 'sparkles-lower-center',
-    icon: 'sparkles',
-    style: {
-      bottom: '22%',
-      left: '48%',
-      width: 'clamp(26px, 7vw, 34px)',
-      height: 'clamp(26px, 7vw, 34px)',
-      color: 'rgba(108, 165, 244, 0.05)',
-      opacity: 0.26,
-      transform: 'rotate(7deg)',
-    },
-  },
-  {
-    id: 'pin-lower-center',
-    icon: 'pin',
-    style: {
-      bottom: '13%',
-      left: '60%',
-      width: 'clamp(26px, 7vw, 34px)',
-      height: 'clamp(26px, 7vw, 34px)',
-      color: 'rgba(103, 160, 240, 0.05)',
-      opacity: 0.26,
-      transform: 'rotate(-4deg)',
-    },
-  },
-] satisfies CommentBackdropOrnament[];
+] satisfies CommentBackdropWallpaperRow[];
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -1251,22 +977,8 @@ function TypingBubbleOutlineIcon() {
   return <IconoirChatLines strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
-function QuoteMarksOutlineIcon() {
-  return <IconoirQuoteMessage strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-}
-
 function ReactionPillOutlineIcon() {
   return <IconoirBubbleStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-}
-
-function BookmarkOutlineIcon() {
-  return <IconoirBookmark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-}
-
-function BellOutlineIcon() {
-  return (
-    <IconoirBellNotification strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />
-  );
 }
 
 function PaperclipOutlineIcon() {
@@ -1287,6 +999,24 @@ function StarOutlineIcon() {
   return <IconoirStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
+function CameraOutlineIcon() {
+  return <IconoirCamera strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function ClockOutlineIcon() {
+  return (
+    <IconoirClockRotateRight strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />
+  );
+}
+
+function MicrophoneOutlineIcon() {
+  return <IconoirMicrophone strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function SendOutlineIcon() {
+  return <IconoirSendDiagonal strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
   switch (name) {
     case 'conversation':
@@ -1295,18 +1025,12 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <MessageBubbleOutlineIcon />;
     case 'typing':
       return <TypingBubbleOutlineIcon />;
-    case 'quotes':
-      return <QuoteMarksOutlineIcon />;
     case 'reaction':
       return <ReactionPillOutlineIcon />;
     case 'heart':
       return <SoftHeartOutlineIcon />;
     case 'sparkles':
       return <SparklesOutlineIcon />;
-    case 'bookmark':
-      return <BookmarkOutlineIcon />;
-    case 'bell':
-      return <BellOutlineIcon />;
     case 'paperclip':
       return <PaperclipOutlineIcon />;
     case 'pin':
@@ -1315,6 +1039,14 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <SmileOutlineIcon />;
     case 'star':
       return <StarOutlineIcon />;
+    case 'camera':
+      return <CameraOutlineIcon />;
+    case 'clock':
+      return <ClockOutlineIcon />;
+    case 'microphone':
+      return <MicrophoneOutlineIcon />;
+    case 'send':
+      return <SendOutlineIcon />;
     default:
       return null;
   }
@@ -1322,11 +1054,37 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
 
 function CommentBackdropOrnaments() {
   return (
-    <div className="channel-dialog-screen__ornaments" aria-hidden>
-      {COMMENT_BACKDROP_ORNAMENTS.map((ornament) => (
-        <span key={ornament.id} className="channel-dialog-screen__ornament" style={ornament.style}>
-          <CommentBackdropIcon name={ornament.icon} />
-        </span>
+    <div className="channel-dialog-screen__wallpaper" aria-hidden>
+      {COMMENT_BACKDROP_WALLPAPER_ROWS.map((row) => (
+        <div
+          key={row.id}
+          className={cn(
+            'channel-dialog-screen__wallpaper-row',
+            row.shift === 'left' && 'is-shift-left',
+            row.shift === 'right' && 'is-shift-right',
+          )}
+        >
+          {row.tiles.map((tile) => (
+            <span
+              key={tile.id}
+              className={cn(
+                'channel-dialog-screen__wallpaper-tile',
+                tile.tone === 'accent' && 'is-accent',
+                tile.tone === 'soft' && 'is-soft',
+                tile.tone === 'faint' && 'is-faint',
+              )}
+              style={
+                {
+                  '--channel-dialog-wallpaper-offset-y': `${tile.offsetY ?? 0}px`,
+                  '--channel-dialog-wallpaper-rotation': `${tile.rotate}deg`,
+                  '--channel-dialog-wallpaper-scale': `${tile.scale ?? 1}`,
+                } as CSSProperties
+              }
+            >
+              <CommentBackdropIcon name={tile.icon} />
+            </span>
+          ))}
+        </div>
       ))}
     </div>
   );
