@@ -60,6 +60,15 @@ export type ToggleChannelDialogReactionPayload = {
   emoji: string;
 };
 
+export type UpdateChannelDialogMessagePayload = {
+  token: string;
+  text: string;
+};
+
+export type DeleteChannelDialogMessagePayload = {
+  token: string;
+};
+
 export type UpdateChatRulesPayload = Pick<
   ChatRules,
   | 'text'

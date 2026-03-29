@@ -25,8 +25,12 @@ import { useToast } from '../components/ui/toast';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,
+  deleteChatDialogMessage,
+  deleteChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
+  updateChatDialogMessage,
+  updateChannelDialogMessage,
   toggleChannelDialogReaction,
   toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
@@ -589,6 +593,20 @@ function updateDialogMessage(
   };
 }
 
+function removeDialogMessage(
+  dialog: ChannelDialogResponse | undefined,
+  messageId: string,
+): ChannelDialogResponse | undefined {
+  if (!dialog) {
+    return dialog;
+  }
+
+  return {
+    ...dialog,
+    messages: dialog.messages.filter((item) => item.id !== messageId),
+  };
+}
+
 function toggleDialogReactionLocally(
   dialog: ChannelDialogResponse | undefined,
   messageId: string,
@@ -745,6 +763,56 @@ function ReplyArrowIcon() {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M4.7 15.3L7.2 14.7L14.6 7.3C15 6.9 15 6.2 14.6 5.8L13.9 5.1C13.5 4.7 12.8 4.7 12.4 5.1L5 12.5L4.7 15.3Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M11.6 5.9L13.8 8.1"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M5.8 6.4L6.4 14.2C6.5 15.1 7.2 15.8 8.1 15.8H11.9C12.8 15.8 13.5 15.1 13.6 14.2L14.2 6.4"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.8 5.2H15.2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M8.1 5.2V4.6C8.1 4.2 8.4 3.9 8.8 3.9H11.2C11.6 3.9 11.9 4.2 11.9 4.6V5.2"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M8.7 8.3V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+      <path d="M11.3 8.3V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -762,6 +830,11 @@ type SwipeReplyPreview = {
   offset: number;
   progress: number;
   armed: boolean;
+};
+
+type EditRestoreState = {
+  draft: string;
+  replyToMessageId: string | null;
 };
 
 type SwipeReplyGesture = {
@@ -837,6 +910,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [suggestionImage, setSuggestionImage] = useState<SuggestionDraftImage | null>(null);
   const [isPreparingSuggestionImage, setIsPreparingSuggestionImage] = useState(false);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [editRestoreState, setEditRestoreState] = useState<EditRestoreState | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isBodyScrolled, setIsBodyScrolled] = useState(false);
@@ -929,12 +1004,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     () => messages.find((message) => message.id === activeMessageId) ?? null,
     [activeMessageId, messages],
   );
+  const editingMessage = useMemo(
+    () => messages.find((message) => message.id === editingMessageId) ?? null,
+    [editingMessageId, messages],
+  );
   const replyTarget = useMemo(
     () => messages.find((message) => message.id === replyToMessageId) ?? null,
     [messages, replyToMessageId],
   );
   const draftLength = draft.trim().length;
-  const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
+  const showComposeMeta =
+    dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget) || Boolean(editingMessage);
   const canSubmitMessage =
     dialogType === 'suggest' ? Boolean(draftLength || suggestionImage) : draftLength > 0;
   const activeMessageIsOwn = activeMessage
@@ -995,6 +1075,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     clearSwipeReplyGesture();
   };
 
+  const cancelEditing = (options?: { restoreDraft?: boolean }) => {
+    if (options?.restoreDraft && editRestoreState) {
+      setDraft(editRestoreState.draft);
+      setReplyToMessageId(editRestoreState.replyToMessageId);
+    } else {
+      setDraft('');
+      setReplyToMessageId(null);
+    }
+
+    setEditingMessageId(null);
+    setEditRestoreState(null);
+  };
+
   const handleDismiss = () => {
     maxImpact('light');
     navigate(buildManagedEntitiesRoute(entityType), { replace: true });
@@ -1009,7 +1102,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     field.style.height = '0px';
     const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
     field.style.height = `${nextHeight}px`;
-  }, [draft, replyTarget]);
+  }, [draft, editingMessage, replyTarget]);
 
   useEffect(
     () => () => {
@@ -1142,6 +1235,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setReplyToMessageId(null);
     }
 
+    if (editingMessageId && !messages.some((message) => message.id === editingMessageId)) {
+      setEditingMessageId(null);
+      setEditRestoreState(null);
+      setDraft('');
+    }
+
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
       setActiveMessageId(null);
       setIsReactionPickerExpanded(false);
@@ -1165,6 +1264,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   }, [
     activeMessageId,
+    editingMessageId,
     firstUnreadMessageId,
     highlightedMessageId,
     messageIdSet,
@@ -1447,6 +1547,78 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const updateMutation = useMutation({
+    mutationFn: ({ messageId, text }: { messageId: string; text: string }) =>
+      entityType === 'channel'
+        ? updateChannelDialogMessage(api, chatId, dialogType, messageId, {
+            token,
+            text,
+          })
+        : updateChatDialogMessage(api, chatId, dialogType, messageId, {
+            token,
+            text,
+          }),
+    onSuccess: (result) => {
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        updateDialogMessage(current, result.message),
+      );
+      pushToast({
+        tone: 'success',
+        title: 'Готово',
+        description: 'Комментарий обновлён.',
+      });
+      cancelEditing();
+      dismissMessageActions();
+      void queryClient.invalidateQueries({
+        queryKey: dialogQueryKey,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Ошибка',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: ({ messageId }: { messageId: string; deletedByAdmin: boolean }) =>
+      entityType === 'channel'
+        ? deleteChannelDialogMessage(api, chatId, dialogType, messageId, {
+            token,
+          })
+        : deleteChatDialogMessage(api, chatId, dialogType, messageId, {
+            token,
+          }),
+    onSuccess: (result, variables) => {
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        removeDialogMessage(current, result.deletedMessageId),
+      );
+      pushToast({
+        tone: 'success',
+        title: 'Готово',
+        description: variables.deletedByAdmin
+          ? 'Комментарий удалён администратором.'
+          : 'Комментарий удалён.',
+      });
+      if (editingMessageId === variables.messageId) {
+        cancelEditing();
+      }
+      dismissMessageActions();
+      void queryClient.invalidateQueries({
+        queryKey: dialogQueryKey,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Ошибка',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
   const reactionMutation = useMutation({
     mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
       entityType === 'channel'
@@ -1489,6 +1661,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+
+  const isComposePending =
+    sendMutation.isPending || updateMutation.isPending || isPreparingSuggestionImage;
+  const isCommentActionPending =
+    reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
 
   const openMessageActions = (
     messageId: string,
@@ -1688,9 +1865,51 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const handleReply = (message: ChannelDialogMessage) => {
     maxImpact('soft');
+    setEditingMessageId(null);
+    setEditRestoreState(null);
+    setDraft('');
     setReplyToMessageId(message.id);
     dismissMessageActions();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
+  };
+
+  const handleStartEditing = (message: ChannelDialogMessage) => {
+    if (!message.canEdit) {
+      return;
+    }
+
+    maxImpact('soft');
+    setEditRestoreState((current) =>
+      current ?? {
+        draft,
+        replyToMessageId,
+      },
+    );
+    setReplyToMessageId(null);
+    setEditingMessageId(message.id);
+    setDraft(message.text);
+    dismissMessageActions();
+    requestAnimationFrame(() => composeFieldRef.current?.focus());
+  };
+
+  const handleDelete = (message: ChannelDialogMessage) => {
+    if (deleteMutation.isPending || (!message.canDelete && !message.canDeleteAsAdmin)) {
+      return;
+    }
+
+    const confirmationText =
+      message.canDeleteAsAdmin && !message.canDelete
+        ? 'Удалить чужой комментарий как администратор?'
+        : 'Удалить комментарий?';
+    if (typeof window !== 'undefined' && !window.confirm(confirmationText)) {
+      return;
+    }
+
+    maxImpact('medium');
+    deleteMutation.mutate({
+      messageId: message.id,
+      deletedByAdmin: message.canDeleteAsAdmin && !message.canDelete,
+    });
   };
 
   const handleReactionToggle = (
@@ -1700,7 +1919,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       closePicker?: boolean;
     },
   ) => {
-    if (reactionMutation.isPending) {
+    if (isCommentActionPending) {
       return;
     }
 
@@ -1841,12 +2060,24 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const onSubmit = () => {
     const text = draft.trim();
     if (
-      sendMutation.isPending ||
-      isPreparingSuggestionImage ||
+      isComposePending ||
       !chatId ||
       !token ||
       (dialogType === 'suggest' ? !text && !suggestionImage : !text)
     ) {
+      return;
+    }
+
+    if (editingMessage) {
+      if (text === editingMessage.text.trim()) {
+        cancelEditing({ restoreDraft: true });
+        return;
+      }
+
+      updateMutation.mutate({
+        messageId: editingMessage.id,
+        text,
+      });
       return;
     }
 
@@ -2058,9 +2289,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   const canJumpToReplySource = Boolean(
                     replySourceMessageId && messageIdSet.has(replySourceMessageId),
                   );
-                  const isReactionPending =
-                    reactionMutation.isPending &&
-                    reactionMutation.variables?.messageId === message.id;
+                  const isReactionPending = isCommentActionPending;
 
                   return (
                     <Fragment key={message.id}>
@@ -2182,6 +2411,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                   </strong>
                                   <time dateTime={message.createdAt}>
                                     {formatMessageTime(message.createdAt)}
+                                    {message.editedAt ? ' · ред.' : ''}
                                   </time>
                                 </div>
                               ) : null}
@@ -2287,7 +2517,26 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           <div className="channel-dialog-compose__surface">
-            {replyTarget ? (
+            {editingMessage ? (
+              <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
+                <button
+                  type="button"
+                  className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                  onClick={() => scrollToMessage(editingMessage.id)}
+                >
+                  <span>Редактирование комментария</span>
+                  <p>{summarizeReplyText(editingMessage.text, 84)}</p>
+                </button>
+                <button
+                  type="button"
+                  className="channel-dialog-compose__reply-dismiss"
+                  onClick={() => cancelEditing({ restoreDraft: true })}
+                  aria-label="Отменить редактирование"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+            ) : replyTarget ? (
               <div className="channel-dialog-compose__reply">
                 <button
                   type="button"
@@ -2317,6 +2566,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               >
                 {dialogType === 'suggest' ? (
                   <span>После отправки бот передаст материал админам канала в личку</span>
+                ) : editingMessage ? (
+                  <span>Изменение сохранится для всех участников треда</span>
                 ) : null}
                 <span>{draftLength}/2000</span>
               </div>
@@ -2368,7 +2619,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   rows={1}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder={replyTarget ? 'Ответить на комментарий' : view.placeholder}
+                  placeholder={
+                    editingMessage
+                      ? 'Изменить комментарий'
+                      : replyTarget
+                        ? 'Ответить на комментарий'
+                        : view.placeholder
+                  }
                   maxLength={2_000}
                 />
               </label>
@@ -2378,12 +2635,18 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   type="button"
                   className="channel-dialog-submit"
                   onClick={onSubmit}
-                  disabled={
-                    !canSubmitMessage || sendMutation.isPending || isPreparingSuggestionImage
+                  disabled={!canSubmitMessage || isComposePending}
+                  aria-label={
+                    editingMessage
+                      ? updateMutation.isPending
+                        ? 'Сохранение'
+                        : 'Сохранить'
+                      : sendMutation.isPending
+                        ? 'Отправка'
+                        : 'Отправить'
                   }
-                  aria-label={sendMutation.isPending ? 'Отправка' : 'Отправить'}
                 >
-                  {sendMutation.isPending ? (
+                  {isComposePending ? (
                     <span className="channel-dialog-submit__loader" aria-hidden />
                   ) : (
                     <SendArrowIcon />
@@ -2440,7 +2703,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 closePicker: true,
                               })
                             }
-                            disabled={reactionMutation.isPending}
+                            disabled={isCommentActionPending}
                             aria-label={`Поставить реакцию ${emoji}`}
                           >
                             {emoji}
@@ -2457,10 +2720,38 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           'channel-dialog-reaction-popover__action--reply',
                         )}
                         onClick={() => handleReply(activeMessage)}
+                        disabled={isCommentActionPending}
                       >
                         <ReplyArrowIcon />
                         Ответить
                       </button>
+
+                      {activeMessage.canEdit ? (
+                        <button
+                          type="button"
+                          className="channel-dialog-reaction-popover__action"
+                          onClick={() => handleStartEditing(activeMessage)}
+                          disabled={isCommentActionPending}
+                        >
+                          <EditIcon />
+                          Изменить
+                        </button>
+                      ) : null}
+
+                      {activeMessage.canDelete || activeMessage.canDeleteAsAdmin ? (
+                        <button
+                          type="button"
+                          className={cn(
+                            'channel-dialog-reaction-popover__action',
+                            'channel-dialog-reaction-popover__action--danger',
+                          )}
+                          onClick={() => handleDelete(activeMessage)}
+                          disabled={isCommentActionPending}
+                        >
+                          <TrashIcon />
+                          Удалить
+                        </button>
+                      ) : null}
 
                       <button
                         type="button"
@@ -2469,6 +2760,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           isReactionPickerExpanded && 'is-active',
                         )}
                         onClick={() => setIsReactionPickerExpanded((current) => !current)}
+                        disabled={isCommentActionPending}
                         aria-label="Показать больше реакций"
                       >
                         <PlusIcon />
@@ -2497,7 +2789,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 closePicker: true,
                               })
                             }
-                            disabled={reactionMutation.isPending}
+                            disabled={isCommentActionPending}
                             aria-label={`Поставить реакцию ${emoji}`}
                           >
                             {emoji}

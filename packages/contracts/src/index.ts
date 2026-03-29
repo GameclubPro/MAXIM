@@ -2271,9 +2271,13 @@ export const channelDialogMessageSchema = z.object({
   isAdmin: z.boolean().default(false),
   avatarUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
+  editedAt: z.string().datetime().nullable().optional(),
   replyToMessageId: z.string().nullable().optional(),
   replyTo: channelDialogReplyPreviewSchema.nullable().optional(),
   reactionGroups: z.array(channelDialogReactionGroupSchema).default([]),
+  canEdit: z.boolean().default(false),
+  canDelete: z.boolean().default(false),
+  canDeleteAsAdmin: z.boolean().default(false),
   delivered: z.boolean().optional(),
   deliveredToUserId: z.string().nullable().optional(),
   reviewStatus: channelDialogSuggestionReviewStatusSchema.optional(),
@@ -2301,6 +2305,22 @@ export type CreateChannelDialogMessageResponse = z.infer<
   typeof createChannelDialogMessageResponseSchema
 >;
 
+export const updateChannelDialogMessageRequestSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+  text: z.string().trim().min(1).max(2_000),
+});
+export type UpdateChannelDialogMessageRequest = z.infer<
+  typeof updateChannelDialogMessageRequestSchema
+>;
+
+export const updateChannelDialogMessageResponseSchema = z.object({
+  ok: z.boolean(),
+  message: channelDialogMessageSchema,
+});
+export type UpdateChannelDialogMessageResponse = z.infer<
+  typeof updateChannelDialogMessageResponseSchema
+>;
+
 export const toggleChannelDialogReactionRequestSchema = z.object({
   token: z.string().trim().min(16).max(256),
   emoji: z.string().trim().min(1).max(16),
@@ -2315,6 +2335,21 @@ export const toggleChannelDialogReactionResponseSchema = z.object({
 });
 export type ToggleChannelDialogReactionResponse = z.infer<
   typeof toggleChannelDialogReactionResponseSchema
+>;
+
+export const deleteChannelDialogMessageRequestSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+});
+export type DeleteChannelDialogMessageRequest = z.infer<
+  typeof deleteChannelDialogMessageRequestSchema
+>;
+
+export const deleteChannelDialogMessageResponseSchema = z.object({
+  ok: z.boolean(),
+  deletedMessageId: z.string(),
+});
+export type DeleteChannelDialogMessageResponse = z.infer<
+  typeof deleteChannelDialogMessageResponseSchema
 >;
 
 export const maxMessagePayloadSchema = z.object({

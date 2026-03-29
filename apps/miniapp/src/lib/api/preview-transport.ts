@@ -12,6 +12,8 @@ import {
   chatSettingsScreenResponseSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
+  deleteChannelDialogMessageRequestSchema,
+  deleteChannelDialogMessageResponseSchema,
   domainAllowlistEntrySchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
@@ -31,6 +33,8 @@ import {
   systemModeSnapshotSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateChannelDialogMessageRequestSchema,
+  updateChannelDialogMessageResponseSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChannelDialogMessage,
@@ -807,6 +811,21 @@ function buildPreviewDialogMessage(payload: {
   });
 }
 
+function decoratePreviewDialogMessageAccess(
+  message: ChannelDialogMessage,
+  viewerUserId: string,
+): ChannelDialogMessage {
+  const isOwnMessage = message.authorUserId === viewerUserId;
+  const viewerIsAdmin = viewerUserId.startsWith('preview-admin');
+
+  return channelDialogMessageSchema.parse({
+    ...message,
+    canEdit: message.type === 'comments' && isOwnMessage,
+    canDelete: message.type === 'comments' && isOwnMessage,
+    canDeleteAsAdmin: message.type === 'comments' && !isOwnMessage && viewerIsAdmin,
+  });
+}
+
 function findPreviewDialogMessage(
   bucket: PreviewDialogBucket,
   messageId: string | null | undefined,
@@ -872,10 +891,37 @@ function togglePreviewDialogReaction(
   return bucket.messages.find((message) => message.id === messageId) ?? bucket.messages.at(-1)!;
 }
 
+function updatePreviewDialogMessage(
+  bucket: PreviewDialogBucket,
+  messageId: string,
+  text: string,
+): ChannelDialogMessage {
+  const editedAt = new Date().toISOString();
+  const nextMessages = bucket.messages.map((message) =>
+    message.id === messageId
+      ? channelDialogMessageSchema.parse({
+          ...message,
+          text,
+          editedAt,
+        })
+      : message,
+  );
+
+  bucket.messages = nextMessages;
+  return bucket.messages.find((message) => message.id === messageId) ?? bucket.messages.at(-1)!;
+}
+
+function deletePreviewDialogMessage(bucket: PreviewDialogBucket, messageId: string): boolean {
+  const previousLength = bucket.messages.length;
+  bucket.messages = bucket.messages.filter((message) => message.id !== messageId);
+  return bucket.messages.length < previousLength;
+}
+
 function buildPreviewDialogResponse(
   chatId: string,
   dialogType: ChannelDialogType,
   bucket: PreviewDialogBucket,
+  viewerUserId: string,
 ): ChannelDialogResponse {
   const previewThreadVariant =
     typeof window !== 'undefined'
@@ -893,7 +939,9 @@ function buildPreviewDialogResponse(
     chatId,
     type: dialogType,
     introText: normalizedBucket.introText,
-    messages: normalizedBucket.messages,
+    messages: normalizedBucket.messages.map((message) =>
+      decoratePreviewDialogMessageAccess(message, viewerUserId),
+    ),
   });
 }
 
@@ -2208,7 +2256,7 @@ async function handleChatRequest(
 
     if (tail.length === 2 && method === 'GET') {
       return cloneJson(
-        buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType]),
+        buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType], state.me.userId),
       );
     }
 
@@ -2248,7 +2296,29 @@ async function handleChatRequest(
       state.chatDialogs[dialogType].messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
-        message,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && method === 'PATCH') {
+      const payload = updateChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const message = updatePreviewDialogMessage(
+        state.chatDialogs[dialogType],
+        tail[3],
+        payload.text,
+      );
+      return updateChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && method === 'DELETE') {
+      deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      deletePreviewDialogMessage(state.chatDialogs[dialogType], tail[3]);
+      return deleteChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        deletedMessageId: tail[3],
       });
     }
 
@@ -2261,7 +2331,7 @@ async function handleChatRequest(
       );
       return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
-        message,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
       });
     }
   }
@@ -2714,7 +2784,12 @@ async function handleChannelRequest(
 
     if (tail.length === 2 && method === 'GET') {
       return cloneJson(
-        buildPreviewDialogResponse(channelId, dialogType, state.channelDialogs[dialogType]),
+        buildPreviewDialogResponse(
+          channelId,
+          dialogType,
+          state.channelDialogs[dialogType],
+          state.me.userId,
+        ),
       );
     }
 
@@ -2754,7 +2829,29 @@ async function handleChannelRequest(
       state.channelDialogs[dialogType].messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
-        message,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && method === 'PATCH') {
+      const payload = updateChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const message = updatePreviewDialogMessage(
+        state.channelDialogs[dialogType],
+        tail[3],
+        payload.text,
+      );
+      return updateChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && method === 'DELETE') {
+      deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      deletePreviewDialogMessage(state.channelDialogs[dialogType], tail[3]);
+      return deleteChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        deletedMessageId: tail[3],
       });
     }
 
@@ -2767,7 +2864,7 @@ async function handleChannelRequest(
       );
       return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
-        message,
+        message: decoratePreviewDialogMessageAccess(message, state.me.userId),
       });
     }
   }

@@ -141,6 +141,7 @@ function createPrismaMock() {
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockResolvedValue(undefined),
       update: jest.fn().mockResolvedValue(undefined),
+      delete: jest.fn().mockResolvedValue(undefined),
     },
     managedBroadcast: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -8277,6 +8278,66 @@ describe('AdminService.sendBroadcast', () => {
       isAdmin: false,
     });
   });
+
+  it('allows the author to delete their own chat comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'chat-comment-delete-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'comments',
+        threadId: 'chat-thread-delete',
+        text: 'Комментарий для удаления',
+      },
+      createdAt: new Date('2026-03-21T11:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-delete') as string;
+
+    const result = await service.deleteChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      'chat-comment-delete-1',
+      {
+        token: commentsToken,
+      },
+    );
+
+    expect(prisma.auditLog.delete).toHaveBeenCalledWith({
+      where: {
+        id: 'chat-comment-delete-1',
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      deletedMessageId: 'chat-comment-delete-1',
+    });
+  });
 });
 
 describe('AdminService.sendChannelBroadcast', () => {
@@ -10283,6 +10344,217 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         { emoji: '❤️', count: 1, reactedByMe: true },
       ]),
     );
+  });
+
+  it('allows the author to edit a channel comment and returns edit capabilities', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-edit-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-edit',
+        text: 'Старый текст',
+        authorDisplayName: 'Пользователь',
+        reactions: [{ emoji: '👍', userIds: ['user-2'] }],
+      },
+      createdAt: new Date('2026-03-21T10:00:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'comment-edit-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-edit',
+        text: 'Обновлённый текст',
+        editedAt: '2026-03-21T10:05:00.000Z',
+        authorDisplayName: 'Пользователь',
+        reactions: [{ emoji: '👍', userIds: ['user-2'] }],
+      },
+      createdAt: new Date('2026-03-21T10:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken('channel', 'channel-1', 'comments', 'channel-thread-edit') as string;
+
+    const result = await service.updateChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      'comment-edit-1',
+      {
+        token: commentsToken,
+        text: 'Обновлённый текст',
+      },
+    );
+
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'comment-edit-1',
+        },
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            text: 'Обновлённый текст',
+            editedAt: expect.any(String),
+          }),
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      message: {
+        id: 'comment-edit-1',
+        text: 'Обновлённый текст',
+        editedAt: '2026-03-21T10:05:00.000Z',
+        canEdit: true,
+        canDelete: true,
+        canDeleteAsAdmin: false,
+      },
+    });
+  });
+
+  it('rejects editing another user channel comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-edit-foreign-1',
+      actorUserId: 'user-2',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-edit-foreign',
+        text: 'Чужой комментарий',
+      },
+      createdAt: new Date('2026-03-21T10:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-edit-foreign',
+    ) as string;
+
+    await expect(
+      service.updateChannelDialogMessage(
+        'channel-1',
+        {
+          userId: 'user-1',
+          username: 'user1',
+          displayName: 'Пользователь',
+          chatTitle: null,
+        },
+        'comments',
+        'comment-edit-foreign-1',
+        {
+          token: commentsToken,
+          text: 'Пытаюсь изменить чужой комментарий',
+        },
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
+  });
+
+  it('allows an admin to delete another user channel comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-delete-admin-1',
+      actorUserId: 'user-2',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-delete-admin',
+        text: 'Чужой комментарий',
+      },
+      createdAt: new Date('2026-03-21T10:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-delete-admin',
+    ) as string;
+
+    const result = await service.deleteChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: 'admin1',
+        displayName: 'Админ',
+        chatTitle: null,
+      },
+      'comments',
+      'comment-delete-admin-1',
+      {
+        token: commentsToken,
+      },
+    );
+
+    expect(prisma.auditLog.delete).toHaveBeenCalledWith({
+      where: {
+        id: 'comment-delete-admin-1',
+      },
+    });
+    expect(result).toEqual({
+      ok: true,
+      deletedMessageId: 'comment-delete-admin-1',
+    });
   });
 
   it('updates the published channel comments button counter after a new comment', async () => {

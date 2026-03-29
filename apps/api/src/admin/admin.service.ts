@@ -13,6 +13,8 @@ import {
   channelSettingsSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
+  deleteChannelDialogMessageRequestSchema,
+  deleteChannelDialogMessageResponseSchema,
   dateRangeQuerySchema,
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
@@ -82,6 +84,8 @@ import {
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateChannelDialogMessageRequestSchema,
+  updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
   type BroadcastScheduleMode,
 } from '@maxim/contracts';
@@ -3420,9 +3424,13 @@ export class AdminService {
       isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
+      editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
       reactionGroups: [],
+      canEdit: dialogType === 'comments',
+      canDelete: dialogType === 'comments',
+      canDeleteAsAdmin: false,
     };
 
     if (dialogType === 'comments' && threadId) {
@@ -3567,9 +3575,13 @@ export class AdminService {
       isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
+      editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
       reactionGroups: [],
+      canEdit: true,
+      canDelete: true,
+      canDeleteAsAdmin: false,
     };
 
     if (threadId) {
@@ -3583,6 +3595,120 @@ export class AdminService {
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
       message,
+    });
+  }
+
+  async updateChannelDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = updateChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+    if (!channelSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    return this.updateEntityDialogMessage({
+      chatId,
+      entityType: 'channel',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
+      text: parsed.data.text,
+    });
+  }
+
+  async deleteChannelDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = deleteChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+    if (!channelSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    return this.deleteEntityDialogMessage({
+      chatId,
+      entityType: 'channel',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
+    });
+  }
+
+  async updateChatDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = updateChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    return this.updateEntityDialogMessage({
+      chatId,
+      entityType: 'chat',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
+      text: parsed.data.text,
+    });
+  }
+
+  async deleteChatDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = deleteChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    return this.deleteEntityDialogMessage({
+      chatId,
+      entityType: 'chat',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
     });
   }
 
@@ -11110,12 +11236,14 @@ export class AdminService {
     adminUserIds?: ReadonlySet<string>,
   ): ChannelDialogMessage {
     const payload = this.readObjectPayload(row.payload);
+    const normalizedCurrentUserId = this.readTrimmedString(currentUserId);
     const rawType = this.readLowerString(payload.type);
     const type: ChannelDialogType =
       rawType === 'suggest' || rawType === 'comments' ? rawType : fallbackType;
     const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
     const avatarUrl = this.readTrimmedString(payload.authorAvatarUrl);
     const text = this.readTrimmedString(payload.text) ?? '';
+    const editedAt = this.readTrimmedString(payload.editedAt);
     const replyTo = this.readDialogReplyPreview(payload.replyTo);
     const delivered = payload.delivered === true;
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
@@ -11130,6 +11258,11 @@ export class AdminService {
     const videoFileName =
       this.readTrimmedString(payload.videoFileName) ??
       this.readTrimmedString(payload.mediaFileName);
+    const isOwnMessage = normalizedCurrentUserId === row.actorUserId;
+    const canDeleteAsAdmin =
+      type === 'comments' &&
+      !isOwnMessage &&
+      Boolean(normalizedCurrentUserId && adminUserIds?.has(normalizedCurrentUserId));
 
     return {
       id: row.id,
@@ -11140,9 +11273,13 @@ export class AdminService {
       isAdmin: adminUserIds?.has(row.actorUserId) ?? false,
       avatarUrl: avatarUrl ?? null,
       createdAt: row.createdAt.toISOString(),
+      editedAt: editedAt ?? null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
       reactionGroups: this.readDialogReactionGroups(payload.reactions, currentUserId),
+      canEdit: type === 'comments' && isOwnMessage,
+      canDelete: type === 'comments' && isOwnMessage,
+      canDeleteAsAdmin,
       ...(type === 'suggest'
         ? {
             delivered,
@@ -11217,19 +11354,17 @@ export class AdminService {
     };
   }
 
-  private async toggleEntityDialogReaction(params: {
+  private async resolveEntityDialogMessageTarget(params: {
     chatId: string;
     entityType: ManagedEntityType;
-    userId: string;
     dialogType: ChannelDialogType;
     messageId: string;
     token: string;
-    emoji: string;
-  }) {
-    if (params.dialogType !== 'comments') {
-      throw new BadRequestException('Реакции доступны только в комментариях.');
-    }
-
+  }): Promise<{
+    row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date };
+    payload: Record<string, unknown>;
+    threadId: string | null;
+  }> {
     const threadId =
       params.entityType === 'channel'
         ? this.resolveChannelDialogThreadId(params.chatId, params.dialogType, params.token)
@@ -11265,16 +11400,123 @@ export class AdminService {
       throw new BadRequestException('Комментарий не найден.');
     }
 
-    const payload = this.readObjectPayload(row.payload);
+    return {
+      row,
+      payload: this.readObjectPayload(row.payload),
+      threadId,
+    };
+  }
+
+  private async updateEntityDialogMessage(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    dialogType: ChannelDialogType;
+    messageId: string;
+    token: string;
+    text: string;
+  }) {
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Редактирование доступно только в комментариях.');
+    }
+
+    const target = await this.resolveEntityDialogMessageTarget(params);
+    if (target.row.actorUserId !== params.userId) {
+      throw new ForbiddenException('Редактировать можно только свои комментарии.');
+    }
+
+    const text = params.text.trim();
+    if (!text) {
+      throw new BadRequestException('Введите текст комментария.');
+    }
+
     const updated = await this.prisma.auditLog.update({
       where: {
-        id: row.id,
+        id: target.row.id,
       },
       data: {
         payload: {
-          ...payload,
+          ...target.payload,
+          text,
+          editedAt: new Date().toISOString(),
+        } as Prisma.InputJsonValue,
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+    const adminUserIds = await this.readDialogAdminUserIds(params.chatId);
+
+    return updateChannelDialogMessageResponseSchema.parse({
+      ok: true,
+      message: this.mapChannelDialogAuditLog(updated, params.dialogType, params.userId, adminUserIds),
+    });
+  }
+
+  private async deleteEntityDialogMessage(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    dialogType: ChannelDialogType;
+    messageId: string;
+    token: string;
+  }) {
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Удаление доступно только в комментариях.');
+    }
+
+    const target = await this.resolveEntityDialogMessageTarget(params);
+    if (target.row.actorUserId !== params.userId) {
+      await this.assertChatAdmin(params.chatId, params.userId, params.entityType);
+      await this.ensureEntityType(params.chatId, params.userId, params.entityType);
+    }
+
+    await this.prisma.auditLog.delete({
+      where: {
+        id: target.row.id,
+      },
+    });
+
+    if (target.threadId) {
+      await this.syncCommentsButtonCount({
+        chatId: params.chatId,
+        entityType: params.entityType,
+        threadId: target.threadId,
+      });
+    }
+
+    return deleteChannelDialogMessageResponseSchema.parse({
+      ok: true,
+      deletedMessageId: target.row.id,
+    });
+  }
+
+  private async toggleEntityDialogReaction(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    dialogType: ChannelDialogType;
+    messageId: string;
+    token: string;
+    emoji: string;
+  }) {
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Реакции доступны только в комментариях.');
+    }
+
+    const target = await this.resolveEntityDialogMessageTarget(params);
+    const updated = await this.prisma.auditLog.update({
+      where: {
+        id: target.row.id,
+      },
+      data: {
+        payload: {
+          ...target.payload,
           reactions: this.toggleDialogReactionEntries(
-            payload.reactions,
+            target.payload.reactions,
             params.emoji,
             params.userId,
           ),

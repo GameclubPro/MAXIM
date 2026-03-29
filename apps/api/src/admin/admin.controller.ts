@@ -5,6 +5,7 @@ import {
   Delete,
   Get,
   Param,
+  Patch,
   Post,
   Put,
   Query,
@@ -320,6 +321,28 @@ export class AdminController {
     return this.adminService.createChannelDialogMessage(chatId, user, dialogType, body);
   }
 
+  @Patch('channels/:chatId/dialog/:dialogType/messages/:messageId')
+  updateChannelDialogMessage(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelDialogMessage(chatId, user, dialogType, messageId, body);
+  }
+
+  @Delete('channels/:chatId/dialog/:dialogType/messages/:messageId')
+  deleteChannelDialogMessage(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.deleteChannelDialogMessage(chatId, user, dialogType, messageId, body);
+  }
+
   @Post('channels/:chatId/dialog/:dialogType/messages/:messageId/reactions')
   toggleChannelDialogReaction(
     @Param('chatId') chatId: string,
@@ -349,6 +372,28 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.createChatDialogMessage(chatId, user, dialogType, body);
+  }
+
+  @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')
+  updateChatDialogMessage(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChatDialogMessage(chatId, user, dialogType, messageId, body);
+  }
+
+  @Delete('chats/:chatId/dialog/:dialogType/messages/:messageId')
+  deleteChatDialogMessage(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.deleteChatDialogMessage(chatId, user, dialogType, messageId, body);
   }
 
   @Post('chats/:chatId/dialog/:dialogType/messages/:messageId/reactions')
