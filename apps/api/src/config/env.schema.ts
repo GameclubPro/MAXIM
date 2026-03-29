@@ -37,6 +37,7 @@ const envSchema = z.object({
   WEBHOOK_BURST_LIMIT: z.coerce.number().int().positive().default(450),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),
   ENQUEUE_BATCH_SIZE: z.coerce.number().int().positive().default(200),
+  ENQUEUE_CONCURRENCY: z.coerce.number().int().positive().default(25),
   ENQUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().default(120),
   QUEUE_LAG_DEGRADE_SEC: z.coerce.number().int().positive().default(10),
   DEGRADE_STABILIZE_SEC: z.coerce.number().int().positive().default(300),

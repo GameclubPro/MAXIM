@@ -17,12 +17,20 @@ import {
   WEBHOOK_QUEUE_DEFAULT,
 } from './webhook-queues';
 
+type WebhookEnqueueCandidate = {
+  id: string;
+  enqueueAttempts: number;
+  createdAt: Date;
+  normalizedPayload: unknown;
+};
+
 @Injectable()
 export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WebhookOutboxService.name);
   private readonly enabled: boolean;
   private readonly pollIntervalMs: number;
   private readonly batchSize: number;
+  private readonly enqueueConcurrency: number;
   private readonly maxEnqueueAttempts: number;
   private readonly webhookRetentionDays: number;
   private readonly moderationRetentionDays: number;
@@ -48,6 +56,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.enabled = roleRunsEnqueue(getAppRole());
     this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 500);
     this.batchSize = this.configService.get<number>('ENQUEUE_BATCH_SIZE', 200);
+    this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 25);
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
@@ -108,7 +117,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async enqueueBatch() {
     const now = new Date();
     const staleQueuedBefore = new Date(now.getTime() - 120_000);
-    const candidates = await this.prisma.webhookEvent.findMany({
+    const candidates: WebhookEnqueueCandidate[] = await this.prisma.webhookEvent.findMany({
       where: {
         OR: [
           {
@@ -142,15 +151,38 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return left.createdAt.getTime() - right.createdAt.getTime();
     });
 
-    for (const event of prioritizedCandidates) {
-      const queueName = resolveWebhookQueueName(event.normalizedPayload);
-      await this.enqueueOne(
-        event.id,
-        event.enqueueAttempts,
-        resolveWebhookJobPriority(event.normalizedPayload),
-        queueName,
-      );
+    await this.enqueueCandidates(prioritizedCandidates);
+  }
+
+  private async enqueueCandidates(candidates: WebhookEnqueueCandidate[]) {
+    if (candidates.length === 0) {
+      return;
     }
+
+    const workerCount = Math.max(1, Math.min(this.enqueueConcurrency, candidates.length));
+    let nextIndex = 0;
+
+    const runWorker = async () => {
+      while (true) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+
+        const event = candidates[currentIndex];
+        if (!event) {
+          return;
+        }
+
+        const queueName = resolveWebhookQueueName(event.normalizedPayload);
+        await this.enqueueOne(
+          event.id,
+          event.enqueueAttempts,
+          resolveWebhookJobPriority(event.normalizedPayload),
+          queueName,
+        );
+      }
+    };
+
+    await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
   }
 
   private async enqueueOne(

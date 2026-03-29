@@ -62,6 +62,7 @@ function createService(params?: {
   const configValues: Record<string, number> = {
     ENQUEUE_POLL_INTERVAL_MS: 500,
     ENQUEUE_BATCH_SIZE: 200,
+    ENQUEUE_CONCURRENCY: 25,
     ENQUEUE_MAX_ATTEMPTS: 120,
     WEBHOOK_RETENTION_DAYS: 7,
     MODERATION_RETENTION_DAYS: 90,
