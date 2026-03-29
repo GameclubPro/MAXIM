@@ -33,6 +33,7 @@ import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
+  type MaxCustomMessagePayload,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -2199,6 +2200,7 @@ export class PrivateControlService {
       throw error;
     }
 
+    session.pendingInput = null;
     this.clearChannelSuggestionDraft(session);
 
     const view = result.delivered
@@ -2258,6 +2260,7 @@ export class PrivateControlService {
         this.markdownTitle('✍️ Добавьте контент'),
         '',
         '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
+        'Можно отправить несколько сообщений подряд: бот будет обновлять пример публикации после каждого нового текста или медиа.',
       ].join('\n'),
       options: {
         buttons: [[await this.buildChannelSuggestionReturnButton(chatId)]],
@@ -2585,9 +2588,7 @@ export class PrivateControlService {
       case 'chat_page': {
         session.chatPage = this.toPositiveInt(callback.args[0], 1);
         session.screen = 'home';
-        const view = this.renderLauncherHomeView(
-          'Выбор чатов и каналов перенесён в mini app.',
-        );
+        const view = this.renderLauncherHomeView('Выбор чатов и каналов перенесён в mini app.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Выбор доступен в mini app',
@@ -2677,9 +2678,7 @@ export class PrivateControlService {
           ...DEFAULT_POLL_DRAFT,
           options: [...DEFAULT_POLL_DRAFT.options],
         };
-        const view = this.renderLauncherHomeView(
-          'Выбор чата и канала перенесён в mini app.',
-        );
+        const view = this.renderLauncherHomeView('Выбор чата и канала перенесён в mini app.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Откройте приложение',
@@ -4700,17 +4699,18 @@ export class PrivateControlService {
                 'channel-suggestion',
               )
             : null;
-        session.pendingInput = null;
+        const previousDraft = session.suggestionDraft;
         session.suggestionDraft = {
           chatId: pendingInput.chatId,
           token: pendingInput.token,
-          text: rawText,
-          media,
-          imageBase64: '',
-          imageMimeType: '',
-          imageFileName: '',
-          sourceMessageId: context.update.message?.messageId ?? null,
-          previewMessageId: null,
+          text: rawText || previousDraft?.text || '',
+          media: media ?? previousDraft?.media ?? null,
+          imageBase64: media ? '' : (previousDraft?.imageBase64 ?? ''),
+          imageMimeType: media ? '' : (previousDraft?.imageMimeType ?? ''),
+          imageFileName: media ? '' : (previousDraft?.imageFileName ?? ''),
+          sourceMessageId:
+            context.update.message?.messageId ?? previousDraft?.sourceMessageId ?? null,
+          previewMessageId: previousDraft?.previewMessageId ?? null,
         };
         await this.sendChannelSuggestionDraftPreview(context, session);
         return;
@@ -6449,7 +6449,9 @@ export class PrivateControlService {
     }
 
     if (numberedItems.length === 0) {
-      throw new BadRequestException('Не удалось собрать короткий текст правил из текущих настроек.');
+      throw new BadRequestException(
+        'Не удалось собрать короткий текст правил из текущих настроек.',
+      );
     }
 
     return [...lines, ...numberedItems].join('\n');
@@ -6487,7 +6489,9 @@ export class PrivateControlService {
     }
 
     if (settings.commercialAdsFilterEnabled) {
-      items.push('Рекламу и коммерческие предложения публикуйте только по согласованию с администраторами.');
+      items.push(
+        'Рекламу и коммерческие предложения публикуйте только по согласованию с администраторами.',
+      );
     }
 
     if (settings.thematicCodewordEnabled) {
@@ -6519,7 +6523,9 @@ export class PrivateControlService {
     }
 
     if (settings.maxMessageLengthEnabled) {
-      items.push(`Старайтесь писать короче: до ${settings.maxMessageLength} символов в одном сообщении.`);
+      items.push(
+        `Старайтесь писать короче: до ${settings.maxMessageLength} символов в одном сообщении.`,
+      );
     }
 
     if (settings.photoMessageCooldownEnabled) {
@@ -8136,7 +8142,7 @@ export class PrivateControlService {
         '',
         requirementsText,
         '',
-        '⬇️ Пришлите следующим сообщением текст, фото или фото с подписью.',
+        '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
       ].join('\n'),
       options: {
         buttons: await this.buildChannelSuggestionIntroButtons(chatId, token),
@@ -8197,8 +8203,8 @@ export class PrivateControlService {
       text: [
         this.markdownTitle('🗂 Черновик предложки'),
         '',
-        'Не удалось отрисовать копию сообщения, но черновик сохранён.',
-        'Можно отправить его админам, отредактировать или вернуться в канал.',
+        'Не удалось собрать превью публикации, но черновик сохранён.',
+        'Можно отправить ещё текст или медиа, отправить материал админам или вернуться в канал.',
       ].join('\n'),
     };
   }
@@ -8332,21 +8338,9 @@ export class PrivateControlService {
     const buttons = await this.buildChannelSuggestionPreviewButtons(draft.chatId);
 
     try {
-      if (!draft.sourceMessageId) {
-        throw new Error('Channel suggestion draft source message id is missing');
-      }
-
-      const published = await this.maxClient.sendMessageCopyWithInlineKeyboard(
+      const published = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(
         context.chatId,
-        draft.sourceMessageId,
-        null,
-        this.withDebugContext(
-          {
-            buttons,
-          },
-          session,
-          'suggest_preview',
-        ),
+        this.buildChannelSuggestionPreviewPayload(draft, buttons),
       );
       draft.previewMessageId = published.messageId;
       await this.saveSession(context.actor.userId, session);
@@ -8359,7 +8353,7 @@ export class PrivateControlService {
           sourceMessageId: draft.sourceMessageId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to send channel suggestion preview copy',
+        'Failed to send channel suggestion preview',
       );
     }
 
@@ -8377,6 +8371,88 @@ export class PrivateControlService {
         'suggest_preview_fallback',
       ),
     );
+  }
+
+  private buildChannelSuggestionPreviewPayload(
+    draft: PrivateSuggestionDraft,
+    buttons: MaxMessageButton[][],
+  ): MaxCustomMessagePayload {
+    const attachments: Record<string, unknown>[] = [];
+    if (draft.media) {
+      attachments.push({
+        type: draft.media.kind,
+        payload: draft.media.payload,
+      });
+    }
+
+    const normalizedButtons = this.normalizeChannelSuggestionPreviewButtons(buttons);
+    if (normalizedButtons.length > 0) {
+      attachments.push({
+        type: 'inline_keyboard',
+        payload: {
+          buttons: normalizedButtons,
+        },
+      });
+    }
+
+    return {
+      ...(draft.text ? { text: draft.text } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+  }
+
+  private normalizeChannelSuggestionPreviewButtons(
+    buttons: MaxMessageButton[][],
+  ): Array<Array<Record<string, unknown>>> {
+    return buttons
+      .map((row) =>
+        row
+          .map((button) => this.normalizeChannelSuggestionPreviewButton(button))
+          .filter((button): button is Record<string, unknown> => button !== null),
+      )
+      .filter((row) => row.length > 0);
+  }
+
+  private normalizeChannelSuggestionPreviewButton(
+    button: MaxMessageButton,
+  ): Record<string, unknown> | null {
+    const text = typeof button.text === 'string' ? button.text.trim() : '';
+    if (!text) {
+      return null;
+    }
+
+    const type =
+      ('type' in button && typeof button.type === 'string' ? button.type : null) ??
+      ('url' in button ? 'link' : null);
+    if (type === 'link') {
+      const url = 'url' in button && typeof button.url === 'string' ? button.url.trim() : '';
+      return url
+        ? {
+            type: 'link',
+            text,
+            url,
+          }
+        : null;
+    }
+
+    if (type === 'callback') {
+      const payload =
+        'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
+      if (!payload) {
+        return null;
+      }
+
+      const intent =
+        'intent' in button && typeof button.intent === 'string' ? button.intent.trim() : '';
+      return {
+        type: 'callback',
+        text,
+        payload,
+        ...(intent ? { intent } : {}),
+      };
+    }
+
+    return null;
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
@@ -8528,7 +8604,7 @@ export class PrivateControlService {
         return {
           title: 'Требования для предложки',
           description:
-            'Сначала прочитайте требования, затем пришлите следующим сообщением текст, фото, видео или подпись к медиа. Для выхода используйте `Отмена`.',
+            'Сначала прочитайте требования, затем отправьте текст, фото, видео или подпись к медиа. Можно прислать несколько сообщений подряд: бот будет обновлять превью после каждого нового текста или медиа. Для выхода используйте `Отмена`.',
         };
       case 'giveaway_title':
         return {
@@ -9389,10 +9465,7 @@ export class PrivateControlService {
         continue;
       }
 
-      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(
-        item,
-        text.slice(start, end),
-      );
+      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(item, text.slice(start, end));
       if (!delimiters) {
         continue;
       }
@@ -9514,8 +9587,10 @@ export class PrivateControlService {
       return false;
     }
 
-    return this.normalizeIncomingComparableUrl(normalizedVisibleText) ===
-      this.normalizeIncomingComparableUrl(normalizedTargetUrl);
+    return (
+      this.normalizeIncomingComparableUrl(normalizedVisibleText) ===
+      this.normalizeIncomingComparableUrl(normalizedTargetUrl)
+    );
   }
 
   private normalizeIncomingComparableUrl(value: string): string {
@@ -10567,8 +10642,9 @@ export class PrivateControlService {
           url,
           token: this.readString(payload.token) ?? null,
           fileId:
-            this.readString(payload.video_id ?? payload.videoId ?? payload.file_id ?? payload.fileId) ??
-            null,
+            this.readString(
+              payload.video_id ?? payload.videoId ?? payload.file_id ?? payload.fileId,
+            ) ?? null,
           fileName:
             this.readString(
               payload.file_name ??

@@ -553,14 +553,27 @@ function createHarness(
     },
   ];
 
+  let previewMessageCounter = 0;
+  let imageUploadCounter = 0;
+  let videoUploadCounter = 0;
   const maxClient = {
     sendMessage: jest.fn().mockResolvedValue(undefined),
+    sendCustomMessageImmediateWithResolvedLink: jest.fn().mockImplementation(async () => {
+      previewMessageCounter += 1;
+      return { messageId: `msg-preview-${previewMessageCounter}`, url: null };
+    }),
     sendMessageCopyWithInlineKeyboard: jest
       .fn()
       .mockResolvedValue({ messageId: 'msg-preview-1', url: null }),
     sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
-    uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
-    uploadVideo: jest.fn().mockResolvedValue({ token: 'upload-video-token-1' }),
+    uploadImage: jest.fn().mockImplementation(async () => {
+      imageUploadCounter += 1;
+      return { token: `upload-token-${imageUploadCounter}` };
+    }),
+    uploadVideo: jest.fn().mockImplementation(async () => {
+      videoUploadCounter += 1;
+      return { token: `upload-video-token-${videoUploadCounter}` };
+    }),
     editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     answerCallback: jest.fn().mockResolvedValue(undefined),
     getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
@@ -965,9 +978,36 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
   return (callbackButtons ?? []) as Array<Array<unknown>>;
 }
 
-function getLastCopiedButtons(maxClient: { sendMessageCopyWithInlineKeyboard: jest.Mock }) {
-  return (maxClient.sendMessageCopyWithInlineKeyboard.mock.calls.at(-1)?.[3]?.buttons ??
-    []) as Array<Array<unknown>>;
+function getLastCustomMessagePayload(maxClient: {
+  sendCustomMessageImmediateWithResolvedLink: jest.Mock;
+}) {
+  return (maxClient.sendCustomMessageImmediateWithResolvedLink.mock.calls.at(-1)?.[1] ?? null) as {
+    text?: string;
+    attachments?: Array<Record<string, unknown>>;
+  } | null;
+}
+
+function getLastCustomMessageButtons(maxClient: {
+  sendCustomMessageImmediateWithResolvedLink: jest.Mock;
+}) {
+  const attachments = getLastCustomMessagePayload(maxClient)?.attachments ?? [];
+  const keyboard = attachments.find((attachment) => attachment?.type === 'inline_keyboard') as
+    | {
+        payload?: {
+          buttons?: Array<Array<unknown>>;
+        };
+      }
+    | undefined;
+
+  return (keyboard?.payload?.buttons ?? []) as Array<Array<unknown>>;
+}
+
+function getLastCustomMessageAttachments(maxClient: {
+  sendCustomMessageImmediateWithResolvedLink: jest.Mock;
+}) {
+  return (getLastCustomMessagePayload(maxClient)?.attachments ?? []) as Array<
+    Record<string, unknown>
+  >;
 }
 
 function getLastSendOptions(maxClient: { sendMessage: jest.Mock }) {
@@ -1071,7 +1111,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
 
     expect(listManagedEntities).not.toHaveBeenCalled();
-    expect(getLastEditedText(maxClient)).toContain('Список управляемых сущностей обновляется в mini app.');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Список управляемых сущностей обновляется в mini app.',
+    );
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
@@ -2194,7 +2236,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
-  it('builds a preview copy with edit, send and return buttons for channel suggestions', async () => {
+  it('builds a composed preview with edit, send and return buttons for channel suggestions', async () => {
     const { service, adminService, maxClient, channels } = createHarness({
       channelSettings: {
         ...defaultChannelSettings,
@@ -2225,19 +2267,23 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain(
       '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
     );
+    expect(getLastEditedText(maxClient)).toContain('Можно отправить несколько сообщений подряд');
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
     expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('msg-'),
-      null,
       expect.objectContaining({
-        buttons: expect.any(Array),
+        text: 'Текст для публикации',
+        attachments: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'inline_keyboard',
+          }),
+        ]),
       }),
     );
-    const previewButtons = getLastCopiedButtons(maxClient)
+    const previewButtons = getLastCustomMessageButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(previewButtons).toContain('✏️ Исправить');
@@ -2269,6 +2315,90 @@ describe('PrivateControlService', () => {
     );
 
     expect(getLastEditedText(maxClient)).toContain('📰 Предложка');
+  });
+
+  it('updates the suggestion preview when subscriber replaces media and later updates text', async () => {
+    const { service, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-4');
+    const imageMock = mockImageFetch();
+
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      let previewPayload = getLastCustomMessagePayload(maxClient);
+      expect(previewPayload?.text).toBeUndefined();
+      expect(getLastCustomMessageAttachments(maxClient)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-1' },
+          }),
+          expect.objectContaining({
+            type: 'inline_keyboard',
+          }),
+        ]),
+      );
+
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      previewPayload = getLastCustomMessagePayload(maxClient);
+      expect(previewPayload?.text).toBeUndefined();
+      expect(getLastCustomMessageAttachments(maxClient)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-2' },
+          }),
+        ]),
+      );
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+        '152517912',
+        'msg-preview-1',
+        null,
+        { buttons: [] },
+      );
+
+      await service.handleUpdate(createPrivateTextUpdate('Подпись к фото'));
+
+      previewPayload = getLastCustomMessagePayload(maxClient);
+      expect(previewPayload?.text).toBe('Подпись к фото');
+      expect(getLastCustomMessageAttachments(maxClient)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-2' },
+          }),
+        ]),
+      );
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+        '152517912',
+        'msg-preview-2',
+        null,
+        { buttons: [] },
+      );
+
+      await service.handleUpdate(createPrivateTextUpdate('Обновлённая подпись'));
+
+      previewPayload = getLastCustomMessagePayload(maxClient);
+      expect(previewPayload?.text).toBe('Обновлённая подпись');
+      expect(getLastCustomMessageAttachments(maxClient)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-2' },
+          }),
+        ]),
+      );
+      expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+        '152517912',
+        'msg-preview-3',
+        null,
+        { buttons: [] },
+      );
+    } finally {
+      imageMock.restore();
+    }
   });
 
   it('accepts a photo-only suggestion in the bot flow after explicit send', async () => {
@@ -2350,12 +2480,18 @@ describe('PrivateControlService', () => {
         mediaFileName: 'channel-suggestion-video.mp4',
       }),
     );
-    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('msg-video-'),
-      null,
       expect.objectContaining({
-        buttons: expect.any(Array),
+        attachments: expect.arrayContaining([
+          expect.objectContaining({
+            type: 'video',
+            payload: { token: 'upload-video-token-1' },
+          }),
+          expect.objectContaining({
+            type: 'inline_keyboard',
+          }),
+        ]),
       }),
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
@@ -2742,9 +2878,9 @@ describe('PrivateControlService', () => {
 
     const launchButton = getLastButtons(maxClient)
       .flat()
-      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
-      | { url?: string }
-      | undefined;
+      .find(
+        (button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении',
+      ) as { url?: string } | undefined;
     expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
     );
@@ -2992,9 +3128,9 @@ describe('PrivateControlService', () => {
 
     const launchButton = getLastEditedButtons(maxClient)
       .flat()
-      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
-      | { url?: string }
-      | undefined;
+      .find(
+        (button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении',
+      ) as { url?: string } | undefined;
     expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
     );
@@ -3019,9 +3155,9 @@ describe('PrivateControlService', () => {
 
     const launchButton = getLastEditedButtons(maxClient)
       .flat()
-      .find((button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении') as
-      | { url?: string }
-      | undefined;
+      .find(
+        (button) => String((button as { text?: string }).text ?? '') === '📱 Открыть в приложении',
+      ) as { url?: string } | undefined;
     expect(decodeStartAppRoute(String(launchButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=poll&handoff=1`,
     );
