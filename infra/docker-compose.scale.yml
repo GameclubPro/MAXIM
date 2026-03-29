@@ -53,7 +53,7 @@ services:
       - ../.env
     environment:
       APP_ROLE: moderation
-      MODERATION_CONCURRENCY: 12
+      MODERATION_CONCURRENCY: 8
     depends_on:
       - postgres
       - redis
