@@ -6,15 +6,11 @@ import type {
   ManagedEntitiesRefreshState,
 } from '@maxim/contracts';
 import { getChannels, getChats } from './api/root-client';
-import {
-  readManagedEntitiesSnapshot,
-  saveManagedEntitiesSnapshot,
-  type ManagedEntityKind,
-} from './managed-entities-cache';
 import type { ApiTransport } from './api/transport';
 
 const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
 
+type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
 type ManagedEntitiesRefreshRequestOptions = {
   bypassRemoteCache?: boolean;
@@ -26,7 +22,6 @@ type ManagedEntitiesSyncState = {
   error: Error | null;
   refreshState: ManagedEntitiesRefreshState | null;
   phase: ManagedEntitiesSyncPhase;
-  lastSyncedAtMs: number | null;
 };
 
 const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
@@ -34,7 +29,6 @@ const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
   error: null,
   refreshState: null,
   phase: 'loading',
-  lastSyncedAtMs: null,
 };
 
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
@@ -119,7 +113,6 @@ export function useManagedEntitiesSync({
   reloadNonce = 0,
   resumeOnVisibilityReturn = false,
   skipInitialSyncIfCached = false,
-  cacheMaxAgeMs = 0,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -127,35 +120,15 @@ export function useManagedEntitiesSync({
   reloadNonce?: number;
   resumeOnVisibilityReturn?: boolean;
   skipInitialSyncIfCached?: boolean;
-  cacheMaxAgeMs?: number;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const cacheKey = useMemo(() => ['managed-entities-sync', entityType] as const, [entityType]);
-  const [state, setState] = useState<ManagedEntitiesSyncState>(() => {
-    const cachedState = queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey);
-    if (cachedState) {
-      return cachedState;
-    }
-
-    const snapshot = readManagedEntitiesSnapshot(entityType);
-    if (!snapshot) {
-      return {
+  const [state, setState] = useState<ManagedEntitiesSyncState>(
+    () =>
+      queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? {
         ...EMPTY_SYNC_STATE,
-      };
-    }
-
-    return {
-      data: snapshot.items,
-      error: null,
-      refreshState: snapshot.refreshState,
-      phase: snapshot.refreshState?.complete
-        ? 'complete'
-        : snapshot.refreshState?.backoffActive
-          ? 'backoff'
-          : 'idle',
-      lastSyncedAtMs: snapshot.lastSyncedAtMs,
-    };
-  });
+      },
+  );
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(state.data);
   const skippedInitialSyncRef = useRef(false);
@@ -165,22 +138,6 @@ export function useManagedEntitiesSync({
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
   }, [cacheKey, queryClient, state]);
-
-  useEffect(() => {
-    latestDataRef.current = state.data;
-  }, [state.data]);
-
-  useEffect(() => {
-    if (!state.data || state.data.length === 0) {
-      return;
-    }
-
-    saveManagedEntitiesSnapshot(entityType, {
-      items: state.data,
-      refreshState: state.refreshState,
-      lastSyncedAtMs: state.lastSyncedAtMs,
-    });
-  }, [entityType, state.data, state.lastSyncedAtMs, state.refreshState]);
 
   useEffect(() => {
     if (!state.refreshState?.backoffActive) {
@@ -262,18 +219,12 @@ export function useManagedEntitiesSync({
       return;
     }
 
-    const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
-
     if (
       skipInitialSyncIfCached &&
-      !forceRefreshSession &&
       !skippedInitialSyncRef.current &&
-      latestDataRef.current !== null &&
-      state.lastSyncedAtMs !== null &&
-      (cacheMaxAgeMs <= 0 || Date.now() - state.lastSyncedAtMs <= cacheMaxAgeMs)
+      latestDataRef.current !== null
     ) {
       skippedInitialSyncRef.current = true;
-      handledReloadNonceRef.current = reloadNonce;
       setState((current) => ({
         ...current,
         error: null,
@@ -289,6 +240,7 @@ export function useManagedEntitiesSync({
     skippedInitialSyncRef.current = true;
 
     let cancelled = false;
+    const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
     setState((current) => ({
@@ -314,7 +266,6 @@ export function useManagedEntitiesSync({
           error: null,
           refreshState: null,
           phase: documentVisible ? 'syncing' : 'idle',
-          lastSyncedAtMs: Date.now(),
         });
 
         if (!documentVisible) {
@@ -355,7 +306,6 @@ export function useManagedEntitiesSync({
             error: null,
             refreshState: next.refresh,
             phase,
-            lastSyncedAtMs: Date.now(),
           });
 
           if (next.refresh.complete || next.refresh.backoffActive) {
@@ -390,15 +340,7 @@ export function useManagedEntitiesSync({
     return () => {
       cancelled = true;
     };
-  }, [
-    api,
-    cacheMaxAgeMs,
-    enabled,
-    entityType,
-    reloadNonce,
-    skipInitialSyncIfCached,
-    visibilityResumeNonce,
-  ]);
+  }, [api, enabled, entityType, reloadNonce, skipInitialSyncIfCached, visibilityResumeNonce]);
 
   return {
     ...state,

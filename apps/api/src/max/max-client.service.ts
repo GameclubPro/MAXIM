@@ -233,7 +233,7 @@ type MaxApiRequestOptions = {
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
-const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 180;
+const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
 
 @Injectable()
@@ -2912,7 +2912,9 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
+  private normalizeReadRequestOptions(
+    options: MaxApiRequestOptions | MaxApiTrafficClass,
+  ): {
     trafficClass?: MaxApiTrafficClass;
     ignoreFailureMetricStatuses?: readonly number[];
   } {
@@ -2967,9 +2969,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const normalized = Array.from(
-      new Set(
-        statuses.filter((status): status is number => Number.isInteger(status) && status > 0),
-      ),
+      new Set(statuses.filter((status): status is number => Number.isInteger(status) && status > 0)),
     );
     return normalized.length > 0 ? normalized : undefined;
   }
@@ -3127,9 +3127,7 @@ export class MaxClientService implements OnModuleDestroy {
     for (let index = 0; index < counters.length; index += 1) {
       const value = result[index * 2]?.[1];
       if (typeof value !== 'number') {
-        throw new Error(
-          `Failed to increment MAX API rate limit counter for ${counters[index].key}`,
-        );
+        throw new Error(`Failed to increment MAX API rate limit counter for ${counters[index].key}`);
       }
       counts.push(value);
     }
