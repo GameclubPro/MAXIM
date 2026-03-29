@@ -2472,6 +2472,9 @@
 }
 
 .channel-dialog-screen--comments {
+  --dialog-bg-start: #eef5ff;
+  --dialog-bg-end: #f9fbff;
+  --dialog-surface: rgba(255, 255, 255, 0.78);
   padding-top: max(4px, env(safe-area-inset-top, 0px));
   padding-bottom: max(0px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 58px), 31rem);
@@ -2482,8 +2485,22 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-shell {
-  gap: 8px;
+  gap: 12px;
   grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.channel-dialog-screen--comments .channel-dialog-screen__backdrop {
+  background:
+    radial-gradient(circle at 10% 0%, rgba(77, 152, 255, 0.2), transparent 28%),
+    radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.88), transparent 24%),
+    radial-gradient(circle at 76% 80%, rgba(70, 132, 255, 0.14), transparent 28%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0) 30%),
+    repeating-linear-gradient(
+      135deg,
+      rgba(255, 255, 255, 0.12) 0 1px,
+      rgba(255, 255, 255, 0) 1px 12px
+    );
+  opacity: 0.94;
 }
 
 .channel-dialog-screen__backdrop {
@@ -2557,14 +2574,14 @@
   left: 0;
   right: 0;
   z-index: 3;
-  padding: 4px 0 12px;
+  padding: 6px 0 16px;
   border: 0;
   border-radius: 0;
   background: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--dialog-bg-start) 96%, white),
-    rgba(237, 245, 255, 0.78) 72%,
-    rgba(237, 245, 255, 0)
+    color-mix(in srgb, var(--dialog-bg-start) 92%, white),
+    rgba(238, 246, 255, 0.88) 62%,
+    rgba(238, 246, 255, 0)
   );
   box-shadow: none;
   backdrop-filter: none;
@@ -2573,16 +2590,23 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-thread-context--floating p {
-  max-width: calc(100% - 28px);
+  max-width: calc(100% - 40px);
   margin: 0 auto;
-  padding: 9px 14px;
+  padding: 10px 16px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.92);
-  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 251, 255, 0.62)),
+    rgba(255, 255, 255, 0.64);
   box-shadow:
-    0 10px 24px rgba(31, 62, 90, 0.05),
-    inset 0 1px 0 rgba(255, 255, 255, 0.74);
-  color: rgba(30, 49, 64, 0.68);
+    0 18px 34px rgba(31, 62, 90, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  color: rgba(31, 48, 62, 0.64);
+  font-size: 0.76rem;
+  line-height: 1.2;
+  letter-spacing: 0.01em;
   -webkit-line-clamp: 1;
 }
 
@@ -2655,11 +2679,11 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-body {
-  padding: 0 1px 10px;
+  padding: 0 2px 12px;
 }
 
 .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-  padding: 50px 1px 12px;
+  padding: 56px 2px 14px;
 }
 
 .channel-dialog-skeletons,
@@ -2670,6 +2694,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
+  gap: 12px;
   min-height: 100%;
 }
 
@@ -2727,19 +2752,43 @@
 }
 
 .channel-dialog-message.is-grouped {
-  margin-top: -3px;
+  margin-top: -5px;
 }
 
 .channel-dialog-new-comments {
   display: flex;
+  justify-content: center;
+  padding: 2px 0 0;
+}
+
+.channel-dialog-new-comments__pill {
+  min-height: 28px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(246, 250, 255, 0.68)),
+    rgba(255, 255, 255, 0.72);
+  color: rgba(27, 46, 63, 0.68);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 14px 30px rgba(31, 62, 90, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
 }
 
 .channel-dialog-skeleton__avatar,
 .channel-dialog-message__avatar,
 .channel-dialog-message__avatar-spacer {
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
   flex: 0 0 auto;
 }
 
@@ -2771,7 +2820,7 @@
 .channel-dialog-message__content {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   justify-items: start;
   max-width: var(--channel-dialog-comments-bubble-max-width, min(calc(100% - 42px), 560px));
   position: relative;
@@ -2809,7 +2858,7 @@
   position: relative;
   z-index: 1;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   width: fit-content;
   max-width: 100%;
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
@@ -2843,12 +2892,19 @@
 }
 
 .channel-dialog-message__swipe-indicator-icon {
-  width: 32px;
-  min-width: 32px;
-  height: 32px;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
   border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--dialog-accent) 16%, white);
-  background: color-mix(in srgb, var(--dialog-accent) 14%, white);
+  border: 1px solid color-mix(in srgb, var(--dialog-accent) 22%, white);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dialog-accent) 20%, white),
+    color-mix(in srgb, var(--dialog-accent) 10%, white)
+  );
+  box-shadow:
+    0 12px 26px color-mix(in srgb, var(--dialog-accent) 16%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.66);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2879,18 +2935,18 @@
 .channel-dialog-reaction-popover__surface {
   display: grid;
   gap: 8px;
-  padding: 8px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.94);
+  padding: 9px;
+  border-radius: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 251, 255, 0.94)),
-    rgba(255, 255, 255, 0.94);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(244, 249, 255, 0.72)),
+    rgba(255, 255, 255, 0.7);
   box-shadow:
-    0 18px 34px rgba(27, 57, 83, 0.12),
-    0 4px 10px rgba(27, 57, 83, 0.05),
+    0 22px 44px rgba(27, 57, 83, 0.16),
+    0 6px 14px rgba(27, 57, 83, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  backdrop-filter: blur(22px) saturate(160%);
-  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(28px) saturate(175%);
+  -webkit-backdrop-filter: blur(28px) saturate(175%);
 }
 
 .channel-dialog-reaction-popover__rail {
@@ -3012,30 +3068,39 @@
 .channel-dialog-message__bubble {
   width: fit-content;
   max-width: 100%;
-  border-radius: 18px 18px 18px 12px;
+  border-radius: 24px 24px 24px 12px;
   justify-self: start;
 }
 
 .channel-dialog-screen--comments .channel-dialog-message__bubble {
-  padding: 12px 14px 13px;
-  border-color: rgba(255, 255, 255, 0.94);
+  padding: 12px 14px 12px;
+  border-color: rgba(255, 255, 255, 0.72);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(251, 253, 255, 0.94)),
-    rgba(255, 255, 255, 0.94);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(249, 252, 255, 0.66)),
+    rgba(255, 255, 255, 0.68);
   box-shadow:
-    0 10px 22px rgba(31, 62, 90, 0.06),
-    inset 0 1px 0 rgba(255, 255, 255, 0.82);
+    0 16px 34px rgba(31, 62, 90, 0.08),
+    0 2px 10px rgba(31, 62, 90, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  backdrop-filter: blur(22px) saturate(170%);
+  -webkit-backdrop-filter: blur(22px) saturate(170%);
 }
 
 .channel-dialog-message__avatar {
   display: grid;
   place-items: center;
-  color: var(--dialog-accent);
-  font-size: 0.76rem;
+  color: color-mix(in srgb, var(--dialog-accent) 76%, black);
+  font-size: 0.72rem;
   font-weight: 800;
-  background: color-mix(in srgb, var(--dialog-accent) 16%, white);
-  border: 1px solid color-mix(in srgb, var(--dialog-accent) 22%, white);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dialog-accent) 20%, white),
+    color-mix(in srgb, var(--dialog-accent) 9%, white)
+  );
+  border: 1px solid color-mix(in srgb, var(--dialog-accent) 20%, white);
+  box-shadow:
+    0 8px 16px rgba(31, 62, 90, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
   overflow: hidden;
 }
 
@@ -3057,8 +3122,8 @@
 
 .channel-dialog-message__meta {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: baseline;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -3069,19 +3134,20 @@
     color-mix(in srgb, var(--dialog-accent) 8%, white)
   );
   border-color: color-mix(in srgb, var(--dialog-accent) 18%, white);
-  border-radius: 18px 18px 12px 18px;
+  border-radius: 24px 24px 12px 24px;
 }
 
 .channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble {
-  border-color: color-mix(in srgb, var(--dialog-accent) 16%, white);
+  border-color: color-mix(in srgb, var(--dialog-accent) 18%, white);
   background: linear-gradient(
     160deg,
-    color-mix(in srgb, var(--dialog-accent) 20%, white),
-    color-mix(in srgb, var(--dialog-accent) 10%, white)
+    color-mix(in srgb, var(--dialog-accent) 24%, white),
+    color-mix(in srgb, var(--dialog-accent) 12%, white)
   );
   box-shadow:
-    0 12px 24px color-mix(in srgb, var(--dialog-accent) 8%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+    0 18px 32px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+    0 4px 12px color-mix(in srgb, var(--dialog-accent) 6%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
 .channel-dialog-message__bubble.is-selectable {
@@ -3093,6 +3159,7 @@
   transition:
     border-color 0.2s ease,
     box-shadow 0.2s ease,
+    background 0.2s ease,
     transform 0.2s ease;
 }
 
@@ -3103,30 +3170,30 @@
 }
 
 .channel-dialog-message__bubble.is-selectable:active {
-  transform: scale(0.996);
+  transform: scale(0.992);
 }
 
 .channel-dialog-message__bubble.is-active {
   border-color: color-mix(in srgb, var(--dialog-accent) 28%, white);
   box-shadow:
-    0 12px 24px rgba(31, 62, 90, 0.08),
-    0 0 0 3px color-mix(in srgb, var(--dialog-accent) 8%, transparent);
+    0 22px 38px rgba(31, 62, 90, 0.1),
+    0 0 0 4px color-mix(in srgb, var(--dialog-accent) 9%, transparent);
 }
 
 .channel-dialog-message.is-source-highlighted .channel-dialog-message__bubble {
   border-color: color-mix(in srgb, var(--dialog-accent) 30%, white);
   box-shadow:
-    0 12px 24px rgba(31, 62, 90, 0.08),
-    0 0 0 4px color-mix(in srgb, var(--dialog-accent) 10%, transparent);
+    0 22px 40px rgba(31, 62, 90, 0.1),
+    0 0 0 5px color-mix(in srgb, var(--dialog-accent) 11%, transparent);
 }
 
 .channel-dialog-message__bubble.is-grouped {
-  border-top-left-radius: 14px;
+  border-top-left-radius: 16px;
 }
 
 .channel-dialog-message.is-own .channel-dialog-message__bubble.is-grouped {
-  border-top-right-radius: 14px;
-  border-top-left-radius: 18px;
+  border-top-right-radius: 16px;
+  border-top-left-radius: 24px;
 }
 
 .channel-dialog-message.is-own .channel-dialog-message__footer {
@@ -3139,31 +3206,29 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 0.82rem;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
   line-height: 1.2;
 }
 
 .channel-dialog-message__meta time {
   flex: 0 0 auto;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(62, 96, 127, 0.08);
-  color: rgba(30, 49, 64, 0.58);
-  font-size: 0.68rem;
-  font-weight: 800;
+  color: rgba(30, 49, 64, 0.44);
+  font-size: 0.72rem;
+  font-weight: 700;
   letter-spacing: 0.01em;
   white-space: nowrap;
 }
 
 .channel-dialog-message__reply {
   display: grid;
-  gap: 1px;
+  gap: 2px;
   width: 100%;
-  padding: 8px 10px 8px 11px;
-  border-radius: 15px;
-  border: 1px solid rgba(62, 96, 127, 0.08);
-  border-left: 3px solid color-mix(in srgb, var(--dialog-accent) 42%, white);
-  background: rgba(244, 248, 253, 0.92);
+  padding: 1px 0 1px 11px;
+  border: 0;
+  border-left: 2px solid color-mix(in srgb, var(--dialog-accent) 50%, white);
+  background: none;
   font: inherit;
   color: inherit;
   text-align: left;
@@ -3173,7 +3238,7 @@
 }
 
 .channel-dialog-message__reply span {
-  color: rgba(32, 53, 69, 0.84);
+  color: rgba(32, 53, 69, 0.78);
   font-size: 0.7rem;
   font-weight: 800;
   line-height: 1.15;
@@ -3181,7 +3246,7 @@
 
 .channel-dialog-message__reply p {
   margin: 0;
-  color: rgba(32, 53, 69, 0.64);
+  color: rgba(32, 53, 69, 0.56);
   font-size: 0.76rem;
   line-height: 1.3;
 }
@@ -3189,7 +3254,9 @@
 .channel-dialog-message__bubble p {
   margin: 0;
   color: var(--text-primary);
-  line-height: 1.44;
+  font-size: 0.94rem;
+  line-height: 1.42;
+  letter-spacing: -0.01em;
   white-space: pre-wrap;
 }
 
@@ -3203,8 +3270,8 @@
   width: max-content;
   max-width: 100%;
   justify-self: start;
-  margin-top: -3px;
-  padding: 0 4px 1px;
+  margin-top: -8px;
+  padding: 0 10px 1px;
 }
 
 .channel-dialog-message.is-own .channel-dialog-message__footer--comments {
@@ -3214,7 +3281,7 @@
 .channel-dialog-message__reactions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
 }
 
@@ -3223,10 +3290,12 @@
 }
 
 .channel-dialog-reaction-pill {
-  min-height: 28px;
+  min-height: 26px;
   border-radius: 999px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(246, 250, 255, 0.66)),
+    rgba(255, 255, 255, 0.72);
   color: rgba(24, 44, 58, 0.72);
   display: inline-flex;
   align-items: center;
@@ -3234,13 +3303,24 @@
   gap: 4px;
   font-weight: 800;
   cursor: pointer;
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  transition:
+    transform 0.18s ease,
+    border-color 0.18s ease,
+    background 0.18s ease,
+    box-shadow 0.18s ease;
 }
 
 .channel-dialog-reaction-pill {
-  padding: 0 11px;
+  padding: 0 10px;
   box-shadow:
-    0 6px 14px rgba(28, 61, 92, 0.04),
+    0 10px 18px rgba(28, 61, 92, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.channel-dialog-reaction-pill:not(:first-child) {
+  margin-left: -1px;
 }
 
 .channel-dialog-reaction-pill b {
@@ -3248,15 +3328,23 @@
 }
 
 .channel-dialog-reaction-pill span {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
+}
+
+.channel-dialog-reaction-pill:active {
+  transform: translateY(1px) scale(0.98);
 }
 
 .channel-dialog-reaction-pill.is-active {
-  border-color: color-mix(in srgb, var(--dialog-accent) 22%, white);
-  background: color-mix(in srgb, var(--dialog-accent) 14%, white);
+  border-color: color-mix(in srgb, var(--dialog-accent) 26%, white);
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dialog-accent) 16%, white),
+    color-mix(in srgb, var(--dialog-accent) 10%, white)
+  );
   color: color-mix(in srgb, var(--dialog-accent) 78%, black);
   box-shadow:
-    0 8px 18px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+    0 12px 24px color-mix(in srgb, var(--dialog-accent) 16%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
@@ -3330,8 +3418,13 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose {
-  padding-top: 0;
-  background: none;
+  padding: 10px 2px 2px;
+  background: linear-gradient(
+    180deg,
+    rgba(245, 249, 255, 0) 0%,
+    rgba(245, 249, 255, 0.62) 28%,
+    rgba(245, 249, 255, 0.94) 100%
+  );
 }
 
 .channel-dialog-jump-latest {
@@ -3342,13 +3435,21 @@
   min-height: 40px;
   padding: 4px 6px 4px 4px;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.94);
-  color: rgba(26, 44, 59, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(246, 250, 255, 0.7)),
+    rgba(255, 255, 255, 0.72);
+  color: rgba(26, 44, 59, 0.8);
   display: inline-flex;
   align-items: center;
   gap: 8px;
   font-size: 0.78rem;
   font-weight: 800;
+  box-shadow:
+    0 18px 34px rgba(31, 62, 90, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+  backdrop-filter: blur(20px) saturate(165%);
+  -webkit-backdrop-filter: blur(20px) saturate(165%);
 }
 
 .channel-dialog-jump-latest__icon svg {
@@ -3372,15 +3473,19 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__surface {
-  padding: 7px;
-  border-radius: 24px;
-  border-color: rgba(255, 255, 255, 0.98);
+  gap: 8px;
+  padding: 8px;
+  border-radius: 30px;
+  border-color: rgba(255, 255, 255, 0.76);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.94)),
-    rgba(255, 255, 255, 0.94);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(245, 249, 255, 0.64)),
+    rgba(255, 255, 255, 0.68);
   box-shadow:
-    0 10px 24px rgba(27, 57, 83, 0.1),
+    0 22px 40px rgba(27, 57, 83, 0.14),
+    0 8px 18px rgba(27, 57, 83, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(28px) saturate(175%);
+  -webkit-backdrop-filter: blur(28px) saturate(175%);
 }
 
 .channel-dialog-compose__reply {
@@ -3392,6 +3497,18 @@
   border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(242, 247, 252, 0.84);
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__reply {
+  padding: 8px 10px 8px 8px;
+  border-radius: 22px;
+  border: 0;
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__reply-copy {
+  padding-left: 12px;
+  border-left: 2px solid color-mix(in srgb, var(--dialog-accent) 48%, white);
 }
 
 .channel-dialog-compose__reply-copy {
@@ -3436,6 +3553,11 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__reply-dismiss {
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
 .channel-dialog-compose__reply-dismiss svg {
@@ -3521,6 +3643,11 @@
   letter-spacing: 0.01em;
 }
 
+.channel-dialog-screen--comments .channel-dialog-compose__meta {
+  padding: 0 8px;
+  color: rgba(32, 53, 69, 0.5);
+}
+
 .channel-dialog-compose__meta--solo {
   justify-content: flex-end;
 }
@@ -3589,9 +3716,30 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
+.channel-dialog-screen--comments .channel-dialog-compose__field textarea {
+  min-height: 52px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 24px;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.94rem;
+  line-height: 1.38;
+  letter-spacing: -0.01em;
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__field textarea::placeholder {
+  color: rgba(30, 49, 64, 0.48);
+}
+
 .channel-dialog-compose__field textarea:focus {
   border-color: color-mix(in srgb, var(--dialog-accent) 36%, white);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--dialog-accent) 12%, transparent);
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__field textarea:focus {
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .channel-dialog-compose__actions {
@@ -3621,6 +3769,22 @@
   box-shadow:
     0 14px 26px color-mix(in srgb, var(--dialog-accent) 24%, transparent),
     inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.channel-dialog-screen--comments .channel-dialog-submit {
+  width: 52px;
+  min-width: 52px;
+  min-height: 52px;
+  border-radius: 999px;
+  background: linear-gradient(
+    160deg,
+    color-mix(in srgb, var(--dialog-accent) 92%, white),
+    color-mix(in srgb, var(--dialog-accent) 70%, black)
+  );
+  box-shadow:
+    0 20px 34px color-mix(in srgb, var(--dialog-accent) 24%, transparent),
+    0 6px 12px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .channel-dialog-submit svg {
@@ -3676,7 +3840,7 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose {
-    padding-top: 0;
+    padding: 8px 2px 2px;
   }
 
   .channel-dialog-thread-context {
@@ -3697,7 +3861,7 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-    padding: 46px 1px 10px;
+    padding: 50px 2px 12px;
   }
 
   .channel-dialog-reaction-popover {
@@ -3706,7 +3870,7 @@
 
   .channel-dialog-reaction-popover__surface {
     padding: 6px;
-    border-radius: 19px;
+    border-radius: 22px;
   }
 
   .channel-dialog-reaction-popover__rail {
@@ -3737,8 +3901,8 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__surface {
-    padding: 7px;
-    border-radius: 22px;
+    padding: 8px;
+    border-radius: 28px;
   }
 
   .channel-dialog-compose__meta {
@@ -3752,6 +3916,12 @@
     border-radius: 16px;
   }
 
+  .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
+    min-height: 50px;
+    padding: 13px 15px;
+    border-radius: 22px;
+  }
+
   .channel-dialog-message__meta strong {
     font-size: 0.8rem;
   }
@@ -3761,9 +3931,9 @@
   }
 
   .channel-dialog-message__swipe-indicator-icon {
-    width: 30px;
-    min-width: 30px;
-    height: 30px;
+    width: 34px;
+    min-width: 34px;
+    height: 34px;
   }
 
   .channel-dialog-submit {
@@ -3771,6 +3941,13 @@
     min-width: 46px;
     min-height: 46px;
     border-radius: 16px;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-submit {
+    width: 50px;
+    min-width: 50px;
+    min-height: 50px;
+    border-radius: 999px;
   }
 }
 

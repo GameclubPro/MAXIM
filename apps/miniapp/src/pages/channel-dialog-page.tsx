@@ -486,14 +486,14 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
 
   if (isOwnMessage) {
     return {
-      background: 'linear-gradient(160deg, rgba(255, 231, 182, 0.96), rgba(255, 244, 220, 0.95))',
-      borderColor: 'rgba(225, 176, 82, 0.36)',
+      background: 'linear-gradient(160deg, rgba(255, 238, 198, 0.92), rgba(255, 247, 228, 0.88))',
+      borderColor: 'rgba(225, 178, 89, 0.3)',
     };
   }
 
   return {
-    background: 'linear-gradient(180deg, rgba(255, 249, 237, 0.98), rgba(255, 243, 214, 0.96))',
-    borderColor: 'rgba(224, 180, 96, 0.34)',
+    background: 'linear-gradient(180deg, rgba(255, 249, 234, 0.88), rgba(255, 244, 218, 0.8))',
+    borderColor: 'rgba(224, 180, 96, 0.28)',
   };
 }
 
@@ -503,7 +503,7 @@ function buildAdminAuthorStyle(isAdmin: boolean): CSSProperties | undefined {
   }
 
   return {
-    color: '#8f6117',
+    color: '#8d661f',
   };
 }
 
@@ -2066,7 +2066,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     <Fragment key={message.id}>
                       {dialogType === 'comments' && unreadStartIndex === index ? (
                         <div className="channel-dialog-new-comments" aria-label="Новые комментарии">
-                          <span>Новые комментарии</span>
+                          <span className="channel-dialog-new-comments__pill">
+                            Новые комментарии
+                          </span>
                         </div>
                       ) : null}
 
