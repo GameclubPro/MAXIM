@@ -31,6 +31,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingDeleteBotMessageEnabled: false,
+    greetingDeleteBotMessageDelayMinutes: 2,
     greetingBotMessageText: '',
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',

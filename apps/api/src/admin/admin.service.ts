@@ -139,7 +139,11 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { RedisCounterService } from '../moderation/redis-counter.service';
-import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from '../system/system-access.util';
+import {
+  canUserAccessSystem,
+  readSystemAccessConfig,
+  type SystemAccessConfig,
+} from '../system/system-access.util';
 import {
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
   type AdminSuggestionDeliveryJob,
@@ -365,6 +369,7 @@ const SETTINGS_SECTION_KEYS = {
     'greetingEnabled',
     'greetingBotMessageEnabled',
     'greetingDeleteBotMessageEnabled',
+    'greetingDeleteBotMessageDelayMinutes',
     'greetingBotMessageText',
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
@@ -591,8 +596,7 @@ export class AdminService {
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
-    this.maxBotToken =
-      configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.maxBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.maxBotTokenValidationSecrets =
       configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
@@ -676,7 +680,10 @@ export class AdminService {
     }
   }
 
-  async listChats(user: AuthUser, options: ManagedEntitiesListOptions = {}): Promise<ChatSummary[]> {
+  async listChats(
+    user: AuthUser,
+    options: ManagedEntitiesListOptions = {},
+  ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'chat', options);
     return result.items;
   }
@@ -911,7 +918,11 @@ export class AdminService {
       options.backoffActiveOverride ??
       (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshCooldownKey));
     const nextPollAfterMs = backoffActive
-      ? await this.getManagedEntitiesRefreshBackoffRemainingMs(userId, entityType, refreshCooldownKey)
+      ? await this.getManagedEntitiesRefreshBackoffRemainingMs(
+          userId,
+          entityType,
+          refreshCooldownKey,
+        )
       : 0;
 
     return this.createManagedEntitiesRefreshState(
@@ -1296,9 +1307,12 @@ export class AdminService {
       };
     }
 
-    const discoveryKey = [user.userId, entityType, 'local', options.fullScan ? 'full' : 'delta'].join(
-      ':',
-    );
+    const discoveryKey = [
+      user.userId,
+      entityType,
+      'local',
+      options.fullScan ? 'full' : 'delta',
+    ].join(':');
     const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
     const pending =
       inFlight ??
@@ -1393,9 +1407,7 @@ export class AdminService {
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: candidate.link,
-            ...(candidate.avatarUrl?.trim()
-              ? { avatarUrl: candidate.avatarUrl.trim() }
-              : {}),
+            ...(candidate.avatarUrl?.trim() ? { avatarUrl: candidate.avatarUrl.trim() } : {}),
             channelOverview: null,
           };
 
@@ -1466,11 +1478,7 @@ export class AdminService {
         items: hydratedItems,
         refresh:
           options.includeRefreshState === true
-            ? this.createManagedEntitiesRefreshState(
-                MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
-                false,
-                0,
-              )
+            ? this.createManagedEntitiesRefreshState(MANAGED_ENTITIES_REFRESH_CURSOR_DONE, false, 0)
             : null,
       };
     } catch (error: unknown) {
@@ -1689,9 +1697,7 @@ export class AdminService {
               ...cachedChat,
               title: remoteChat.title?.trim() ? remoteChat.title : cachedChat.title,
               link: remoteChat.link,
-              ...(remoteChat.avatarUrl?.trim()
-                ? { avatarUrl: remoteChat.avatarUrl.trim() }
-                : {}),
+              ...(remoteChat.avatarUrl?.trim() ? { avatarUrl: remoteChat.avatarUrl.trim() } : {}),
             },
             lastEventTime: remoteChat.lastEventTime ?? 0,
             remoteIndex,
@@ -1753,9 +1759,7 @@ export class AdminService {
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: remoteChat.link,
-            ...(remoteChat.avatarUrl?.trim()
-              ? { avatarUrl: remoteChat.avatarUrl.trim() }
-              : {}),
+            ...(remoteChat.avatarUrl?.trim() ? { avatarUrl: remoteChat.avatarUrl.trim() } : {}),
             channelOverview: null,
           };
 
@@ -1916,7 +1920,9 @@ export class AdminService {
         ? remoteChats
         : remoteChats.filter((chat) => chat.entityType === entityType);
 
-    return candidateChats.filter((chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType));
+    return candidateChats.filter(
+      (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
+    );
   }
 
   async getChannelStats(
@@ -2891,7 +2897,8 @@ export class AdminService {
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
     const suggestUrl =
-      this.buildBotStartUrl(suggestPayload) ?? this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+      this.buildBotStartUrl(suggestPayload) ??
+      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
     const commentsButton = this.buildChannelDialogButton(
       chatId,
       'comments',
@@ -6684,7 +6691,10 @@ export class AdminService {
     chatId: string,
     text: string,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | Pick<
+          MaxSendMessageOptions,
+          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+        >
       | undefined,
   ): Promise<string> {
     let lastError: unknown = null;
@@ -6718,7 +6728,10 @@ export class AdminService {
     chatId: string,
     text: string,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | Pick<
+          MaxSendMessageOptions,
+          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+        >
       | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
@@ -6747,7 +6760,10 @@ export class AdminService {
     error: unknown,
     attempt: number,
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | Pick<
+          MaxSendMessageOptions,
+          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+        >
       | undefined,
   ): number | null {
     if (this.hasRetriableMaxAttachment(options) && this.isAttachmentNotReadyError(error)) {
@@ -6763,7 +6779,10 @@ export class AdminService {
 
   private hasRetriableMaxAttachment(
     options:
-      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | Pick<
+          MaxSendMessageOptions,
+          'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+        >
       | undefined,
   ): boolean {
     return Boolean(options?.imagePayload) || Boolean(options?.attachments?.length);
@@ -7238,9 +7257,9 @@ export class AdminService {
     }
   }
 
-  private buildChatRulesButtonRow(rules: Pick<ChatRules, 'buttonEnabled' | 'buttonUrl' | 'buttonText'>): [
-    MaxMessageButton,
-  ] | null {
+  private buildChatRulesButtonRow(
+    rules: Pick<ChatRules, 'buttonEnabled' | 'buttonUrl' | 'buttonText'>,
+  ): [MaxMessageButton] | null {
     if (!rules.buttonEnabled) {
       return null;
     }
@@ -8229,7 +8248,10 @@ export class AdminService {
       };
       if (shouldFanoutCommandMute) {
         try {
-          sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
+          sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(
+            chatId,
+            targetUserId,
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -11102,7 +11124,9 @@ export class AdminService {
     const hasImage =
       payload.hasImage === true || Boolean(this.readTrimmedString(payload.imageBase64));
     const imageFileName = this.readTrimmedString(payload.imageFileName);
-    const hasVideo = payload.hasVideo === true || this.readChannelSuggestionMediaType(payload.mediaType) === 'video';
+    const hasVideo =
+      payload.hasVideo === true ||
+      this.readChannelSuggestionMediaType(payload.mediaType) === 'video';
     const videoFileName =
       this.readTrimmedString(payload.videoFileName) ??
       this.readTrimmedString(payload.mediaFileName);
@@ -11819,16 +11843,21 @@ export class AdminService {
       };
     }
 
-    const delivery = await this.deliverSuggestionToAdminPrivates(created.id, params.chatId, params.user, {
-      text: params.text,
-      imageBase64: params.imageBase64,
-      imageMimeType: params.imageMimeType,
-      imageFileName: params.imageFileName,
-      mediaType: params.mediaType,
-      mediaPayload: params.mediaPayload,
-      mediaMimeType: params.mediaMimeType,
-      mediaFileName: params.mediaFileName,
-    });
+    const delivery = await this.deliverSuggestionToAdminPrivates(
+      created.id,
+      params.chatId,
+      params.user,
+      {
+        text: params.text,
+        imageBase64: params.imageBase64,
+        imageMimeType: params.imageMimeType,
+        imageFileName: params.imageFileName,
+        mediaType: params.mediaType,
+        mediaPayload: params.mediaPayload,
+        mediaMimeType: params.mediaMimeType,
+        mediaFileName: params.mediaFileName,
+      },
+    );
     const updated = await this.applyChannelSuggestionDeliveryResult(created, delivery);
 
     return {
@@ -12021,8 +12050,7 @@ export class AdminService {
     }
 
     const channelTitle = await this.resolveChannelTitle(chatId);
-    const actorName =
-      this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
+    const actorName = this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
     const messageOptions = await this.buildChannelSuggestionMessageOptions(suggestion, buttons);
     const message = this.buildChannelSuggestionAdminMessage({
@@ -12413,11 +12441,19 @@ export class AdminService {
       throw new BadRequestException('Медиа предложки передано в неполном формате.');
     }
 
-    if (mediaType === 'image' && mediaMimeType && !mediaMimeType.toLowerCase().startsWith('image/')) {
+    if (
+      mediaType === 'image' &&
+      mediaMimeType &&
+      !mediaMimeType.toLowerCase().startsWith('image/')
+    ) {
       throw new BadRequestException('Фото предложки передано в неверном формате.');
     }
 
-    if (mediaType === 'video' && mediaMimeType && !mediaMimeType.toLowerCase().startsWith('video/')) {
+    if (
+      mediaType === 'video' &&
+      mediaMimeType &&
+      !mediaMimeType.toLowerCase().startsWith('video/')
+    ) {
       throw new BadRequestException('Видео предложки передано в неверном формате.');
     }
 
@@ -12525,7 +12561,9 @@ export class AdminService {
       mediaFileName?: string | null;
     },
     buttons: MaxMessageButton[][],
-  ): Promise<Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>> {
+  ): Promise<
+    Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+  > {
     const media = await this.resolveChannelSuggestionAttachments(suggestion);
     return {
       buttons,
@@ -13034,9 +13072,7 @@ export class AdminService {
       throw new BadRequestException(openAgainMessage);
     }
 
-    if (
-      !this.isValidEntityDialogTokenSignature(signature, entityType, chatId, type, threadId)
-    ) {
+    if (!this.isValidEntityDialogTokenSignature(signature, entityType, chatId, type, threadId)) {
       throw new BadRequestException(staleMessage);
     }
 
@@ -13218,7 +13254,7 @@ export class AdminService {
           requestOptions ?? {},
         );
         const botAccess =
-          (botContactId ? accessByUserId.get(botContactId) ?? null : null) ??
+          (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
           (await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions ?? {}));
 
         if (!botAccess.isAdmin && !botAccess.isOwner) {
@@ -13639,11 +13675,7 @@ export class AdminService {
 
     const backoffActive =
       options.backoffActiveOverride ??
-      (await this.isManagedEntitiesRefreshBackoffActive(
-        userId,
-        entityType,
-        refreshCooldownKey,
-      ));
+      (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshCooldownKey));
 
     const nextPollAfterMs = backoffActive
       ? await this.getManagedEntitiesRefreshBackoffRemainingMs(

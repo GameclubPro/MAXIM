@@ -159,6 +159,7 @@ model ChatSettings {
   greetingEnabled                  Boolean                  @default(false) @map("greeting_enabled")
   greetingBotMessageEnabled        Boolean                  @default(false) @map("greeting_bot_message_enabled")
   greetingDeleteBotMessageEnabled  Boolean                  @default(false) @map("greeting_delete_bot_message_enabled")
+  greetingDeleteBotMessageDelayMinutes Float                @default(2) @map("greeting_delete_bot_message_delay_minutes")
   greetingBotMessageText           String                   @default("") @map("greeting_bot_message_text")
   greetingBotButtonEnabled         Boolean                  @default(false) @map("greeting_bot_button_enabled")
   greetingBotButtonUrl             String                   @default("") @map("greeting_bot_button_url")

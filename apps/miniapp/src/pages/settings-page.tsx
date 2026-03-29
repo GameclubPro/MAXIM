@@ -425,6 +425,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'greetingEnabled',
     'greetingBotMessageEnabled',
     'greetingDeleteBotMessageEnabled',
+    'greetingDeleteBotMessageDelayMinutes',
     'greetingBotMessageText',
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
@@ -1827,11 +1828,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ? { comments: true }
             : focusSection === 'poll'
               ? { poll: true }
-            : focusSection === 'giveaway'
-              ? { giveaway: true }
-              : focusSection === 'requiredSubscription'
-                ? { requiredSubscription: true }
-                : { mailing: true }),
+              : focusSection === 'giveaway'
+                ? { giveaway: true }
+                : focusSection === 'requiredSubscription'
+                  ? { requiredSubscription: true }
+                  : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -2943,9 +2944,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const normalizedButtonUrl = value.buttonUrl.trim();
     const normalizedButtonText = value.buttonText.trim();
-    const shouldShowButtonErrors = Boolean(
-      options.forceButtonErrors || rulesButtonFieldsTouched,
-    );
+    const shouldShowButtonErrors = Boolean(options.forceButtonErrors || rulesButtonFieldsTouched);
     if (value.buttonEnabled) {
       if (!isValidHttpUrl(normalizedButtonUrl)) {
         setRulesButtonUrlError(
@@ -3093,20 +3092,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMuteDurationValue(key, Number(draft[key]) + deltaHours);
   }
 
-  function adjustDeleteBotMessagesDelay(direction: number) {
+  function adjustDeleteBotMessagesDelayValue(
+    key: 'deleteBotMessagesDelayMinutes' | 'greetingDeleteBotMessageDelayMinutes',
+    direction: number,
+  ) {
     if (!draft) {
       return;
     }
 
-    const next = stepDeleteBotMessagesDelayMinutes(
-      Number(draft.deleteBotMessagesDelayMinutes),
-      direction,
-    );
+    const next = stepDeleteBotMessagesDelayMinutes(Number(draft[key]), direction);
 
-    setFieldValue(
-      'deleteBotMessagesDelayMinutes',
-      next as ChatSettings['deleteBotMessagesDelayMinutes'],
-    );
+    setFieldValue(key, next as ChatSettings[typeof key]);
+  }
+
+  function adjustDeleteBotMessagesDelay(direction: number) {
+    adjustDeleteBotMessagesDelayValue('deleteBotMessagesDelayMinutes', direction);
+  }
+
+  function adjustGreetingDeleteBotMessagesDelay(direction: number) {
+    adjustDeleteBotMessagesDelayValue('greetingDeleteBotMessageDelayMinutes', direction);
   }
 
   function adjustStickerMessageCooldown(deltaMinutes: number) {
@@ -4054,8 +4058,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : hasRulesDraftText
       ? `${rulesDraft?.text.trim().length ?? 0}/${MAX_CHAT_RULES_TEXT_LENGTH} символов`
       : 'Редактирование через бота';
-  const rulesButtonPreviewText =
-    rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
+  const rulesButtonPreviewText = rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
   const rulesButtonPreviewUrl = rulesDraft?.buttonUrl.trim() ?? '';
   const hasRulesButtonPreviewUrl = isValidHttpUrl(rulesButtonPreviewUrl);
   const rulesAutoFillSummary = rulesDraft?.autoTextEnabled ? 'Включено' : 'Выключено';
@@ -4065,9 +4068,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключена';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
-      ? draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
-        ? 'Сообщение + кнопки'
-        : 'Только сообщение'
+      ? draft?.greetingDeleteBotMessageEnabled
+        ? `Сообщение • удаление через ${formatDeleteBotMessagesDelayLabel(
+            draft.greetingDeleteBotMessageDelayMinutes,
+          )}`
+        : draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
+          ? 'Сообщение + кнопки'
+          : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
   const duplicateAllowedCount = draft ? resolveDuplicateAllowedCount(draft) : 1;
@@ -6000,7 +6007,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="settings-native-toggle__row">
                                 <div className="settings-native-toggle__title-wrap">
                                   <span className="settings-native-toggle__title">
-                                    Удалять свои сообщения
+                                    Удалять приветствие
                                   </span>
                                   <button
                                     type="button"
@@ -6042,12 +6049,74 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   id="greeting-delete-bot-messages-hint"
                                   className="settings-native-toggle__hint"
                                 >
-                                  Приветствие будет удаляться через{' '}
-                                  {formatDeleteBotMessagesDelayLabel(
-                                    draft.deleteBotMessagesDelayMinutes,
-                                  )}
-                                  . Задержка настраивается в разделе «Сервис».
+                                  Бот будет автоматически удалять приветствие через выбранное время.
                                 </p>
+                              ) : null}
+                            </div>
+                          ) : null}
+
+                          {draft.greetingBotMessageEnabled &&
+                          draft.greetingDeleteBotMessageEnabled ? (
+                            <div
+                              className={cn(
+                                'settings-native-toggle',
+                                'settings-native-toggle--nested',
+                                fieldErrors.greetingDeleteBotMessageDelayMinutes && 'field--error',
+                              )}
+                            >
+                              <div className="settings-native-toggle__row">
+                                <span className="settings-native-toggle__title">
+                                  Через сколько удалять
+                                </span>
+
+                                <div
+                                  className="ban-duration-stepper"
+                                  role="group"
+                                  aria-label="Задержка удаления приветствия"
+                                >
+                                  <button
+                                    type="button"
+                                    className="ban-duration-stepper__button"
+                                    onClick={() => adjustGreetingDeleteBotMessagesDelay(-1)}
+                                    disabled={
+                                      draft.greetingDeleteBotMessageDelayMinutes <=
+                                      BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]
+                                    }
+                                    aria-label="Уменьшить задержку удаления приветствия"
+                                  >
+                                    -
+                                  </button>
+
+                                  <output
+                                    className="ban-duration-stepper__value"
+                                    aria-live="polite"
+                                  >
+                                    {formatDeleteBotMessagesDelayLabel(
+                                      draft.greetingDeleteBotMessageDelayMinutes,
+                                    )}
+                                  </output>
+
+                                  <button
+                                    type="button"
+                                    className="ban-duration-stepper__button"
+                                    onClick={() => adjustGreetingDeleteBotMessagesDelay(1)}
+                                    disabled={
+                                      draft.greetingDeleteBotMessageDelayMinutes >=
+                                      BOT_MESSAGES_DELETE_DELAY_OPTIONS[
+                                        BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1
+                                      ]
+                                    }
+                                    aria-label="Увеличить задержку удаления приветствия"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              </div>
+
+                              {fieldErrors.greetingDeleteBotMessageDelayMinutes ? (
+                                <small className="field__hint">
+                                  {fieldErrors.greetingDeleteBotMessageDelayMinutes}
+                                </small>
                               ) : null}
                             </div>
                           ) : null}
@@ -8005,7 +8074,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             }}
                             placeholder="Введите слово"
                             maxLength={240}
-                            disabled={messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX}
+                            disabled={
+                              messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
+                            }
                             aria-label="Добавить стоп-слово"
                           />
                           <button
@@ -8025,7 +8096,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <>
                             <div className="settings-word-banlist__chips-head">
                               <small className="settings-word-banlist__chips-caption">
-                                {hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
+                                {hasMessageLimitsBlockedWordsOverflow &&
+                                !messageLimitsBlockedWordsExpanded
                                   ? `Показаны последние ${visibleMessageLimitsBlockedWords.length} из ${messageLimitsBlockedWords.length}`
                                   : `Все ${messageLimitsBlockedWords.length} слов`}
                               </small>

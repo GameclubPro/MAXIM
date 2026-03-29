@@ -1110,6 +1110,7 @@ function createInitialState(): PreviewState {
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
     greetingDeleteBotMessageEnabled: false,
+    greetingDeleteBotMessageDelayMinutes: 2,
     greetingBotMessageText: 'Добро пожаловать в чат. Ознакомьтесь с правилами и пишите по делу.',
     greetingRulesButtonEnabled: false,
     linkPolicy: 'ALLOWLIST_ONLY',

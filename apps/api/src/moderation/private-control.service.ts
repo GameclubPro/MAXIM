@@ -594,6 +594,15 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       label: 'Удалять приветствие',
       type: 'boolean',
     },
+    {
+      key: 'greetingDeleteBotMessageDelayMinutes',
+      label: 'Задержка удаления приветствия',
+      type: 'number',
+      min: 0.5,
+      max: 60,
+      step: 1,
+      presets: [0.5, 1, 5],
+    },
     { key: 'greetingBotMessageText', label: 'Текст приветствия', type: 'text' },
     { key: 'greetingBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'greetingBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
@@ -917,7 +926,12 @@ const SECTION_CARD_FIELDS: Record<
     ],
   },
   greeting: {
-    basic: ['greetingEnabled', 'greetingBotMessageEnabled', 'greetingDeleteBotMessageEnabled'],
+    basic: [
+      'greetingEnabled',
+      'greetingBotMessageEnabled',
+      'greetingDeleteBotMessageEnabled',
+      'greetingDeleteBotMessageDelayMinutes',
+    ],
     advanced: [
       'greetingBotMessageText',
       'greetingBotButtonEnabled',
@@ -2972,7 +2986,7 @@ export class PrivateControlService {
         const current = await this.adminService.getSettings(session.selectedChatId!, context.actor);
         const currentValue = Number(current[key] ?? 0);
         const bounded =
-          key === 'deleteBotMessagesDelayMinutes'
+          key === 'deleteBotMessagesDelayMinutes' || key === 'greetingDeleteBotMessageDelayMinutes'
             ? stepDeleteBotMessagesDelayMinutes(currentValue, delta)
             : Math.max(
                 config.min ?? Number.MIN_SAFE_INTEGER,
@@ -7754,7 +7768,7 @@ export class PrivateControlService {
       case 'greeting':
         return [
           `Приветствие: ${this.describeBooleanCompact(settings.greetingEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)} • правила ${this.describeBooleanCompact(settings.greetingRulesButtonEnabled)}`,
+          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)}${settings.greetingDeleteBotMessageEnabled ? ` (${formatDeleteBotMessagesDelayLabel(settings.greetingDeleteBotMessageDelayMinutes)})` : ''} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)} • правила ${this.describeBooleanCompact(settings.greetingRulesButtonEnabled)}`,
         ];
       case 'profanityFilter':
         return [
@@ -8002,7 +8016,7 @@ export class PrivateControlService {
 
   private formatNumberPreset(field: SettingFieldConfig, value: number): string {
     const key = String(field.key).toLowerCase();
-    if (key === 'deletebotmessagesdelayminutes') {
+    if (key === 'deletebotmessagesdelayminutes' || key === 'greetingdeletebotmessagedelayminutes') {
       return formatDeleteBotMessagesDelayLabel(value);
     }
     if (key.includes('windowsec')) {

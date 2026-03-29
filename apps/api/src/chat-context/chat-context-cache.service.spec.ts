@@ -33,6 +33,7 @@ function buildSettings(chatId: string): ChatSettings {
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingDeleteBotMessageEnabled: false,
+    greetingDeleteBotMessageDelayMinutes: 2,
     greetingBotMessageText: '',
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
@@ -292,9 +293,9 @@ describe('ChatContextCacheService', () => {
     );
 
     redisInstance.get.mockResolvedValueOnce('1');
-    await expect(
-      service.isManagedEntitiesRefreshCooldownActive('user-1', 'channel'),
-    ).resolves.toBe(true);
+    await expect(service.isManagedEntitiesRefreshCooldownActive('user-1', 'channel')).resolves.toBe(
+      true,
+    );
 
     await service.activateManagedEntitiesRefreshBackoff('user-1', 'channel', 60);
     expect(redisInstance.set).toHaveBeenCalledWith(

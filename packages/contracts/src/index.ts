@@ -94,6 +94,14 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
+const deleteBotMessagesDelayMinutesSchema = z
+  .number()
+  .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
+  .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
+  .refine(isValidDeleteBotMessagesDelayMinutes, {
+    message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
+  })
+  .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
@@ -504,6 +512,7 @@ export const chatSettingsSchema = z
       greetingEnabled: z.boolean().default(false),
       greetingBotMessageEnabled: z.boolean().default(false),
       greetingDeleteBotMessageEnabled: z.boolean().default(false),
+      greetingDeleteBotMessageDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       greetingBotMessageText: botMessageTextSchema,
       greetingBotButtonEnabled: z.boolean().default(false),
       greetingBotButtonUrl: botButtonUrlSchema,
@@ -523,14 +532,7 @@ export const chatSettingsSchema = z
       commentsAllEnabled: z.boolean().default(false),
       commentsChatBroadcastsEnabled: z.boolean().default(false),
       deleteBotMessagesEnabled: z.boolean().default(true),
-      deleteBotMessagesDelayMinutes: z
-        .number()
-        .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
-        .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
-        .refine(isValidDeleteBotMessagesDelayMinutes, {
-          message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
-        })
-        .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES),
+      deleteBotMessagesDelayMinutes: deleteBotMessagesDelayMinutesSchema,
       removeBotsFromGroupEnabled: z.boolean().default(true),
       deleteSpammersEnabled: z.boolean().default(false),
       antiSpamEnabled: z.boolean().default(true),

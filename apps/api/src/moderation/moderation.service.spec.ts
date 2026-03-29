@@ -137,6 +137,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingDeleteBotMessageEnabled: false,
+    greetingDeleteBotMessageDelayMinutes: 2,
     greetingBotMessageText: '',
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
@@ -2869,9 +2870,10 @@ describe('ModerationService', () => {
             greetingEnabled: true,
             greetingBotMessageEnabled: true,
             greetingDeleteBotMessageEnabled: true,
+            greetingDeleteBotMessageDelayMinutes: 0.5,
             greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
             deleteBotMessagesEnabled: false,
-            deleteBotMessagesDelayMinutes: 0.5,
+            deleteBotMessagesDelayMinutes: 5,
           }),
           domains: [],
           admins: [],
@@ -4376,9 +4378,9 @@ describe('ModerationService', () => {
   });
 
   it('resets link escalation window after a later manual unban', async () => {
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(
-      new Date('2026-03-28T10:00:00.000Z').getTime(),
-    );
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-03-28T10:00:00.000Z').getTime());
     try {
       const prisma = {
         violation: {
@@ -6334,11 +6336,9 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
-      'chat-1',
-      ['user-1'],
-      { trafficClass: 'interactive' },
-    );
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
+      trafficClass: 'interactive',
+    });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
       where: {
@@ -6448,7 +6448,9 @@ describe('ModerationService', () => {
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
-      sentTexts.some((text) => text.includes(`Пользователь ${userMention('Нарушитель', 'user-2')} забанен.`)),
+      sentTexts.some((text) =>
+        text.includes(`Пользователь ${userMention('Нарушитель', 'user-2')} забанен.`),
+      ),
     ).toBe(true);
   });
 
@@ -6539,7 +6541,9 @@ describe('ModerationService', () => {
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(sentTexts.some((text) => text.includes('Мут на 6ч.'))).toBe(true);
     expect(
-      sentTexts.some((text) => text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`)),
+      sentTexts.some((text) =>
+        text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`),
+      ),
     ).toBe(true);
   });
 
@@ -6864,9 +6868,11 @@ describe('ModerationService', () => {
         rulesPublishedUrl: null,
         rulesPublishedMessageId: null,
       }),
-      getAdminAccess: jest.fn().mockImplementation(async (_chatId: string, userId: string) =>
-        userId === 'user-1' ? 'granted' : null,
-      ),
+      getAdminAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, userId: string) =>
+          userId === 'user-1' ? 'granted' : null,
+        ),
     };
 
     const service = new ModerationService(

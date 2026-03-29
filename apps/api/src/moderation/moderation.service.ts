@@ -536,6 +536,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           update,
           greetingBotMessageEnabled: settings.greetingBotMessageEnabled,
           greetingDeleteBotMessageEnabled: settings.greetingDeleteBotMessageEnabled,
+          greetingDeleteBotMessageDelayMinutes: settings.greetingDeleteBotMessageDelayMinutes,
           greetingBotMessageText: settings.greetingBotMessageText,
           botSpeechStyle: settings.botSpeechStyle,
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
@@ -4488,6 +4489,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     update: MaxUpdate;
     greetingBotMessageEnabled: boolean;
     greetingDeleteBotMessageEnabled: boolean;
+    greetingDeleteBotMessageDelayMinutes: number;
     greetingBotMessageText: string;
     botSpeechStyle: BotSpeechStyle | null;
     greetingBotButtonEnabled: boolean;
@@ -4506,6 +4508,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       update,
       greetingBotMessageEnabled,
       greetingDeleteBotMessageEnabled,
+      greetingDeleteBotMessageDelayMinutes,
       greetingBotMessageText,
       botSpeechStyle,
       greetingBotButtonEnabled,
@@ -4556,6 +4559,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       const shouldDeleteGreetingMessage =
         greetingDeleteBotMessageEnabled || deleteBotMessagesEnabled;
+      const greetingDeleteDelayMinutes = greetingDeleteBotMessageEnabled
+        ? greetingDeleteBotMessageDelayMinutes
+        : deleteBotMessagesDelayMinutes;
       const shouldSendPersistentGreetingMessage = shouldDeleteGreetingMessage;
       try {
         const sentMessageId = shouldSendPersistentGreetingMessage
@@ -4572,7 +4578,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userId: member.userId,
             messageId: sentMessageId,
             text: greetingMessage,
-            delayMinutes: deleteBotMessagesDelayMinutes,
+            delayMinutes: greetingDeleteDelayMinutes,
           });
         }
 
