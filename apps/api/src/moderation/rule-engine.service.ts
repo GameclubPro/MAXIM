@@ -9,6 +9,7 @@ import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
 import { buildDuplicateStageKey } from './duplicate-state';
+import { isExactProfanityVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -629,7 +630,7 @@ export class RuleEngineService {
       if (
         normalizedCandidate &&
         !this.isProfanityException(normalizedCandidate) &&
-        this.isProfanityToken(normalizedCandidate)
+        (this.isProfanityToken(normalizedCandidate) || isExactProfanityVariant(normalizedCandidate))
       ) {
         return true;
       }

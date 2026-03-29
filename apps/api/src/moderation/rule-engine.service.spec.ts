@@ -1,4 +1,5 @@
 import { LinkPolicy, type ChatSettings } from '@prisma/client';
+import { PROFANITY_EXACT_VARIANT_COUNT } from './profanity-lexicon';
 import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
@@ -158,6 +159,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 const DUPLICATE_SPAM_TEXT = 'продам курс по маркетингу пишите в личные сообщения сегодня скидка';
 
 describe('RuleEngineService', () => {
+  it('ships with 500+ exact profanity and insult variants', () => {
+    expect(PROFANITY_EXACT_VARIANT_COUNT).toBeGreaterThanOrEqual(500);
+  });
+
   it('detects profanity and blocked links', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -591,6 +596,19 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'zaebal uzhe etot spam',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('detects PROFANITY for transliterated russian insults from the exact lexicon', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'nu ty pidor i mudak',
       settings: buildSettings(),
       domainAllowlist: [],
     });
