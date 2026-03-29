@@ -78,6 +78,38 @@ function summaryChipLabel(status: 'healthy' | 'warning' | 'critical') {
   return 'Healthy';
 }
 
+function webhookChipClass(status: 'healthy' | 'warning' | 'critical' | 'disabled') {
+  if (status === 'critical') {
+    return 'chip chip--danger';
+  }
+
+  if (status === 'warning') {
+    return 'chip chip--warning';
+  }
+
+  if (status === 'healthy') {
+    return 'chip chip--success';
+  }
+
+  return 'chip';
+}
+
+function webhookChipLabel(status: 'healthy' | 'warning' | 'critical' | 'disabled') {
+  if (status === 'critical') {
+    return 'Coverage broken';
+  }
+
+  if (status === 'warning') {
+    return 'Coverage drift';
+  }
+
+  if (status === 'healthy') {
+    return 'Coverage OK';
+  }
+
+  return 'Disabled';
+}
+
 function alertCardClass(level: 'info' | 'warning' | 'critical') {
   if (level === 'critical') {
     return 'system-alert-card is-critical';
@@ -164,7 +196,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
 
   const dashboard = dashboardQuery.data;
   const selectedMode: SystemModeSelection =
-    dashboard.mode.source === 'manual' ? (dashboard.mode.manualMode ?? dashboard.mode.mode) : 'auto';
+    dashboard.mode.source === 'manual'
+      ? (dashboard.mode.manualMode ?? dashboard.mode.mode)
+      : 'auto';
   const failedEvents = dashboard.queues.webhookEvents.failed.count;
   const queuedEvents = dashboard.queues.webhookEvents.queued.count;
   const receivedEvents = dashboard.queues.webhookEvents.received.count;
@@ -181,6 +215,7 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     { label: 'Actions', queue: dashboard.queues.actions },
     { label: 'Moderation total', queue: dashboard.queues.moderation },
   ];
+  const webhookSubscription = dashboard.webhookSubscription;
 
   return (
     <div className="page-stack page-enter">
@@ -276,7 +311,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
             <article className="system-metric-card">
               <span>RECEIVED</span>
               <strong>{receivedEvents}</strong>
-              <small>oldest {formatLag(dashboard.queues.webhookEvents.received.oldestLagSec)}</small>
+              <small>
+                oldest {formatLag(dashboard.queues.webhookEvents.received.oldestLagSec)}
+              </small>
             </article>
             <article className="system-metric-card">
               <span>QUEUED</span>
@@ -295,6 +332,105 @@ export function SystemPage({ api }: { api: ApiTransport }) {
       <GlassCard className="system-panel" elevated>
         <div className="system-panel__head">
           <div>
+            <h2>Webhook coverage</h2>
+            <p>Серверный snapshot подписки без прямых live-check в MAX на каждый refresh.</p>
+          </div>
+          <span className={webhookChipClass(webhookSubscription.status)}>
+            {webhookChipLabel(webhookSubscription.status)}
+          </span>
+        </div>
+        <div className="system-subscription-grid">
+          <article className="system-subscription-card">
+            <span>Configured URL</span>
+            <strong>{webhookSubscription.url ?? 'Не настроен'}</strong>
+            <small>
+              {webhookSubscription.checkedAt
+                ? `Проверено ${formatTime(webhookSubscription.checkedAt)}`
+                : 'Ожидаю первую проверку'}
+            </small>
+          </article>
+          <article className="system-subscription-card">
+            <span>Missing update types</span>
+            <strong>{webhookSubscription.missingUpdateTypes.length}</strong>
+            <small>
+              {webhookSubscription.reconciledAt
+                ? `Reconciled ${formatTime(webhookSubscription.reconciledAt)}`
+                : 'Авто-reconcile ещё не выполнялся'}
+            </small>
+          </article>
+          <article className="system-subscription-card">
+            <span>Other subscriptions</span>
+            <strong>{webhookSubscription.otherSubscriptionsCount}</strong>
+            <small>
+              {webhookSubscription.extraUpdateTypes.length > 0
+                ? `${webhookSubscription.extraUpdateTypes.length} extra update types`
+                : 'Лишних update types нет'}
+            </small>
+          </article>
+        </div>
+        <div className="system-subscription-meta">
+          <div>
+            <small>Required</small>
+            <div className="system-chip-list">
+              {webhookSubscription.requiredUpdateTypes.map((type) => (
+                <span key={`required-${type}`} className="chip">
+                  {type}
+                </span>
+              ))}
+            </div>
+          </div>
+          <div>
+            <small>Active</small>
+            <div className="system-chip-list">
+              {webhookSubscription.actualUpdateTypes.length > 0 ? (
+                webhookSubscription.actualUpdateTypes.map((type) => (
+                  <span key={`actual-${type}`} className="chip chip--success">
+                    {type}
+                  </span>
+                ))
+              ) : (
+                <span className="chip">Нет данных</span>
+              )}
+            </div>
+          </div>
+          {webhookSubscription.missingUpdateTypes.length > 0 ? (
+            <div>
+              <small>Missing</small>
+              <div className="system-chip-list">
+                {webhookSubscription.missingUpdateTypes.map((type) => (
+                  <span key={`missing-${type}`} className="chip chip--danger">
+                    {type}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+          {webhookSubscription.extraUpdateTypes.length > 0 ? (
+            <div>
+              <small>Extra</small>
+              <div className="system-chip-list">
+                {webhookSubscription.extraUpdateTypes.map((type) => (
+                  <span key={`extra-${type}`} className="chip chip--warning">
+                    {type}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+        {webhookSubscription.note ? (
+          <p className="system-panel__hint">{webhookSubscription.note}</p>
+        ) : null}
+        {webhookSubscription.lastError ? (
+          <p className="system-subscription-error">
+            Последняя ошибка: {webhookSubscription.lastError}
+          </p>
+        ) : null}
+      </GlassCard>
+
+      <GlassCard className="system-panel" elevated>
+        <div className="system-panel__head">
+          <div>
             <h2>Сигналы и рекомендации</h2>
             <p>Приоритетные штуки, которые стоит проверить оператору.</p>
           </div>
@@ -305,7 +441,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
             {dashboard.alerts.map((alert) => (
               <article key={alert.code} className={alertCardClass(alert.level)}>
                 <div className="system-alert-card__head">
-                  <span className={summaryChipClass(alert.level === 'info' ? 'healthy' : alert.level)}>
+                  <span
+                    className={summaryChipClass(alert.level === 'info' ? 'healthy' : alert.level)}
+                  >
                     {alert.level}
                   </span>
                   <h3>{alert.title}</h3>
@@ -383,7 +521,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           <article className="system-lifecycle-card">
             <span>FAILED</span>
             <strong>{failedEvents}</strong>
-            <small>action critical {formatPercent(dashboard.queues.actionHealth.criticalRate)}</small>
+            <small>
+              action critical {formatPercent(dashboard.queues.actionHealth.criticalRate)}
+            </small>
           </article>
         </div>
       </GlassCard>

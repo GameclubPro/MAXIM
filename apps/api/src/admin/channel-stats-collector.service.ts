@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { MaxClientService, type MaxChannelMessageSnapshot } from '../max/max-client.service';
+import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 
@@ -17,20 +18,9 @@ const CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS = 60 * 1000;
 const CHANNEL_STATS_STARTUP_INTER_CHANNEL_DELAY_MS = 2_000;
 const CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS = 500;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
-const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY =
-  'channel-stats:background-sync-backoff:v1';
+const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY = 'channel-stats:background-sync-backoff:v1';
 const CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES = [404] as const;
-const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
-  'message_created',
-  'message_callback',
-  'user_added',
-  'user_removed',
-  'bot_added',
-  'bot_removed',
-  'bot_started',
-] as const;
-
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -238,7 +228,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
             err: error instanceof Error ? error.message : String(error),
           };
           if (this.isMaxApiNotFoundError(error)) {
-            this.logger.debug(logPayload, 'Skipped official channel audience snapshot after MAX 404');
+            this.logger.debug(
+              logPayload,
+              'Skipped official channel audience snapshot after MAX 404',
+            );
           } else {
             this.logger.warn(logPayload, 'Failed to sync official channel audience snapshot');
           }
@@ -367,7 +360,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       'channel-stats:webhook-subscriptions',
       CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS,
       async () => {
-        await this.maxClient.ensureWebhookSubscription([...CHANNEL_STATS_REQUIRED_UPDATE_TYPES], {
+        await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
           trafficClass: 'background',
         });
         ensuredAt = new Date();

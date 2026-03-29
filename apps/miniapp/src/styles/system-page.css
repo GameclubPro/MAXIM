@@ -32,7 +32,8 @@
 
 .system-hero__stats,
 .system-metric-grid,
-.system-lifecycle-grid {
+.system-lifecycle-grid,
+.system-subscription-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
@@ -40,7 +41,8 @@
 
 .system-hero__stat,
 .system-metric-card,
-.system-lifecycle-card {
+.system-lifecycle-card,
+.system-subscription-card {
   display: grid;
   gap: 6px;
   padding: 14px;
@@ -51,7 +53,8 @@
 
 .system-hero__stat span,
 .system-metric-card span,
-.system-lifecycle-card span {
+.system-lifecycle-card span,
+.system-subscription-card span {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -60,7 +63,8 @@
 
 .system-hero__stat strong,
 .system-metric-card strong,
-.system-lifecycle-card strong {
+.system-lifecycle-card strong,
+.system-subscription-card strong {
   font-size: 1.15rem;
   line-height: 1.1;
 }
@@ -69,6 +73,7 @@
 .system-hero__footer,
 .system-metric-card small,
 .system-lifecycle-card small,
+.system-subscription-card small,
 .system-alert-card small,
 .system-panel__timestamp {
   margin: 0;
@@ -195,6 +200,44 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.system-subscription-grid,
+.system-subscription-meta {
+  display: grid;
+  gap: 12px;
+}
+
+.system-subscription-card {
+  background:
+    linear-gradient(180deg, rgba(248, 252, 255, 0.96), rgba(237, 246, 255, 0.94)),
+    rgba(255, 255, 255, 0.92);
+  border-color: rgba(65, 133, 180, 0.16);
+}
+
+.system-subscription-card strong {
+  word-break: break-word;
+}
+
+.system-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.system-subscription-meta small {
+  display: block;
+  color: var(--text-secondary);
+}
+
+.system-subscription-error {
+  margin: 0;
+  padding: 12px 14px;
+  border-radius: 16px;
+  color: #8e2037;
+  background: rgba(255, 236, 240, 0.92);
+  border: 1px solid rgba(240, 98, 120, 0.22);
+}
+
 @media (min-width: 860px) {
   .system-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -209,7 +252,8 @@
 @media (max-width: 720px) {
   .system-hero__stats,
   .system-metric-grid,
-  .system-lifecycle-grid {
+  .system-lifecycle-grid,
+  .system-subscription-grid {
     grid-template-columns: 1fr;
   }
 

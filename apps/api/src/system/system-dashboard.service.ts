@@ -1,12 +1,14 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   SystemDashboardAlert,
   SystemDashboardResponse,
   SystemDashboardStatus,
+  WebhookSubscriptionSnapshot,
 } from '@maxim/contracts';
 import { QueueMetricsService } from './queue-metrics.service';
 import { SystemModeService } from './system-mode.service';
+import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
 const QUEUE_LAG_WARNING_SEC = 5;
 const FAILED_EVENTS_CRITICAL_COUNT = 100;
@@ -22,14 +24,20 @@ export class SystemDashboardService {
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
     configService: ConfigService,
+    @Optional()
+    private readonly webhookSubscriptionStatusService?: WebhookSubscriptionStatusService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
   }
 
   async getSnapshot(): Promise<SystemDashboardResponse> {
-    const [queues, mode] = await Promise.all([
+    const webhookSubscriptionPromise = this.webhookSubscriptionStatusService
+      ? this.webhookSubscriptionStatusService.getSnapshot()
+      : Promise.resolve(this.buildFallbackWebhookSubscriptionSnapshot());
+    const [queues, mode, webhookSubscription] = await Promise.all([
       this.queueMetricsService.getSnapshot(),
       this.systemModeService.getEffectiveSnapshot(),
+      webhookSubscriptionPromise,
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.effectiveLagSec;
@@ -110,12 +118,18 @@ export class SystemDashboardService {
       });
     }
 
+    const webhookSubscriptionAlert = this.buildWebhookSubscriptionAlert(webhookSubscription);
+    if (webhookSubscriptionAlert) {
+      alerts.push(webhookSubscriptionAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
       failedCount,
       criticalRate,
       errorRate,
+      webhookSubscriptionStatus: webhookSubscription.status,
     });
 
     return {
@@ -129,6 +143,7 @@ export class SystemDashboardService {
       alerts,
       queues,
       mode,
+      webhookSubscription,
     };
   }
 
@@ -138,12 +153,14 @@ export class SystemDashboardService {
     failedCount: number;
     criticalRate: number;
     errorRate: number;
+    webhookSubscriptionStatus: WebhookSubscriptionSnapshot['status'];
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
       input.queueLagSec > this.queueLagCriticalThresholdSec ||
       input.failedCount >= FAILED_EVENTS_CRITICAL_COUNT ||
-      input.criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD
+      input.criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD ||
+      input.webhookSubscriptionStatus === 'critical'
     ) {
       return 'critical';
     }
@@ -152,7 +169,8 @@ export class SystemDashboardService {
       input.queueLagSec > QUEUE_LAG_WARNING_SEC ||
       input.failedCount > 0 ||
       input.criticalRate > ACTION_RATE_WARNING_THRESHOLD ||
-      input.errorRate > ACTION_RATE_WARNING_THRESHOLD
+      input.errorRate > ACTION_RATE_WARNING_THRESHOLD ||
+      input.webhookSubscriptionStatus === 'warning'
     ) {
       return 'warning';
     }
@@ -201,5 +219,80 @@ export class SystemDashboardService {
       mode.action.errorRate <= ACTION_RATE_WARNING_THRESHOLD &&
       mode.action.criticalRate <= ACTION_RATE_WARNING_THRESHOLD
     );
+  }
+
+  private buildWebhookSubscriptionAlert(
+    snapshot: WebhookSubscriptionSnapshot,
+  ): SystemDashboardAlert | null {
+    if (snapshot.status === 'healthy') {
+      return null;
+    }
+
+    if (snapshot.status === 'disabled') {
+      return {
+        code: 'webhook-subscription-disabled',
+        level: 'info',
+        title: 'Webhook reconcile отключён',
+        detail: snapshot.note ?? 'Фоновая проверка webhook subscription сейчас не активна.',
+        recommendedAction:
+          'Для production это не норма. Проверьте app role и конфигурацию webhook URL/secret.',
+      };
+    }
+
+    if (snapshot.status === 'critical') {
+      const detail = !snapshot.configured
+        ? 'Webhook URL не сконфигурирован, бот не сможет держать подписку в актуальном состоянии.'
+        : snapshot.missingUpdateTypes.length > 0
+          ? `У текущей subscription не хватает update types: ${snapshot.missingUpdateTypes.join(', ')}.`
+          : 'Текущая webhook subscription для сконфигурированного URL не найдена.';
+      return {
+        code: 'webhook-subscription-critical',
+        level: 'critical',
+        title: 'Webhook coverage требует вмешательства',
+        detail,
+        recommendedAction:
+          'Проверьте reconcile и текущие subscriptions. Не выполняйте ручную чистку чужих URL без подтверждения.',
+      };
+    }
+
+    const warningDetails: string[] = [];
+    if (snapshot.extraUpdateTypes.length > 0) {
+      warningDetails.push(`лишние update types: ${snapshot.extraUpdateTypes.join(', ')}`);
+    }
+    if (snapshot.otherSubscriptionsCount > 0) {
+      warningDetails.push(`дополнительных subscriptions: ${snapshot.otherSubscriptionsCount}`);
+    }
+    if (snapshot.lastError) {
+      warningDetails.push(`последняя ошибка: ${snapshot.lastError}`);
+    }
+
+    return {
+      code: 'webhook-subscription-warning',
+      level: 'warning',
+      title: 'Webhook subscription под наблюдением',
+      detail:
+        warningDetails.length > 0
+          ? `Есть drift или ошибка reconcile: ${warningDetails.join('; ')}.`
+          : (snapshot.note ?? 'Состояние webhook subscription требует внимания.'),
+      recommendedAction:
+        'Следите за drift и reconcile errors. MAX UI не должен делать прямой live-check в фоне на каждый refresh.',
+    };
+  }
+
+  private buildFallbackWebhookSubscriptionSnapshot(): WebhookSubscriptionSnapshot {
+    return {
+      status: 'warning',
+      configured: false,
+      url: null,
+      checkedAt: null,
+      reconciledAt: null,
+      requiredUpdateTypes: [],
+      actualUpdateTypes: [],
+      missingUpdateTypes: [],
+      extraUpdateTypes: [],
+      otherSubscriptionsCount: 0,
+      lastError: null,
+      note: 'Webhook subscription snapshot пока недоступен.',
+    };
   }
 }

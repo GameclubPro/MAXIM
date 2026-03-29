@@ -1513,6 +1513,32 @@ export const systemDashboardAlertSchema = z.object({
 });
 export type SystemDashboardAlert = z.infer<typeof systemDashboardAlertSchema>;
 
+export const webhookSubscriptionSnapshotStatusSchema = z.enum([
+  'healthy',
+  'warning',
+  'critical',
+  'disabled',
+]);
+export type WebhookSubscriptionSnapshotStatus = z.infer<
+  typeof webhookSubscriptionSnapshotStatusSchema
+>;
+
+export const webhookSubscriptionSnapshotSchema = z.object({
+  status: webhookSubscriptionSnapshotStatusSchema,
+  configured: z.boolean(),
+  url: z.string().nullable(),
+  checkedAt: z.string().datetime().nullable(),
+  reconciledAt: z.string().datetime().nullable(),
+  requiredUpdateTypes: z.array(z.string()),
+  actualUpdateTypes: z.array(z.string()),
+  missingUpdateTypes: z.array(z.string()),
+  extraUpdateTypes: z.array(z.string()),
+  otherSubscriptionsCount: z.number().int().min(0),
+  lastError: z.string().nullable(),
+  note: z.string().nullable(),
+});
+export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
+
 export const systemDashboardSummarySchema = z.object({
   status: systemDashboardStatusSchema,
   title: z.string(),
@@ -1527,6 +1553,7 @@ export const systemDashboardResponseSchema = z.object({
   alerts: z.array(systemDashboardAlertSchema),
   queues: queueMetricsSnapshotSchema,
   mode: systemModeSnapshotSchema,
+  webhookSubscription: webhookSubscriptionSnapshotSchema,
 });
 export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;
 

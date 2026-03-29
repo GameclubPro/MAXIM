@@ -7,6 +7,7 @@ import { QueueMetricsService } from './queue-metrics.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
+import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
 @Module({
   imports: [
@@ -15,7 +16,19 @@ import { SystemModeService } from './system-mode.service';
     BullModule.registerQueue({ name: 'moderation-actions' }),
   ],
   controllers: [SystemController],
-  providers: [QueueMetricsService, ActionHealthService, SystemModeService, SystemDashboardService],
-  exports: [QueueMetricsService, ActionHealthService, SystemModeService, SystemDashboardService],
+  providers: [
+    QueueMetricsService,
+    ActionHealthService,
+    SystemModeService,
+    SystemDashboardService,
+    WebhookSubscriptionStatusService,
+  ],
+  exports: [
+    QueueMetricsService,
+    ActionHealthService,
+    SystemModeService,
+    SystemDashboardService,
+    WebhookSubscriptionStatusService,
+  ],
 })
 export class SystemModule {}

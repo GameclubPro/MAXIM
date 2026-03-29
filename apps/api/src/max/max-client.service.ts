@@ -253,6 +253,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
   private readonly webhookUrl: string | null;
+  private readonly webhookSecretPath: string | null;
   private readonly webhookHeaderSecret: string | null;
   private readonly limiterRedis: Redis;
   private readonly criticalFailuresMs: number[] = [];
@@ -307,10 +308,13 @@ export class MaxClientService implements OnModuleDestroy {
     );
     this.circuitWindowSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_WINDOW_SEC'), 30);
     this.circuitOpenSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_OPEN_SEC'), 20);
+    this.webhookSecretPath = this.readTrimmedString(
+      configService.get<string>('MAX_WEBHOOK_SECRET_PATH'),
+    );
     this.webhookUrl = this.buildWebhookUrl(
       configService.get<string>('APP_BASE_URL'),
       configService.get<string>('MAX_BOT_ID'),
-      configService.get<string>('MAX_WEBHOOK_SECRET_PATH'),
+      this.webhookSecretPath ?? undefined,
     );
     this.webhookHeaderSecret = this.readTrimmedString(
       configService.get<string>('MAX_WEBHOOK_HEADER_SECRET'),
@@ -767,6 +771,48 @@ export class MaxClientService implements OnModuleDestroy {
     return rows
       .map((row) => this.parseWebhookSubscription(row))
       .filter((item): item is MaxWebhookSubscription => item !== null);
+  }
+
+  getConfiguredWebhookSubscriptionTarget(): { url: string | null; maskedUrl: string | null } {
+    return {
+      url: this.webhookUrl,
+      maskedUrl: this.maskWebhookUrl(this.webhookUrl),
+    };
+  }
+
+  matchesConfiguredWebhookUrl(url: string): boolean {
+    if (!this.webhookUrl) {
+      return false;
+    }
+
+    return url === this.webhookUrl || this.normalizeUrl(url) === this.normalizeUrl(this.webhookUrl);
+  }
+
+  maskWebhookUrl(url: string | null): string | null {
+    if (!url) {
+      return null;
+    }
+
+    const normalizedSecretPath = this.webhookSecretPath;
+    if (!normalizedSecretPath) {
+      return url;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const pathSegments = parsed.pathname.split('/');
+      const lastSegment = pathSegments[pathSegments.length - 1] ?? '';
+      if (lastSegment === normalizedSecretPath) {
+        pathSegments[pathSegments.length - 1] = '***';
+        parsed.pathname = pathSegments.join('/');
+        return parsed.toString();
+      }
+    } catch {
+      // Fall through to the string replacement fallback.
+    }
+
+    const suffix = `/${normalizedSecretPath}`;
+    return url.endsWith(suffix) ? `${url.slice(0, -suffix.length)}/***` : url;
   }
 
   async ensureWebhookSubscription(
@@ -2912,9 +2958,7 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  private normalizeReadRequestOptions(
-    options: MaxApiRequestOptions | MaxApiTrafficClass,
-  ): {
+  private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
     trafficClass?: MaxApiTrafficClass;
     ignoreFailureMetricStatuses?: readonly number[];
   } {
@@ -2969,7 +3013,9 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const normalized = Array.from(
-      new Set(statuses.filter((status): status is number => Number.isInteger(status) && status > 0)),
+      new Set(
+        statuses.filter((status): status is number => Number.isInteger(status) && status > 0),
+      ),
     );
     return normalized.length > 0 ? normalized : undefined;
   }
@@ -3127,7 +3173,9 @@ export class MaxClientService implements OnModuleDestroy {
     for (let index = 0; index < counters.length; index += 1) {
       const value = result[index * 2]?.[1];
       if (typeof value !== 'number') {
-        throw new Error(`Failed to increment MAX API rate limit counter for ${counters[index].key}`);
+        throw new Error(
+          `Failed to increment MAX API rate limit counter for ${counters[index].key}`,
+        );
       }
       counts.push(value);
     }

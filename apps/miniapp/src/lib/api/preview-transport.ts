@@ -116,8 +116,7 @@ function cloneJson<T>(value: T): T {
 
 function buildPreviewSystemMode(state: PreviewState): SystemModeSnapshot {
   const now = new Date().toISOString();
-  const manualMode =
-    state.systemModeSelection === 'auto' ? null : state.systemModeSelection;
+  const manualMode = state.systemModeSelection === 'auto' ? null : state.systemModeSelection;
   const mode = manualMode ?? 'normal';
   const action =
     mode === 'degrade'
@@ -261,6 +260,47 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
     alerts,
     queues,
     mode,
+    webhookSubscription: {
+      status: inDegrade ? 'warning' : 'healthy',
+      configured: true,
+      url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      checkedAt: generatedAt,
+      reconciledAt: inDegrade ? null : generatedAt,
+      requiredUpdateTypes: [
+        'message_created',
+        'message_callback',
+        'user_added',
+        'user_removed',
+        'bot_added',
+        'bot_removed',
+        'bot_started',
+      ],
+      actualUpdateTypes: inDegrade
+        ? [
+            'message_created',
+            'message_callback',
+            'user_added',
+            'user_removed',
+            'bot_added',
+            'bot_started',
+          ]
+        : [
+            'message_created',
+            'message_callback',
+            'user_added',
+            'user_removed',
+            'bot_added',
+            'bot_removed',
+            'bot_started',
+          ],
+      missingUpdateTypes: inDegrade ? ['bot_removed'] : [],
+      extraUpdateTypes: [],
+      otherSubscriptionsCount: 0,
+      lastError: inDegrade ? 'Preview reconcile error' : null,
+      note: inDegrade
+        ? 'Preview показывает drift webhook coverage.'
+        : 'Preview показывает актуальную webhook coverage.',
+    },
   };
 }
 

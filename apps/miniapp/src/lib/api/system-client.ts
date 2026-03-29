@@ -2,6 +2,7 @@ import type {
   SystemDashboardAlert,
   SystemDashboardResponse,
   SystemModeSnapshot,
+  WebhookSubscriptionSnapshot,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -130,12 +131,65 @@ function parseWebhookStatusMetrics(value: unknown) {
   };
 }
 
+function parseWebhookSubscriptionSnapshot(value: unknown): WebhookSubscriptionSnapshot {
+  if (
+    !isRecord(value) ||
+    (value.status !== 'healthy' &&
+      value.status !== 'warning' &&
+      value.status !== 'critical' &&
+      value.status !== 'disabled') ||
+    typeof value.configured !== 'boolean' ||
+    (value.url !== null && value.url !== undefined && typeof value.url !== 'string') ||
+    (value.checkedAt !== null &&
+      value.checkedAt !== undefined &&
+      typeof value.checkedAt !== 'string') ||
+    (value.reconciledAt !== null &&
+      value.reconciledAt !== undefined &&
+      typeof value.reconciledAt !== 'string') ||
+    !Array.isArray(value.requiredUpdateTypes) ||
+    !Array.isArray(value.actualUpdateTypes) ||
+    !Array.isArray(value.missingUpdateTypes) ||
+    !Array.isArray(value.extraUpdateTypes) ||
+    typeof value.otherSubscriptionsCount !== 'number' ||
+    (value.lastError !== null &&
+      value.lastError !== undefined &&
+      typeof value.lastError !== 'string') ||
+    (value.note !== null && value.note !== undefined && typeof value.note !== 'string')
+  ) {
+    throw new Error('Invalid webhook subscription snapshot');
+  }
+
+  return {
+    status: value.status,
+    configured: value.configured,
+    url: typeof value.url === 'string' ? value.url : null,
+    checkedAt: typeof value.checkedAt === 'string' ? value.checkedAt : null,
+    reconciledAt: typeof value.reconciledAt === 'string' ? value.reconciledAt : null,
+    requiredUpdateTypes: value.requiredUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    actualUpdateTypes: value.actualUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    missingUpdateTypes: value.missingUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    extraUpdateTypes: value.extraUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    otherSubscriptionsCount: value.otherSubscriptionsCount,
+    lastError: typeof value.lastError === 'string' ? value.lastError : null,
+    note: typeof value.note === 'string' ? value.note : null,
+  };
+}
+
 function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
   if (
     !isRecord(value) ||
     !isRecord(value.summary) ||
     !Array.isArray(value.alerts) ||
-    !isRecord(value.queues)
+    !isRecord(value.queues) ||
+    !isRecord(value.webhookSubscription)
   ) {
     throw new Error('Invalid system dashboard response');
   }
@@ -199,6 +253,7 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
       generatedAt: queues.generatedAt,
     },
     mode: parseSystemModeSnapshot(value.mode),
+    webhookSubscription: parseWebhookSubscriptionSnapshot(value.webhookSubscription),
   };
 }
 
