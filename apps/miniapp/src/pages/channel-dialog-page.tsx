@@ -81,56 +81,406 @@ const DIALOG_REDIRECTABLE_ERROR_PATTERNS = [
   /^Неверный токен кнопки\./u,
 ] as const;
 
-const COMMENT_BACKDROP_ORNAMENT_STYLES = {
-  conversationHero: {
-    top: '5%',
-    right: '-5%',
-    width: 'clamp(150px, 38vw, 198px)',
-    height: 'clamp(150px, 38vw, 198px)',
-    color: 'rgba(70, 127, 215, 0.14)',
-    transform: 'rotate(10deg)',
+type CommentBackdropIconName =
+  | 'conversation'
+  | 'message'
+  | 'typing'
+  | 'quotes'
+  | 'reaction'
+  | 'heart'
+  | 'sparkles'
+  | 'bookmark'
+  | 'bell'
+  | 'paperclip'
+  | 'pin'
+  | 'smile'
+  | 'star';
+
+type CommentBackdropOrnament = {
+  icon: CommentBackdropIconName;
+  id: string;
+  style: CSSProperties;
+};
+
+const COMMENT_BACKDROP_ORNAMENTS = [
+  {
+    id: 'conversation-hero',
+    icon: 'conversation',
+    style: {
+      top: '3%',
+      right: '-6%',
+      width: 'clamp(144px, 38vw, 192px)',
+      height: 'clamp(144px, 38vw, 192px)',
+      color: 'rgba(82, 138, 224, 0.14)',
+      opacity: 0.94,
+      transform: 'rotate(9deg)',
+    },
   },
-  sparkles: {
-    top: '16%',
-    left: '-4%',
-    width: 'clamp(94px, 24vw, 128px)',
-    height: 'clamp(94px, 24vw, 128px)',
-    color: 'rgba(111, 167, 244, 0.14)',
-    transform: 'rotate(-7deg)',
+  {
+    id: 'sparkles-northwest',
+    icon: 'sparkles',
+    style: {
+      top: '11%',
+      left: '-5%',
+      width: 'clamp(88px, 22vw, 120px)',
+      height: 'clamp(88px, 22vw, 120px)',
+      color: 'rgba(112, 171, 247, 0.13)',
+      opacity: 0.82,
+      transform: 'rotate(-8deg)',
+    },
   },
-  typing: {
-    top: '33%',
-    right: '-8%',
-    width: 'clamp(118px, 30vw, 156px)',
-    height: 'clamp(118px, 30vw, 156px)',
-    color: 'rgba(88, 142, 227, 0.1)',
-    transform: 'rotate(7deg)',
+  {
+    id: 'message-upper-left',
+    icon: 'message',
+    style: {
+      top: '19%',
+      left: '6%',
+      width: 'clamp(64px, 18vw, 78px)',
+      height: 'clamp(64px, 18vw, 78px)',
+      color: 'rgba(96, 151, 236, 0.09)',
+      opacity: 0.72,
+      transform: 'rotate(-4deg)',
+    },
   },
-  quotes: {
-    left: '-8%',
-    bottom: '30%',
-    width: 'clamp(112px, 30vw, 146px)',
-    height: 'clamp(112px, 30vw, 146px)',
-    color: 'rgba(84, 136, 223, 0.11)',
-    transform: 'rotate(-14deg)',
+  {
+    id: 'bookmark-top',
+    icon: 'bookmark',
+    style: {
+      top: '9%',
+      left: '27%',
+      width: 'clamp(48px, 13vw, 60px)',
+      height: 'clamp(48px, 13vw, 60px)',
+      color: 'rgba(91, 146, 229, 0.08)',
+      opacity: 0.68,
+      transform: 'rotate(-7deg)',
+    },
   },
-  reactionPill: {
-    left: '3%',
-    bottom: '14%',
-    width: 'clamp(118px, 32vw, 158px)',
-    height: 'clamp(84px, 22vw, 112px)',
-    color: 'rgba(73, 131, 220, 0.1)',
-    transform: 'rotate(-6deg)',
+  {
+    id: 'bell-top',
+    icon: 'bell',
+    style: {
+      top: '12%',
+      right: '18%',
+      width: 'clamp(42px, 11vw, 54px)',
+      height: 'clamp(42px, 11vw, 54px)',
+      color: 'rgba(83, 139, 223, 0.08)',
+      opacity: 0.68,
+      transform: 'rotate(12deg)',
+    },
   },
-  heart: {
-    right: '-4%',
-    bottom: '18%',
-    width: 'clamp(108px, 28vw, 144px)',
-    height: 'clamp(108px, 28vw, 144px)',
-    color: 'rgba(101, 153, 233, 0.1)',
-    transform: 'rotate(9deg)',
+  {
+    id: 'paperclip-top',
+    icon: 'paperclip',
+    style: {
+      top: '18%',
+      right: '2%',
+      width: 'clamp(54px, 14vw, 70px)',
+      height: 'clamp(46px, 12vw, 58px)',
+      color: 'rgba(87, 144, 228, 0.08)',
+      opacity: 0.74,
+      transform: 'rotate(14deg)',
+    },
   },
-} satisfies Record<string, CSSProperties>;
+  {
+    id: 'typing-hero',
+    icon: 'typing',
+    style: {
+      top: '30%',
+      right: '-9%',
+      width: 'clamp(108px, 30vw, 150px)',
+      height: 'clamp(108px, 30vw, 150px)',
+      color: 'rgba(88, 143, 227, 0.1)',
+      opacity: 0.86,
+      transform: 'rotate(6deg)',
+    },
+  },
+  {
+    id: 'star-west',
+    icon: 'star',
+    style: {
+      top: '38%',
+      left: '2%',
+      width: 'clamp(38px, 10vw, 48px)',
+      height: 'clamp(38px, 10vw, 48px)',
+      color: 'rgba(99, 156, 239, 0.07)',
+      opacity: 0.62,
+      transform: 'rotate(2deg)',
+    },
+  },
+  {
+    id: 'quotes-hero',
+    icon: 'quotes',
+    style: {
+      top: '46%',
+      left: '-10%',
+      width: 'clamp(80px, 24vw, 108px)',
+      height: 'clamp(80px, 24vw, 108px)',
+      color: 'rgba(88, 142, 226, 0.1)',
+      opacity: 0.8,
+      transform: 'rotate(-14deg)',
+    },
+  },
+  {
+    id: 'reaction-mid',
+    icon: 'reaction',
+    style: {
+      top: '53%',
+      right: '8%',
+      width: 'clamp(74px, 20vw, 94px)',
+      height: 'clamp(52px, 14vw, 66px)',
+      color: 'rgba(78, 134, 219, 0.08)',
+      opacity: 0.76,
+      transform: 'rotate(8deg)',
+    },
+  },
+  {
+    id: 'heart-mid',
+    icon: 'heart',
+    style: {
+      top: '59%',
+      right: '29%',
+      width: 'clamp(48px, 13vw, 60px)',
+      height: 'clamp(48px, 13vw, 60px)',
+      color: 'rgba(99, 154, 235, 0.07)',
+      opacity: 0.66,
+      transform: 'rotate(7deg)',
+    },
+  },
+  {
+    id: 'pin-mid',
+    icon: 'pin',
+    style: {
+      top: '66%',
+      right: '3%',
+      width: 'clamp(46px, 13vw, 60px)',
+      height: 'clamp(46px, 13vw, 60px)',
+      color: 'rgba(90, 147, 230, 0.08)',
+      opacity: 0.7,
+      transform: 'rotate(12deg)',
+    },
+  },
+  {
+    id: 'message-lower-right',
+    icon: 'message',
+    style: {
+      top: '73%',
+      right: '-8%',
+      width: 'clamp(70px, 19vw, 88px)',
+      height: 'clamp(70px, 19vw, 88px)',
+      color: 'rgba(91, 148, 231, 0.08)',
+      opacity: 0.72,
+      transform: 'rotate(-8deg)',
+    },
+  },
+  {
+    id: 'smile-lower-left',
+    icon: 'smile',
+    style: {
+      top: '78%',
+      left: '12%',
+      width: 'clamp(48px, 13vw, 58px)',
+      height: 'clamp(48px, 13vw, 58px)',
+      color: 'rgba(104, 159, 239, 0.06)',
+      opacity: 0.6,
+      transform: 'rotate(-6deg)',
+    },
+  },
+  {
+    id: 'bookmark-bottom',
+    icon: 'bookmark',
+    style: {
+      bottom: '11%',
+      left: '30%',
+      width: 'clamp(46px, 12vw, 58px)',
+      height: 'clamp(46px, 12vw, 58px)',
+      color: 'rgba(97, 153, 235, 0.07)',
+      opacity: 0.64,
+      transform: 'rotate(9deg)',
+    },
+  },
+  {
+    id: 'paperclip-bottom',
+    icon: 'paperclip',
+    style: {
+      bottom: '24%',
+      left: '18%',
+      width: 'clamp(50px, 13vw, 64px)',
+      height: 'clamp(42px, 11vw, 52px)',
+      color: 'rgba(92, 149, 231, 0.06)',
+      opacity: 0.58,
+      transform: 'rotate(-9deg)',
+    },
+  },
+  {
+    id: 'sparkles-southwest',
+    icon: 'sparkles',
+    style: {
+      bottom: '18%',
+      left: '6%',
+      width: 'clamp(52px, 14vw, 66px)',
+      height: 'clamp(52px, 14vw, 66px)',
+      color: 'rgba(103, 159, 239, 0.08)',
+      opacity: 0.68,
+      transform: 'rotate(4deg)',
+    },
+  },
+  {
+    id: 'bell-southeast',
+    icon: 'bell',
+    style: {
+      bottom: '30%',
+      right: '33%',
+      width: 'clamp(38px, 10vw, 48px)',
+      height: 'clamp(38px, 10vw, 48px)',
+      color: 'rgba(98, 154, 236, 0.06)',
+      opacity: 0.54,
+      transform: 'rotate(-8deg)',
+    },
+  },
+  {
+    id: 'star-southwest',
+    icon: 'star',
+    style: {
+      bottom: '41%',
+      left: '21%',
+      width: 'clamp(34px, 9vw, 44px)',
+      height: 'clamp(34px, 9vw, 44px)',
+      color: 'rgba(102, 158, 239, 0.06)',
+      opacity: 0.54,
+      transform: 'rotate(5deg)',
+    },
+  },
+  {
+    id: 'typing-small',
+    icon: 'typing',
+    style: {
+      bottom: '35%',
+      right: '-7%',
+      width: 'clamp(66px, 18vw, 84px)',
+      height: 'clamp(66px, 18vw, 84px)',
+      color: 'rgba(93, 149, 231, 0.07)',
+      opacity: 0.62,
+      transform: 'rotate(-6deg)',
+    },
+  },
+  {
+    id: 'heart-hero',
+    icon: 'heart',
+    style: {
+      bottom: '14%',
+      right: '-6%',
+      width: 'clamp(96px, 26vw, 126px)',
+      height: 'clamp(96px, 26vw, 126px)',
+      color: 'rgba(100, 153, 233, 0.09)',
+      opacity: 0.78,
+      transform: 'rotate(9deg)',
+    },
+  },
+  {
+    id: 'reaction-hero',
+    icon: 'reaction',
+    style: {
+      bottom: '13%',
+      left: '-2%',
+      width: 'clamp(98px, 28vw, 128px)',
+      height: 'clamp(70px, 19vw, 90px)',
+      color: 'rgba(83, 140, 224, 0.08)',
+      opacity: 0.7,
+      transform: 'rotate(-7deg)',
+    },
+  },
+  {
+    id: 'quotes-upper',
+    icon: 'quotes',
+    style: {
+      top: '27%',
+      left: '-5%',
+      width: 'clamp(42px, 11vw, 54px)',
+      height: 'clamp(42px, 11vw, 54px)',
+      color: 'rgba(103, 160, 240, 0.07)',
+      opacity: 0.56,
+      transform: 'rotate(10deg)',
+    },
+  },
+  {
+    id: 'message-top-right',
+    icon: 'message',
+    style: {
+      top: '6%',
+      right: '30%',
+      width: 'clamp(42px, 11vw, 52px)',
+      height: 'clamp(42px, 11vw, 52px)',
+      color: 'rgba(104, 160, 241, 0.06)',
+      opacity: 0.52,
+      transform: 'rotate(5deg)',
+    },
+  },
+  {
+    id: 'bookmark-mid-right',
+    icon: 'bookmark',
+    style: {
+      top: '49%',
+      right: '20%',
+      width: 'clamp(38px, 10vw, 48px)',
+      height: 'clamp(38px, 10vw, 48px)',
+      color: 'rgba(102, 159, 239, 0.06)',
+      opacity: 0.52,
+      transform: 'rotate(-7deg)',
+    },
+  },
+  {
+    id: 'sparkles-mid-right',
+    icon: 'sparkles',
+    style: {
+      top: '56%',
+      right: '40%',
+      width: 'clamp(28px, 8vw, 36px)',
+      height: 'clamp(28px, 8vw, 36px)',
+      color: 'rgba(110, 166, 245, 0.06)',
+      opacity: 0.48,
+      transform: 'rotate(8deg)',
+    },
+  },
+  {
+    id: 'pin-lower-left',
+    icon: 'pin',
+    style: {
+      bottom: '36%',
+      left: '3%',
+      width: 'clamp(38px, 10vw, 48px)',
+      height: 'clamp(38px, 10vw, 48px)',
+      color: 'rgba(103, 160, 240, 0.06)',
+      opacity: 0.5,
+      transform: 'rotate(-12deg)',
+    },
+  },
+  {
+    id: 'smile-lower-right',
+    icon: 'smile',
+    style: {
+      bottom: '25%',
+      right: '14%',
+      width: 'clamp(40px, 11vw, 50px)',
+      height: 'clamp(40px, 11vw, 50px)',
+      color: 'rgba(102, 159, 239, 0.06)',
+      opacity: 0.54,
+      transform: 'rotate(10deg)',
+    },
+  },
+  {
+    id: 'star-top-center',
+    icon: 'star',
+    style: {
+      top: '23%',
+      left: '39%',
+      width: 'clamp(30px, 8vw, 38px)',
+      height: 'clamp(30px, 8vw, 38px)',
+      color: 'rgba(108, 164, 244, 0.05)',
+      opacity: 0.42,
+      transform: 'rotate(-4deg)',
+    },
+  },
+] satisfies CommentBackdropOrnament[];
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -870,29 +1220,35 @@ function ConversationStackOutlineIcon() {
       <path
         d="M18.4 17.8H39.1C43.9 17.8 47.8 21.7 47.8 26.5V33.1C47.8 37.9 43.9 41.8 39.1 41.8H29.5L22.3 47V41.8H18.4C13.6 41.8 9.7 37.9 9.7 33.1V26.5C9.7 21.7 13.6 17.8 18.4 17.8Z"
         stroke="currentColor"
-        strokeWidth="2.6"
+        strokeWidth="2.15"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M32.4 25.6H53.6C58.4 25.6 62.3 29.5 62.3 34.3V41C62.3 45.8 58.4 49.7 53.6 49.7H44L36.8 54.9V49.7H32.4C27.6 49.7 23.7 45.8 23.7 41V34.3C23.7 29.5 27.6 25.6 32.4 25.6Z"
         stroke="currentColor"
-        strokeWidth="2.6"
+        strokeWidth="2.15"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      <path d="M35.5 35.9H50.5" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" />
+      <path d="M35.5 42.3H45.7" stroke="currentColor" strokeWidth="2.15" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function MessageBubbleOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
       <path
-        d="M35.5 35.9H50.5"
+        d="M18.8 18.6H45.2C50.1 18.6 54 22.5 54 27.4V36.9C54 41.8 50.1 45.7 45.2 45.7H31.7L24.8 50.8V45.7H18.8C13.9 45.7 10 41.8 10 36.9V27.4C10 22.5 13.9 18.6 18.8 18.6Z"
         stroke="currentColor"
-        strokeWidth="2.6"
+        strokeWidth="2.05"
         strokeLinecap="round"
+        strokeLinejoin="round"
       />
-      <path
-        d="M35.5 42.3H45.7"
-        stroke="currentColor"
-        strokeWidth="2.6"
-        strokeLinecap="round"
-      />
+      <path d="M20.9 29.2H43.1" stroke="currentColor" strokeWidth="2.05" strokeLinecap="round" />
+      <path d="M20.9 35.9H35.6" stroke="currentColor" strokeWidth="2.05" strokeLinecap="round" />
     </svg>
   );
 }
@@ -903,7 +1259,7 @@ function SoftHeartOutlineIcon() {
       <path
         d="M32 49.7C30.7 48.8 16.5 36.9 16.5 27.9C16.5 22.8 20.6 18.8 25.7 18.8C28.9 18.8 31.7 20.3 33.3 22.9C35 20.3 37.8 18.8 41 18.8C46 18.8 50.2 22.8 50.2 27.9C50.2 36.9 36 48.8 34.7 49.7H32Z"
         stroke="currentColor"
-        strokeWidth="2.8"
+        strokeWidth="2.2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -917,27 +1273,27 @@ function SparklesOutlineIcon() {
       <path
         d="M31.6 14.2L34.7 24.5L45 27.6L34.7 30.7L31.6 41L28.5 30.7L18.2 27.6L28.5 24.5L31.6 14.2Z"
         stroke="currentColor"
-        strokeWidth="2.6"
+        strokeWidth="2.05"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M47.3 13.9L48.6 18.3L53 19.6L48.6 20.9L47.3 25.3L46 20.9L41.6 19.6L46 18.3L47.3 13.9Z"
         stroke="currentColor"
-        strokeWidth="2.4"
+        strokeWidth="1.95"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M18.6 39.8L20 44.2L24.4 45.6L20 46.9L18.6 51.3L17.3 46.9L12.9 45.6L17.3 44.2L18.6 39.8Z"
         stroke="currentColor"
-        strokeWidth="2.4"
+        strokeWidth="1.95"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="14.6" cy="20.2" r="2" fill="currentColor" />
-      <circle cx="49.8" cy="42.8" r="1.8" fill="currentColor" />
-      <circle cx="23.4" cy="55" r="1.6" fill="currentColor" />
+      <circle cx="14.6" cy="20.2" r="1.8" fill="currentColor" />
+      <circle cx="49.8" cy="42.8" r="1.6" fill="currentColor" />
+      <circle cx="23.4" cy="55" r="1.4" fill="currentColor" />
     </svg>
   );
 }
@@ -948,13 +1304,13 @@ function TypingBubbleOutlineIcon() {
       <path
         d="M19.2 18.5H44.8C50 18.5 54.2 22.7 54.2 27.9V38C54.2 43.2 50 47.4 44.8 47.4H31.4L24.3 52.8V47.4H19.2C14 47.4 9.8 43.2 9.8 38V27.9C9.8 22.7 14 18.5 19.2 18.5Z"
         stroke="currentColor"
-        strokeWidth="2.6"
+        strokeWidth="2.05"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="23.6" cy="33.2" r="2.4" fill="currentColor" />
-      <circle cx="32" cy="33.2" r="2.4" fill="currentColor" />
-      <circle cx="40.4" cy="33.2" r="2.4" fill="currentColor" />
+      <circle cx="23.6" cy="33.2" r="2.15" fill="currentColor" />
+      <circle cx="32" cy="33.2" r="2.15" fill="currentColor" />
+      <circle cx="40.4" cy="33.2" r="2.15" fill="currentColor" />
     </svg>
   );
 }
@@ -965,14 +1321,14 @@ function QuoteMarksOutlineIcon() {
       <path
         d="M24 20.8C17.2 21.6 12.3 26.9 12.3 33.4C12.3 38.6 16 42.4 21.2 42.4H28.1V27.1H21.1C21.4 24.7 22.4 22.7 24.8 21.1"
         stroke="currentColor"
-        strokeWidth="2.8"
+        strokeWidth="2.15"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M47.1 20.8C40.3 21.6 35.4 26.9 35.4 33.4C35.4 38.6 39.1 42.4 44.3 42.4H51.2V27.1H44.2C44.5 24.7 45.5 22.7 47.9 21.1"
         stroke="currentColor"
-        strokeWidth="2.8"
+        strokeWidth="2.15"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -986,53 +1342,153 @@ function ReactionPillOutlineIcon() {
       <path
         d="M15.6 8.8H48.4C53.6 8.8 57.8 13 57.8 18.2V25.8C57.8 31 53.6 35.2 48.4 35.2H15.6C10.4 35.2 6.2 31 6.2 25.8V18.2C6.2 13 10.4 8.8 15.6 8.8Z"
         stroke="currentColor"
-        strokeWidth="2.4"
+        strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
         d="M23 27.2L19.7 24C18.8 23.1 18.8 21.7 19.7 20.8C20.6 19.9 22 19.9 22.9 20.8L23.2 21.1L23.5 20.8C24.4 19.9 25.8 19.9 26.7 20.8C27.6 21.7 27.6 23.1 26.7 24L23.4 27.2H23Z"
         stroke="currentColor"
-        strokeWidth="2.2"
+        strokeWidth="1.9"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="38.6" cy="22" r="2.1" fill="currentColor" />
-      <circle cx="45.8" cy="22" r="2.1" fill="currentColor" />
+      <circle cx="38.6" cy="22" r="1.9" fill="currentColor" />
+      <circle cx="45.8" cy="22" r="1.9" fill="currentColor" />
     </svg>
   );
+}
+
+function BookmarkOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M21.3 17.6H42.7C45.7 17.6 48.1 20 48.1 23V46.4L32 38.6L15.9 46.4V23C15.9 20 18.3 17.6 21.3 17.6Z"
+        stroke="currentColor"
+        strokeWidth="2.05"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function BellOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M32 16.8C24.9 16.8 19.2 22.5 19.2 29.6V35.7C19.2 38 18.3 40.3 16.7 41.9L14.5 44.1H49.5L47.3 41.9C45.7 40.3 44.8 38 44.8 35.7V29.6C44.8 22.5 39.1 16.8 32 16.8Z"
+        stroke="currentColor"
+        strokeWidth="2.05"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M27.2 48C28 50.6 29.8 51.8 32 51.8C34.2 51.8 36 50.6 36.8 48" stroke="currentColor" strokeWidth="2.05" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function PaperclipOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M39.7 23.6L26.5 36.8C23.6 39.7 23.6 44.3 26.5 47.2C29.3 50.1 33.9 50.1 36.8 47.2L49.5 34.5C53.3 30.7 53.3 24.6 49.5 20.8C45.7 17 39.6 17 35.8 20.8L22.4 34.2C19.7 36.9 19.7 41.3 22.4 44C25.1 46.7 29.5 46.7 32.2 44L44.1 32.1"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function PinOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M24.6 18.7L45.4 39.5"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+      />
+      <path
+        d="M20.7 24.2L27.5 18.1C29.5 16.3 32.6 16.4 34.5 18.3L45.7 29.5C47.6 31.4 47.7 34.5 45.9 36.5L39.8 43.3L34 37.5L23.4 48.1"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path d="M23.4 48.1L18.8 52.7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function SmileOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <circle cx="32" cy="32" r="18.5" stroke="currentColor" strokeWidth="2" />
+      <circle cx="25.6" cy="28.8" r="1.8" fill="currentColor" />
+      <circle cx="38.4" cy="28.8" r="1.8" fill="currentColor" />
+      <path d="M24.8 36.4C26.9 39 29.2 40.2 32 40.2C34.8 40.2 37.1 39 39.2 36.4" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function StarOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M32 15.2L36.9 25.1L47.8 26.7L39.9 34.4L41.8 45.3L32 40.1L22.2 45.3L24.1 34.4L16.2 26.7L27.1 25.1L32 15.2Z"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
+  switch (name) {
+    case 'conversation':
+      return <ConversationStackOutlineIcon />;
+    case 'message':
+      return <MessageBubbleOutlineIcon />;
+    case 'typing':
+      return <TypingBubbleOutlineIcon />;
+    case 'quotes':
+      return <QuoteMarksOutlineIcon />;
+    case 'reaction':
+      return <ReactionPillOutlineIcon />;
+    case 'heart':
+      return <SoftHeartOutlineIcon />;
+    case 'sparkles':
+      return <SparklesOutlineIcon />;
+    case 'bookmark':
+      return <BookmarkOutlineIcon />;
+    case 'bell':
+      return <BellOutlineIcon />;
+    case 'paperclip':
+      return <PaperclipOutlineIcon />;
+    case 'pin':
+      return <PinOutlineIcon />;
+    case 'smile':
+      return <SmileOutlineIcon />;
+    case 'star':
+      return <StarOutlineIcon />;
+    default:
+      return null;
+  }
 }
 
 function CommentBackdropOrnaments() {
   return (
     <div className="channel-dialog-screen__ornaments" aria-hidden>
-      <span
-        className="channel-dialog-screen__ornament"
-        style={COMMENT_BACKDROP_ORNAMENT_STYLES.conversationHero}
-      >
-        <ConversationStackOutlineIcon />
-      </span>
-      <span
-        className="channel-dialog-screen__ornament"
-        style={COMMENT_BACKDROP_ORNAMENT_STYLES.sparkles}
-      >
-        <SparklesOutlineIcon />
-      </span>
-      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.typing}>
-        <TypingBubbleOutlineIcon />
-      </span>
-      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.quotes}>
-        <QuoteMarksOutlineIcon />
-      </span>
-      <span
-        className="channel-dialog-screen__ornament"
-        style={COMMENT_BACKDROP_ORNAMENT_STYLES.reactionPill}
-      >
-        <ReactionPillOutlineIcon />
-      </span>
-      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.heart}>
-        <SoftHeartOutlineIcon />
-      </span>
+      {COMMENT_BACKDROP_ORNAMENTS.map((ornament) => (
+        <span key={ornament.id} className="channel-dialog-screen__ornament" style={ornament.style}>
+          <CommentBackdropIcon name={ornament.icon} />
+        </span>
+      ))}
     </div>
   );
 }

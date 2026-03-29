@@ -2539,17 +2539,17 @@
 .channel-dialog-screen__ornament {
   position: absolute;
   display: block;
-  opacity: 0.96;
+  opacity: 1;
 }
 
 .channel-dialog-screen__ornament::before {
   content: '';
   position: absolute;
-  inset: -18%;
+  inset: -12%;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.52), rgba(255, 255, 255, 0) 72%);
-  filter: blur(24px);
-  opacity: 0.88;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0) 72%);
+  filter: blur(18px);
+  opacity: 0.54;
 }
 
 .channel-dialog-screen__ornament svg {
