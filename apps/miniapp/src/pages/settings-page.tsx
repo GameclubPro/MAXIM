@@ -3403,10 +3403,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (!rulesDraft.text.trim()) {
+    if (!rulesDraft.autoTextEnabled && !rulesDraft.text.trim()) {
       setRulesTextError('Введите текст правил перед публикацией.');
       return;
     }
+    setRulesTextError('');
 
     if (rulesDraft.text.length > MAX_CHAT_RULES_TEXT_LENGTH) {
       setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);

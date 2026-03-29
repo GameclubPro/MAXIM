@@ -9184,6 +9184,86 @@ describe('AdminService chat rules', () => {
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
   });
 
+  it('publishes rules with autofilled text when the stored draft is empty', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: true,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-auto-1',
+        url: 'https://max.ru/chats/chat-1/message/601',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service, 'getSettings')
+      .mockResolvedValue(chatSettingsSchema.parse({ russianProfanityFilterEnabled: true }));
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
+      {
+        textFormat: 'markdown',
+      },
+    );
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        text: expect.stringContaining('Пожалуйста, без мата и грубой лексики.'),
+        publishedMessageId: 'mid-rules-auto-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/601',
+        publishedAt: expect.any(Date),
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'PUBLISH_CHAT_RULES',
+        payload: expect.objectContaining({
+          autofilledTextApplied: true,
+          source: 'miniapp',
+        }),
+      }),
+    });
+  });
+
   it('publishes rules even when MAX does not return a direct post link', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({
