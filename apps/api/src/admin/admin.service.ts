@@ -11533,8 +11533,8 @@ export class AdminService {
 
         deliveredAdminUserIds.push(adminUserId);
         privateChatId =
-          privateChatId ??
           this.readTrimmedString(published.chatId) ??
+          privateChatId ??
           (await this.findLatestPrivateChatIdForUser(adminUserId));
 
         if (!privateChatId) {
@@ -12025,6 +12025,7 @@ export class AdminService {
     options: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>;
   }) {
     let lastError: unknown = null;
+    let privateChatId = params.privateChatId;
     const attempts =
       Math.max(
         this.hasRetriableMaxAttachment(params.options)
@@ -12033,11 +12034,11 @@ export class AdminService {
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
       ) + 1;
 
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    for (let attempt = 1; attempt <= attempts; ) {
       try {
-        return params.privateChatId
+        return privateChatId
           ? await this.maxClient.sendMessageImmediateWithId(
-              params.privateChatId,
+              privateChatId,
               params.message,
               params.options,
             )
@@ -12048,6 +12049,10 @@ export class AdminService {
             );
       } catch (error: unknown) {
         lastError = error;
+        if (privateChatId && this.isPrivateDialogChatUnavailableError(error)) {
+          privateChatId = null;
+          continue;
+        }
         const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
           error,
           attempt,
@@ -12057,6 +12062,7 @@ export class AdminService {
           throw error;
         }
         await this.sleep(retryDelayMs);
+        attempt += 1;
       }
     }
 
@@ -12885,6 +12891,30 @@ export class AdminService {
     }
 
     return String(error).trim().toLowerCase();
+  }
+
+  private isPrivateDialogChatUnavailableError(error: unknown): boolean {
+    const status = this.extractMaxErrorStatus(error);
+    if (status === 404) {
+      return true;
+    }
+
+    if (status !== 403) {
+      return false;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('chat not found') ||
+      message.includes('not accessible') ||
+      message.includes('bot is not a chat member') ||
+      message.includes('forbidden')
+    );
   }
 
   private isBotAdminLookupDeniedError(error: unknown): boolean {

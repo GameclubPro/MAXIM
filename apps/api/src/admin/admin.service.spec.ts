@@ -10983,6 +10983,129 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('falls back to send-to-user when the cached admin private chat id is stale', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '555001' }]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-stale-private-chat-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T06:30:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-stale-private-chat-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: 'Предложка',
+        delivered: true,
+        deliveredToUserId: '98315271',
+        source: 'private_bot',
+      },
+      createdAt: new Date('2026-03-25T06:30:00.000Z'),
+    });
+
+    const tokenPublisherClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-stale-private-chat', url: null }),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['98315271']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '777000',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      sendMessageImmediateWithId: jest.fn().mockRejectedValue({
+        response: {
+          status: 404,
+          data: {
+            message: 'chat not found',
+          },
+        },
+      }),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'mid-suggestion-human-admin-fallback-1',
+        url: null,
+        chatId: '777001',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const tokenPublisher = new AdminService(
+      prisma as never,
+      tokenPublisherClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(tokenPublisher, tokenPublisherClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Предложка',
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      '98315271',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            deliveries: [
+              expect.objectContaining({
+                adminUserId: '98315271',
+                privateChatId: '777001',
+                messageId: 'mid-suggestion-human-admin-fallback-1',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
   it('publishes a reviewed suggestion and removes admin review buttons', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

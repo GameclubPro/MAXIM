@@ -49,6 +49,10 @@ export type QueueMetricsSnapshot = {
   generatedAt: string;
 };
 
+type QueueMetricsSnapshotOptions = {
+  maxAgeMs?: number;
+};
+
 const EMPTY_COUNTERS: QueueCounters = {
   waiting: 0,
   active: 0,
@@ -66,6 +70,10 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
 
 @Injectable()
 export class QueueMetricsService {
+  private snapshotCache: QueueMetricsSnapshot | null = null;
+  private snapshotCacheAtMs = 0;
+  private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly actionHealthService: ActionHealthService,
@@ -78,7 +86,42 @@ export class QueueMetricsService {
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
   ) {}
 
-  async getSnapshot(): Promise<QueueMetricsSnapshot> {
+  async getSnapshot(options: QueueMetricsSnapshotOptions = {}): Promise<QueueMetricsSnapshot> {
+    const maxAgeMs = options.maxAgeMs ?? 0;
+    const cachedSnapshot = this.getCachedSnapshot(maxAgeMs);
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+
+    if (this.snapshotPromise) {
+      return this.snapshotPromise;
+    }
+
+    this.snapshotPromise = this.buildSnapshot();
+
+    try {
+      const snapshot = await this.snapshotPromise;
+      this.snapshotCache = snapshot;
+      this.snapshotCacheAtMs = Date.now();
+      return snapshot;
+    } finally {
+      this.snapshotPromise = null;
+    }
+  }
+
+  private getCachedSnapshot(maxAgeMs: number): QueueMetricsSnapshot | null {
+    if (!this.snapshotCache || maxAgeMs <= 0) {
+      return null;
+    }
+
+    if (Date.now() - this.snapshotCacheAtMs > maxAgeMs) {
+      return null;
+    }
+
+    return this.snapshotCache;
+  }
+
+  private async buildSnapshot(): Promise<QueueMetricsSnapshot> {
     const [
       webhookCritical,
       webhookDefault,

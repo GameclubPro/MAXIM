@@ -32,7 +32,6 @@ const envSchema = z.object({
   INIT_DATA_MAX_AGE_SEC: z.coerce.number().int().positive().default(300),
   SYSTEM_ADMIN_USER_IDS: z.string().optional(),
 
-  WEBHOOK_RPS_LIMIT: z.coerce.number().int().positive().default(30),
   WEBHOOK_GLOBAL_RPS_LIMIT: z.coerce.number().int().positive().default(300),
   WEBHOOK_BURST_LIMIT: z.coerce.number().int().positive().default(450),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(200),

@@ -28,10 +28,16 @@ export type ReadinessSnapshot = {
   };
 };
 
+const READINESS_CACHE_TTL_MS = 2_000;
+const READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 5_000;
+
 @Injectable()
 export class HealthService implements OnModuleDestroy {
   private readonly redis: Redis;
   private readonly queueLagThresholdSec: number;
+  private readyCache: ReadinessSnapshot | null = null;
+  private readyCacheAtMs = 0;
+  private readyPromise: Promise<ReadinessSnapshot> | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -55,33 +61,56 @@ export class HealthService implements OnModuleDestroy {
   }
 
   async ready(): Promise<ReadinessSnapshot> {
-    const now = new Date().toISOString();
-    let database = false;
-    let redis = false;
-
-    try {
-      await this.prisma.$queryRawUnsafe('SELECT 1');
-      database = true;
-    } catch {
-      database = false;
+    const cachedSnapshot = this.getCachedReadySnapshot();
+    if (cachedSnapshot) {
+      return cachedSnapshot;
     }
 
-    try {
-      const pong = await this.redis.ping();
-      redis = pong.toUpperCase() === 'PONG';
-    } catch {
-      redis = false;
+    if (this.readyPromise) {
+      return this.readyPromise;
     }
 
-    const queueMetrics = await this.queueMetricsService.getSnapshot();
+    this.readyPromise = this.buildReadySnapshot();
+
+    try {
+      const snapshot = await this.readyPromise;
+      this.readyCache = snapshot;
+      this.readyCacheAtMs = Date.now();
+      return snapshot;
+    } finally {
+      this.readyPromise = null;
+    }
+  }
+
+  private getCachedReadySnapshot(): ReadinessSnapshot | null {
+    if (!this.readyCache) {
+      return null;
+    }
+
+    if (Date.now() - this.readyCacheAtMs > READINESS_CACHE_TTL_MS) {
+      return null;
+    }
+
+    return this.readyCache;
+  }
+
+  private async buildReadySnapshot(): Promise<ReadinessSnapshot> {
+    const [database, redis, queueMetrics, systemMode] = await Promise.all([
+      this.checkDatabase(),
+      this.checkRedis(),
+      this.queueMetricsService.getSnapshot({ maxAgeMs: READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS }),
+      this.systemModeService.getEffectiveSnapshot(),
+    ]);
+
     const queueLagOk = queueMetrics.effectiveLagSec <= this.queueLagThresholdSec;
-    const systemMode = await this.systemModeService.getEffectiveSnapshot();
 
     return {
       ok: database && redis && queueLagOk,
-      timestamp: now,
+      timestamp: new Date().toISOString(),
       systemMode: {
         ...systemMode,
+        queueLagSec: queueMetrics.effectiveLagSec,
+        action: queueMetrics.actionHealth,
         degraded: systemMode.mode === 'degrade',
       },
       checks: {
@@ -100,5 +129,23 @@ export class HealthService implements OnModuleDestroy {
         },
       },
     };
+  }
+
+  private async checkDatabase(): Promise<boolean> {
+    try {
+      await this.prisma.$queryRawUnsafe('SELECT 1');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async checkRedis(): Promise<boolean> {
+    try {
+      const pong = await this.redis.ping();
+      return pong.toUpperCase() === 'PONG';
+    } catch {
+      return false;
+    }
   }
 }
