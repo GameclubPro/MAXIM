@@ -12,10 +12,10 @@ PRE_PULL_HEAD=""
 if [[ $# -ge 2 ]]; then
   SERVICES=("${@:2}")
 else
-  SERVICES=("api-ingress" "api-enqueue" "api-moderation" "api-action" "miniapp-static")
+  SERVICES=("api-ingress" "api-admin" "api-enqueue" "api-moderation" "api-action" "miniapp-static")
 fi
 
-API_SERVICES=("api-ingress" "api-enqueue" "api-moderation" "api-action")
+API_SERVICES=("api-ingress" "api-admin" "api-enqueue" "api-moderation" "api-action")
 
 contains_service() {
   local needle="$1"
@@ -54,6 +54,7 @@ ensure_compose_env() {
   local restore_candidates=(
     "infra-api-1"
     "infra-api-ingress-1"
+    "infra-api-admin-1"
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
     "infra-api-action-1"
@@ -238,11 +239,19 @@ docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICE
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
+if contains_service "api-admin" "${SERVICES[@]}"; then
+  wait_for_url "http://127.0.0.1:3002/api/health/live" 180
+  wait_for_url "http://127.0.0.1:3002/api/health/ready" 180
+fi
 wait_for_url "https://maxim.play-team.ru/api/health/live" 180
 wait_for_url "https://maxim.play-team.ru/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
 curl -i http://127.0.0.1:3001/api/health/ready
+if contains_service "api-admin" "${SERVICES[@]}"; then
+  curl -i http://127.0.0.1:3002/api/health/live
+  curl -i http://127.0.0.1:3002/api/health/ready
+fi
 curl -i https://maxim.play-team.ru/api/health/live
 curl -i https://maxim.play-team.ru/api/health/ready
 

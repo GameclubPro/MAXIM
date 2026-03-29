@@ -36,6 +36,29 @@ services:
     ports:
       - '127.0.0.1:3001:3001'
 
+  api-admin:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ROLE: ingress
+      MAX_API_GLOBAL_RPS: 30
+      MAX_API_GLOBAL_RPS_CRITICAL: 12
+      MAX_API_GLOBAL_RPS_INTERACTIVE: 6
+      MAX_API_GLOBAL_RPS_BACKGROUND: 8
+      MAX_API_CHAT_RPS: 5
+      MAX_API_LIST_BOT_CHATS_CACHE_SEC: 120
+      MAX_API_CHAT_SNAPSHOT_CACHE_SEC: 300
+      MANAGED_ENTITY_HEADER_CACHE_SEC: 3600
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - '127.0.0.1:3002:3001'
+
   api-enqueue:
     build:
       context: ..

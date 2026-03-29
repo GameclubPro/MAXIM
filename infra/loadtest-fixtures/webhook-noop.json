@@ -1,0 +1,8 @@
+{
+  "update_type": "synthetic_load_test",
+  "update_id": "synthetic-load-template",
+  "probe": {
+    "kind": "synthetic_load_test",
+    "source": "infra/loadtest-fixtures/webhook-noop.json"
+  }
+}

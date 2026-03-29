@@ -6,24 +6,37 @@ cd "$ROOT_DIR"
 
 ensure_compose_env() {
   local tmp_env
+  local container_name
+  local restore_candidates=(
+    "infra-api-admin-1"
+    "infra-api-ingress-1"
+    "infra-api-enqueue-1"
+    "infra-api-moderation-1"
+    "infra-api-action-1"
+    "infra-api-1"
+  )
 
   if [[ -s .env ]]; then
     return 0
   fi
 
-  if docker ps --format '{{.Names}}' | grep -qx 'infra-api-1'; then
-    echo "Missing .env. Restoring it from infra-api-1 container env..."
+  for container_name in "${restore_candidates[@]}"; do
+    if ! docker ps --format '{{.Names}}' | grep -qx "$container_name"; then
+      continue
+    fi
+
+    echo "Missing .env. Restoring it from $container_name container env..."
     tmp_env="$(mktemp .env.restore.XXXXXX)"
-    if docker inspect infra-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
+    if docker inspect "$container_name" --format '{{range .Config.Env}}{{println .}}{{end}}' \
       | awk '!/^(PATH|NODE_VERSION|YARN_VERSION)=/' >"$tmp_env" && [[ -s "$tmp_env" ]]; then
       mv "$tmp_env" .env
       return 0
     fi
 
     rm -f "$tmp_env"
-    echo "Failed to restore .env from infra-api-1 container env."
+    echo "Failed to restore .env from $container_name container env."
     return 1
-  fi
+  done
 
   echo "Missing .env in project root"
   exit 1
