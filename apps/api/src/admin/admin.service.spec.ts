@@ -710,6 +710,11 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function flushAsyncTasks() {
+  await new Promise((resolve) => setImmediate(resolve));
+  await Promise.resolve();
+}
+
 function createLocalManagedEntityRow(options: {
   chatId: string;
   title: string;
@@ -3517,7 +3522,7 @@ describe('AdminService.listChannels', () => {
         },
       },
     ]);
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
   it('returns channel overview summary for each managed channel', async () => {
@@ -3745,10 +3750,10 @@ describe('AdminService.listChannels', () => {
         },
       },
     ]);
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
-  it('fills a cached channel avatar from chat snapshot when MAX list has no icon', async () => {
+  it('does not block default channel load on live snapshot hydration', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -3809,7 +3814,6 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         link: null,
-        avatarUrl: 'https://i.oneme.ru/channel-1.webp',
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
@@ -3819,17 +3823,9 @@ describe('AdminService.listChannels', () => {
       },
     ]);
 
-    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
-      trafficClass: 'interactive',
-    });
-    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
-      id: 'channel-1',
-      title: 'Кэш канала',
-      entityType: 'channel',
-      link: 'https://max.ru/channel-1',
-      participantsCount: 321,
-      avatarUrl: 'https://i.oneme.ru/channel-1.webp',
-    });
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntityHeader).not.toHaveBeenCalled();
   });
 
   it('revalidates cached channels during refresh and checks admin for current scan window candidates', async () => {
@@ -4152,7 +4148,7 @@ describe('AdminService.listChannels', () => {
         title: 'Новости MAX',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
+        link: 'https://max.ru/news',
         avatarUrl: 'https://i.oneme.ru/news.webp',
         channelOverview: {
           enabledScenariosCount: 1,
@@ -4857,7 +4853,7 @@ describe('AdminService.listChats', () => {
         channelOverview: null,
       },
     ]);
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
   it('bootstraps recent bot_added chats into the default chats list without remote discovery', async () => {
@@ -4937,7 +4933,7 @@ describe('AdminService.listChats', () => {
     expect(result).toEqual([
       {
         id: 'chat-2',
-        title: 'Новый чат',
+        title: 'Chat chat-2',
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'chat',
         link: null,
@@ -4952,9 +4948,9 @@ describe('AdminService.listChats', () => {
         channelOverview: null,
       },
     ]);
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
-    expect(maxClient.getChatTitle).toHaveBeenCalledWith('chat-2');
+    expect(maxClient.getChatTitle).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
@@ -5087,7 +5083,7 @@ describe('AdminService.listChats', () => {
       },
     ]);
 
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -5160,7 +5156,7 @@ describe('AdminService.listChats', () => {
         },
       },
     });
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
   });
 
@@ -5338,6 +5334,184 @@ describe('AdminService.listChats', () => {
 
     expect(chatContextCache.getManagedEntityHeader).toHaveBeenCalledWith('chat-1', 'chat');
     expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('does not call live MAX hydration for cached default managed lists', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatSnapshot: jest.fn(),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue({
+        id: 'channel-1',
+        title: 'Кэш канала',
+        entityType: 'channel',
+        link: null,
+        participantsCount: null,
+        avatarUrl: 'https://i.oneme.ru/channel-1.webp',
+      }),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        avatarUrl: 'https://i.oneme.ru/channel-1.webp',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns a cached stale channel header when interactive MAX snapshot refresh times out', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Кэш канала',
+      entityType: 'CHANNEL',
+    });
+
+    const cachedHeader = {
+      id: 'channel-1',
+      title: 'Кэш канала',
+      entityType: 'channel' as const,
+      link: null,
+      participantsCount: null,
+      avatarUrl: 'https://i.oneme.ru/channel-1.webp',
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockRejectedValue(
+        Object.assign(new Error('timeout of 5000ms exceeded'), {
+          code: 'ECONNABORTED',
+        }),
+      ),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue(cachedHeader),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getChannelHeader('channel-1', {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual(cachedHeader);
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      trafficClass: 'interactive',
+    });
+  });
+
+  it('backs off background header hydration after MAX API throttling', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      getChatSnapshot: jest
+        .fn()
+        .mockRejectedValue(new Error('MAX API background rate limit exceeded')),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    await flushAsyncTasks();
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      trafficClass: 'background',
+    });
+    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      60,
+    );
   });
 });
 

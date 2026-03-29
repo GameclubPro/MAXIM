@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { FastifyRequest } from 'fastify';
+import { timingSafeEqual } from 'node:crypto';
 import { WebhookParser } from './webhook.parser';
 import { WebhookRateLimitService } from './webhook-rate-limit.service';
 import { WebhookService } from './webhook.service';
@@ -47,7 +48,7 @@ export class WebhookController {
     const providedHeaderSecret = String(
       request.headers['x-max-bot-api-secret'] ?? request.headers['x-max-secret'] ?? '',
     );
-    if (providedHeaderSecret !== expectedHeaderSecret) {
+    if (!this.isMatchingWebhookSecret(providedHeaderSecret, expectedHeaderSecret)) {
       throw new ForbiddenException('Invalid webhook header secret');
     }
 
@@ -65,5 +66,14 @@ export class WebhookController {
       duplicate: result.duplicate,
       acceptedAt: new Date().toISOString(),
     };
+  }
+
+  private isMatchingWebhookSecret(provided: string, expected: string): boolean {
+    const providedBuffer = Buffer.from(provided);
+    const expectedBuffer = Buffer.from(expected);
+    return (
+      providedBuffer.length === expectedBuffer.length &&
+      timingSafeEqual(providedBuffer, expectedBuffer)
+    );
   }
 }

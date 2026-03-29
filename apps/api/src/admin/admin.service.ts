@@ -278,8 +278,8 @@ const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
 const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 1_500;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
-const MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT = 12;
-const MANAGED_ENTITY_AVATAR_SNAPSHOT_CONCURRENCY = 3;
+const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 25;
+const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 2;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -545,6 +545,7 @@ export class AdminService {
   >();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
+  private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -709,8 +710,10 @@ export class AdminService {
         cached,
       );
       if (initial.length > 0) {
+        const items = await this.hydrateManagedEntities(initial);
+        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
         return {
-          items: await this.hydrateManagedEntities(initial),
+          items,
           refresh:
             options.includeRefreshState === true
               ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
@@ -759,15 +762,15 @@ export class AdminService {
             this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType),
           )
         : false);
+    const items =
+      fallback.length > 0
+        ? skipAvatarHydration
+          ? await this.attachChannelOverview(await this.attachManagedEntityAvatars(fallback))
+          : await this.hydrateManagedEntities(fallback)
+        : [];
+    this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
     return {
-      items:
-        fallback.length > 0
-          ? skipAvatarHydration
-            ? await this.attachChannelOverview(
-                await this.attachManagedEntityAvatars(fallback, { skipRemoteFetch: true }),
-              )
-            : await this.hydrateManagedEntities(fallback)
-          : [],
+      items,
       refresh: discovered.refresh,
     };
   }
@@ -1146,10 +1149,6 @@ export class AdminService {
         channelOverview: null,
       };
 
-      if (this.isFallbackTitle(chat.id, chat.title)) {
-        await this.refreshChatTitle(chat);
-      }
-
       bootstrapped.push(chat);
       if (bootstrapped.length >= RECENT_BOT_ADDED_BOOTSTRAP_LIMIT) {
         break;
@@ -1353,10 +1352,6 @@ export class AdminService {
             channelOverview: null,
           };
 
-          if (this.isFallbackTitle(chat.id, chat.title)) {
-            await this.refreshChatTitle(chat);
-          }
-
           return {
             kind: 'include' as const,
             chat,
@@ -1416,8 +1411,9 @@ export class AdminService {
         .sort((left, right) => right.lastEventTime - left.lastEventTime)
         .map((item) => item.chat);
       const hydratedItems = await this.attachChannelOverview(
-        await this.attachManagedEntityAvatars(mergedChats, { skipRemoteFetch: true }),
+        await this.attachManagedEntityAvatars(mergedChats),
       );
+      this.scheduleManagedEntityHeaderHydration(user.userId, entityType, hydratedItems);
 
       return {
         items: hydratedItems,
@@ -1716,10 +1712,6 @@ export class AdminService {
             channelOverview: null,
           };
 
-          if (this.isFallbackTitle(chat.id, chat.title)) {
-            await this.refreshChatTitle(chat);
-          }
-
           return {
             kind: 'include' as const,
             chat,
@@ -1809,6 +1801,9 @@ export class AdminService {
           remoteChats: supportedCandidateChats,
         },
       );
+      this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
+        remoteChats: supportedCandidateChats,
+      });
       return {
         items,
         refresh:
@@ -12913,6 +12908,16 @@ export class AdminService {
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 
+  private isMaxApiTimeoutError(error: unknown): boolean {
+    const maybeCode = (error as { code?: unknown }).code;
+    if (typeof maybeCode === 'string' && maybeCode.trim().toUpperCase() === 'ECONNABORTED') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return message.includes('timeout');
+  }
+
   private isManagedEntitiesRefreshThrottledError(
     error: unknown,
   ): error is ManagedEntitiesRefreshThrottledError {
@@ -13119,32 +13124,6 @@ export class AdminService {
     });
   }
 
-  private async refreshChatTitle(chat: ChatSummary): Promise<void> {
-    try {
-      const refreshedTitle = await this.maxClient.getChatTitle(chat.id);
-      if (!refreshedTitle) {
-        return;
-      }
-
-      chat.title = refreshedTitle;
-      await this.prisma.chat.update({
-        where: { id: chat.id },
-        data: {
-          title: refreshedTitle,
-        },
-      });
-      await this.chatContextCache.invalidateManagedEntityHeader?.(chat.id);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: chat.id,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to refresh chat title from MAX API',
-      );
-    }
-  }
-
   private async listChatsFromAllowlist(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -13253,159 +13232,47 @@ export class AdminService {
 
   private async attachManagedEntityAvatars(
     chats: ChatSummary[],
-    options: {
+    _options: {
       remoteChats?: readonly MaxBotChat[];
-      skipRemoteFetch?: boolean;
     } = {},
   ): Promise<ChatSummary[]> {
-    const missingAvatarChats = chats.filter((chat) => !this.readTrimmedString(chat.avatarUrl));
-    if (missingAvatarChats.length === 0) {
+    if (chats.length === 0) {
       return chats;
     }
 
-    const avatarByChatId = new Map<string, string>();
+    const headersByChatId = new Map<string, ManagedEntityHeader>();
 
     await Promise.all(
-      missingAvatarChats.map(async (chat) => {
+      chats.map(async (chat) => {
         const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
           chat.id,
           chat.entityType,
         );
-        const avatarUrl = this.readTrimmedString(cachedHeader?.avatarUrl);
-        if (avatarUrl) {
-          avatarByChatId.set(chat.id, avatarUrl);
+        if (cachedHeader) {
+          headersByChatId.set(chat.id, cachedHeader);
         }
       }),
     );
 
-    const unresolvedChats = missingAvatarChats.filter((chat) => !avatarByChatId.has(chat.id));
-    const remoteChatsSource =
-      Array.isArray(options.remoteChats) && options.remoteChats.length > 0
-        ? options.remoteChats
-        : null;
-    const allowRemoteFetch = options.skipRemoteFetch !== true;
-
-    if (unresolvedChats.length > 0 && remoteChatsSource) {
-      const remoteByChatId = new Map(remoteChatsSource.map((chat) => [chat.chatId, chat]));
-
-      await Promise.all(
-        unresolvedChats.map(async (chat) => {
-          const remoteChat = remoteByChatId.get(chat.id);
-          const avatarUrl = this.readTrimmedString(remoteChat?.avatarUrl);
-          if (!avatarUrl) {
-            return;
-          }
-
-          avatarByChatId.set(chat.id, avatarUrl);
-          await this.chatContextCache.setManagedEntityHeader?.({
-            id: chat.id,
-            title: remoteChat?.title?.trim() || chat.title,
-            entityType: chat.entityType,
-            link: remoteChat?.link ?? chat.link ?? null,
-            participantsCount: null,
-            avatarUrl,
-          });
-        }),
-      );
-    } else if (
-      allowRemoteFetch &&
-      unresolvedChats.length > 0 &&
-      typeof this.maxClient.listBotChats === 'function'
-    ) {
-      try {
-        const remoteChats = await this.maxClient.listBotChats({ trafficClass: 'interactive' });
-        if (!Array.isArray(remoteChats)) {
-          return chats;
-        }
-        const remoteByChatId = new Map(remoteChats.map((chat) => [chat.chatId, chat]));
-
-        await Promise.all(
-          unresolvedChats.map(async (chat) => {
-            const remoteChat = remoteByChatId.get(chat.id);
-            const avatarUrl = this.readTrimmedString(remoteChat?.avatarUrl);
-            if (!avatarUrl) {
-              return;
-            }
-
-            avatarByChatId.set(chat.id, avatarUrl);
-            await this.chatContextCache.setManagedEntityHeader?.({
-              id: chat.id,
-              title: remoteChat?.title?.trim() || chat.title,
-              entityType: chat.entityType,
-              link: remoteChat?.link ?? chat.link ?? null,
-              participantsCount: null,
-              avatarUrl,
-            });
-          }),
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          { err: error instanceof Error ? error.message : String(error) },
-          'Failed to attach managed entity avatars to managed entities list',
-        );
-      }
-    }
-
-    const snapshotFallbackChats = allowRemoteFetch
-      ? unresolvedChats
-          .filter((chat) => !avatarByChatId.has(chat.id))
-          .sort((left, right) => {
-            if (left.entityType === right.entityType) {
-              return 0;
-            }
-            return left.entityType === 'channel' ? -1 : 1;
-          })
-          .slice(0, MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT)
-      : [];
-
-    if (
-      snapshotFallbackChats.length > 0 &&
-      typeof this.maxClient.getChatSnapshot === 'function'
-    ) {
-      await this.mapWithConcurrencyLimit(
-        snapshotFallbackChats,
-        MANAGED_ENTITY_AVATAR_SNAPSHOT_CONCURRENCY,
-        async (chat) => {
-          try {
-            const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
-              trafficClass: 'interactive',
-            });
-            const avatarUrl = this.readTrimmedString(snapshot.avatarUrl);
-            if (!avatarUrl) {
-              return null;
-            }
-
-            avatarByChatId.set(chat.id, avatarUrl);
-            await this.chatContextCache.setManagedEntityHeader?.({
-              id: chat.id,
-              title: snapshot.title?.trim() || chat.title,
-              entityType: chat.entityType,
-              link: snapshot.link ?? chat.link ?? null,
-              participantsCount: snapshot.participantsCount ?? null,
-              avatarUrl,
-            });
-          } catch {
-            return null;
-          }
-
-          return null;
-        },
-      );
-    }
-
-    if (avatarByChatId.size === 0) {
+    if (headersByChatId.size === 0) {
       return chats;
     }
 
     return chats.map((chat) => {
-      const avatarUrl = avatarByChatId.get(chat.id);
-      if (!avatarUrl) {
+      const header = headersByChatId.get(chat.id);
+      if (!header) {
         return chat;
       }
 
+      const title = this.readTrimmedString(header.title) ?? chat.title;
+      const link = this.readTrimmedString(header.link) ?? chat.link ?? null;
+      const avatarUrl = this.readTrimmedString(header.avatarUrl);
+
       return {
         ...chat,
-        avatarUrl,
+        title,
+        link,
+        ...(avatarUrl ? { avatarUrl } : {}),
       };
     });
   }
@@ -13462,6 +13329,211 @@ export class AdminService {
     }
     const withAvatars = await this.attachManagedEntityAvatars(chats, options);
     return this.attachChannelOverview(withAvatars);
+  }
+
+  private scheduleManagedEntityHeaderHydration(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    chats: ChatSummary[],
+    options: {
+      remoteChats?: readonly MaxBotChat[];
+    } = {},
+  ) {
+    if (chats.length === 0) {
+      return;
+    }
+
+    const key = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
+    if (this.managedEntityHeaderHydrationRuns.has(key)) {
+      return;
+    }
+
+    const chatsSnapshot = chats.map((chat) => ({ ...chat }));
+    const remoteChatsSnapshot =
+      Array.isArray(options.remoteChats) && options.remoteChats.length > 0
+        ? options.remoteChats.map((chat) => ({ ...chat }))
+        : undefined;
+
+    const pending = this.runManagedEntityHeaderHydration(
+      userId,
+      entityType,
+      key,
+      chatsSnapshot,
+      remoteChatsSnapshot,
+    )
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            entityType,
+            userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed entity header hydration failed',
+        );
+      })
+      .finally(() => {
+        if (this.managedEntityHeaderHydrationRuns.get(key) === pending) {
+          this.managedEntityHeaderHydrationRuns.delete(key);
+        }
+      });
+
+    this.managedEntityHeaderHydrationRuns.set(key, pending);
+  }
+
+  private async runManagedEntityHeaderHydration(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    refreshKey: string,
+    chats: ChatSummary[],
+    remoteChats?: readonly MaxBotChat[],
+  ): Promise<void> {
+    if (await this.isManagedEntitiesRefreshBackoffActive(userId, entityType, refreshKey)) {
+      return;
+    }
+
+    if (Array.isArray(remoteChats) && remoteChats.length > 0) {
+      await this.primeManagedEntityHeaders(chats, remoteChats);
+    }
+
+    const hydrationCandidates = (
+      await Promise.all(
+        chats.map(async (chat) => {
+          const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
+            chat.id,
+            chat.entityType,
+          );
+          return this.isManagedEntityHeaderStale(cachedHeader ?? null, chat) ? chat : null;
+        }),
+      )
+    )
+      .filter((chat): chat is ChatSummary => chat !== null)
+      .sort((left, right) => {
+        if (left.entityType === right.entityType) {
+          return 0;
+        }
+        return left.entityType === 'channel' ? -1 : 1;
+      })
+      .slice(0, MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE);
+
+    if (hydrationCandidates.length === 0 || typeof this.maxClient.getChatSnapshot !== 'function') {
+      return;
+    }
+
+    let shouldBackoff = false;
+    let failure: unknown = null;
+
+    await this.mapWithConcurrencyLimit(
+      hydrationCandidates,
+      MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY,
+      async (chat) => {
+        if (shouldBackoff) {
+          return null;
+        }
+
+        try {
+          const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
+            trafficClass: 'background',
+          });
+          await this.persistManagedEntityHeaderSnapshot(chat, snapshot);
+        } catch (error: unknown) {
+          if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+            shouldBackoff = true;
+            failure = error;
+          }
+        }
+
+        return null;
+      },
+    );
+
+    if (!shouldBackoff) {
+      return;
+    }
+
+    const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
+      userId,
+      entityType,
+      refreshKey,
+    );
+    this.logger.warn(
+      {
+        entityType,
+        userId,
+        backoffMs,
+        err: failure instanceof Error ? failure.message : String(failure),
+      },
+      'Paused managed entity header hydration after MAX API throttling',
+    );
+  }
+
+  private isManagedEntityHeaderStale(
+    header: ManagedEntityHeader | null,
+    chat: ChatSummary,
+    options: {
+      refreshMissingLink?: boolean;
+    } = {},
+  ): boolean {
+    if (!header) {
+      return true;
+    }
+
+    return (
+      this.isFallbackTitle(chat.id, header.title) ||
+      !this.readTrimmedString(header.avatarUrl) ||
+      (options.refreshMissingLink === true && !this.readTrimmedString(header.link))
+    );
+  }
+
+  private toHeaderChatSummary(header: ManagedEntityHeader): ChatSummary {
+    return {
+      id: header.id,
+      title: header.title,
+      createdAt: new Date(0).toISOString(),
+      entityType: header.entityType,
+      link: header.link,
+      ...(this.readTrimmedString(header.avatarUrl) ? { avatarUrl: header.avatarUrl } : {}),
+      channelOverview: null,
+    };
+  }
+
+  private async persistManagedEntityHeaderSnapshot(
+    chat: ChatSummary,
+    snapshot: {
+      title: string | null;
+      link: string | null;
+      participantsCount: number | null;
+      avatarUrl: string | null;
+    },
+  ): Promise<void> {
+    const title = this.readTrimmedString(snapshot.title) ?? chat.title;
+    const avatarUrl = this.readTrimmedString(snapshot.avatarUrl);
+    const link = this.readTrimmedString(snapshot.link) ?? chat.link ?? null;
+
+    if (!this.isFallbackTitle(chat.id, title) && title !== chat.title) {
+      try {
+        await this.prisma.chat.update({
+          where: { id: chat.id },
+          data: { title },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: chat.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to persist refreshed managed entity title',
+        );
+      }
+    }
+
+    await this.chatContextCache.setManagedEntityHeader?.({
+      id: chat.id,
+      title,
+      entityType: chat.entityType,
+      link,
+      participantsCount: snapshot.participantsCount ?? null,
+      avatarUrl,
+    });
   }
 
   private async upsertUserChatAccess(
@@ -13556,10 +13628,6 @@ export class AdminService {
       channelOverview: null,
     };
 
-    if (this.isFallbackTitle(chat.id, chat.title)) {
-      await this.refreshChatTitle(chat);
-    }
-
     return chat;
   }
 
@@ -13624,9 +13692,10 @@ export class AdminService {
     }
 
     try {
-      const remoteChats = await this.maxClient.listBotChats();
-      const discovered = remoteChats.find((item) => item.chatId === chatId);
-      if (discovered && discovered.entityType !== expectedEntityType) {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        trafficClass: 'interactive',
+      });
+      if (snapshot.entityType !== expectedEntityType) {
         throw new BadRequestException(
           expectedEntityType === 'channel'
             ? 'Этот ID относится к чату, а не к каналу.'
@@ -13651,7 +13720,12 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     const cached = await this.chatContextCache.getManagedEntityHeader?.(chatId, entityType);
-    if (cached) {
+    if (
+      cached &&
+      !this.isManagedEntityHeaderStale(cached, this.toHeaderChatSummary(cached), {
+        refreshMissingLink: entityType === 'channel',
+      })
+    ) {
       return cached;
     }
 
@@ -13664,7 +13738,9 @@ export class AdminService {
     });
 
     try {
-      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        trafficClass: 'interactive',
+      });
       const title = snapshot.title?.trim() || persistedChat?.title?.trim() || chatId;
 
       if (
@@ -13698,6 +13774,10 @@ export class AdminService {
         },
         'Failed to load managed entity header snapshot from MAX API',
       );
+    }
+
+    if (cached) {
+      return cached;
     }
 
     const fallbackHeader: ManagedEntityHeader = {

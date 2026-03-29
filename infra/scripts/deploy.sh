@@ -41,7 +41,7 @@ docker compose -f infra/docker-compose.yml pull
 docker compose -f infra/docker-compose.yml up -d --build --remove-orphans
 
 ensure_compose_env
-docker compose -f infra/docker-compose.yml exec -T api sh -lc \
+docker compose -f infra/docker-compose.yml exec -T api-ingress sh -lc \
   'cd /app/apps/api && ../../node_modules/.bin/prisma migrate deploy --schema prisma/schema.prisma'
 
 echo "Deployment complete"

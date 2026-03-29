@@ -5,14 +5,17 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 COMPOSE_FILES=(-f "infra/docker-compose.yml")
+ALTERNATE_COMPOSE_FILES=(-f "infra/docker-compose.scale.yml")
 BRANCH="${1:-main}"
 PRE_PULL_HEAD=""
 
 if [[ $# -ge 2 ]]; then
   SERVICES=("${@:2}")
 else
-  SERVICES=("api" "miniapp-static")
+  SERVICES=("api-ingress" "api-enqueue" "api-moderation" "api-action" "miniapp-static")
 fi
+
+API_SERVICES=("api-ingress" "api-enqueue" "api-moderation" "api-action")
 
 contains_service() {
   local needle="$1"
@@ -47,26 +50,36 @@ diff_in_paths() {
 
 ensure_compose_env() {
   local tmp_env
+  local container_name
+  local restore_candidates=(
+    "infra-api-ingress-1"
+    "infra-api-enqueue-1"
+    "infra-api-moderation-1"
+    "infra-api-action-1"
+    "infra-api-1"
+  )
 
   if [[ -s .env ]]; then
     return 0
   fi
 
-  if docker ps --format '{{.Names}}' | grep -qx 'infra-api-1'; then
-    echo "Missing .env. Restoring it from infra-api-1 container env..."
-    tmp_env="$(mktemp .env.restore.XXXXXX)"
-    if docker inspect infra-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
-      | awk '!/^(PATH|NODE_VERSION|YARN_VERSION)=/' >"$tmp_env" && [[ -s "$tmp_env" ]]; then
-      mv "$tmp_env" .env
-      return 0
+  for container_name in "${restore_candidates[@]}"; do
+    if docker ps --format '{{.Names}}' | grep -qx "$container_name"; then
+      echo "Missing .env. Restoring it from $container_name container env..."
+      tmp_env="$(mktemp .env.restore.XXXXXX)"
+      if docker inspect "$container_name" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+        | awk '!/^(PATH|NODE_VERSION|YARN_VERSION)=/' >"$tmp_env" && [[ -s "$tmp_env" ]]; then
+        mv "$tmp_env" .env
+        return 0
+      fi
+
+      rm -f "$tmp_env"
+      echo "Failed to restore /var/www/Chat_bot/.env from $container_name container env."
+      return 1
     fi
+  done
 
-    rm -f "$tmp_env"
-    echo "Failed to restore /var/www/Chat_bot/.env from infra-api-1 container env."
-    return 1
-  fi
-
-  echo "Missing /var/www/Chat_bot/.env and infra-api-1 is unavailable for restore."
+  echo "Missing /var/www/Chat_bot/.env and no running API container is available for restore."
   echo "Create .env manually, then rerun the deploy."
   return 1
 }
@@ -137,6 +150,11 @@ wait_for_postgres() {
   return 1
 }
 
+stop_conflicting_stacks() {
+  docker compose "${COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
+  docker compose "${ALTERNATE_COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
+}
+
 remove_stale_service_containers() {
   local service
   local container_id
@@ -162,7 +180,8 @@ remove_stale_service_containers() {
 
 run_migrations() {
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api-ingress \
+    npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -172,13 +191,19 @@ fi
 
 sync_branch
 ensure_compose_env
+stop_conflicting_stacks
 
 BUILD_API_IMAGE=0
-if contains_service "api" "${SERVICES[@]}"; then
+for service in "${API_SERVICES[@]}"; do
+  if contains_service "$service" "${SERVICES[@]}"; then
+    BUILD_API_IMAGE=1
+    break
+  fi
+done
+
+if [[ "$BUILD_API_IMAGE" -eq 0 ]] && diff_in_paths apps/api packages/contracts package.json package-lock.json tsconfig.base.json; then
   BUILD_API_IMAGE=1
-elif diff_in_paths apps/api packages/contracts package.json package-lock.json tsconfig.base.json; then
-  BUILD_API_IMAGE=1
-  echo "API-related changes detected. Building api image for migrations, but api service recreation was not requested."
+  echo "API-related changes detected. Building split API services for migrations, but API role recreation was not requested."
 fi
 
 docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
@@ -186,7 +211,7 @@ wait_for_postgres 180
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
   ensure_compose_env
-  docker compose "${COMPOSE_FILES[@]}" build api
+  docker compose "${COMPOSE_FILES[@]}" build "${API_SERVICES[@]}"
 fi
 
 if ! run_migrations; then
@@ -197,7 +222,7 @@ fi
 
 SERVICES_TO_BUILD=()
 for service in "${SERVICES[@]}"; do
-  if [[ "$service" == "api" ]] && [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  if [[ "$BUILD_API_IMAGE" -eq 1 ]] && contains_service "$service" "${API_SERVICES[@]}"; then
     continue
   fi
   SERVICES_TO_BUILD+=("$service")
@@ -212,10 +237,14 @@ remove_stale_service_containers "${SERVICES[@]}"
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
+wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
 wait_for_url "https://maxim.play-team.ru/api/health/live" 180
+wait_for_url "https://maxim.play-team.ru/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
+curl -i http://127.0.0.1:3001/api/health/ready
 curl -i https://maxim.play-team.ru/api/health/live
+curl -i https://maxim.play-team.ru/api/health/ready
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/

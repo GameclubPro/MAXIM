@@ -3,6 +3,7 @@ import { Injectable, Optional } from '@nestjs/common';
 import { WebhookStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
 import {
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
@@ -18,6 +19,13 @@ export type QueueCounters = {
   completed: number;
 };
 
+export type WebhookStatusMetrics = {
+  count: number;
+  oldestEventId: string | null;
+  oldestCreatedAt: string | null;
+  oldestLagSec: number;
+};
+
 export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   webhookCritical: QueueCounters;
@@ -25,6 +33,12 @@ export type QueueMetricsSnapshot = {
   webhookBackground: QueueCounters;
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
+  webhookEvents: {
+    received: WebhookStatusMetrics;
+    queued: WebhookStatusMetrics;
+    failed: WebhookStatusMetrics;
+  };
+  actionHealth: ActionHealthSnapshot;
   oldestQueuedEventId: string | null;
   oldestQueuedCreatedAt: string | null;
   oldestQueuedLagSec: number;
@@ -43,10 +57,18 @@ const EMPTY_COUNTERS: QueueCounters = {
   completed: 0,
 };
 
+const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
+  count: 0,
+  oldestEventId: null,
+  oldestCreatedAt: null,
+  oldestLagSec: 0,
+};
+
 @Injectable()
 export class QueueMetricsService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly actionHealthService: ActionHealthService,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_CRITICAL) private readonly webhookCriticalQueue?: Queue,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT) private readonly webhookDefaultQueue?: Queue,
     @Optional()
@@ -57,29 +79,29 @@ export class QueueMetricsService {
   ) {}
 
   async getSnapshot(): Promise<QueueMetricsSnapshot> {
-    const [webhookCritical, webhookDefault, webhookBackground, webhookLegacy, actions, oldestQueued, oldestReceived] = await Promise.all([
+    const [
+      webhookCritical,
+      webhookDefault,
+      webhookBackground,
+      webhookLegacy,
+      actions,
+      received,
+      queued,
+      failed,
+    ] = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
       this.readQueueCounters(this.webhookDefaultQueue),
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.actionQueue),
-      this.prisma.webhookEvent.findFirst({
-        where: { status: WebhookStatus.QUEUED },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, createdAt: true },
-      }),
-      this.prisma.webhookEvent.findFirst({
-        where: { status: WebhookStatus.RECEIVED },
-        orderBy: { createdAt: 'asc' },
-        select: { id: true, createdAt: true },
-      }),
+      this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
+      this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
+      this.readWebhookStatusMetrics(WebhookStatus.FAILED),
     ]);
 
-    const now = Date.now();
-    const oldestQueuedLagSec = oldestQueued ? Math.max(0, (now - oldestQueued.createdAt.getTime()) / 1_000) : 0;
-    const oldestReceivedLagSec = oldestReceived
-      ? Math.max(0, (now - oldestReceived.createdAt.getTime()) / 1_000)
-      : 0;
+    const actionHealth = this.actionHealthService.getSnapshot(60);
+    const oldestQueuedLagSec = queued.oldestLagSec;
+    const oldestReceivedLagSec = received.oldestLagSec;
     const effectiveLagSec = Math.max(oldestQueuedLagSec, oldestReceivedLagSec);
     const moderation = this.sumQueueCounters(
       webhookCritical,
@@ -95,14 +117,20 @@ export class QueueMetricsService {
       webhookBackground,
       webhookLegacy,
       actions,
-      oldestQueuedEventId: oldestQueued?.id ?? null,
-      oldestQueuedCreatedAt: oldestQueued ? oldestQueued.createdAt.toISOString() : null,
+      webhookEvents: {
+        received,
+        queued,
+        failed,
+      },
+      actionHealth,
+      oldestQueuedEventId: queued.oldestEventId,
+      oldestQueuedCreatedAt: queued.oldestCreatedAt,
       oldestQueuedLagSec,
-      oldestReceivedEventId: oldestReceived?.id ?? null,
-      oldestReceivedCreatedAt: oldestReceived ? oldestReceived.createdAt.toISOString() : null,
+      oldestReceivedEventId: received.oldestEventId,
+      oldestReceivedCreatedAt: received.oldestCreatedAt,
       oldestReceivedLagSec,
       effectiveLagSec,
-      generatedAt: new Date(now).toISOString(),
+      generatedAt: new Date().toISOString(),
     };
   }
 
@@ -133,5 +161,33 @@ export class QueueMetricsService {
       }),
       { ...EMPTY_COUNTERS },
     );
+  }
+
+  private async readWebhookStatusMetrics(status: WebhookStatus): Promise<WebhookStatusMetrics> {
+    const [count, oldestEvent] = await Promise.all([
+      this.prisma.webhookEvent.count({
+        where: { status },
+      }),
+      this.prisma.webhookEvent.findFirst({
+        where: { status },
+        orderBy: { createdAt: 'asc' },
+        select: { id: true, createdAt: true },
+      }),
+    ]);
+
+    if (!oldestEvent) {
+      return {
+        ...EMPTY_WEBHOOK_STATUS_METRICS,
+        count,
+      };
+    }
+
+    const oldestLagSec = Math.max(0, (Date.now() - oldestEvent.createdAt.getTime()) / 1_000);
+    return {
+      count,
+      oldestEventId: oldestEvent.id,
+      oldestCreatedAt: oldestEvent.createdAt.toISOString(),
+      oldestLagSec,
+    };
   }
 }

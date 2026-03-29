@@ -237,10 +237,14 @@ remove_stale_service_containers "${SERVICES[@]}"
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
+wait_for_url "http://127.0.0.1:3001/api/health/ready" 180
 wait_for_url "https://maxim.play-team.ru/api/health/live" 180
+wait_for_url "https://maxim.play-team.ru/api/health/ready" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
+curl -i http://127.0.0.1:3001/api/health/ready
 curl -i https://maxim.play-team.ru/api/health/live
+curl -i https://maxim.play-team.ru/api/health/ready
 
 if contains_service "miniapp-static" "${SERVICES[@]}"; then
   curl -i https://maxim.play-team.ru/app/

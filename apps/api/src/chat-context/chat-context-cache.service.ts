@@ -24,7 +24,7 @@ type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
   private static readonly ADMIN_ACCESS_TTL_SEC = 60;
-  private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 24 * 60 * 60;
+  private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly managedEntityHeaderTtlSec: number;
