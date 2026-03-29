@@ -114,6 +114,15 @@ type BroadcastCountdownPresentation = {
 };
 type ManagedBroadcastCardTone = 'active' | 'warning' | 'danger' | 'muted';
 type MailingWorkspaceView = 'compose' | 'active';
+type DeleteDelayStepperProps = {
+  title: string;
+  value: number;
+  fieldError?: string;
+  groupAriaLabel: string;
+  decreaseAriaLabel: string;
+  increaseAriaLabel: string;
+  onAdjust: (direction: number) => void;
+};
 
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 const LazyMessageLimitsBlockedWordPresets = lazy(
@@ -254,6 +263,61 @@ function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageL
         <span>{max}</span>
       </div>
     </>
+  );
+}
+
+function DeleteDelayStepper({
+  title,
+  value,
+  fieldError,
+  groupAriaLabel,
+  decreaseAriaLabel,
+  increaseAriaLabel,
+  onAdjust,
+}: DeleteDelayStepperProps) {
+  return (
+    <div
+      className={cn(
+        'settings-native-toggle',
+        'settings-native-toggle--nested',
+        fieldError && 'field--error',
+      )}
+    >
+      <div className="settings-native-toggle__row">
+        <span className="settings-native-toggle__title">{title}</span>
+
+        <div className="ban-duration-stepper" role="group" aria-label={groupAriaLabel}>
+          <button
+            type="button"
+            className="ban-duration-stepper__button"
+            onClick={() => onAdjust(-1)}
+            disabled={value <= BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]}
+            aria-label={decreaseAriaLabel}
+          >
+            -
+          </button>
+
+          <output className="ban-duration-stepper__value" aria-live="polite">
+            {formatDeleteBotMessagesDelayLabel(value)}
+          </output>
+
+          <button
+            type="button"
+            className="ban-duration-stepper__button"
+            onClick={() => onAdjust(1)}
+            disabled={
+              value >=
+              BOT_MESSAGES_DELETE_DELAY_OPTIONS[BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1]
+            }
+            aria-label={increaseAriaLabel}
+          >
+            +
+          </button>
+        </div>
+      </div>
+
+      {fieldError ? <small className="field__hint">{fieldError}</small> : null}
+    </div>
   );
 }
 
@@ -4068,13 +4132,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключена';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
-      ? draft?.greetingDeleteBotMessageEnabled
-        ? `Сообщение • удаление через ${formatDeleteBotMessagesDelayLabel(
-            draft.greetingDeleteBotMessageDelayMinutes,
-          )}`
-        : draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
-          ? 'Сообщение + кнопки'
-          : 'Только сообщение'
+      ? draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
+        ? 'Сообщение + кнопки'
+        : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
   const duplicateAllowedCount = draft ? resolveDuplicateAllowedCount(draft) : 1;
@@ -6057,68 +6117,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           {draft.greetingBotMessageEnabled &&
                           draft.greetingDeleteBotMessageEnabled ? (
-                            <div
-                              className={cn(
-                                'settings-native-toggle',
-                                'settings-native-toggle--nested',
-                                fieldErrors.greetingDeleteBotMessageDelayMinutes && 'field--error',
-                              )}
-                            >
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">
-                                  Через сколько удалять
-                                </span>
-
-                                <div
-                                  className="ban-duration-stepper"
-                                  role="group"
-                                  aria-label="Задержка удаления приветствия"
-                                >
-                                  <button
-                                    type="button"
-                                    className="ban-duration-stepper__button"
-                                    onClick={() => adjustGreetingDeleteBotMessagesDelay(-1)}
-                                    disabled={
-                                      draft.greetingDeleteBotMessageDelayMinutes <=
-                                      BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]
-                                    }
-                                    aria-label="Уменьшить задержку удаления приветствия"
-                                  >
-                                    -
-                                  </button>
-
-                                  <output
-                                    className="ban-duration-stepper__value"
-                                    aria-live="polite"
-                                  >
-                                    {formatDeleteBotMessagesDelayLabel(
-                                      draft.greetingDeleteBotMessageDelayMinutes,
-                                    )}
-                                  </output>
-
-                                  <button
-                                    type="button"
-                                    className="ban-duration-stepper__button"
-                                    onClick={() => adjustGreetingDeleteBotMessagesDelay(1)}
-                                    disabled={
-                                      draft.greetingDeleteBotMessageDelayMinutes >=
-                                      BOT_MESSAGES_DELETE_DELAY_OPTIONS[
-                                        BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1
-                                      ]
-                                    }
-                                    aria-label="Увеличить задержку удаления приветствия"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                              </div>
-
-                              {fieldErrors.greetingDeleteBotMessageDelayMinutes ? (
-                                <small className="field__hint">
-                                  {fieldErrors.greetingDeleteBotMessageDelayMinutes}
-                                </small>
-                              ) : null}
-                            </div>
+                            <DeleteDelayStepper
+                              title="Через сколько удалять"
+                              value={draft.greetingDeleteBotMessageDelayMinutes}
+                              fieldError={fieldErrors.greetingDeleteBotMessageDelayMinutes}
+                              groupAriaLabel="Задержка удаления приветствия"
+                              decreaseAriaLabel="Уменьшить задержку удаления приветствия"
+                              increaseAriaLabel="Увеличить задержку удаления приветствия"
+                              onAdjust={adjustGreetingDeleteBotMessagesDelay}
+                            />
                           ) : null}
 
                           {draft.greetingBotMessageEnabled ? (
@@ -10149,65 +10156,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       {draft.deleteBotMessagesEnabled ? (
-                        <div
-                          className={cn(
-                            'settings-native-toggle',
-                            'settings-native-toggle--nested',
-                            fieldErrors.deleteBotMessagesDelayMinutes && 'field--error',
-                          )}
-                        >
-                          <div className="settings-native-toggle__row">
-                            <span className="settings-native-toggle__title">
-                              Через сколько удалять
-                            </span>
-
-                            <div
-                              className="ban-duration-stepper"
-                              role="group"
-                              aria-label="Задержка удаления сообщений бота"
-                            >
-                              <button
-                                type="button"
-                                className="ban-duration-stepper__button"
-                                onClick={() => adjustDeleteBotMessagesDelay(-1)}
-                                disabled={
-                                  draft.deleteBotMessagesDelayMinutes <=
-                                  BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]
-                                }
-                                aria-label="Уменьшить задержку удаления сообщений бота"
-                              >
-                                -
-                              </button>
-
-                              <output className="ban-duration-stepper__value" aria-live="polite">
-                                {formatDeleteBotMessagesDelayLabel(
-                                  draft.deleteBotMessagesDelayMinutes,
-                                )}
-                              </output>
-
-                              <button
-                                type="button"
-                                className="ban-duration-stepper__button"
-                                onClick={() => adjustDeleteBotMessagesDelay(1)}
-                                disabled={
-                                  draft.deleteBotMessagesDelayMinutes >=
-                                  BOT_MESSAGES_DELETE_DELAY_OPTIONS[
-                                    BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1
-                                  ]
-                                }
-                                aria-label="Увеличить задержку удаления сообщений бота"
-                              >
-                                +
-                              </button>
-                            </div>
-                          </div>
-
-                          {fieldErrors.deleteBotMessagesDelayMinutes ? (
-                            <small className="field__hint">
-                              {fieldErrors.deleteBotMessagesDelayMinutes}
-                            </small>
-                          ) : null}
-                        </div>
+                        <DeleteDelayStepper
+                          title="Через сколько удалять"
+                          value={draft.deleteBotMessagesDelayMinutes}
+                          fieldError={fieldErrors.deleteBotMessagesDelayMinutes}
+                          groupAriaLabel="Задержка удаления сообщений бота"
+                          decreaseAriaLabel="Уменьшить задержку удаления сообщений бота"
+                          increaseAriaLabel="Увеличить задержку удаления сообщений бота"
+                          onAdjust={adjustDeleteBotMessagesDelay}
+                        />
                       ) : null}
 
                       <div className="settings-native-toggle">
