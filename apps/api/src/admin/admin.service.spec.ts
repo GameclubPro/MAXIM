@@ -2777,6 +2777,7 @@ describe('AdminService.applyManualModerationAction', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       banMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -2820,6 +2821,12 @@ describe('AdminService.applyManualModerationAction', () => {
           }),
         }),
       }),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь [user-3](max://user/user-3) забанен.',
+      { textFormat: 'markdown' },
+      { immediate: true },
     );
     expect(result).toEqual({
       ok: true,
@@ -3395,6 +3402,7 @@ describe('AdminService.applyManualSystemBan', () => {
       }),
       cancelScheduledUnban: jest.fn().mockRejectedValue(new Error('redis timeout')),
       banMember: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -3424,6 +3432,12 @@ describe('AdminService.applyManualSystemBan', () => {
     );
 
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь [user-3](max://user/user-3) забанен.',
+      { textFormat: 'markdown' },
+      { immediate: true },
+    );
   });
 });
 

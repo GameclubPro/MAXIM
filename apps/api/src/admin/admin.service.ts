@@ -7973,6 +7973,12 @@ export class AdminService {
           permanent: true,
         },
       });
+      await this.sendManualBanChatNotice({
+        chatId,
+        targetUserId,
+        source,
+        removedOnly: executionMode === 'MAX_REMOVE_ONLY',
+      });
 
       return manualModerationActionResultSchema.parse({
         ok: true,
@@ -8186,6 +8192,12 @@ export class AdminService {
         crossChatFanout,
       },
     });
+    await this.sendManualBanChatNotice({
+      chatId,
+      targetUserId,
+      source,
+      removedOnly: false,
+    });
 
     return manualModerationActionResultSchema.parse({
       ok: true,
@@ -8195,6 +8207,54 @@ export class AdminService {
       muteExpiresAt: null,
       message: 'Бан включён.',
     });
+  }
+
+  private async sendManualBanChatNotice(params: {
+    chatId: string;
+    targetUserId: string;
+    source: AdminActionSource;
+    removedOnly: boolean;
+  }): Promise<void> {
+    if (params.source === 'group_command') {
+      return;
+    }
+
+    const maxClientWithSendMessage = this.maxClient as MaxClientService & {
+      sendMessage?: MaxClientService['sendMessage'];
+    };
+    if (typeof maxClientWithSendMessage.sendMessage !== 'function') {
+      return;
+    }
+
+    const userMention = this.buildManualModerationUserMention(params.targetUserId);
+    const text = params.removedOnly
+      ? `Пользователь ${userMention} удалён из чата.`
+      : `Пользователь ${userMention} забанен.`;
+
+    try {
+      await maxClientWithSendMessage.sendMessage(
+        params.chatId,
+        text,
+        { textFormat: 'markdown' },
+        { immediate: true },
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.targetUserId,
+          source: params.source,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send manual ban notice message',
+      );
+    }
+  }
+
+  private buildManualModerationUserMention(userId: string): string {
+    const normalizedUserId = userId.trim();
+    const label = this.escapeMarkdown(normalizedUserId || 'Пользователь');
+    return `[${label}](max://user/${encodeURIComponent(normalizedUserId)})`;
   }
 
   private async applyManualMuteFanout(params: {
