@@ -152,7 +152,6 @@ wait_for_postgres() {
 }
 
 stop_conflicting_stacks() {
-  docker compose "${COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
   docker compose "${LEGACY_COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
 }
 
