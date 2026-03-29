@@ -2545,11 +2545,11 @@
 .channel-dialog-screen__ornament::before {
   content: '';
   position: absolute;
-  inset: -12%;
+  inset: -8%;
   border-radius: 999px;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.38), rgba(255, 255, 255, 0) 72%);
-  filter: blur(18px);
-  opacity: 0.54;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.3), rgba(255, 255, 255, 0) 72%);
+  filter: blur(14px);
+  opacity: 0.36;
 }
 
 .channel-dialog-screen__ornament svg {

@@ -117,17 +117,19 @@ type CommentBackdropOrnament = {
   style: CSSProperties;
 };
 
+const COMMENT_BACKDROP_STROKE = 1.62;
+
 const COMMENT_BACKDROP_ORNAMENTS = [
   {
     id: 'sparkles-top-left',
     icon: 'sparkles',
     style: {
-      top: '6%',
-      left: '-5%',
-      width: 'clamp(74px, 20vw, 98px)',
-      height: 'clamp(74px, 20vw, 98px)',
+      top: '5%',
+      left: '-6%',
+      width: 'clamp(70px, 19vw, 92px)',
+      height: 'clamp(70px, 19vw, 92px)',
       color: 'rgba(109, 168, 246, 0.12)',
-      opacity: 0.68,
+      opacity: 0.58,
       transform: 'rotate(-6deg)',
     },
   },
@@ -135,12 +137,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'conversation-left-hero',
     icon: 'conversation',
     style: {
-      top: '17%',
-      left: '-10%',
-      width: 'clamp(98px, 28vw, 126px)',
-      height: 'clamp(98px, 28vw, 126px)',
+      top: '15%',
+      left: '-12%',
+      width: 'clamp(98px, 27vw, 118px)',
+      height: 'clamp(98px, 27vw, 118px)',
       color: 'rgba(84, 141, 226, 0.12)',
-      opacity: 0.76,
+      opacity: 0.68,
       transform: 'rotate(-7deg)',
     },
   },
@@ -148,12 +150,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'star-top-left',
     icon: 'star',
     style: {
-      top: '13%',
+      top: '11%',
       left: '18%',
       width: 'clamp(24px, 7vw, 32px)',
       height: 'clamp(24px, 7vw, 32px)',
       color: 'rgba(99, 156, 240, 0.06)',
-      opacity: 0.46,
+      opacity: 0.34,
       transform: 'rotate(5deg)',
     },
   },
@@ -162,50 +164,50 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'message',
     style: {
       top: '29%',
-      left: '6%',
-      width: 'clamp(52px, 15vw, 66px)',
-      height: 'clamp(52px, 15vw, 66px)',
+      left: '3%',
+      width: 'clamp(48px, 14vw, 60px)',
+      height: 'clamp(48px, 14vw, 60px)',
       color: 'rgba(95, 150, 235, 0.08)',
-      opacity: 0.6,
-      transform: 'rotate(-4deg)',
-    },
-  },
-  {
-    id: 'bookmark-left-mid',
-    icon: 'bookmark',
-    style: {
-      top: '39%',
-      left: '2%',
-      width: 'clamp(34px, 10vw, 42px)',
-      height: 'clamp(34px, 10vw, 42px)',
-      color: 'rgba(92, 147, 229, 0.06)',
       opacity: 0.5,
-      transform: 'rotate(-6deg)',
+      transform: 'rotate(-4deg)',
     },
   },
   {
     id: 'quotes-left-hero',
     icon: 'quotes',
     style: {
-      top: '50%',
-      left: '-8%',
-      width: 'clamp(72px, 22vw, 94px)',
-      height: 'clamp(72px, 22vw, 94px)',
+      top: '46%',
+      left: '-9%',
+      width: 'clamp(72px, 21vw, 90px)',
+      height: 'clamp(72px, 21vw, 90px)',
       color: 'rgba(86, 141, 225, 0.09)',
-      opacity: 0.7,
-      transform: 'rotate(-13deg)',
+      opacity: 0.62,
+      transform: 'rotate(-12deg)',
+    },
+  },
+  {
+    id: 'bookmark-left-lower',
+    icon: 'bookmark',
+    style: {
+      top: '61%',
+      left: '4%',
+      width: 'clamp(30px, 8vw, 38px)',
+      height: 'clamp(30px, 8vw, 38px)',
+      color: 'rgba(92, 147, 229, 0.06)',
+      opacity: 0.38,
+      transform: 'rotate(-6deg)',
     },
   },
   {
     id: 'paperclip-left-low',
     icon: 'paperclip',
     style: {
-      top: '64%',
-      left: '8%',
-      width: 'clamp(42px, 12vw, 52px)',
-      height: 'clamp(34px, 10vw, 42px)',
+      bottom: '24%',
+      left: '16%',
+      width: 'clamp(40px, 11vw, 48px)',
+      height: 'clamp(32px, 9vw, 40px)',
       color: 'rgba(93, 149, 230, 0.06)',
-      opacity: 0.48,
+      opacity: 0.38,
       transform: 'rotate(-9deg)',
     },
   },
@@ -213,12 +215,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'star-left-low',
     icon: 'star',
     style: {
-      top: '75%',
-      left: '4%',
+      top: '73%',
+      left: '7%',
       width: 'clamp(24px, 7vw, 30px)',
       height: 'clamp(24px, 7vw, 30px)',
       color: 'rgba(102, 158, 239, 0.05)',
-      opacity: 0.42,
+      opacity: 0.3,
       transform: 'rotate(4deg)',
     },
   },
@@ -226,12 +228,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'reaction-left-bottom',
     icon: 'reaction',
     style: {
-      bottom: '15%',
-      left: '-3%',
-      width: 'clamp(84px, 24vw, 110px)',
-      height: 'clamp(60px, 17vw, 78px)',
+      bottom: '14%',
+      left: '-6%',
+      width: 'clamp(82px, 23vw, 102px)',
+      height: 'clamp(58px, 16vw, 72px)',
       color: 'rgba(84, 141, 224, 0.08)',
-      opacity: 0.66,
+      opacity: 0.56,
       transform: 'rotate(-7deg)',
     },
   },
@@ -239,12 +241,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'smile-left-bottom',
     icon: 'smile',
     style: {
-      bottom: '11%',
-      left: '22%',
-      width: 'clamp(34px, 10vw, 42px)',
-      height: 'clamp(34px, 10vw, 42px)',
+      bottom: '6%',
+      left: '23%',
+      width: 'clamp(30px, 8vw, 38px)',
+      height: 'clamp(30px, 8vw, 38px)',
       color: 'rgba(103, 159, 239, 0.05)',
-      opacity: 0.44,
+      opacity: 0.3,
       transform: 'rotate(-5deg)',
     },
   },
@@ -253,11 +255,11 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'message',
     style: {
       top: '8%',
-      right: '-4%',
-      width: 'clamp(56px, 16vw, 72px)',
-      height: 'clamp(56px, 16vw, 72px)',
+      right: '-5%',
+      width: 'clamp(54px, 15vw, 66px)',
+      height: 'clamp(54px, 15vw, 66px)',
       color: 'rgba(97, 152, 236, 0.08)',
-      opacity: 0.58,
+      opacity: 0.5,
       transform: 'rotate(6deg)',
     },
   },
@@ -266,11 +268,11 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'bell',
     style: {
       top: '18%',
-      right: '19%',
-      width: 'clamp(36px, 10vw, 44px)',
-      height: 'clamp(36px, 10vw, 44px)',
+      right: '18%',
+      width: 'clamp(32px, 9vw, 40px)',
+      height: 'clamp(32px, 9vw, 40px)',
       color: 'rgba(88, 144, 227, 0.06)',
-      opacity: 0.48,
+      opacity: 0.36,
       transform: 'rotate(9deg)',
     },
   },
@@ -279,11 +281,11 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'star',
     style: {
       top: '13%',
-      right: '36%',
+      right: '35%',
       width: 'clamp(24px, 7vw, 30px)',
       height: 'clamp(24px, 7vw, 30px)',
       color: 'rgba(100, 157, 239, 0.05)',
-      opacity: 0.4,
+      opacity: 0.3,
       transform: 'rotate(-4deg)',
     },
   },
@@ -292,11 +294,11 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'paperclip',
     style: {
       top: '28%',
-      right: '4%',
-      width: 'clamp(46px, 13vw, 56px)',
-      height: 'clamp(36px, 10vw, 44px)',
+      right: '3%',
+      width: 'clamp(42px, 12vw, 50px)',
+      height: 'clamp(34px, 10vw, 40px)',
       color: 'rgba(89, 146, 229, 0.06)',
-      opacity: 0.5,
+      opacity: 0.38,
       transform: 'rotate(11deg)',
     },
   },
@@ -304,12 +306,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'typing-right-hero',
     icon: 'typing',
     style: {
-      top: '39%',
-      right: '-9%',
-      width: 'clamp(98px, 28vw, 126px)',
-      height: 'clamp(98px, 28vw, 126px)',
+      top: '38%',
+      right: '-10%',
+      width: 'clamp(96px, 27vw, 116px)',
+      height: 'clamp(96px, 27vw, 116px)',
       color: 'rgba(88, 143, 228, 0.1)',
-      opacity: 0.74,
+      opacity: 0.66,
       transform: 'rotate(5deg)',
     },
   },
@@ -317,12 +319,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'bookmark-right-mid',
     icon: 'bookmark',
     style: {
-      top: '52%',
+      top: '55%',
       right: '6%',
-      width: 'clamp(34px, 10vw, 42px)',
-      height: 'clamp(34px, 10vw, 42px)',
+      width: 'clamp(30px, 8vw, 38px)',
+      height: 'clamp(30px, 8vw, 38px)',
       color: 'rgba(95, 151, 234, 0.06)',
-      opacity: 0.46,
+      opacity: 0.34,
       transform: 'rotate(-7deg)',
     },
   },
@@ -330,12 +332,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'heart-right-mid',
     icon: 'heart',
     style: {
-      top: '61%',
-      right: '27%',
-      width: 'clamp(38px, 11vw, 48px)',
-      height: 'clamp(38px, 11vw, 48px)',
+      top: '63%',
+      right: '24%',
+      width: 'clamp(36px, 10vw, 44px)',
+      height: 'clamp(36px, 10vw, 44px)',
       color: 'rgba(101, 156, 237, 0.06)',
-      opacity: 0.48,
+      opacity: 0.36,
       transform: 'rotate(8deg)',
     },
   },
@@ -343,12 +345,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'reaction-right-low',
     icon: 'reaction',
     style: {
-      top: '69%',
-      right: '9%',
-      width: 'clamp(66px, 19vw, 84px)',
-      height: 'clamp(47px, 14vw, 60px)',
+      top: '71%',
+      right: '8%',
+      width: 'clamp(62px, 17vw, 74px)',
+      height: 'clamp(44px, 12vw, 54px)',
       color: 'rgba(83, 139, 224, 0.07)',
-      opacity: 0.56,
+      opacity: 0.48,
       transform: 'rotate(7deg)',
     },
   },
@@ -356,12 +358,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'pin-right-low',
     icon: 'pin',
     style: {
-      top: '80%',
+      top: '82%',
       right: '3%',
-      width: 'clamp(36px, 10vw, 44px)',
-      height: 'clamp(36px, 10vw, 44px)',
+      width: 'clamp(32px, 9vw, 40px)',
+      height: 'clamp(32px, 9vw, 40px)',
       color: 'rgba(91, 148, 231, 0.06)',
-      opacity: 0.46,
+      opacity: 0.36,
       transform: 'rotate(10deg)',
     },
   },
@@ -369,12 +371,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'heart-right-bottom',
     icon: 'heart',
     style: {
-      bottom: '13%',
-      right: '-5%',
-      width: 'clamp(88px, 24vw, 112px)',
-      height: 'clamp(88px, 24vw, 112px)',
+      bottom: '10%',
+      right: '-6%',
+      width: 'clamp(86px, 23vw, 104px)',
+      height: 'clamp(86px, 23vw, 104px)',
       color: 'rgba(100, 154, 234, 0.08)',
-      opacity: 0.62,
+      opacity: 0.54,
       transform: 'rotate(8deg)',
     },
   },
@@ -383,11 +385,11 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     icon: 'smile',
     style: {
       bottom: '23%',
-      right: '15%',
-      width: 'clamp(34px, 10vw, 42px)',
-      height: 'clamp(34px, 10vw, 42px)',
+      right: '16%',
+      width: 'clamp(30px, 8vw, 38px)',
+      height: 'clamp(30px, 8vw, 38px)',
       color: 'rgba(102, 159, 239, 0.05)',
-      opacity: 0.42,
+      opacity: 0.3,
       transform: 'rotate(9deg)',
     },
   },
@@ -395,12 +397,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'quotes-top-center',
     icon: 'quotes',
     style: {
-      top: '20%',
-      left: '43%',
-      width: 'clamp(30px, 9vw, 40px)',
-      height: 'clamp(30px, 9vw, 40px)',
+      top: '17%',
+      left: '44%',
+      width: 'clamp(26px, 7vw, 34px)',
+      height: 'clamp(26px, 7vw, 34px)',
       color: 'rgba(104, 161, 240, 0.05)',
-      opacity: 0.4,
+      opacity: 0.3,
       transform: 'rotate(-8deg)',
     },
   },
@@ -408,13 +410,52 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'bookmark-top-center',
     icon: 'bookmark',
     style: {
-      top: '9%',
-      left: '54%',
-      width: 'clamp(28px, 8vw, 36px)',
-      height: 'clamp(28px, 8vw, 36px)',
+      top: '7%',
+      left: '55%',
+      width: 'clamp(26px, 7vw, 34px)',
+      height: 'clamp(26px, 7vw, 34px)',
       color: 'rgba(103, 159, 239, 0.05)',
-      opacity: 0.38,
+      opacity: 0.28,
       transform: 'rotate(6deg)',
+    },
+  },
+  {
+    id: 'smile-center-mid',
+    icon: 'smile',
+    style: {
+      top: '41%',
+      left: '38%',
+      width: 'clamp(24px, 6vw, 30px)',
+      height: 'clamp(24px, 6vw, 30px)',
+      color: 'rgba(104, 160, 240, 0.05)',
+      opacity: 0.26,
+      transform: 'rotate(4deg)',
+    },
+  },
+  {
+    id: 'star-center-low',
+    icon: 'star',
+    style: {
+      top: '58%',
+      left: '56%',
+      width: 'clamp(22px, 6vw, 28px)',
+      height: 'clamp(22px, 6vw, 28px)',
+      color: 'rgba(103, 159, 239, 0.05)',
+      opacity: 0.24,
+      transform: 'rotate(-6deg)',
+    },
+  },
+  {
+    id: 'sparkles-center-low',
+    icon: 'sparkles',
+    style: {
+      top: '66%',
+      left: '34%',
+      width: 'clamp(22px, 6vw, 28px)',
+      height: 'clamp(22px, 6vw, 28px)',
+      color: 'rgba(107, 164, 243, 0.05)',
+      opacity: 0.24,
+      transform: 'rotate(7deg)',
     },
   },
   {
@@ -423,10 +464,10 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     style: {
       bottom: '30%',
       left: '35%',
-      width: 'clamp(28px, 8vw, 36px)',
-      height: 'clamp(28px, 8vw, 36px)',
+      width: 'clamp(26px, 7vw, 34px)',
+      height: 'clamp(26px, 7vw, 34px)',
       color: 'rgba(103, 160, 240, 0.05)',
-      opacity: 0.38,
+      opacity: 0.28,
       transform: 'rotate(-5deg)',
     },
   },
@@ -439,7 +480,7 @@ const COMMENT_BACKDROP_ORNAMENTS = [
       width: 'clamp(26px, 7vw, 34px)',
       height: 'clamp(26px, 7vw, 34px)',
       color: 'rgba(108, 165, 244, 0.05)',
-      opacity: 0.36,
+      opacity: 0.26,
       transform: 'rotate(7deg)',
     },
   },
@@ -447,12 +488,12 @@ const COMMENT_BACKDROP_ORNAMENTS = [
     id: 'pin-lower-center',
     icon: 'pin',
     style: {
-      bottom: '16%',
-      left: '58%',
-      width: 'clamp(28px, 8vw, 36px)',
-      height: 'clamp(28px, 8vw, 36px)',
+      bottom: '13%',
+      left: '60%',
+      width: 'clamp(26px, 7vw, 34px)',
+      height: 'clamp(26px, 7vw, 34px)',
       color: 'rgba(103, 160, 240, 0.05)',
-      opacity: 0.36,
+      opacity: 0.26,
       transform: 'rotate(-4deg)',
     },
   },
@@ -1191,55 +1232,59 @@ function TrashIcon() {
 }
 
 function ConversationStackOutlineIcon() {
-  return <IconoirMultiBubble strokeWidth={2.15} aria-hidden focusable="false" />;
+  return <IconoirMultiBubble strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function MessageBubbleOutlineIcon() {
-  return <IconoirMessageText strokeWidth={2.1} aria-hidden focusable="false" />;
+  return <IconoirMessageText strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function SoftHeartOutlineIcon() {
-  return <IconoirHeart strokeWidth={2.15} aria-hidden focusable="false" />;
+  return <IconoirHeart strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function SparklesOutlineIcon() {
-  return <IconoirSparks strokeWidth={2.1} aria-hidden focusable="false" />;
+  return <IconoirSparks strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function TypingBubbleOutlineIcon() {
-  return <IconoirChatLines strokeWidth={2.15} aria-hidden focusable="false" />;
+  return <IconoirChatLines strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function QuoteMarksOutlineIcon() {
-  return <IconoirQuoteMessage strokeWidth={2.15} aria-hidden focusable="false" />;
+  return <IconoirQuoteMessage strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function ReactionPillOutlineIcon() {
-  return <IconoirBubbleStar strokeWidth={2.05} aria-hidden focusable="false" />;
+  return <IconoirBubbleStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function BookmarkOutlineIcon() {
-  return <IconoirBookmark strokeWidth={2.05} aria-hidden focusable="false" />;
+  return <IconoirBookmark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function BellOutlineIcon() {
-  return <IconoirBellNotification strokeWidth={2.1} aria-hidden focusable="false" />;
+  return (
+    <IconoirBellNotification strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />
+  );
 }
 
 function PaperclipOutlineIcon() {
-  return <IconoirAttachment strokeWidth={2.05} aria-hidden focusable="false" />;
+  return <IconoirAttachment strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function PinOutlineIcon() {
-  return <IconoirPin strokeWidth={2.05} aria-hidden focusable="false" />;
+  return <IconoirPin strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function SmileOutlineIcon() {
-  return <IconoirEmojiSatisfied strokeWidth={2.05} aria-hidden focusable="false" />;
+  return (
+    <IconoirEmojiSatisfied strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />
+  );
 }
 
 function StarOutlineIcon() {
-  return <IconoirStar strokeWidth={2.05} aria-hidden focusable="false" />;
+  return <IconoirStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
