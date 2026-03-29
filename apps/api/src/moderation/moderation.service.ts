@@ -9267,6 +9267,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
     text: string,
   ): MaxMessageButton {
+    if (type === 'suggest') {
+      const startPayload =
+        this.adminService?.buildChannelSuggestionStartPayload(chatId, threadId) ??
+        this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
+      const botStartUrl = this.buildBotStartUrl(startPayload);
+      if (botStartUrl) {
+        return {
+          type: 'link',
+          text,
+          url: botStartUrl,
+        };
+      }
+    }
+
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();

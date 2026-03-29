@@ -2845,7 +2845,8 @@ export class AdminService {
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
-    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+    const suggestUrl =
+      this.buildBotStartUrl(suggestPayload) ?? this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
     const commentsButton = this.buildChannelDialogButton(
       chatId,
       'comments',
@@ -6943,6 +6944,18 @@ export class AdminService {
     threadId: string,
     text: string,
   ): MaxMessageButton {
+    if (type === 'suggest') {
+      const startPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
+      const botStartUrl = this.buildBotStartUrl(startPayload);
+      if (botStartUrl) {
+        return {
+          type: 'link',
+          text,
+          url: botStartUrl,
+        };
+      }
+    }
+
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();

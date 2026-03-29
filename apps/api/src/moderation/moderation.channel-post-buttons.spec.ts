@@ -189,7 +189,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],
@@ -618,7 +618,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],
@@ -740,7 +740,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],
