@@ -1443,6 +1443,12 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-1',
         title: 'Новости MAX',
@@ -1510,10 +1516,13 @@ describe('AdminService required subscription settings', () => {
         if (chatId === 'chat-1') {
           return ['admin-1'];
         }
-        if (chatId === 'channel-ext-1') {
-          return ['partner-owner'];
-        }
         return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
       }),
       listBotChats: jest.fn().mockResolvedValue([
         {
@@ -1570,6 +1579,12 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-1',
         title: 'Партнерские новости',
@@ -1605,16 +1620,13 @@ describe('AdminService required subscription settings', () => {
         if (chatId === 'chat-1') {
           return ['admin-1'];
         }
-
-        throw {
-          response: {
-            status: 403,
-            data: {
-              message: 'Method is available only for chat administrator',
-            },
-          },
-          message: 'Method is available only for chat administrator',
-        };
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
       }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-ext-1',
@@ -1686,6 +1698,12 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-1',
         title: 'Новости MAX',
@@ -1745,6 +1763,12 @@ describe('AdminService required subscription settings', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
       getChatSnapshot: jest.fn().mockResolvedValue({
         chatId: 'channel-1',
         title: 'Новости MAX',
@@ -10522,6 +10546,107 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         reviewStatus: 'pending',
         hasImage: true,
         imageFileName: 'suggestion.webp',
+      },
+    });
+  });
+
+  it('queues mini app suggestions for async admin delivery when the queue is available', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-queued-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        threadId: null,
+        text: 'Отложенная предложка',
+        authorDisplayName: 'Пользователь',
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        source: 'miniapp_dialog',
+        reviewStatus: 'pending',
+        hasImage: false,
+        hasVideo: false,
+      },
+      createdAt: new Date('2026-03-25T09:15:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-queue-1', url: null }),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const adminSuggestionDeliveryQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminSuggestionDeliveryQueue as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'suggest',
+      {
+        token: suggestToken,
+        text: 'Отложенная предложка',
+      },
+    );
+
+    expect(adminSuggestionDeliveryQueue.add).toHaveBeenCalledWith(
+      'deliver-channel-suggestion',
+      {
+        auditLogId: 'suggestion-queued-1',
+      },
+      expect.objectContaining({
+        jobId: 'channel-suggestion-delivery__suggestion-queued-1',
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(prisma.auditLog.update).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      ok: true,
+      message: {
+        id: 'suggestion-queued-1',
+        type: 'suggest',
+        text: 'Отложенная предложка',
+        delivered: false,
+        reviewStatus: 'pending',
       },
     });
   });

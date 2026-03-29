@@ -85,6 +85,7 @@ import {
   type AllowlistMatchType,
   type BroadcastScheduleMode,
 } from '@maxim/contracts';
+import { InjectQueue } from '@nestjs/bullmq';
 import {
   ChatEntityType,
   ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
@@ -109,6 +110,7 @@ import {
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import type { Queue } from 'bullmq';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   ChatContextCacheService,
@@ -138,6 +140,10 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from '../system/system-access.util';
+import {
+  ADMIN_SUGGESTION_DELIVERY_QUEUE,
+  type AdminSuggestionDeliveryJob,
+} from './admin-suggestion-delivery.queue';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -196,6 +202,23 @@ type ResolvedUserProfile = {
 type ModerationFeedCursor = {
   createdAt: Date;
   id: string;
+};
+
+type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
+  username?: string | null;
+  displayName?: string | null;
+  avatarUrl?: string | null;
+};
+
+type ChannelSuggestionDeliveryInput = {
+  text: string;
+  imageBase64?: string | null;
+  imageMimeType?: string | null;
+  imageFileName?: string | null;
+  mediaType?: 'image' | 'video' | null;
+  mediaPayload?: Record<string, unknown> | null;
+  mediaMimeType?: string | null;
+  mediaFileName?: string | null;
 };
 
 type ModerationViolationRow = {
@@ -557,6 +580,9 @@ export class AdminService {
     @Optional()
     private readonly channelStatsCollector?: ChannelStatsCollectorService,
     @Optional() private readonly redisCounter?: RedisCounterService,
+    @Optional()
+    @InjectQueue(ADMIN_SUGGESTION_DELIVERY_QUEUE)
+    private readonly adminSuggestionDeliveryQueue?: Queue<AdminSuggestionDeliveryJob>,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -4038,8 +4064,20 @@ export class AdminService {
 
   private async assertBotCanInspectRequiredSubscriptionChannel(chatId: string): Promise<void> {
     try {
-      await this.maxClient.getChatAdminIds(chatId);
+      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+        trafficClass: 'interactive',
+      });
+      if (access.isAdmin || access.isOwner) {
+        return;
+      }
+
+      throw new BadRequestException(
+        'Бот должен быть администратором этого канала, чтобы проверять подписку.',
+      );
     } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
       if (this.isBotAdminLookupDeniedError(error)) {
         throw new BadRequestException(
           'Бот должен быть администратором этого канала, чтобы проверять подписку.',
@@ -11331,10 +11369,6 @@ export class AdminService {
     delivered: boolean;
     deliveredToUserId: string | null;
   }> {
-    const authorDisplayName = params.user.displayName?.trim()
-      ? params.user.displayName.trim()
-      : params.user.username;
-    const authorAvatarUrl = this.readTrimmedString(params.user.avatarUrl);
     const created = await this.prisma.auditLog.create({
       data: {
         chatId: params.chatId,
@@ -11345,8 +11379,8 @@ export class AdminService {
           threadId: params.threadId,
           text: params.text,
           actorUserId: params.user.userId,
-          authorDisplayName: authorDisplayName ?? null,
-          authorAvatarUrl: authorAvatarUrl ?? null,
+          authorDisplayName: this.resolveChannelSuggestionActorDisplayName(params.user),
+          authorAvatarUrl: this.readTrimmedString(params.user.avatarUrl) ?? null,
           delivered: false,
           deliveredToUserId: null,
           deliveredToUserIds: [],
@@ -11372,25 +11406,140 @@ export class AdminService {
       },
     });
 
+    if (await this.enqueueChannelSuggestionDelivery(created.id)) {
+      return {
+        row: created,
+        delivered: false,
+        deliveredToUserId: null,
+      };
+    }
+
+    const delivery = await this.deliverSuggestionToAdminPrivates(created.id, params.chatId, params.user, {
+      text: params.text,
+      imageBase64: params.imageBase64,
+      imageMimeType: params.imageMimeType,
+      imageFileName: params.imageFileName,
+      mediaType: params.mediaType,
+      mediaPayload: params.mediaPayload,
+      mediaMimeType: params.mediaMimeType,
+      mediaFileName: params.mediaFileName,
+    });
+    const updated = await this.applyChannelSuggestionDeliveryResult(created, delivery);
+
+    return {
+      row: updated,
+      delivered: delivery.delivered,
+      deliveredToUserId: delivery.deliveredToUserId,
+    };
+  }
+
+  async processChannelSuggestionDeliveryJob(auditLogId: string): Promise<void> {
+    const normalizedAuditLogId = auditLogId.trim();
+    if (!normalizedAuditLogId) {
+      return;
+    }
+
+    const row = await this.prisma.auditLog.findUnique({
+      where: { id: normalizedAuditLogId },
+      select: {
+        id: true,
+        chatId: true,
+        actorUserId: true,
+        action: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+    if (!row || row.action !== CHANNEL_DIALOG_ACTION_SUGGEST) {
+      return;
+    }
+
+    const payload = this.readObjectPayload(row.payload);
+    const reviewStatus = this.readLowerString(payload.reviewStatus);
+    if (reviewStatus && reviewStatus !== 'pending') {
+      return;
+    }
+
+    const alreadyDelivered = payload.delivered === true;
+    if (alreadyDelivered || this.readChannelSuggestionDeliveries(payload.deliveries).length > 0) {
+      return;
+    }
+
     const delivery = await this.deliverSuggestionToAdminPrivates(
-      created.id,
-      params.chatId,
-      params.user,
+      row.id,
+      row.chatId,
       {
-        text: params.text,
-        imageBase64: params.imageBase64,
-        imageMimeType: params.imageMimeType,
-        imageFileName: params.imageFileName,
-        mediaType: params.mediaType,
-        mediaPayload: params.mediaPayload,
-        mediaMimeType: params.mediaMimeType,
-        mediaFileName: params.mediaFileName,
+        userId: row.actorUserId,
+        username: null,
+        displayName: this.readTrimmedString(payload.authorDisplayName),
+        avatarUrl: this.readTrimmedString(payload.authorAvatarUrl),
+      },
+      {
+        text: this.readTrimmedString(payload.text) ?? '',
+        imageBase64: this.readTrimmedString(payload.imageBase64),
+        imageMimeType: this.readTrimmedString(payload.imageMimeType),
+        imageFileName: this.readTrimmedString(payload.imageFileName),
+        mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
+        mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
+        mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
+        mediaFileName: this.readTrimmedString(payload.mediaFileName),
       },
     );
-    const createdPayload = this.readObjectPayload(created.payload);
-    const updated = await this.prisma.auditLog.update({
+    await this.applyChannelSuggestionDeliveryResult(row, delivery);
+  }
+
+  private resolveChannelSuggestionActorDisplayName(user: ChannelSuggestionActor): string | null {
+    return user.displayName?.trim() || user.username?.trim() || null;
+  }
+
+  private async enqueueChannelSuggestionDelivery(auditLogId: string): Promise<boolean> {
+    if (!this.adminSuggestionDeliveryQueue) {
+      return false;
+    }
+
+    try {
+      await this.adminSuggestionDeliveryQueue.add(
+        'deliver-channel-suggestion',
+        {
+          auditLogId,
+        },
+        {
+          jobId: `channel-suggestion-delivery__${auditLogId}`,
+          attempts: 5,
+          removeOnComplete: true,
+          removeOnFail: false,
+          backoff: {
+            type: 'exponential',
+            delay: 1_000,
+          },
+        },
+      );
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          auditLogId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue channel suggestion delivery',
+      );
+      return false;
+    }
+  }
+
+  private async applyChannelSuggestionDeliveryResult(
+    row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
+    delivery: {
+      delivered: boolean;
+      deliveredToUserId: string | null;
+      deliveredToUserIds: string[];
+      deliveries: ChannelSuggestionAdminDelivery[];
+    },
+  ) {
+    const createdPayload = this.readObjectPayload(row.payload);
+    return this.prisma.auditLog.update({
       where: {
-        id: created.id,
+        id: row.id,
       },
       data: {
         payload: {
@@ -11408,12 +11557,6 @@ export class AdminService {
         createdAt: true,
       },
     });
-
-    return {
-      row: updated,
-      delivered: delivery.delivered,
-      deliveredToUserId: delivery.deliveredToUserId,
-    };
   }
 
   private async assertChannelSuggestionDailyLimit(
@@ -11443,17 +11586,8 @@ export class AdminService {
   private async deliverSuggestionToAdminPrivates(
     suggestionId: string,
     chatId: string,
-    user: AuthUser,
-    suggestion: {
-      text: string;
-      imageBase64?: string | null;
-      imageMimeType?: string | null;
-      imageFileName?: string | null;
-      mediaType?: 'image' | 'video' | null;
-      mediaPayload?: Record<string, unknown> | null;
-      mediaMimeType?: string | null;
-      mediaFileName?: string | null;
-    },
+    user: ChannelSuggestionActor,
+    suggestion: ChannelSuggestionDeliveryInput,
   ): Promise<{
     delivered: boolean;
     deliveredToUserId: string | null;
@@ -11482,7 +11616,8 @@ export class AdminService {
     }
 
     const channelTitle = await this.resolveChannelTitle(chatId);
-    const actorName = user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
+    const actorName =
+      this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
     const messageOptions = await this.buildChannelSuggestionMessageOptions(suggestion, buttons);
     const message = this.buildChannelSuggestionAdminMessage({
