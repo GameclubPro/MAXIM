@@ -81,6 +81,41 @@ const DIALOG_REDIRECTABLE_ERROR_PATTERNS = [
   /^Неверный токен кнопки\./u,
 ] as const;
 
+const COMMENT_BACKDROP_ORNAMENT_STYLES = {
+  commentPrimary: {
+    top: '7%',
+    right: '-5%',
+    width: 'clamp(132px, 34vw, 182px)',
+    height: 'clamp(132px, 34vw, 182px)',
+    color: 'rgba(66, 123, 212, 0.15)',
+    transform: 'rotate(13deg)',
+  },
+  sparkles: {
+    top: '18%',
+    left: '-3%',
+    width: 'clamp(108px, 26vw, 146px)',
+    height: 'clamp(108px, 26vw, 146px)',
+    color: 'rgba(114, 164, 241, 0.14)',
+    transform: 'rotate(-9deg)',
+  },
+  heart: {
+    right: '-4%',
+    bottom: '19%',
+    width: 'clamp(116px, 28vw, 154px)',
+    height: 'clamp(116px, 28vw, 154px)',
+    color: 'rgba(84, 136, 224, 0.12)',
+    transform: 'rotate(8deg)',
+  },
+  reply: {
+    left: '-8%',
+    bottom: '11%',
+    width: 'clamp(144px, 38vw, 196px)',
+    height: 'clamp(144px, 38vw, 196px)',
+    color: 'rgba(63, 117, 206, 0.1)',
+    transform: 'rotate(-8deg)',
+  },
+} satisfies Record<string, CSSProperties>;
+
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Не удалось отправить сообщение.';
@@ -810,6 +845,99 @@ function TrashIcon() {
       <path d="M8.7 8.3V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       <path d="M11.3 8.3V13" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
     </svg>
+  );
+}
+
+function CommentBubbleOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M19.5 19.5H44.5C48.9 19.5 52.5 23.1 52.5 27.5V38.2C52.5 42.6 48.9 46.2 44.5 46.2H33.6L25.3 52.4V46.2H19.5C15.1 46.2 11.5 42.6 11.5 38.2V27.5C11.5 23.1 15.1 19.5 19.5 19.5Z"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M22.8 30.7H41.2"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+      />
+      <path
+        d="M22.8 36.9H34.9"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function HeartOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M32 49.1L17.9 35.2C14.2 31.5 14.2 25.6 17.9 21.9C21.6 18.2 27.5 18.2 31.2 21.9L32 22.8L32.8 21.9C36.5 18.2 42.4 18.2 46.1 21.9C49.8 25.6 49.8 31.5 46.1 35.2L32 49.1Z"
+        stroke="currentColor"
+        strokeWidth="2.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function SparklesOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M31.6 14.2L34.7 24.5L45 27.6L34.7 30.7L31.6 41L28.5 30.7L18.2 27.6L28.5 24.5L31.6 14.2Z"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M47.3 13.9L48.6 18.3L53 19.6L48.6 20.9L47.3 25.3L46 20.9L41.6 19.6L46 18.3L47.3 13.9Z"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M18.6 39.8L20 44.2L24.4 45.6L20 46.9L18.6 51.3L17.3 46.9L12.9 45.6L17.3 44.2L18.6 39.8Z"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CommentBackdropOrnaments() {
+  return (
+    <div className="channel-dialog-screen__ornaments" aria-hidden>
+      <span
+        className="channel-dialog-screen__ornament"
+        style={COMMENT_BACKDROP_ORNAMENT_STYLES.commentPrimary}
+      >
+        <CommentBubbleOutlineIcon />
+      </span>
+      <span
+        className="channel-dialog-screen__ornament"
+        style={COMMENT_BACKDROP_ORNAMENT_STYLES.sparkles}
+      >
+        <SparklesOutlineIcon />
+      </span>
+      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.heart}>
+        <HeartOutlineIcon />
+      </span>
+      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.reply}>
+        <ReplyArrowIcon />
+      </span>
+    </div>
   );
 }
 
@@ -2130,7 +2258,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       ref={screenRef}
       className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}
     >
-      <div className="channel-dialog-screen__backdrop" aria-hidden />
+      <div className="channel-dialog-screen__backdrop" aria-hidden>
+        {dialogType === 'comments' ? <CommentBackdropOrnaments /> : null}
+      </div>
 
       <div className="channel-dialog-shell">
         {dialogType === 'comments' && introText ? (
