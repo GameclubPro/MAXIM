@@ -25,10 +25,12 @@ export class WebhookParser {
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
     const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
     const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
-    const resolvedMessageId = messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
+    const resolvedMessageId =
+      messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
     const resolvedChatId = chatId || membershipChatId;
     const resolvedSenderId = senderId || membershipSenderId;
     const resolvedSenderName = senderName ?? membershipSenderName;
+    const membership = this.extractMembershipChange(payload, type, message, resolvedSenderId);
     const hasMessage =
       Boolean(message && resolvedMessageId && resolvedChatId) ||
       Boolean(this.isSyntheticMessageUpdateType(type) && resolvedChatId);
@@ -36,18 +38,18 @@ export class WebhookParser {
     const normalized: MaxUpdate = {
       updateId,
       type,
-      message:
-        hasMessage
-          ? {
-              messageId: resolvedMessageId,
-              chatId: resolvedChatId,
-              ...(chatTitle ? { chatTitle } : {}),
-              senderId: resolvedSenderId,
-              ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
-              text: messageText,
-              createdAt,
-            }
-          : undefined,
+      message: hasMessage
+        ? {
+            messageId: resolvedMessageId,
+            chatId: resolvedChatId,
+            ...(chatTitle ? { chatTitle } : {}),
+            senderId: resolvedSenderId,
+            ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
+            text: messageText,
+            createdAt,
+          }
+        : undefined,
+      ...(membership ? { membership } : {}),
       raw: payload,
     };
 
@@ -105,6 +107,68 @@ export class WebhookParser {
     }
 
     return null;
+  }
+
+  private extractMembershipChange(
+    payload: Record<string, unknown>,
+    type: string,
+    message: Record<string, unknown> | undefined,
+    resolvedSenderId: string,
+  ): MaxUpdate['membership'] | undefined {
+    const normalizedType = type.trim().toLowerCase();
+
+    if (
+      normalizedType === 'user_added' ||
+      normalizedType === 'bot_added' ||
+      normalizedType === 'user_removed' ||
+      normalizedType === 'bot_removed'
+    ) {
+      const memberUserIds = resolvedSenderId ? [resolvedSenderId] : [];
+      if (memberUserIds.length === 0) {
+        return undefined;
+      }
+
+      return {
+        action:
+          normalizedType === 'user_removed' || normalizedType === 'bot_removed'
+            ? 'removed'
+            : 'added',
+        memberUserIds,
+      };
+    }
+
+    if (normalizedType !== 'message_created' || !message) {
+      return undefined;
+    }
+
+    const addedMemberUserIds = this.extractMembershipCollectionUserIds(message, 'added');
+    if (addedMemberUserIds.length > 0) {
+      return {
+        action: 'added',
+        memberUserIds: addedMemberUserIds,
+      };
+    }
+
+    const removedMemberUserIds = this.extractMembershipCollectionUserIds(message, 'removed');
+    if (removedMemberUserIds.length > 0) {
+      return {
+        action: 'removed',
+        memberUserIds: removedMemberUserIds,
+      };
+    }
+
+    const removedMemberUserIdsFromPayload = this.extractMembershipCollectionUserIds(
+      payload,
+      'removed',
+    );
+    if (removedMemberUserIdsFromPayload.length > 0) {
+      return {
+        action: 'removed',
+        memberUserIds: removedMemberUserIdsFromPayload,
+      };
+    }
+
+    return undefined;
   }
 
   private extractMembershipChatId(node: Record<string, unknown> | null): string {
@@ -167,10 +231,133 @@ export class WebhookParser {
       }
     }
 
-    const firstName = this.readString(user.first_name ?? user.firstName ?? user.given_name ?? user.givenName);
-    const lastName = this.readString(user.last_name ?? user.lastName ?? user.family_name ?? user.familyName);
+    const firstName = this.readString(
+      user.first_name ?? user.firstName ?? user.given_name ?? user.givenName,
+    );
+    const lastName = this.readString(
+      user.last_name ?? user.lastName ?? user.family_name ?? user.familyName,
+    );
     const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
     return fullName.length > 0 ? fullName : undefined;
+  }
+
+  private extractMembershipCollectionUserIds(
+    node: unknown,
+    action: 'added' | 'removed',
+    depth = 0,
+  ): string[] {
+    if (depth > 6 || node === null || node === undefined) {
+      return [];
+    }
+
+    if (Array.isArray(node)) {
+      const memberUserIds = new Set<string>();
+      for (const item of node) {
+        for (const userId of this.extractMembershipCollectionUserIds(item, action, depth + 1)) {
+          memberUserIds.add(userId);
+        }
+      }
+      return [...memberUserIds];
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return [];
+    }
+
+    const memberUserIds = new Set<string>();
+    for (const [key, value] of Object.entries(row)) {
+      const normalizedKey = key.trim().toLowerCase();
+      if (!this.isMembershipCollectionKey(normalizedKey, action)) {
+        continue;
+      }
+
+      for (const userId of this.collectMembershipUserIdsFromNode(value, depth + 1)) {
+        memberUserIds.add(userId);
+      }
+    }
+
+    return [...memberUserIds];
+  }
+
+  private collectMembershipUserIdsFromNode(node: unknown, depth = 0): string[] {
+    if (depth > 6 || node === null || node === undefined) {
+      return [];
+    }
+
+    if (Array.isArray(node)) {
+      const memberUserIds = new Set<string>();
+      for (const item of node) {
+        for (const userId of this.collectMembershipUserIdsFromNode(item, depth + 1)) {
+          memberUserIds.add(userId);
+        }
+      }
+      return [...memberUserIds];
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return [];
+    }
+
+    const directUser = this.asRecord(row.user) ?? this.asRecord(row.member);
+    const directCandidates = [
+      row.user_id,
+      row.userId,
+      row.id,
+      directUser?.user_id,
+      directUser?.userId,
+      directUser?.id,
+    ];
+
+    for (const candidate of directCandidates) {
+      if (typeof candidate === 'string' || typeof candidate === 'number') {
+        return [String(candidate)];
+      }
+    }
+
+    const memberUserIds = new Set<string>();
+    for (const value of Object.values(row)) {
+      for (const userId of this.collectMembershipUserIdsFromNode(value, depth + 1)) {
+        memberUserIds.add(userId);
+      }
+    }
+
+    return [...memberUserIds];
+  }
+
+  private isMembershipCollectionKey(key: string, action: 'added' | 'removed'): boolean {
+    if (action === 'added') {
+      return (
+        key === 'new_members' ||
+        key === 'new_member' ||
+        key === 'members_added' ||
+        key === 'member_added' ||
+        key === 'added_members' ||
+        key === 'added_member' ||
+        key === 'joined_members' ||
+        key === 'joined_member' ||
+        key === 'invited_members' ||
+        key === 'invited_member' ||
+        key === 'new_users' ||
+        key === 'new_user'
+      );
+    }
+
+    return (
+      key === 'removed_members' ||
+      key === 'removed_member' ||
+      key === 'members_removed' ||
+      key === 'member_removed' ||
+      key === 'left_members' ||
+      key === 'left_member' ||
+      key === 'leaving_members' ||
+      key === 'leaving_member' ||
+      key === 'departed_members' ||
+      key === 'departed_member' ||
+      key === 'kicked_members' ||
+      key === 'kicked_member'
+    );
   }
 
   private extractMessageNode(
@@ -182,7 +369,14 @@ export class WebhookParser {
       return directMessage;
     }
 
-    const envelopeKeys = [type, payload.update_type, payload.event_type, payload.type, 'data', 'event'];
+    const envelopeKeys = [
+      type,
+      payload.update_type,
+      payload.event_type,
+      payload.type,
+      'data',
+      'event',
+    ];
     for (const key of envelopeKeys) {
       if (typeof key !== 'string' || key.trim().length === 0) {
         continue;
@@ -671,15 +865,14 @@ export class WebhookParser {
   }
 
   private normalizeUrlForCompare(url: string): string {
-    return url.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
+    return url
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/\/$/, '');
   }
 
-  private collectTextSnippetsFromNode(
-    node: unknown,
-    acc: Set<string>,
-    parentKey = '',
-    depth = 0,
-  ) {
+  private collectTextSnippetsFromNode(node: unknown, acc: Set<string>, parentKey = '', depth = 0) {
     if (depth > 8 || node === null || node === undefined) {
       return;
     }

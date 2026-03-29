@@ -2298,10 +2298,16 @@ export const maxMessagePayloadSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+export const maxMembershipChangeSchema = z.object({
+  action: z.enum(['added', 'removed']),
+  memberUserIds: z.array(z.string()).min(1),
+});
+
 export const maxUpdateSchema = z.object({
   updateId: z.string(),
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
+  membership: maxMembershipChangeSchema.optional(),
   raw: z.record(z.any()).optional(),
 });
 

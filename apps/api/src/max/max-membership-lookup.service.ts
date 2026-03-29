@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { MaxClientService, type MaxApiTrafficClass } from './max-client.service';
@@ -18,6 +18,11 @@ type MaxMembershipLookupOptions = {
 type MembershipCacheSnapshot = {
   isMember: boolean;
   checkedAtMs: number;
+};
+
+type CacheEpochState = {
+  epoch: number;
+  expiresAtMs: number;
 };
 
 type MembershipLookupPolicyConfig = {
@@ -73,24 +78,76 @@ const MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC = Math.max(
 const MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
   ...Object.values(MEMBERSHIP_LOOKUP_POLICIES).map((policy) => policy.negativeFreshTtlSec),
 );
+const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
+const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
 
 @Injectable()
-export class MaxMembershipLookupService implements OnModuleDestroy {
+export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(MaxMembershipLookupService.name);
   private readonly redis: Redis;
+  private readonly subscriber: Redis;
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
+  private readonly cacheEpochs = new Map<string, CacheEpochState>();
 
   constructor(
     private readonly maxClient: MaxClientService,
     configService: ConfigService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.subscriber = this.redis.duplicate();
+  }
+
+  async onModuleInit(): Promise<void> {
+    this.subscriber.on('message', (channel, payload) => {
+      if (channel !== MEMBERSHIP_INVALIDATION_CHANNEL) {
+        return;
+      }
+
+      const normalized = this.parseInvalidationMessage(payload);
+      if (!normalized) {
+        return;
+      }
+
+      this.applyLocalInvalidation(normalized.chatId, normalized.userIds);
+    });
+    await this.subscriber.subscribe(MEMBERSHIP_INVALIDATION_CHANNEL);
   }
 
   async onModuleDestroy() {
+    await this.subscriber.quit();
     await this.redis.quit();
+  }
+
+  async invalidateMemberships(chatId: string, userIds: readonly string[]): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const normalizedUserIds = Array.from(
+      new Set(
+        userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
+      ),
+    );
+    if (normalizedUserIds.length === 0) {
+      return;
+    }
+
+    this.applyLocalInvalidation(normalizedChatId, normalizedUserIds);
+
+    const cacheKeys = normalizedUserIds.map((userId) =>
+      this.buildCacheKey(normalizedChatId, userId),
+    );
+    await this.redis.del(...cacheKeys);
+    await this.redis.publish(
+      MEMBERSHIP_INVALIDATION_CHANNEL,
+      JSON.stringify({
+        chatId: normalizedChatId,
+        userIds: normalizedUserIds,
+      }),
+    );
   }
 
   async getMembership(
@@ -99,13 +156,18 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
     policyName: MaxMembershipLookupPolicy,
     options: MaxMembershipLookupOptions = {},
   ): Promise<boolean | null> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return null;
+    }
+
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
       return false;
     }
 
     const membershipByUserId = await this.getMemberships(
-      chatId,
+      normalizedChatId,
       [normalizedUserId],
       policyName,
       options,
@@ -119,13 +181,14 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
     policyName: MaxMembershipLookupPolicy,
     options: MaxMembershipLookupOptions = {},
   ): Promise<Map<string, boolean | null>> {
+    const normalizedChatId = chatId.trim();
     const normalizedUserIds = Array.from(
       new Set(
         userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
       ),
     );
     const results = new Map<string, boolean | null>();
-    if (normalizedUserIds.length === 0) {
+    if (!normalizedChatId || normalizedUserIds.length === 0) {
       return results;
     }
 
@@ -136,7 +199,7 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
     const usersToLookup: string[] = [];
 
     for (const userId of normalizedUserIds) {
-      const cacheKey = this.buildCacheKey(chatId, userId);
+      const cacheKey = this.buildCacheKey(normalizedChatId, userId);
       const freshMemorySnapshot = !options.forceRefresh
         ? this.readFreshMemorySnapshot(cacheKey, policy, now)
         : null;
@@ -178,11 +241,11 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
       const [userId] = usersToLookup;
       pendingPromises.set(
         userId,
-        this.createSingleLookupPromise(chatId, userId, policyName, allowStaleOnError),
+        this.createSingleLookupPromise(normalizedChatId, userId, policyName, allowStaleOnError),
       );
     } else if (usersToLookup.length > 1) {
       const batchPromises = this.createBatchLookupPromises(
-        chatId,
+        normalizedChatId,
         usersToLookup,
         policyName,
         allowStaleOnError,
@@ -212,17 +275,20 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
   ): Promise<boolean | null> {
     const cacheKey = this.buildCacheKey(chatId, userId);
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
+    const cacheEpoch = this.readCacheEpoch(cacheKey);
     const lookupPromise = (async () => {
       try {
         const isMember = await this.maxClient.hasChatMember(chatId, userId, {
           trafficClass: policy.trafficClass,
         });
         const snapshot = this.buildSnapshot(isMember);
-        this.storeSnapshot(cacheKey, snapshot);
-        this.backoffUntilMs.delete(cacheKey);
+        if (this.hasSameCacheEpoch(cacheKey, cacheEpoch)) {
+          this.storeSnapshot(cacheKey, snapshot);
+          this.backoffUntilMs.delete(cacheKey);
+        }
         return isMember;
       } catch (error: unknown) {
-        this.handleLookupError(cacheKey, policy, error, {
+        this.handleLookupError(cacheKey, cacheEpoch, policy, error, {
           chatId,
           userIds: [userId],
           policyName,
@@ -250,6 +316,12 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
   ): Map<string, Promise<boolean | null>> {
     const normalizedUserIds = Array.from(new Set(userIds));
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
+    const cacheEpochByKey = new Map(
+      normalizedUserIds.map((userId) => {
+        const cacheKey = this.buildCacheKey(chatId, userId);
+        return [cacheKey, this.readCacheEpoch(cacheKey)] as const;
+      }),
+    );
     const batchLookupPromise = (async () => {
       try {
         const accessByUserId = await this.maxClient.getChatMembersAccess(
@@ -263,13 +335,16 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
         const results = new Map<string, boolean | null>();
 
         for (const userId of normalizedUserIds) {
+          const cacheKey = this.buildCacheKey(chatId, userId);
           const isMember = accessByUserId.has(userId);
           const snapshot: MembershipCacheSnapshot = {
             isMember,
             checkedAtMs,
           };
-          this.storeSnapshot(this.buildCacheKey(chatId, userId), snapshot);
-          this.backoffUntilMs.delete(this.buildCacheKey(chatId, userId));
+          if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
+            this.storeSnapshot(cacheKey, snapshot);
+            this.backoffUntilMs.delete(cacheKey);
+          }
           results.set(userId, isMember);
         }
 
@@ -278,10 +353,10 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
         const transient = this.isTransientLookupError(error);
         if (transient) {
           for (const userId of normalizedUserIds) {
-            this.backoffUntilMs.set(
-              this.buildCacheKey(chatId, userId),
-              Date.now() + policy.backoffMs,
-            );
+            const cacheKey = this.buildCacheKey(chatId, userId);
+            if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
+              this.backoffUntilMs.set(cacheKey, Date.now() + policy.backoffMs);
+            }
           }
         }
         this.logLookupError(policy, error, {
@@ -322,6 +397,7 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
 
   private handleLookupError(
     cacheKey: string,
+    cacheEpoch: number,
     policy: MembershipLookupPolicyConfig,
     error: unknown,
     context: {
@@ -331,7 +407,7 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
     },
   ) {
     const transient = this.isTransientLookupError(error);
-    if (transient) {
+    if (transient && this.hasSameCacheEpoch(cacheKey, cacheEpoch)) {
       this.backoffUntilMs.set(cacheKey, Date.now() + policy.backoffMs);
     }
 
@@ -363,6 +439,54 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
     );
   }
 
+  private parseInvalidationMessage(payload: string): {
+    chatId: string;
+    userIds: string[];
+  } | null {
+    try {
+      const parsed = JSON.parse(payload) as {
+        chatId?: unknown;
+        userIds?: unknown;
+      };
+      if (
+        (typeof parsed.chatId !== 'string' && typeof parsed.chatId !== 'number') ||
+        !Array.isArray(parsed.userIds)
+      ) {
+        return null;
+      }
+
+      const chatId = String(parsed.chatId).trim();
+      const userIds = Array.from(
+        new Set(
+          parsed.userIds
+            .map((value) => (typeof value === 'string' ? value.trim() : ''))
+            .filter((value): value is string => value.length > 0),
+        ),
+      );
+      if (!chatId || userIds.length === 0) {
+        return null;
+      }
+
+      return {
+        chatId,
+        userIds,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private applyLocalInvalidation(chatId: string, userIds: readonly string[]) {
+    const now = Date.now();
+    for (const userId of userIds) {
+      const cacheKey = this.buildCacheKey(chatId, userId);
+      this.memoryCache.delete(cacheKey);
+      this.inFlight.delete(cacheKey);
+      this.backoffUntilMs.delete(cacheKey);
+      this.bumpCacheEpoch(cacheKey, now);
+    }
+  }
+
   private resolveLookupFallback(cacheKey: string, allowStaleOnError: boolean): boolean | null {
     if (!allowStaleOnError) {
       return null;
@@ -381,6 +505,33 @@ export class MaxMembershipLookupService implements OnModuleDestroy {
   private storeSnapshot(cacheKey: string, snapshot: MembershipCacheSnapshot) {
     this.memoryCache.set(cacheKey, snapshot);
     void this.writeRedisSnapshot(cacheKey, snapshot);
+  }
+
+  private readCacheEpoch(cacheKey: string, now = Date.now()): number {
+    const state = this.cacheEpochs.get(cacheKey);
+    if (!state) {
+      return 0;
+    }
+
+    if (state.expiresAtMs <= now) {
+      this.cacheEpochs.delete(cacheKey);
+      return 0;
+    }
+
+    return state.epoch;
+  }
+
+  private hasSameCacheEpoch(cacheKey: string, epoch: number): boolean {
+    return this.readCacheEpoch(cacheKey) === epoch;
+  }
+
+  private bumpCacheEpoch(cacheKey: string, now = Date.now()): number {
+    const nextEpoch = this.readCacheEpoch(cacheKey, now) + 1;
+    this.cacheEpochs.set(cacheKey, {
+      epoch: nextEpoch,
+      expiresAtMs: now + MEMBERSHIP_INVALIDATION_GUARD_TTL_MS,
+    });
+    return nextEpoch;
   }
 
   private async readRedisSnapshot(cacheKey: string): Promise<MembershipCacheSnapshot | null> {

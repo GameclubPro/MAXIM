@@ -112,4 +112,67 @@ describe('WebhookService', () => {
       }),
     );
   });
+
+  it('best-effort invalidates membership cache for join and leave events before persistence', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-3' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const membershipLookup = {
+      invalidateMemberships: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new WebhookService(prisma as never, config as never, membershipLookup as never);
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-join-1',
+          type: 'user_added',
+          message: {
+            messageId: 'user_added:u-join-1',
+            chatId: 'chat-1',
+            senderId: 'user-10',
+            text: '',
+            createdAt: new Date('2026-03-29T12:00:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['user-10'],
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-leave-1',
+          type: 'user_removed',
+          message: {
+            messageId: 'user_removed:u-leave-1',
+            chatId: 'chat-1',
+            senderId: 'user-10',
+            text: '',
+            createdAt: new Date('2026-03-29T12:00:01.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(membershipLookup.invalidateMemberships).toHaveBeenNthCalledWith(1, 'chat-1', [
+      'user-10',
+    ]);
+    expect(membershipLookup.invalidateMemberships).toHaveBeenNthCalledWith(2, 'chat-1', [
+      'user-10',
+    ]);
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+  });
 });

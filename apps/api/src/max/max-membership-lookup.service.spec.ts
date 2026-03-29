@@ -2,17 +2,61 @@ import Redis from 'ioredis';
 
 jest.mock('ioredis', () => {
   const store = new Map<string, string>();
-  const RedisMock = Object.assign(
-    jest.fn().mockImplementation(() => ({
+  const subscribers = new Set<(channel: string, payload: string) => void>();
+  const createInstance = () => {
+    const messageHandlers = new Set<(channel: string, payload: string) => void>();
+    const instance = {
       get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
       set: jest.fn().mockImplementation(async (key: string, value: string) => {
         store.set(key, value);
         return 'OK';
       }),
-      quit: jest.fn().mockResolvedValue(undefined),
-    })),
+      del: jest.fn().mockImplementation(async (...keys: string[]) => {
+        let deleted = 0;
+        for (const key of keys) {
+          if (store.delete(key)) {
+            deleted += 1;
+          }
+        }
+        return deleted;
+      }),
+      publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
+        for (const subscriber of subscribers) {
+          subscriber(channel, payload);
+        }
+        return subscribers.size;
+      }),
+      subscribe: jest.fn().mockResolvedValue(1),
+      on: jest.fn().mockImplementation((event: string, handler: unknown) => {
+        if (event === 'message' && typeof handler === 'function') {
+          const messageHandler = handler as (channel: string, payload: string) => void;
+          messageHandlers.add(messageHandler);
+          subscribers.add(messageHandler);
+        }
+        return instance;
+      }),
+      duplicate: jest.fn().mockImplementation(() => createInstance()),
+      quit: jest.fn().mockImplementation(async () => {
+        for (const handler of messageHandlers) {
+          subscribers.delete(handler);
+        }
+        messageHandlers.clear();
+      }),
+    };
+
+    return instance;
+  };
+
+  const RedisMock = Object.assign(
+    jest.fn().mockImplementation(() => {
+      const instance = {
+        ...createInstance(),
+      };
+      return instance;
+    }),
     {
       __store: store,
+      __subscribers: subscribers,
     },
   );
 
@@ -39,6 +83,9 @@ function createConfigMock() {
 describe('MaxMembershipLookupService', () => {
   beforeEach(() => {
     (Redis as unknown as { __store: Map<string, string> }).__store.clear();
+    (
+      Redis as unknown as { __subscribers: Set<(channel: string, payload: string) => void> }
+    ).__subscribers.clear();
   });
 
   afterEach(() => {
@@ -159,5 +206,106 @@ describe('MaxMembershipLookupService', () => {
         allowStaleOnError: false,
       }),
     ).resolves.toBeNull();
+  });
+
+  it('invalidates cached membership snapshots and forces a fresh lookup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:20:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      getChatMembersAccess: jest.fn(),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership('channel-1', 'user-4', 'giveaway_interactive'),
+    ).resolves.toBe(true);
+    await service.invalidateMemberships('channel-1', ['user-4']);
+    await expect(
+      service.getMembership('channel-1', 'user-4', 'giveaway_interactive'),
+    ).resolves.toBe(false);
+
+    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts a fresh lookup instead of reusing an invalidated in-flight promise', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:25:00.000Z'));
+
+    let resolveLookup: ((value: boolean) => void) | null = null;
+    const maxClient = {
+      hasChatMember: jest
+        .fn()
+        .mockImplementationOnce(
+          () =>
+            new Promise<boolean>((resolve) => {
+              resolveLookup = resolve;
+            }),
+        )
+        .mockResolvedValueOnce(false),
+      getChatMembersAccess: jest.fn(),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    const pendingLookup = service.getMembership('channel-1', 'user-5', 'giveaway_interactive', {
+      forceRefresh: true,
+    });
+
+    await service.invalidateMemberships('channel-1', ['user-5']);
+    await expect(
+      service.getMembership('channel-1', 'user-5', 'giveaway_interactive'),
+    ).resolves.toBe(false);
+
+    const finishLookup = resolveLookup as ((value: boolean) => void) | null;
+    if (!finishLookup) {
+      throw new Error('Expected pending membership lookup resolver');
+    }
+    finishLookup(true);
+    await expect(pendingLookup).resolves.toBe(true);
+
+    await expect(
+      service.getMembership('channel-1', 'user-5', 'giveaway_interactive'),
+    ).resolves.toBe(false);
+
+    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates membership invalidations across instances via Redis pub/sub', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:30:00.000Z'));
+
+    const maxClientA = {
+      hasChatMember: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
+      getChatMembersAccess: jest.fn(),
+    };
+    const maxClientB = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+    };
+    const serviceA = new MaxMembershipLookupService(
+      maxClientA as never,
+      createConfigMock() as never,
+    );
+    const serviceB = new MaxMembershipLookupService(
+      maxClientB as never,
+      createConfigMock() as never,
+    );
+
+    await serviceA.onModuleInit();
+    await serviceB.onModuleInit();
+
+    await expect(
+      serviceA.getMembership('channel-1', 'user-6', 'giveaway_interactive'),
+    ).resolves.toBe(true);
+
+    await serviceB.invalidateMemberships('channel-1', ['user-6']);
+
+    await expect(
+      serviceA.getMembership('channel-1', 'user-6', 'giveaway_interactive'),
+    ).resolves.toBe(false);
+
+    expect(maxClientA.hasChatMember).toHaveBeenCalledTimes(2);
+    expect(maxClientB.hasChatMember).not.toHaveBeenCalled();
+
+    await serviceA.onModuleDestroy();
+    await serviceB.onModuleDestroy();
   });
 });

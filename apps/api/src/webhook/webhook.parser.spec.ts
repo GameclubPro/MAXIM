@@ -552,6 +552,10 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatId).toBe('-123456789');
     expect(parsed.message?.senderId).toBe('888');
     expect(parsed.message?.senderName).toBe('Иван Смирнов');
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['888'],
+    });
   });
 
   it('builds normalized message for user_removed update without message payload', () => {
@@ -572,6 +576,68 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatId).toBe('-123456789');
     expect(parsed.message?.senderId).toBe('889');
     expect(parsed.message?.senderName).toBe('Петр Иванов');
+    expect(parsed.membership).toEqual({
+      action: 'removed',
+      memberUserIds: ['889'],
+    });
+  });
+
+  it('captures membership additions from service message payloads with new_members', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'mid-service-join-membership',
+        chat_id: -123456789,
+        sender_id: 777,
+        new_members: [
+          {
+            user_id: 1001,
+            display_name: 'Первый',
+          },
+          {
+            user: {
+              user_id: 1002,
+              display_name: 'Второй',
+            },
+          },
+        ],
+        created_at: '2026-03-29T11:00:00.000Z',
+      },
+    });
+
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['1001', '1002'],
+    });
+  });
+
+  it('captures membership removals from service message payloads with removed_members', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'mid-service-leave-membership',
+        chat_id: -123456789,
+        sender_id: 777,
+        removed_members: [
+          {
+            user_id: 1003,
+            display_name: 'Третий',
+          },
+          {
+            user: {
+              user_id: 1004,
+              display_name: 'Четвертый',
+            },
+          },
+        ],
+        created_at: '2026-03-29T11:01:00.000Z',
+      },
+    });
+
+    expect(parsed.membership).toEqual({
+      action: 'removed',
+      memberUserIds: ['1003', '1004'],
+    });
   });
 
   it('builds normalized message for bot_removed update without message payload', () => {

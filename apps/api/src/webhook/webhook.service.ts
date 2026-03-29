@@ -1,7 +1,8 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookStatus, type Prisma } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
+import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type WebhookIngestResult = {
@@ -17,11 +18,14 @@ export class WebhookService {
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
+    @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
   }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
+    await this.invalidateMembershipCacheFromWebhook(update);
+
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
 
@@ -60,6 +64,47 @@ export class WebhookService {
       this.logger.error({ err: error }, 'Failed to ingest webhook event');
       throw error;
     }
+  }
+
+  private async invalidateMembershipCacheFromWebhook(update: MaxUpdate): Promise<void> {
+    if (!this.membershipLookupService) {
+      return;
+    }
+
+    const chatId = update.message?.chatId?.trim() ?? '';
+    const memberUserIds =
+      update.membership?.memberUserIds ??
+      (this.isDirectMembershipChange(update) && update.message?.senderId
+        ? [update.message.senderId]
+        : []);
+
+    if (!chatId || memberUserIds.length === 0) {
+      return;
+    }
+
+    try {
+      await this.membershipLookupService.invalidateMemberships(chatId, memberUserIds);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          chatId,
+          memberUserIds,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to invalidate MAX membership cache from webhook',
+      );
+    }
+  }
+
+  private isDirectMembershipChange(update: MaxUpdate): boolean {
+    const normalizedType = update.type.trim().toLowerCase();
+    return (
+      normalizedType === 'user_added' ||
+      normalizedType === 'bot_added' ||
+      normalizedType === 'user_removed' ||
+      normalizedType === 'bot_removed'
+    );
   }
 
   private async persistEvent(
