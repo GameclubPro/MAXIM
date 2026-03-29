@@ -82,37 +82,53 @@ const DIALOG_REDIRECTABLE_ERROR_PATTERNS = [
 ] as const;
 
 const COMMENT_BACKDROP_ORNAMENT_STYLES = {
-  commentPrimary: {
-    top: '7%',
+  conversationHero: {
+    top: '5%',
     right: '-5%',
-    width: 'clamp(132px, 34vw, 182px)',
-    height: 'clamp(132px, 34vw, 182px)',
-    color: 'rgba(66, 123, 212, 0.15)',
-    transform: 'rotate(13deg)',
+    width: 'clamp(150px, 38vw, 198px)',
+    height: 'clamp(150px, 38vw, 198px)',
+    color: 'rgba(70, 127, 215, 0.14)',
+    transform: 'rotate(10deg)',
   },
   sparkles: {
-    top: '18%',
-    left: '-3%',
-    width: 'clamp(108px, 26vw, 146px)',
-    height: 'clamp(108px, 26vw, 146px)',
-    color: 'rgba(114, 164, 241, 0.14)',
-    transform: 'rotate(-9deg)',
+    top: '16%',
+    left: '-4%',
+    width: 'clamp(94px, 24vw, 128px)',
+    height: 'clamp(94px, 24vw, 128px)',
+    color: 'rgba(111, 167, 244, 0.14)',
+    transform: 'rotate(-7deg)',
+  },
+  typing: {
+    top: '33%',
+    right: '-8%',
+    width: 'clamp(118px, 30vw, 156px)',
+    height: 'clamp(118px, 30vw, 156px)',
+    color: 'rgba(88, 142, 227, 0.1)',
+    transform: 'rotate(7deg)',
+  },
+  quotes: {
+    left: '-8%',
+    bottom: '30%',
+    width: 'clamp(112px, 30vw, 146px)',
+    height: 'clamp(112px, 30vw, 146px)',
+    color: 'rgba(84, 136, 223, 0.11)',
+    transform: 'rotate(-14deg)',
+  },
+  reactionPill: {
+    left: '3%',
+    bottom: '14%',
+    width: 'clamp(118px, 32vw, 158px)',
+    height: 'clamp(84px, 22vw, 112px)',
+    color: 'rgba(73, 131, 220, 0.1)',
+    transform: 'rotate(-6deg)',
   },
   heart: {
     right: '-4%',
-    bottom: '19%',
-    width: 'clamp(116px, 28vw, 154px)',
-    height: 'clamp(116px, 28vw, 154px)',
-    color: 'rgba(84, 136, 224, 0.12)',
-    transform: 'rotate(8deg)',
-  },
-  reply: {
-    left: '-8%',
-    bottom: '11%',
-    width: 'clamp(144px, 38vw, 196px)',
-    height: 'clamp(144px, 38vw, 196px)',
-    color: 'rgba(63, 117, 206, 0.1)',
-    transform: 'rotate(-8deg)',
+    bottom: '18%',
+    width: 'clamp(108px, 28vw, 144px)',
+    height: 'clamp(108px, 28vw, 144px)',
+    color: 'rgba(101, 153, 233, 0.1)',
+    transform: 'rotate(9deg)',
   },
 } satisfies Record<string, CSSProperties>;
 
@@ -848,24 +864,31 @@ function TrashIcon() {
   );
 }
 
-function CommentBubbleOutlineIcon() {
+function ConversationStackOutlineIcon() {
   return (
-    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+    <svg viewBox="0 0 72 72" fill="none" aria-hidden focusable="false">
       <path
-        d="M19.5 19.5H44.5C48.9 19.5 52.5 23.1 52.5 27.5V38.2C52.5 42.6 48.9 46.2 44.5 46.2H33.6L25.3 52.4V46.2H19.5C15.1 46.2 11.5 42.6 11.5 38.2V27.5C11.5 23.1 15.1 19.5 19.5 19.5Z"
+        d="M18.4 17.8H39.1C43.9 17.8 47.8 21.7 47.8 26.5V33.1C47.8 37.9 43.9 41.8 39.1 41.8H29.5L22.3 47V41.8H18.4C13.6 41.8 9.7 37.9 9.7 33.1V26.5C9.7 21.7 13.6 17.8 18.4 17.8Z"
         stroke="currentColor"
         strokeWidth="2.6"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
       <path
-        d="M22.8 30.7H41.2"
+        d="M32.4 25.6H53.6C58.4 25.6 62.3 29.5 62.3 34.3V41C62.3 45.8 58.4 49.7 53.6 49.7H44L36.8 54.9V49.7H32.4C27.6 49.7 23.7 45.8 23.7 41V34.3C23.7 29.5 27.6 25.6 32.4 25.6Z"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M35.5 35.9H50.5"
         stroke="currentColor"
         strokeWidth="2.6"
         strokeLinecap="round"
       />
       <path
-        d="M22.8 36.9H34.9"
+        d="M35.5 42.3H45.7"
         stroke="currentColor"
         strokeWidth="2.6"
         strokeLinecap="round"
@@ -874,11 +897,11 @@ function CommentBubbleOutlineIcon() {
   );
 }
 
-function HeartOutlineIcon() {
+function SoftHeartOutlineIcon() {
   return (
     <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
       <path
-        d="M32 49.1L17.9 35.2C14.2 31.5 14.2 25.6 17.9 21.9C21.6 18.2 27.5 18.2 31.2 21.9L32 22.8L32.8 21.9C36.5 18.2 42.4 18.2 46.1 21.9C49.8 25.6 49.8 31.5 46.1 35.2L32 49.1Z"
+        d="M32 49.7C30.7 48.8 16.5 36.9 16.5 27.9C16.5 22.8 20.6 18.8 25.7 18.8C28.9 18.8 31.7 20.3 33.3 22.9C35 20.3 37.8 18.8 41 18.8C46 18.8 50.2 22.8 50.2 27.9C50.2 36.9 36 48.8 34.7 49.7H32Z"
         stroke="currentColor"
         strokeWidth="2.8"
         strokeLinecap="round"
@@ -912,6 +935,70 @@ function SparklesOutlineIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+      <circle cx="14.6" cy="20.2" r="2" fill="currentColor" />
+      <circle cx="49.8" cy="42.8" r="1.8" fill="currentColor" />
+      <circle cx="23.4" cy="55" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+function TypingBubbleOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M19.2 18.5H44.8C50 18.5 54.2 22.7 54.2 27.9V38C54.2 43.2 50 47.4 44.8 47.4H31.4L24.3 52.8V47.4H19.2C14 47.4 9.8 43.2 9.8 38V27.9C9.8 22.7 14 18.5 19.2 18.5Z"
+        stroke="currentColor"
+        strokeWidth="2.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="23.6" cy="33.2" r="2.4" fill="currentColor" />
+      <circle cx="32" cy="33.2" r="2.4" fill="currentColor" />
+      <circle cx="40.4" cy="33.2" r="2.4" fill="currentColor" />
+    </svg>
+  );
+}
+
+function QuoteMarksOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 64" fill="none" aria-hidden focusable="false">
+      <path
+        d="M24 20.8C17.2 21.6 12.3 26.9 12.3 33.4C12.3 38.6 16 42.4 21.2 42.4H28.1V27.1H21.1C21.4 24.7 22.4 22.7 24.8 21.1"
+        stroke="currentColor"
+        strokeWidth="2.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M47.1 20.8C40.3 21.6 35.4 26.9 35.4 33.4C35.4 38.6 39.1 42.4 44.3 42.4H51.2V27.1H44.2C44.5 24.7 45.5 22.7 47.9 21.1"
+        stroke="currentColor"
+        strokeWidth="2.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ReactionPillOutlineIcon() {
+  return (
+    <svg viewBox="0 0 64 44" fill="none" aria-hidden focusable="false">
+      <path
+        d="M15.6 8.8H48.4C53.6 8.8 57.8 13 57.8 18.2V25.8C57.8 31 53.6 35.2 48.4 35.2H15.6C10.4 35.2 6.2 31 6.2 25.8V18.2C6.2 13 10.4 8.8 15.6 8.8Z"
+        stroke="currentColor"
+        strokeWidth="2.4"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M23 27.2L19.7 24C18.8 23.1 18.8 21.7 19.7 20.8C20.6 19.9 22 19.9 22.9 20.8L23.2 21.1L23.5 20.8C24.4 19.9 25.8 19.9 26.7 20.8C27.6 21.7 27.6 23.1 26.7 24L23.4 27.2H23Z"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="38.6" cy="22" r="2.1" fill="currentColor" />
+      <circle cx="45.8" cy="22" r="2.1" fill="currentColor" />
     </svg>
   );
 }
@@ -921,9 +1008,9 @@ function CommentBackdropOrnaments() {
     <div className="channel-dialog-screen__ornaments" aria-hidden>
       <span
         className="channel-dialog-screen__ornament"
-        style={COMMENT_BACKDROP_ORNAMENT_STYLES.commentPrimary}
+        style={COMMENT_BACKDROP_ORNAMENT_STYLES.conversationHero}
       >
-        <CommentBubbleOutlineIcon />
+        <ConversationStackOutlineIcon />
       </span>
       <span
         className="channel-dialog-screen__ornament"
@@ -931,11 +1018,20 @@ function CommentBackdropOrnaments() {
       >
         <SparklesOutlineIcon />
       </span>
-      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.heart}>
-        <HeartOutlineIcon />
+      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.typing}>
+        <TypingBubbleOutlineIcon />
       </span>
-      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.reply}>
-        <ReplyArrowIcon />
+      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.quotes}>
+        <QuoteMarksOutlineIcon />
+      </span>
+      <span
+        className="channel-dialog-screen__ornament"
+        style={COMMENT_BACKDROP_ORNAMENT_STYLES.reactionPill}
+      >
+        <ReactionPillOutlineIcon />
+      </span>
+      <span className="channel-dialog-screen__ornament" style={COMMENT_BACKDROP_ORNAMENT_STYLES.heart}>
+        <SoftHeartOutlineIcon />
       </span>
     </div>
   );
