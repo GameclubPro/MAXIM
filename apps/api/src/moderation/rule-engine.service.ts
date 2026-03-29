@@ -93,6 +93,21 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^(?:на|по|до|о|за|ни|вы)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
   /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её]б[а-я0-9]*$/u,
   /^долбо(?:[её]б)[а-я0-9]*$/u,
+  /^сук(?:а|и|е|у|ой|ою|ам|ами|ах|ин[а-я0-9]*)$/u,
+  /^суч(?:к|ар|он|ен|ь)[а-я0-9]*$/u,
+  /^мраз[а-я0-9]*$/u,
+  /^шлюх[а-я0-9]*$/u,
+  /^муда(?:к|ч)[а-я0-9]*$/u,
+  /^мудил[а-я0-9]*$/u,
+  /^ублюд[а-я0-9]*$/u,
+  /^твар(?:ь|и|ин)[а-я0-9]*$/u,
+  /^дебил[а-я0-9]*$/u,
+  /^идиот[а-я0-9]*$/u,
+  /^урод[а-я0-9]*$/u,
+  /^г[ао]нд(?:он|ош)[а-я0-9]*$/u,
+  /^пид(?:ор|ар|р|ерас|орас|рила|рищ)[а-я0-9]*$/u,
+  /^педик[а-я0-9]*$/u,
+  /^педр[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
@@ -100,6 +115,19 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo|y)(?:y|i|e|ya|yu)?[a-z0-9]*$/i,
   /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a|o|i|y|e|u|l|n|t|s|k|sh|zh)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
+  /^suk(?:a|i|e|u|oy|oyu|am|ami|ah|in[a-z0-9]*)$/i,
+  /^such(?:k|ar|on|en)[a-z0-9]*$/i,
+  /^mraz[a-z0-9]*$/i,
+  /^shl?yuh[a-z0-9]*$/i,
+  /^muda(?:k|ch)[a-z0-9]*$/i,
+  /^mudil[a-z0-9]*$/i,
+  /^ublyu?d[a-z0-9]*$/i,
+  /^tvar(?:in)?[a-z0-9]*$/i,
+  /^urod[a-z0-9]*$/i,
+  /^g[ao]nd(?:on|osh)[a-z0-9]*$/i,
+  /^pid(?:or|ar|r|eras|oras|rila|rish)[a-z0-9]*$/i,
+  /^pedik[a-z0-9]*$/i,
+  /^pedr[a-z0-9]*$/i,
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -296,7 +324,11 @@ export class RuleEngineService {
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
     if (settings.russianProfanityFilterEnabled && this.hasProfanity(text)) {
-      violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
+      violations.push({
+        ruleCode: 'PROFANITY',
+        score: 0.95,
+        reason: 'Detected profanity or abusive language pattern',
+      });
     }
 
     if (settings.commercialAdsFilterEnabled) {
@@ -1079,7 +1111,11 @@ export class RuleEngineService {
         cursor += 1
       ) {
         const normalizedToken = this.normalizeProfanityJoinToken(segments[cursor]);
-        if (!normalizedToken || !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken)) {
+        if (
+          !normalizedToken ||
+          (normalizedToken.length === 2 &&
+            !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken))
+        ) {
           break;
         }
 

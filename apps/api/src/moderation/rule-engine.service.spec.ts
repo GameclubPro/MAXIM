@@ -403,7 +403,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
-  it('does not detect PROFANITY for insults without mat roots', async () => {
+  it('detects PROFANITY for common russian insults without mat roots', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -413,7 +413,20 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('detects PROFANITY for common abusive russian words', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'сука, вы мудачье, гандоны и ублюдки',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
   it('does not detect PROFANITY for safe exception words', async () => {
@@ -448,6 +461,19 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Важно потреблять воду и поддерживать режим',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY in neutral words with "дебилитац" fragment', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'После травмы началась длительная дебилитация организма',
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -526,6 +552,19 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'ну ты б л я т ь конечно',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('detects PROFANITY when russian insult is split into short spaced tokens', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ну ты с у к а конечно',
       settings: buildSettings(),
       domainAllowlist: [],
     });
