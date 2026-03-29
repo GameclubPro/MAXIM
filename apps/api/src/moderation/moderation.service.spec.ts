@@ -2862,7 +2862,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('stores greeting sent message id when auto-delete for own bot messages is enabled', async () => {
+  it('auto-deletes greeting message when global bot auto-delete is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -2926,7 +2926,19 @@ describe('ModerationService', () => {
       }),
     );
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-greeting-sent-1', {
+      delayMs: 120_000,
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-black-2',
+        messageId: 'msg-greeting-sent-1',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         chatId: 'chat-1',
         userId: 'user-black-2',

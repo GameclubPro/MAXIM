@@ -4515,9 +4515,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         greetingBotMessageText,
         botSpeechStyle,
       );
-      const shouldDeleteGreetingMessage = greetingDeleteBotMessageEnabled;
-      const shouldSendPersistentGreetingMessage =
-        shouldDeleteGreetingMessage || deleteBotMessagesEnabled;
+      const shouldDeleteGreetingMessage =
+        greetingDeleteBotMessageEnabled || deleteBotMessagesEnabled;
+      const shouldSendPersistentGreetingMessage = shouldDeleteGreetingMessage;
       try {
         const sentMessageId = shouldSendPersistentGreetingMessage
           ? await this.sendPersistentBotMessage({
