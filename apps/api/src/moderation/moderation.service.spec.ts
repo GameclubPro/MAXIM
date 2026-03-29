@@ -6167,7 +6167,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -6298,7 +6298,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
       'chat-1',
       'user-2',
@@ -6383,7 +6383,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminLinkedModerationUpdate());
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
       'chat-1',
       'user-2',
@@ -6619,7 +6619,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminForwardedBanUpdate('бан', 'chat-2'));
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -6678,7 +6678,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 

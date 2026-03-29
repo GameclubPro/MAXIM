@@ -122,6 +122,7 @@ const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
 const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
 const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
+const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
@@ -131,6 +132,7 @@ const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
 const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
+const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
   readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
@@ -246,6 +248,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       adminUserIds: Set<string>;
     }
   >();
+  private readonly chatAdminLookupInFlight = new Map<string, Promise<Set<string> | null>>();
+  private readonly chatAdminLookupBackoffUntilMs = new Map<string, number>();
+  private readonly requiredSubscriptionMembershipCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      isMember: boolean;
+    }
+  >();
+  private readonly requiredSubscriptionMembershipInFlight = new Map<string, Promise<boolean | null>>();
+  private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
@@ -6031,37 +6044,82 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
   ): Promise<boolean | null> {
     const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(channelId, userId);
+    const now = Date.now();
+    const memoryCached = this.requiredSubscriptionMembershipCache.get(cacheKey);
+    if (memoryCached && memoryCached.expiresAt > now) {
+      return memoryCached.isMember;
+    }
+
     const cached = await this.redisCounter?.getString(cacheKey);
     if (cached === '1') {
+      this.requiredSubscriptionMembershipCache.set(cacheKey, {
+        isMember: true,
+        expiresAt: now + REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC * 1_000,
+      });
       return true;
     }
     if (cached === '0') {
+      this.requiredSubscriptionMembershipCache.set(cacheKey, {
+        isMember: false,
+        expiresAt: now + REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC * 1_000,
+      });
       return false;
     }
 
-    try {
-      const isMember = await this.maxClient.hasChatMember(channelId, userId, {
-        trafficClass: 'critical',
-      });
-      await this.redisCounter?.setStringWithTtl(
-        cacheKey,
-        isMember ? '1' : '0',
-        isMember
-          ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
-          : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC,
-      );
-      return isMember;
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          channelId,
-          userId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to resolve required subscription membership',
-      );
-      return null;
+    const backoffUntilMs = this.requiredSubscriptionMembershipBackoffUntilMs.get(cacheKey) ?? 0;
+    if (backoffUntilMs > now) {
+      return memoryCached?.isMember ?? null;
     }
+
+    const inFlight = this.requiredSubscriptionMembershipInFlight.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    const lookupPromise = (async () => {
+      try {
+        const isMember = await this.maxClient.hasChatMember(channelId, userId, {
+          trafficClass: 'critical',
+        });
+        const ttlSec = isMember
+          ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
+          : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC;
+        this.requiredSubscriptionMembershipCache.set(cacheKey, {
+          isMember,
+          expiresAt: Date.now() + ttlSec * 1_000,
+        });
+        this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);
+        await this.redisCounter?.setStringWithTtl(cacheKey, isMember ? '1' : '0', ttlSec);
+        return isMember;
+      } catch (error: unknown) {
+        const transient = this.isTransientMaxApiLookupError(error);
+        if (transient) {
+          this.requiredSubscriptionMembershipBackoffUntilMs.set(
+            cacheKey,
+            Date.now() + REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
+          );
+        }
+        this.logger.warn(
+          {
+            channelId,
+            userId,
+            backoffMs: transient ? REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS : 0,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to resolve required subscription membership',
+        );
+        return memoryCached?.isMember ?? null;
+      }
+    })();
+    let trackedLookupPromise!: Promise<boolean | null>;
+    trackedLookupPromise = lookupPromise.finally(() => {
+      if (this.requiredSubscriptionMembershipInFlight.get(cacheKey) === trackedLookupPromise) {
+        this.requiredSubscriptionMembershipInFlight.delete(cacheKey);
+      }
+    });
+
+    this.requiredSubscriptionMembershipInFlight.set(cacheKey, trackedLookupPromise);
+    return trackedLookupPromise;
   }
 
   private async resolveRequiredSubscriptionChannels(
@@ -7053,6 +7111,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
   ): Promise<ChatAdminCheckResult> {
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
+    if (localIsAdmin) {
+      return { isAdmin: true, source: 'local' };
+    }
+
     const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
     if (remoteAdminIds) {
       let remoteIsAdmin = false;
@@ -7068,9 +7130,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       if (remoteIsAdmin) {
         return { isAdmin: true, source: 'remote' };
-      }
-      if (localIsAdmin) {
-        return { isAdmin: true, source: 'local' };
       }
 
       return { isAdmin: false, source: 'remote' };
@@ -7110,10 +7169,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (cached && cached.expiresAt > now) {
       return cached.adminUserIds;
     }
+    const staleCached = cached?.adminUserIds ?? null;
 
     const cachedFromSharedStore = await this.readChatAdminsFromSharedCache(chatId, now);
     if (cachedFromSharedStore) {
+      this.chatAdminLookupBackoffUntilMs.delete(chatId);
       return cachedFromSharedStore;
+    }
+
+    const backoffUntilMs = this.chatAdminLookupBackoffUntilMs.get(chatId) ?? 0;
+    if (backoffUntilMs > now) {
+      return staleCached;
+    }
+
+    const inFlight = this.chatAdminLookupInFlight.get(chatId);
+    if (inFlight) {
+      return inFlight;
     }
 
     const getChatAdminIds = (this.maxClient as Partial<MaxClientService>).getChatAdminIds;
@@ -7121,38 +7192,54 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    try {
-      const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId);
-      if (!Array.isArray(rawAdminUserIds)) {
-        return null;
-      }
-
-      const adminUserIds = rawAdminUserIds;
-      const normalizedAdminUserIds = new Set<string>();
-      for (const adminUserId of adminUserIds) {
-        for (const variant of this.buildUserIdVariants(adminUserId)) {
-          normalizedAdminUserIds.add(variant);
+    const lookupPromise = (async () => {
+      try {
+        const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId);
+        if (!Array.isArray(rawAdminUserIds)) {
+          return null;
         }
+
+        const adminUserIds = rawAdminUserIds;
+        const normalizedAdminUserIds = new Set<string>();
+        for (const adminUserId of adminUserIds) {
+          for (const variant of this.buildUserIdVariants(adminUserId)) {
+            normalizedAdminUserIds.add(variant);
+          }
+        }
+
+        this.chatAdminCache.set(chatId, {
+          expiresAt: Date.now() + CHAT_ADMIN_CACHE_TTL_MS,
+          adminUserIds: normalizedAdminUserIds,
+        });
+        this.chatAdminLookupBackoffUntilMs.delete(chatId);
+        await this.writeChatAdminsToSharedCache(chatId, normalizedAdminUserIds);
+
+        return normalizedAdminUserIds;
+      } catch (error: unknown) {
+        const transient = this.isTransientMaxApiLookupError(error);
+        if (transient) {
+          this.chatAdminLookupBackoffUntilMs.set(chatId, Date.now() + CHAT_ADMIN_LOOKUP_BACKOFF_MS);
+        }
+        this.logger.warn(
+          {
+            chatId,
+            backoffMs: transient ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to resolve chat admins for moderation bypass',
+        );
+        return staleCached;
       }
+    })();
+    let trackedLookupPromise!: Promise<Set<string> | null>;
+    trackedLookupPromise = lookupPromise.finally(() => {
+      if (this.chatAdminLookupInFlight.get(chatId) === trackedLookupPromise) {
+        this.chatAdminLookupInFlight.delete(chatId);
+      }
+    });
 
-      this.chatAdminCache.set(chatId, {
-        expiresAt: now + CHAT_ADMIN_CACHE_TTL_MS,
-        adminUserIds: normalizedAdminUserIds,
-      });
-      await this.writeChatAdminsToSharedCache(chatId, normalizedAdminUserIds);
-
-      return normalizedAdminUserIds;
-    } catch (error: unknown) {
-      this.chatAdminCache.delete(chatId);
-      this.logger.warn(
-        {
-          chatId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to resolve chat admins for moderation bypass',
-      );
-      return null;
-    }
+    this.chatAdminLookupInFlight.set(chatId, trackedLookupPromise);
+    return trackedLookupPromise;
   }
 
   private buildChatAdminSharedCacheKey(chatId: string): string {
@@ -9582,6 +9669,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const message = this.extractMaxErrorMessage(error);
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  }
+
+  private isMaxApiTimeoutError(error: unknown): boolean {
+    const code = (error as { code?: unknown })?.code;
+    if (typeof code === 'string' && code.trim().toUpperCase() === 'ECONNABORTED') {
+      return true;
+    }
+
+    return this.extractMaxErrorMessage(error).includes('timeout');
+  }
+
+  private isTransientMaxApiLookupError(error: unknown): boolean {
+    return this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error);
   }
 
   private normalizeSecret(value: string | undefined): string | null {

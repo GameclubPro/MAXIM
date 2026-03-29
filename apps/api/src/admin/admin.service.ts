@@ -576,7 +576,7 @@ export class AdminService {
 
   async getMe(
     user: AuthUser,
-    options: { chatId?: string; entityType?: ManagedEntityType } = {},
+    options: { chatId?: string; entityType?: ManagedEntityType; enrichFromMax?: boolean } = {},
   ): Promise<Me> {
     const canAccessSystem =
       this.systemAccessConfig.requireSystemAdmin &&
@@ -596,6 +596,7 @@ export class AdminService {
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
     if (
+      options.enrichFromMax !== true ||
       !contextChatId ||
       typeof loadProfiles !== 'function' ||
       (fallback.username && fallback.displayName && fallback.avatarUrl && fallback.profileUrl)

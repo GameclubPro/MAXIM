@@ -819,7 +819,7 @@ describe('AdminService getMe', () => {
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
 
-  it('enriches current admin profile from MAX member data when init data misses username', async () => {
+  it('enriches current admin profile from MAX member data only when explicitly requested', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatMemberProfiles: jest.fn().mockResolvedValue(
@@ -852,7 +852,7 @@ describe('AdminService getMe', () => {
           displayName: null,
           avatarUrl: null,
         },
-        { chatId: 'chat-1' },
+        { chatId: 'chat-1', enrichFromMax: true },
       ),
     ).resolves.toEqual({
       userId: 'admin-1',
@@ -930,7 +930,7 @@ describe('AdminService getMe', () => {
           displayName: null,
           avatarUrl: null,
         },
-        { chatId: 'chat-1', entityType: 'chat' },
+        { chatId: 'chat-1', entityType: 'chat', enrichFromMax: true },
       ),
     ).resolves.toEqual({
       userId: 'admin-1',
@@ -978,7 +978,7 @@ describe('AdminService getMe', () => {
           displayName: null,
           avatarUrl: null,
         },
-        { chatId: 'chat-1', entityType: 'chat' },
+        { chatId: 'chat-1', entityType: 'chat', enrichFromMax: true },
       ),
     ).resolves.toEqual({
       userId: 'admin-1',
@@ -990,6 +990,39 @@ describe('AdminService getMe', () => {
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
     });
+  });
+
+  it('returns init data fallback by default when profile enrichment is not explicitly requested', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          avatarUrl: null,
+        },
+        { chatId: 'chat-1' },
+      ),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      avatarUrl: null,
+      profileUrl: null,
+    });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
 });
 
