@@ -29,6 +29,21 @@ contains_service() {
   return 1
 }
 
+ensure_service_requested_if_down() {
+  local service="$1"
+
+  if contains_service "$service" "${SERVICES[@]}"; then
+    return 0
+  fi
+
+  if docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx "$service"; then
+    return 0
+  fi
+
+  echo "$service is not running. Including it in this deploy to restore availability."
+  SERVICES+=("$service")
+}
+
 has_pulled_changes() {
   [[ -n "$PRE_PULL_HEAD" ]] && [[ "$PRE_PULL_HEAD" != "$(git rev-parse HEAD)" ]]
 }
@@ -192,6 +207,7 @@ fi
 sync_branch
 ensure_compose_env
 stop_conflicting_stacks
+ensure_service_requested_if_down "miniapp-static"
 
 BUILD_API_IMAGE=0
 for service in "${API_SERVICES[@]}"; do
