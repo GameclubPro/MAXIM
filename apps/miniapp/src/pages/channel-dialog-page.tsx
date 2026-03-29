@@ -229,6 +229,24 @@ function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string
   return fileName ? `Фото · ${fileName}` : 'Фото приложено';
 }
 
+function renderPlainTextParagraphs(text: string) {
+  const normalized = text.replace(/\r\n?/gu, '\n').trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.split(/\n{2,}/u).map((paragraph, paragraphIndex) => (
+    <p key={`paragraph-${paragraphIndex}`}>
+      {paragraph.split('\n').map((line, lineIndex) => (
+        <Fragment key={lineIndex}>
+          {lineIndex > 0 ? <br /> : null}
+          {line}
+        </Fragment>
+      ))}
+    </p>
+  ));
+}
+
 const SUGGEST_INTRO_STYLE: CSSProperties = {
   display: 'grid',
   gap: '8px',
@@ -1961,10 +1979,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   <strong style={SUGGEST_INTRO_TITLE_STYLE}>
                     Идея уйдёт в редакцию, а не в общий чат
                   </strong>
-                  <p>
-                    {introText ||
-                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.'}
-                  </p>
+                  {renderPlainTextParagraphs(
+                    introText ||
+                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
+                  )}
                   <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
                     <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
                     <span style={SUGGEST_BADGE_STYLE}>Бот пишет редакторам в личку</span>
