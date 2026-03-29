@@ -78,6 +78,7 @@ function parseMe(value: unknown): Me {
     displayName: typeof value.displayName === 'string' ? value.displayName : null,
     avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : null,
     profileUrl: typeof value.profileUrl === 'string' ? value.profileUrl : null,
+    ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
   };
 }
 

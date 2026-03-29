@@ -1,0 +1,205 @@
+import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type {
+  SystemDashboardAlert,
+  SystemDashboardResponse,
+  SystemDashboardStatus,
+} from '@maxim/contracts';
+import { QueueMetricsService } from './queue-metrics.service';
+import { SystemModeService } from './system-mode.service';
+
+const QUEUE_LAG_WARNING_SEC = 5;
+const FAILED_EVENTS_CRITICAL_COUNT = 100;
+const ACTION_RATE_WARNING_THRESHOLD = 0.02;
+const ACTION_RATE_CRITICAL_THRESHOLD = 0.05;
+const ACTION_ERROR_MIN_TOTAL = 100;
+
+@Injectable()
+export class SystemDashboardService {
+  private readonly queueLagCriticalThresholdSec: number;
+
+  constructor(
+    private readonly queueMetricsService: QueueMetricsService,
+    private readonly systemModeService: SystemModeService,
+    configService: ConfigService,
+  ) {
+    this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
+  }
+
+  async getSnapshot(): Promise<SystemDashboardResponse> {
+    const [queues, mode] = await Promise.all([
+      this.queueMetricsService.getSnapshot(),
+      this.systemModeService.getEffectiveSnapshot(),
+    ]);
+    const alerts: SystemDashboardAlert[] = [];
+    const queueLagSec = queues.effectiveLagSec;
+    const failedCount = queues.webhookEvents.failed.count;
+    const criticalRate = mode.action.criticalRate;
+    const errorRate = mode.action.errorRate;
+    const stabilizing = this.isStabilizing(mode, queueLagSec);
+
+    if (mode.source === 'manual') {
+      alerts.push({
+        code: 'manual-mode',
+        level: 'info',
+        title: 'Включён ручной режим',
+        detail:
+          mode.manualMode === 'degrade'
+            ? 'Система удерживается в degrade вручную, даже если очереди уже выровнялись.'
+            : 'Система зафиксирована в normal вручную. Автоматическое переключение временно отключено.',
+        recommendedAction: 'Проверьте инцидент и верните режим в auto после стабилизации.',
+      });
+    }
+
+    if (queueLagSec > QUEUE_LAG_WARNING_SEC) {
+      const critical = queueLagSec > this.queueLagCriticalThresholdSec;
+      alerts.push({
+        code: 'queue-lag',
+        level: critical ? 'critical' : 'warning',
+        title: critical ? 'Очередь начала отставать' : 'Есть задержка в очереди',
+        detail: `Старейшее событие ждёт обработки ${queueLagSec.toFixed(1)} сек.`,
+        recommendedAction:
+          'Проверьте backlog webhook events и rate limit MAX API. Если lag растёт, снижайте background-нагрузку.',
+      });
+    }
+
+    if (failedCount > 0) {
+      const critical = failedCount >= FAILED_EVENTS_CRITICAL_COUNT;
+      alerts.push({
+        code: 'failed-webhooks',
+        level: critical ? 'critical' : 'warning',
+        title: critical ? 'Есть заметный хвост failed webhook' : 'Появились failed webhook',
+        detail: `В статусе FAILED сейчас ${failedCount} событий.`,
+        recommendedAction:
+          'Посмотрите последние ошибки доставки/обработки и очистите только подтверждённо мёртвые записи.',
+      });
+    }
+
+    if (criticalRate > ACTION_RATE_WARNING_THRESHOLD) {
+      const critical = criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD;
+      alerts.push({
+        code: 'critical-rate',
+        level: critical ? 'critical' : 'warning',
+        title: critical ? 'MAX critical rate выше нормы' : 'MAX critical rate растёт',
+        detail: `Критичные ошибки MAX API за окно: ${(criticalRate * 100).toFixed(2)}%.`,
+        recommendedAction:
+          'Защитите critical-трафик: режьте interactive/background запросы и проверяйте route split.',
+      });
+    }
+
+    if (mode.action.total >= ACTION_ERROR_MIN_TOTAL && errorRate > ACTION_RATE_WARNING_THRESHOLD) {
+      alerts.push({
+        code: 'action-error-rate',
+        level: 'warning',
+        title: 'Растёт доля ошибок action-path',
+        detail: `Общий error rate за окно: ${(errorRate * 100).toFixed(2)}%.`,
+        recommendedAction:
+          'Проверьте timeout и retries на MAX API, затем сопоставьте со всплесками UI или moderation-трафика.',
+      });
+    }
+
+    if (stabilizing) {
+      alerts.push({
+        code: 'stabilizing',
+        level: 'info',
+        title: 'Система в окне стабилизации',
+        detail:
+          'Основные метрики уже выровнялись, но auto-mode ещё держит degrade до завершения защитного окна.',
+        recommendedAction:
+          'Наблюдайте за lag и critical rate. Если они остаются низкими, система вернётся в normal автоматически.',
+      });
+    }
+
+    const status = this.resolveStatus({
+      mode: mode.mode,
+      queueLagSec,
+      failedCount,
+      criticalRate,
+      errorRate,
+    });
+
+    return {
+      summary: {
+        status,
+        title: this.buildSummaryTitle(status, stabilizing),
+        detail: this.buildSummaryDetail(status, mode.reason, queueLagSec, failedCount, stabilizing),
+        generatedAt: new Date().toISOString(),
+        stabilizing,
+      },
+      alerts,
+      queues,
+      mode,
+    };
+  }
+
+  private resolveStatus(input: {
+    mode: 'normal' | 'degrade';
+    queueLagSec: number;
+    failedCount: number;
+    criticalRate: number;
+    errorRate: number;
+  }): SystemDashboardStatus {
+    if (
+      input.mode === 'degrade' ||
+      input.queueLagSec > this.queueLagCriticalThresholdSec ||
+      input.failedCount >= FAILED_EVENTS_CRITICAL_COUNT ||
+      input.criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD
+    ) {
+      return 'critical';
+    }
+
+    if (
+      input.queueLagSec > QUEUE_LAG_WARNING_SEC ||
+      input.failedCount > 0 ||
+      input.criticalRate > ACTION_RATE_WARNING_THRESHOLD ||
+      input.errorRate > ACTION_RATE_WARNING_THRESHOLD
+    ) {
+      return 'warning';
+    }
+
+    return 'healthy';
+  }
+
+  private buildSummaryTitle(status: SystemDashboardStatus, stabilizing: boolean): string {
+    if (status === 'critical') {
+      return stabilizing ? 'Система стабилизируется после инцидента' : 'Нужна реакция оператора';
+    }
+
+    if (status === 'warning') {
+      return 'Система под нагрузкой, но управляемая';
+    }
+
+    return 'Бот работает ровно';
+  }
+
+  private buildSummaryDetail(
+    status: SystemDashboardStatus,
+    reason: string,
+    queueLagSec: number,
+    failedCount: number,
+    stabilizing: boolean,
+  ): string {
+    if (status === 'healthy') {
+      return 'Webhook-path чистый, backlog не копится, critical MAX budget не съедается UI-нагрузкой.';
+    }
+
+    if (stabilizing) {
+      return `Auto-mode ещё держит защитный degrade (${reason}), но backlog уже не растёт. Lag ${queueLagSec.toFixed(1)} сек, failed ${failedCount}.`;
+    }
+
+    return `Причина текущего режима: ${reason}. Lag ${queueLagSec.toFixed(1)} сек, failed ${failedCount}.`;
+  }
+
+  private isStabilizing(
+    mode: Awaited<ReturnType<SystemModeService['getEffectiveSnapshot']>>,
+    queueLagSec: number,
+  ): boolean {
+    return (
+      mode.mode === 'degrade' &&
+      mode.source === 'auto' &&
+      queueLagSec <= QUEUE_LAG_WARNING_SEC &&
+      mode.action.errorRate <= ACTION_RATE_WARNING_THRESHOLD &&
+      mode.action.criticalRate <= ACTION_RATE_WARNING_THRESHOLD
+    );
+  }
+}

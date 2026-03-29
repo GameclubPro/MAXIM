@@ -22,6 +22,7 @@ export const preloadChannelStatsPage = () => import('./channel-stats-page');
 export const preloadChannelDialogPage = () => import('./channel-dialog-page');
 export const preloadEventsPage = () => import('./events-page');
 export const preloadGiveawayPage = () => import('./giveaway-page');
+export const preloadSystemPage = () => import('./system-page');
 
 export const LazyChatsPage = lazyPage<RoutedPageProps>(preloadChatsPage, 'ChatsPage');
 export const LazySettingsPage = lazyPage<RoutedPageProps>(preloadSettingsPage, 'SettingsPage');
@@ -39,3 +40,4 @@ export const LazyChannelDialogPage = lazyPage<RoutedPageProps>(
 );
 export const LazyEventsPage = lazyPage<RoutedPageProps>(preloadEventsPage, 'EventsPage');
 export const LazyGiveawayPage = lazyPage<RoutedPageProps>(preloadGiveawayPage, 'GiveawayPage');
+export const LazySystemPage = lazyPage<RoutedPageProps>(preloadSystemPage, 'SystemPage');

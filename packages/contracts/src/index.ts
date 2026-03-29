@@ -1425,8 +1425,110 @@ export const meSchema = z.object({
   displayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
+  canAccessSystem: z.boolean().optional(),
 });
 export type Me = z.infer<typeof meSchema>;
+
+export const queueCountersSchema = z.object({
+  waiting: z.number().int().min(0),
+  active: z.number().int().min(0),
+  delayed: z.number().int().min(0),
+  failed: z.number().int().min(0),
+  completed: z.number().int().min(0),
+});
+export type QueueCounters = z.infer<typeof queueCountersSchema>;
+
+export const webhookStatusMetricsSchema = z.object({
+  count: z.number().int().min(0),
+  oldestEventId: z.string().nullable(),
+  oldestCreatedAt: z.string().datetime().nullable(),
+  oldestLagSec: z.number().min(0),
+});
+export type WebhookStatusMetrics = z.infer<typeof webhookStatusMetricsSchema>;
+
+export const actionHealthSnapshotSchema = z.object({
+  windowSec: z.number().int().min(1),
+  total: z.number().int().min(0),
+  success: z.number().int().min(0),
+  failure: z.number().int().min(0),
+  critical: z.number().int().min(0),
+  errorRate: z.number().min(0),
+  criticalRate: z.number().min(0),
+});
+export type ActionHealthSnapshot = z.infer<typeof actionHealthSnapshotSchema>;
+
+export const systemModeSchema = z.enum(['normal', 'degrade']);
+export type SystemMode = z.infer<typeof systemModeSchema>;
+
+export const systemModeSourceSchema = z.enum(['auto', 'manual']);
+export type SystemModeSource = z.infer<typeof systemModeSourceSchema>;
+
+export const systemModeSnapshotSchema = z.object({
+  mode: systemModeSchema,
+  source: systemModeSourceSchema,
+  reason: z.string(),
+  updatedAt: z.string().datetime(),
+  manualMode: systemModeSchema.nullable(),
+  queueLagSec: z.number().min(0),
+  action: actionHealthSnapshotSchema,
+});
+export type SystemModeSnapshot = z.infer<typeof systemModeSnapshotSchema>;
+
+export const queueMetricsSnapshotSchema = z.object({
+  moderation: queueCountersSchema,
+  webhookCritical: queueCountersSchema,
+  webhookDefault: queueCountersSchema,
+  webhookBackground: queueCountersSchema,
+  webhookLegacy: queueCountersSchema,
+  actions: queueCountersSchema,
+  webhookEvents: z.object({
+    received: webhookStatusMetricsSchema,
+    queued: webhookStatusMetricsSchema,
+    failed: webhookStatusMetricsSchema,
+  }),
+  actionHealth: actionHealthSnapshotSchema,
+  oldestQueuedEventId: z.string().nullable(),
+  oldestQueuedCreatedAt: z.string().datetime().nullable(),
+  oldestQueuedLagSec: z.number().min(0),
+  oldestReceivedEventId: z.string().nullable(),
+  oldestReceivedCreatedAt: z.string().datetime().nullable(),
+  oldestReceivedLagSec: z.number().min(0),
+  effectiveLagSec: z.number().min(0),
+  generatedAt: z.string().datetime(),
+});
+export type QueueMetricsSnapshot = z.infer<typeof queueMetricsSnapshotSchema>;
+
+export const systemDashboardStatusSchema = z.enum(['healthy', 'warning', 'critical']);
+export type SystemDashboardStatus = z.infer<typeof systemDashboardStatusSchema>;
+
+export const systemDashboardAlertLevelSchema = z.enum(['info', 'warning', 'critical']);
+export type SystemDashboardAlertLevel = z.infer<typeof systemDashboardAlertLevelSchema>;
+
+export const systemDashboardAlertSchema = z.object({
+  code: z.string(),
+  level: systemDashboardAlertLevelSchema,
+  title: z.string(),
+  detail: z.string(),
+  recommendedAction: z.string(),
+});
+export type SystemDashboardAlert = z.infer<typeof systemDashboardAlertSchema>;
+
+export const systemDashboardSummarySchema = z.object({
+  status: systemDashboardStatusSchema,
+  title: z.string(),
+  detail: z.string(),
+  generatedAt: z.string().datetime(),
+  stabilizing: z.boolean(),
+});
+export type SystemDashboardSummary = z.infer<typeof systemDashboardSummarySchema>;
+
+export const systemDashboardResponseSchema = z.object({
+  summary: systemDashboardSummarySchema,
+  alerts: z.array(systemDashboardAlertSchema),
+  queues: queueMetricsSnapshotSchema,
+  mode: systemModeSnapshotSchema,
+});
+export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;
 
 export const dateRangeQuerySchema = z.object({
   from: z.string().datetime().optional(),

@@ -107,6 +107,13 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+  if (pathname === '/system') {
+    return {
+      title: 'Операционный центр',
+      subtitle: 'Состояние webhook, очередей и MAX-лимитов в одном экране.',
+    };
+  }
+
   if (pathname.includes('/giveaways/')) {
     return {
       title: 'Розыгрыш',

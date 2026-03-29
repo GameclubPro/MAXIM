@@ -1,5 +1,14 @@
 import { useQueryClient } from '@tanstack/react-query';
-import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
 import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
@@ -8,6 +17,7 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
+import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
@@ -32,6 +42,11 @@ const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '7d';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 
+const LazySystemEntryCard = lazy(async () => {
+  const module = await import('../components/system-entry-card');
+  return { default: module.SystemEntryCard };
+});
+
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
 }
@@ -40,6 +55,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
+  const [canAccessSystem, setCanAccessSystem] = useState(false);
   const [refreshNonceByTab, setRefreshNonceByTab] = useState<Record<ManagedTab, number>>({
     chat: 0,
     channel: 0,
@@ -174,6 +190,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeEntitiesState.isLoading, activeEntitiesState.isRefreshing]);
 
   useEffect(() => {
+    const controller = new AbortController();
+
+    void getMe(api, { signal: controller.signal })
+      .then((me) => {
+        setCanAccessSystem(me.canAccessSystem === true);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setCanAccessSystem(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [api]);
+
+  useEffect(() => {
     const allEntities = [...(chatsState.data ?? []), ...(channelsState.data ?? [])];
     if (allEntities.length === 0) {
       return;
@@ -238,6 +270,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const refreshButtonLabel = isFetching
     ? 'Обновляем список'
     : 'Обновить список';
+  const showSystemCard = canAccessSystem;
 
   return (
     <div className="page-stack page-enter">
@@ -301,6 +334,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             />
           </label>
         </GlassCard>
+      ) : null}
+
+      {showSystemCard ? (
+        <Suspense
+          fallback={
+            <GlassCard className="system-root-card" elevated>
+              <div className="system-root-card__copy">
+                <h2>Операционный центр</h2>
+                <p>Подготавливаю live-сводку по webhook, очередям и MAX-лимитам.</p>
+              </div>
+            </GlassCard>
+          }
+        >
+          <LazySystemEntryCard api={api} />
+        </Suspense>
       ) : null}
 
       {isLoading ? (

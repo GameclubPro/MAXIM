@@ -11,6 +11,7 @@ type SegmentedControlProps<T extends string> = {
   options: Array<SegmentedOption<T>>;
   onChange: (value: T) => void;
   className?: string;
+  ariaLabel?: string;
 };
 
 export function SegmentedControl<T extends string>({
@@ -18,9 +19,10 @@ export function SegmentedControl<T extends string>({
   options,
   onChange,
   className,
+  ariaLabel = 'Фильтр событий',
 }: SegmentedControlProps<T>) {
   return (
-    <div className={cn('segmented-control', className)} role="tablist" aria-label="Фильтр событий">
+    <div className={cn('segmented-control', className)} role="tablist" aria-label={ariaLabel}>
       {options.map((option) => {
         const active = option.value === value;
 

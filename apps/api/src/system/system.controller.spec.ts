@@ -18,6 +18,7 @@ describe('SystemController', () => {
     const controller = new SystemController(
       { getSnapshot: jest.fn() } as never,
       { getEffectiveSnapshot: jest.fn() } as never,
+      { getSnapshot: jest.fn() } as never,
       createConfigMock({
         NODE_ENV: 'production',
         SYSTEM_ADMIN_USER_IDS: '100,200',
@@ -32,6 +33,7 @@ describe('SystemController', () => {
     const controller = new SystemController(
       { getSnapshot: jest.fn() } as never,
       { getEffectiveSnapshot } as never,
+      { getSnapshot: jest.fn() } as never,
       createConfigMock({
         NODE_ENV: 'production',
         SYSTEM_ADMIN_USER_IDS: '100,200',

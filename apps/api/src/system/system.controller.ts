@@ -12,6 +12,8 @@ import { z } from 'zod';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { QueueMetricsService } from './queue-metrics.service';
+import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from './system-access.util';
+import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
 
 const systemModeBodySchema = z.object({
@@ -21,23 +23,15 @@ const systemModeBodySchema = z.object({
 @Controller('v1/system')
 @UseGuards(InitDataGuard)
 export class SystemController {
-  private readonly systemAdminUserIds: ReadonlySet<string>;
-  private readonly requireSystemAdmin: boolean;
+  private readonly systemAccessConfig: SystemAccessConfig;
 
   constructor(
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
+    private readonly systemDashboardService: SystemDashboardService,
     configService: ConfigService,
   ) {
-    const configuredUserIds = String(configService.get<string>('SYSTEM_ADMIN_USER_IDS') ?? '')
-      .split(',')
-      .map((value) => value.trim())
-      .filter((value) => value.length > 0);
-    this.systemAdminUserIds = new Set(configuredUserIds);
-    const nodeEnv = String(configService.get<string>('NODE_ENV', 'development'))
-      .trim()
-      .toLowerCase();
-    this.requireSystemAdmin = nodeEnv === 'production' || this.systemAdminUserIds.size > 0;
+    this.systemAccessConfig = readSystemAccessConfig(configService);
   }
 
   @Get('metrics/queues')
@@ -48,6 +42,12 @@ export class SystemController {
       this.systemModeService.getEffectiveSnapshot(),
     ]);
     return { queues, mode };
+  }
+
+  @Get('dashboard')
+  async getDashboard(@CurrentUser() user: AuthUser) {
+    this.assertSystemAdmin(user);
+    return this.systemDashboardService.getSnapshot();
   }
 
   @Get('mode')
@@ -68,11 +68,7 @@ export class SystemController {
   }
 
   private assertSystemAdmin(user: AuthUser) {
-    if (!this.requireSystemAdmin) {
-      return;
-    }
-
-    if (this.systemAdminUserIds.has(user.userId.trim())) {
+    if (canUserAccessSystem(user.userId, this.systemAccessConfig)) {
       return;
     }
 

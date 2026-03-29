@@ -137,6 +137,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { RedisCounterService } from '../moderation/redis-counter.service';
+import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from '../system/system-access.util';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -538,6 +539,7 @@ export class AdminService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
+  private readonly systemAccessConfig: SystemAccessConfig;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
   private readonly managedEntitiesDiscoveryChecks = new Map<
     string,
@@ -569,12 +571,16 @@ export class AdminService {
       configService.get<string>('MAX_BOT_CONTACT_ID'),
     );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
+    this.systemAccessConfig = readSystemAccessConfig(configService);
   }
 
   async getMe(
     user: AuthUser,
     options: { chatId?: string; entityType?: ManagedEntityType } = {},
   ): Promise<Me> {
+    const canAccessSystem =
+      this.systemAccessConfig.requireSystemAdmin &&
+      canUserAccessSystem(user.userId, this.systemAccessConfig);
     const fallback: Me = {
       userId: user.userId,
       username: this.readTrimmedString(user.username) ?? null,
@@ -583,6 +589,7 @@ export class AdminService {
       profileUrl:
         this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
         this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
+      ...(canAccessSystem ? { canAccessSystem: true } : {}),
     };
     const contextChatId =
       this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
@@ -616,6 +623,7 @@ export class AdminService {
         displayName,
         avatarUrl,
         profileUrl,
+        ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
       this.logger.warn(

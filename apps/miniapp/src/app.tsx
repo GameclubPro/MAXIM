@@ -26,6 +26,7 @@ import {
   LazyEventsPage,
   LazyGiveawayPage,
   LazySettingsPage,
+  LazySystemPage,
 } from './pages/lazy-pages';
 
 const queryClient = new QueryClient({
@@ -111,6 +112,7 @@ function AppRoutes({
               element={<LazyChannelDialogPage api={apiClient} />}
             />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+            <Route path="/system" element={<LazySystemPage api={apiClient} />} />
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
@@ -161,12 +163,28 @@ export function App() {
     previewApiRef.current = previewRuntime.createPreviewApiTransport();
   }
 
+  const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
+
+  if (preview.enabled && !previewRuntime) {
+    return (
+      <div className="app-shell app-shell--centered">
+        <GlassCard className="init-missing-card" elevated>
+          <h1>Design Preview</h1>
+          <StatusState
+            tone="neutral"
+            title="Подготавливаю preview"
+            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
+          />
+        </GlassCard>
+      </div>
+    );
+  }
+
   const apiClient = preview.enabled
     ? previewApiRef.current
     : initData
       ? createApiTransport(initData)
       : null;
-  const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
 
   if (!apiClient) {
     return (
@@ -187,21 +205,6 @@ export function App() {
               <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
             </ul>
           </div>
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (preview.enabled && !previewRuntime) {
-    return (
-      <div className="app-shell app-shell--centered">
-        <GlassCard className="init-missing-card" elevated>
-          <h1>Design Preview</h1>
-          <StatusState
-            tone="neutral"
-            title="Подготавливаю preview"
-            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
-          />
         </GlassCard>
       </div>
     );

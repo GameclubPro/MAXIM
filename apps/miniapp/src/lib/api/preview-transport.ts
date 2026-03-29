@@ -27,6 +27,8 @@ import {
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
+  systemDashboardResponseSchema,
+  systemModeSnapshotSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
   type BroadcastHandoffResponse,
@@ -62,6 +64,8 @@ import {
   type MembershipActivityRange,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type SystemDashboardResponse,
+  type SystemModeSnapshot,
 } from '@maxim/contracts';
 import {
   PREVIEW_CHANNEL_ID,
@@ -73,6 +77,7 @@ import type { ApiTransport } from './transport';
 
 type PreviewState = {
   me: Me;
+  systemModeSelection: 'auto' | 'normal' | 'degrade';
   chats: ChatSummary[];
   channels: ChatSummary[];
   chatDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
@@ -107,6 +112,156 @@ type PreviewGiveawayParticipantVariant = PreviewGiveawayVariant | 'blocked-enter
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function buildPreviewSystemMode(state: PreviewState): SystemModeSnapshot {
+  const now = new Date().toISOString();
+  const manualMode =
+    state.systemModeSelection === 'auto' ? null : state.systemModeSelection;
+  const mode = manualMode ?? 'normal';
+  const action =
+    mode === 'degrade'
+      ? {
+          windowSec: 60,
+          total: 182,
+          success: 162,
+          failure: 20,
+          critical: 9,
+          errorRate: 0.109,
+          criticalRate: 0.049,
+        }
+      : {
+          windowSec: 60,
+          total: 94,
+          success: 93,
+          failure: 1,
+          critical: 0,
+          errorRate: 0.011,
+          criticalRate: 0,
+        };
+
+  return {
+    mode,
+    source: manualMode ? 'manual' : 'auto',
+    reason: manualMode ? 'manual override' : 'system healthy',
+    updatedAt: now,
+    manualMode,
+    queueLagSec: manualMode === 'degrade' ? 11.4 : 0,
+    action,
+  };
+}
+
+function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardResponse {
+  const mode = buildPreviewSystemMode(state);
+  const generatedAt = new Date().toISOString();
+  const inDegrade = mode.mode === 'degrade';
+  const queues = {
+    moderation: {
+      waiting: inDegrade ? 7 : 1,
+      active: inDegrade ? 3 : 0,
+      delayed: 0,
+      failed: 0,
+      completed: 2480,
+    },
+    webhookCritical: {
+      waiting: 0,
+      active: 1,
+      delayed: 0,
+      failed: 0,
+      completed: 960,
+    },
+    webhookDefault: {
+      waiting: inDegrade ? 5 : 1,
+      active: inDegrade ? 2 : 0,
+      delayed: 0,
+      failed: 0,
+      completed: 1224,
+    },
+    webhookBackground: {
+      waiting: inDegrade ? 2 : 0,
+      active: inDegrade ? 1 : 0,
+      delayed: 0,
+      failed: 0,
+      completed: 296,
+    },
+    webhookLegacy: {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    },
+    actions: {
+      waiting: inDegrade ? 2 : 0,
+      active: inDegrade ? 1 : 0,
+      delayed: 0,
+      failed: 0,
+      completed: 480,
+    },
+    webhookEvents: {
+      received: {
+        count: inDegrade ? 3 : 0,
+        oldestEventId: inDegrade ? 'preview-received-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 6.1 : 0,
+      },
+      queued: {
+        count: inDegrade ? 4 : 0,
+        oldestEventId: inDegrade ? 'preview-queued-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 11.4 : 0,
+      },
+      failed: {
+        count: inDegrade ? 12 : 0,
+        oldestEventId: inDegrade ? 'preview-failed-1' : null,
+        oldestCreatedAt: inDegrade ? generatedAt : null,
+        oldestLagSec: inDegrade ? 41 : 0,
+      },
+    },
+    actionHealth: mode.action,
+    oldestQueuedEventId: inDegrade ? 'preview-queued-1' : null,
+    oldestQueuedCreatedAt: inDegrade ? generatedAt : null,
+    oldestQueuedLagSec: inDegrade ? 11.4 : 0,
+    oldestReceivedEventId: inDegrade ? 'preview-received-1' : null,
+    oldestReceivedCreatedAt: inDegrade ? generatedAt : null,
+    oldestReceivedLagSec: inDegrade ? 6.1 : 0,
+    effectiveLagSec: inDegrade ? 11.4 : 0,
+    generatedAt,
+  };
+  const alerts = inDegrade
+    ? [
+        {
+          code: 'queue-lag',
+          level: 'critical' as const,
+          title: 'Очередь отстаёт',
+          detail: 'Preview показывает backlog и ручной degrade режим.',
+          recommendedAction: 'Проверьте split-runtime и снизьте background traffic.',
+        },
+      ]
+    : [
+        {
+          code: 'healthy',
+          level: 'info' as const,
+          title: 'Все контуры зелёные',
+          detail: 'Webhook-path чистый, lag не копится.',
+          recommendedAction: 'Наблюдайте и держите auto-mode активным.',
+        },
+      ];
+
+  return {
+    summary: {
+      status: inDegrade ? 'critical' : 'healthy',
+      title: inDegrade ? 'Нужна реакция оператора' : 'Бот работает ровно',
+      detail: inDegrade
+        ? 'Preview-инцидент: часть событий специально задержана для проверки интерфейса.'
+        : 'Preview-режим показывает штатное состояние без накопления очередей.',
+      generatedAt,
+      stabilizing: false,
+    },
+    alerts,
+    queues,
+    mode,
+  };
 }
 
 function buildAuthorBadge(value: string | null | undefined): string {
@@ -1358,7 +1513,9 @@ function createInitialState(): PreviewState {
       displayName: 'Алексей',
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
+      canAccessSystem: true,
     },
+    systemModeSelection: 'auto',
     chats: [
       {
         id: PREVIEW_CHAT_ID,
@@ -2846,6 +3003,20 @@ export function createPreviewApiTransport(): ApiTransport {
 
       if (url.pathname === '/me' && method === 'GET') {
         return cloneJson(state.me);
+      }
+
+      if (url.pathname === '/system/dashboard' && method === 'GET') {
+        return systemDashboardResponseSchema.parse(buildPreviewSystemDashboard(state));
+      }
+
+      if (url.pathname === '/system/mode' && method === 'POST') {
+        const parsedBody = JSON.parse(String(init.body ?? '{}')) as { mode?: unknown };
+        const mode = parsedBody.mode;
+        if (mode !== 'auto' && mode !== 'normal' && mode !== 'degrade') {
+          throw new Error('Preview transport received invalid system mode payload');
+        }
+        state.systemModeSelection = mode;
+        return systemModeSnapshotSchema.parse(buildPreviewSystemMode(state));
       }
 
       if (url.pathname === '/chats' && method === 'GET') {
