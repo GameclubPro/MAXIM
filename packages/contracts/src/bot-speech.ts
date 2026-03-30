@@ -3,6 +3,9 @@ import { z } from 'zod';
 export const BOT_SPEECH_STYLE_VALUES = ['ROBOT', 'FRIENDLY', 'POLICE', 'IRONIC'] as const;
 export const botSpeechStyleSchema = z.enum(BOT_SPEECH_STYLE_VALUES);
 export type BotSpeechStyle = z.infer<typeof botSpeechStyleSchema>;
+export const BOT_SPEECH_PERSONA_VALUES = ['male', 'female', 'neutral'] as const;
+export const botSpeechPersonaSchema = z.enum(BOT_SPEECH_PERSONA_VALUES);
+export type BotSpeechPersona = z.infer<typeof botSpeechPersonaSchema>;
 
 export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'greetingBotMessageText',
@@ -70,7 +73,7 @@ export const BOT_SPEECH_STYLE_METADATA: Record<BotSpeechStyle, BotSpeechStyleMet
   POLICE: {
     label: 'Полицейский',
     subtitle: 'строгий персонаж с ролью',
-    description: 'Текущий фирменный образ Майора Максимова без изменений.',
+    description: 'Строгий ролевой образ бота с фирменной служебной подачей.',
     iconKey: 'police',
   },
   IRONIC: {
@@ -187,7 +190,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   POLICE: {
     editable: {
       greetingBotMessageText:
-        'Здравия желаю, {user} 🤝 Майор Максимов на месте. Осваивайтесь, но без самодеятельности.',
+        'Здравия желаю, {user} 🤝 {bot_character_name} на месте. Осваивайтесь, но без самодеятельности.',
       linkBotMessageText:
         'Товарищ {user}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.',
       linkWarnMessageText:
@@ -296,8 +299,85 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   },
 };
 
+const BOT_SPEECH_POLICE_FEMALE_PRESET: BotSpeechPreset = {
+  editable: {
+    greetingBotMessageText:
+      'Здравия желаю, {user} 🤝 {bot_character_name} на месте. Осваивайтесь, но без самодеятельности.',
+    linkBotMessageText:
+      'Товарищ {user}, ссылочку изъяла 👮‍♀️ В этом чате с ними строго. Поправьте и работаем дальше.',
+    linkWarnMessageText:
+      'Товарищ {user}, предупреждение за ссылки оформила 👮‍♀️ Ещё один такой заход, и разговор будет короче.',
+    requiredSubscriptionBotMessageText:
+      'Товарищ {user}, для доступа к переписке нужна подписка на {channels} 👮‍♀️ Сначала оформите подписку, потом подавайте сообщение заново. Текущее: {message_status}.',
+    requiredSubscriptionWarnMessageText:
+      'Товарищ {user}, предупреждение по подписке оформила 👮‍♀️ Для сообщений нужна подписка на {channels}.',
+    textFiltersBotMessageText:
+      'Товарищ {user}, сообщение изъяла 👮‍♀️ Причина: {reason}. Поправьте по форме и разъедемся красиво.',
+    textFiltersWarnMessageText:
+      'Товарищ {user}, предупреждение на карандаш занесла 👮‍♀️ Причина: {reason}. Дальше держим порядок.',
+    duplicateBotMessageText:
+      'Товарищ {user}, у нас тут не ксерокс 👮‍♀️ Повтор зафиксировала. {sanction}',
+    messageLimitsBotMessageText:
+      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}. Подправьте и подавайте заново.',
+    nightModeBotMessageText:
+      'Ночной режим, граждане 🌙 Участок прикрыт на {night_window} ({night_timezone}). {night_status}',
+    nightModeOpenMessageText:
+      'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир без нарушений.',
+  },
+  system: {
+    linkMute:
+      'Товарищ {user}, со ссылками устроили повторное правонарушение. Оформляю мут.',
+    requiredSubscriptionMute:
+      'Товарищ {user}, без подписки на {channels} сообщения пошли по второму кругу. Оформляю мут.',
+    requiredSubscriptionBan:
+      'Товарищ {user}, оформляю бан до ручного разбана 👮‍♀️ Для сообщений нужна подписка на {channels}.',
+    textFiltersMuteCommercial:
+      'Товарищ {user}, коммерческую рекламу повторили, а у нас с этим короткий разговор. Оформляю мут.',
+    textFiltersMuteProfanity: 'Товарищ {user}, по лексике пошёл рецидив. Оформляю мут.',
+    textFiltersMuteGeneric:
+      'Товарищ {user}, нарушения пошли по второму кругу. Оформляю мут.',
+    topicExplainAnnouncement:
+      'Товарищ {user}, объявление завернула 👮‍♀️ Причина: {reason}. Поправьте по форме и возвращайтесь.',
+    topicExplainMessage:
+      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}. Поправьте по форме и возвращайтесь.',
+    topicWarn: 'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}.',
+    topicMuteAnnouncement:
+      'Товарищ {user}, объявления снова мимо формы. Оформляю мут.',
+    topicMuteMessage:
+      'Товарищ {user}, сообщения снова мимо формы. Оформляю мут.',
+    topicBan: 'Товарищ {user}, оформляю бан до ручного разбана 👮‍♀️ Причина: {reason}.',
+    muteNotice:
+      'Товарищ {user}, оформляю мут на {mute_duration}. До конца срока новые сообщения будут скрываться.',
+    messageLimitsWarn: 'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}.',
+    messageLimitsMute:
+      'Товарищ {user}, ограничения снова решили проверить на прочность. Оформляю мут. Причина: {reason}.',
+    messageLimitsBan:
+      'Товарищ {user}, оформляю бан до ручного разбана 👮‍♀️ Причина: {reason}.',
+  },
+};
+
 export function resolveBotSpeechStyle(style: BotSpeechStyle | null | undefined): BotSpeechStyle {
   return style ?? 'POLICE';
+}
+
+export function resolveBotSpeechPersona(
+  persona: BotSpeechPersona | null | undefined,
+): BotSpeechPersona {
+  return persona ?? 'male';
+}
+
+function resolveBotSpeechPreset(
+  style: BotSpeechStyle | null | undefined,
+  persona: BotSpeechPersona | null | undefined,
+): BotSpeechPreset {
+  const resolvedStyle = resolveBotSpeechStyle(style);
+  const resolvedPersona = resolveBotSpeechPersona(persona);
+
+  if (resolvedStyle === 'POLICE' && resolvedPersona === 'female') {
+    return BOT_SPEECH_POLICE_FEMALE_PRESET;
+  }
+
+  return BOT_SPEECH_PRESETS[resolvedStyle];
 }
 
 export function hasBotSpeechEditableOverrides(settings: BotSpeechSettingsSubset): boolean {
@@ -323,13 +403,15 @@ export function applyBotSpeechStylePreset<T extends BotSpeechSettingsSubset>(
 export function getBotSpeechEditableTemplate(
   style: BotSpeechStyle | null | undefined,
   fieldKey: BotSpeechEditableFieldKey,
+  persona?: BotSpeechPersona | null,
 ): string {
-  return BOT_SPEECH_PRESETS[resolveBotSpeechStyle(style)].editable[fieldKey];
+  return resolveBotSpeechPreset(style, persona).editable[fieldKey];
 }
 
 export function getBotSpeechSystemTemplate(
   style: BotSpeechStyle | null | undefined,
   templateKey: BotSpeechSystemTemplateKey,
+  persona?: BotSpeechPersona | null,
 ): string {
-  return BOT_SPEECH_PRESETS[resolveBotSpeechStyle(style)].system[templateKey];
+  return resolveBotSpeechPreset(style, persona).system[templateKey];
 }

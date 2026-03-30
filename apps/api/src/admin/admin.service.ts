@@ -1044,6 +1044,8 @@ export class AdminService {
         role: membership.role === 'PRIMARY' ? 'primary' : 'standby',
         membershipStatus: membership.status === 'REMOVED' ? 'removed' : 'active',
         lifecycleState: botMeta?.state ?? 'disabled',
+        speechPersona: botMeta?.speechPersona ?? 'male',
+        characterName: botMeta?.characterName ?? null,
       });
     }
 
@@ -1055,6 +1057,8 @@ export class AdminService {
         role: 'primary',
         membershipStatus: 'active',
         lifecycleState: botMeta?.state ?? 'disabled',
+        speechPersona: botMeta?.speechPersona ?? 'male',
+        characterName: botMeta?.characterName ?? null,
       });
     }
 

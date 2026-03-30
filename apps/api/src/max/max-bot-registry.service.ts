@@ -31,6 +31,8 @@ export class MaxBotRegistryService {
       defaultBot: {
         id: configService.getOrThrow<string>('MAX_BOT_ID'),
         label: configService.get<string>('MAX_BOT_LABEL'),
+        characterName: configService.get<string>('MAX_BOT_CHARACTER_NAME'),
+        speechPersona: configService.get<'male' | 'female' | 'neutral'>('MAX_BOT_SPEECH_PERSONA'),
         token: configService.getOrThrow<string>('MAX_BOT_TOKEN'),
         tokenPrevious: configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
         webhookSecretPath: configService.getOrThrow<string>('MAX_WEBHOOK_SECRET_PATH'),

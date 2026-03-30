@@ -1,23 +1,27 @@
 import { z } from 'zod';
 export {
   BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  BOT_SPEECH_PERSONA_VALUES,
   BOT_SPEECH_PRESETS,
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
   BOT_SPEECH_STYLE_VALUES,
   BOT_SPEECH_SYSTEM_TEMPLATE_KEYS,
   applyBotSpeechStylePreset,
+  botSpeechPersonaSchema,
   botSpeechStyleSchema,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
+  resolveBotSpeechPersona,
   resolveBotSpeechStyle,
   type BotSpeechEditableFieldKey,
+  type BotSpeechPersona,
   type BotSpeechSettingsSubset,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
 } from './bot-speech.js';
-import { botSpeechStyleSchema } from './bot-speech.js';
+import { botSpeechPersonaSchema, botSpeechStyleSchema } from './bot-speech.js';
 
 export const sanctionActionSchema = z.enum([
   'NONE',
@@ -1386,6 +1390,8 @@ export const managedEntityAssignedBotSchema = z.object({
   role: managedEntityBotRoleSchema,
   membershipStatus: managedEntityBotMembershipStatusSchema,
   lifecycleState: managedEntityBotLifecycleStateSchema,
+  speechPersona: botSpeechPersonaSchema.default('male'),
+  characterName: z.string().nullable().optional().default(null),
 });
 export type ManagedEntityAssignedBot = z.infer<typeof managedEntityAssignedBotSchema>;
 

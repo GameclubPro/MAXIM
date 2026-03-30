@@ -19,6 +19,7 @@ import {
   stepDeleteBotMessagesDelayMinutes,
   type AllowlistMatchType,
   type BotSpeechEditableFieldKey,
+  type BotSpeechPersona,
   type BotSpeechStyle,
   type ChatRules,
   type ChatSettings,
@@ -876,18 +877,46 @@ function serializeRulesDraftPayload(
   });
 }
 
+type BotSpeechPreviewContext = {
+  persona: BotSpeechPersona;
+  characterName: string;
+};
+
+const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
+  persona: 'male',
+  characterName: 'Майор Максимов',
+};
+
+function resolveBotSpeechPreviewContext(
+  header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'> | null | undefined,
+): BotSpeechPreviewContext {
+  const assignedBots = header?.assignedBots ?? [];
+  const primaryBot =
+    assignedBots.find((bot) => bot.botId === (header?.primaryBotId ?? null)) ?? assignedBots[0];
+
+  return {
+    persona: primaryBot?.speechPersona ?? DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT.persona,
+    characterName:
+      primaryBot?.characterName?.trim() ||
+      primaryBot?.label?.trim() ||
+      DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT.characterName,
+  };
+}
+
 function getSpeechTemplateFallback(
   style: ChatSettings['botSpeechStyle'],
   fieldKey: BotSpeechEditableFieldKey,
+  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
 ): string {
-  return getBotSpeechEditableTemplate(style, fieldKey);
+  return getBotSpeechEditableTemplate(style, fieldKey, previewContext.persona);
 }
 
 function getSpeechSystemTemplateFallback(
   style: ChatSettings['botSpeechStyle'],
   templateKey: Parameters<typeof getBotSpeechSystemTemplate>[1],
+  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
 ): string {
-  return getBotSpeechSystemTemplate(style, templateKey);
+  return getBotSpeechSystemTemplate(style, templateKey, previewContext.persona);
 }
 
 function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
@@ -897,9 +926,14 @@ function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string
 function renderBotMessageTemplatePreview(
   templateText: string,
   replacements: Record<string, string>,
+  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
 ): string {
   let rendered = templateText;
-  for (const [key, value] of Object.entries(replacements)) {
+  const mergedReplacements: Record<string, string> = {
+    bot_character_name: previewContext.characterName,
+    ...replacements,
+  };
+  for (const [key, value] of Object.entries(mergedReplacements)) {
     rendered = rendered.split(`{${key}}`).join(value);
   }
 
@@ -918,7 +952,10 @@ function mergeBotSpeechStyleSettings(target: ChatSettings, source: ChatSettings)
   return nextSettings;
 }
 
-function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
+function buildSpeechStylePreviewSamples(
+  style: BotSpeechStyle,
+  previewContext: BotSpeechPreviewContext = DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT,
+): {
   greeting: string;
   explanation: string;
   warning: string;
@@ -927,37 +964,48 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
 } {
   return {
     greeting: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'greetingBotMessageText'),
+      getSpeechTemplateFallback(style, 'greetingBotMessageText', previewContext),
       {
         user: 'Алексей',
         greeting: 'добро пожаловать в чат',
       },
+      previewContext,
     ),
     explanation: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'linkBotMessageText'),
+      getSpeechTemplateFallback(style, 'linkBotMessageText', previewContext),
       {
         user: 'Алексей',
         message_status: 'снято с линии',
         reason: 'в этом чате ссылки не проходят, без ссылок',
       },
+      previewContext,
     ),
     warning: renderBotMessageTemplatePreview(
-      getSpeechTemplateFallback(style, 'textFiltersWarnMessageText'),
+      getSpeechTemplateFallback(style, 'textFiltersWarnMessageText', previewContext),
       {
         user: 'Алексей',
         warning: 'вынесено предупреждение за грубую лексику',
         reason: 'грубая лексика запрещена правилами чата',
       },
+      previewContext,
     ),
-    mute: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'muteNotice'), {
-      user: 'Алексей',
-      mute_duration: '24 часа',
-      ban_duration: '24 часа',
-    }),
-    ban: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'topicBan'), {
-      user: 'Алексей',
-      reason: 'повторные нарушения правил чата',
-    }),
+    mute: renderBotMessageTemplatePreview(
+      getSpeechSystemTemplateFallback(style, 'muteNotice', previewContext),
+      {
+        user: 'Алексей',
+        mute_duration: '24 часа',
+        ban_duration: '24 часа',
+      },
+      previewContext,
+    ),
+    ban: renderBotMessageTemplatePreview(
+      getSpeechSystemTemplateFallback(style, 'topicBan', previewContext),
+      {
+        user: 'Алексей',
+        reason: 'повторные нарушения правил чата',
+      },
+      previewContext,
+    ),
   };
 }
 
@@ -1702,6 +1750,7 @@ function SettingsHintAnchor({
 type BotMessageEditorProps = {
   editorKey: BotMessageEditorKey;
   botSpeechStyle: ChatSettings['botSpeechStyle'];
+  botSpeechPreviewContext: BotSpeechPreviewContext;
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
@@ -1710,6 +1759,7 @@ type BotMessageEditorProps = {
 function BotMessageEditor({
   editorKey,
   botSpeechStyle,
+  botSpeechPreviewContext,
   value,
   onChange,
   onReset,
@@ -1717,6 +1767,7 @@ function BotMessageEditor({
   const defaultTemplate = getSpeechTemplateFallback(
     botSpeechStyle,
     BOT_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
+    botSpeechPreviewContext,
   );
   const templateHint = BOT_MESSAGE_TEMPLATE_HINTS[editorKey];
   const isDefaultTemplate = value.trim().length === 0;
@@ -1755,6 +1806,7 @@ function BotMessageEditor({
 type WarnMessageEditorProps = {
   editorKey: WarnMessageEditorKey;
   botSpeechStyle: ChatSettings['botSpeechStyle'];
+  botSpeechPreviewContext: BotSpeechPreviewContext;
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
@@ -1772,6 +1824,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
 function WarnMessageEditor({
   editorKey,
   botSpeechStyle,
+  botSpeechPreviewContext,
   value,
   onChange,
   onReset,
@@ -1779,6 +1832,7 @@ function WarnMessageEditor({
   const defaultTemplate = getSpeechTemplateFallback(
     botSpeechStyle,
     WARN_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
+    botSpeechPreviewContext,
   );
   const templateHint = WARN_MESSAGE_TEMPLATE_HINTS[editorKey];
   const isDefaultTemplate = value.trim().length === 0;
@@ -2047,6 +2101,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatHeaderQuery = {
     data: settingsScreenQuery.data?.header,
   };
+  const botSpeechPreviewContext = useMemo(
+    () => resolveBotSpeechPreviewContext(chatHeaderQuery.data ?? null),
+    [chatHeaderQuery.data],
+  );
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
     isLoading: settingsScreenQuery.isLoading,
@@ -2423,7 +2481,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
     : null;
   const pendingSpeechStyleSamples = pendingSpeechStyle
-    ? buildSpeechStylePreviewSamples(pendingSpeechStyle)
+    ? buildSpeechStylePreviewSamples(pendingSpeechStyle, botSpeechPreviewContext)
     : null;
 
   const publishRulesMutation = useMutation({
@@ -5311,6 +5369,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <BotMessageEditor
                                   editorKey="link"
                                   botSpeechStyle={draft.botSpeechStyle}
+                                  botSpeechPreviewContext={botSpeechPreviewContext}
                                   value={draft.linkBotMessageText}
                                   onChange={(nextValue) =>
                                     setFieldValue(
@@ -5386,6 +5445,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <WarnMessageEditor
                                   editorKey="linkWarn"
                                   botSpeechStyle={draft.botSpeechStyle}
+                                  botSpeechPreviewContext={botSpeechPreviewContext}
                                   value={draft.linkWarnMessageText}
                                   onChange={(nextValue) =>
                                     setFieldValue(
@@ -6079,6 +6139,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <BotMessageEditor
                                 editorKey="greeting"
                                 botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.greetingBotMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -6670,6 +6731,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <BotMessageEditor
                                 editorKey="textFilters"
                                 botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.textFiltersBotMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -6745,6 +6807,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <WarnMessageEditor
                                 editorKey="textFiltersWarn"
                                 botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.textFiltersWarnMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -7238,6 +7301,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <BotMessageEditor
                               editorKey="duplicate"
                               botSpeechStyle={draft.botSpeechStyle}
+                              botSpeechPreviewContext={botSpeechPreviewContext}
                               value={draft.duplicateBotMessageText}
                               onChange={(nextValue) =>
                                 setFieldValue(
@@ -8255,6 +8319,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <BotMessageEditor
                             editorKey="messageLimits"
                             botSpeechStyle={draft.botSpeechStyle}
+                            botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.messageLimitsBotMessageText}
                             onChange={(nextValue) =>
                               setFieldValue(
@@ -8647,6 +8712,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <BotMessageEditor
                                 editorKey="night"
                                 botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.nightModeBotMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -8723,6 +8789,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <BotMessageEditor
                                 editorKey="nightOpen"
                                 botSpeechStyle={draft.botSpeechStyle}
+                                botSpeechPreviewContext={botSpeechPreviewContext}
                                 value={draft.nightModeOpenMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -9983,6 +10050,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <BotMessageEditor
                             editorKey="requiredSubscription"
                             botSpeechStyle={draft.botSpeechStyle}
+                            botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.requiredSubscriptionBotMessageText}
                             onChange={(nextValue) =>
                               setFieldValue(
@@ -10056,6 +10124,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <WarnMessageEditor
                             editorKey="requiredSubscriptionWarn"
                             botSpeechStyle={draft.botSpeechStyle}
+                            botSpeechPreviewContext={botSpeechPreviewContext}
                             value={draft.requiredSubscriptionWarnMessageText}
                             onChange={(nextValue) =>
                               setFieldValue(

@@ -128,6 +128,8 @@ function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
       role: 'primary',
       membershipStatus: 'active',
       lifecycleState: 'active',
+      speechPersona: 'male',
+      characterName: 'Майор Максимов',
     },
   ];
 }

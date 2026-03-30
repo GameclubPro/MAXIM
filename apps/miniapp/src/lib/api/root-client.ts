@@ -65,6 +65,14 @@ function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
         item.lifecycleState === 'disabled'
           ? item.lifecycleState
           : 'active',
+      speechPersona:
+        item.speechPersona === 'female' || item.speechPersona === 'neutral'
+          ? item.speechPersona
+          : 'male',
+      characterName:
+        typeof item.characterName === 'string' && item.characterName.trim().length > 0
+          ? item.characterName.trim()
+          : null,
     });
   }
 

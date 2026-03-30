@@ -1,6 +1,8 @@
 import {
   BOT_SPEECH_EDITABLE_FIELD_KEYS,
   applyBotSpeechStylePreset,
+  getBotSpeechEditableTemplate,
+  getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
   type BotSpeechSettingsSubset,
 } from '@maxim/contracts';
@@ -245,6 +247,21 @@ describe('bot speech styles', () => {
         'IRONIC',
       ),
     ).toBe('**Алексей**, это сообщение уже было. Да, это уже предупреждение.');
+  });
+
+  it('renders feminine police templates for female bot persona', () => {
+    expect(
+      getBotSpeechEditableTemplate('POLICE', 'greetingBotMessageText', 'female'),
+    ).toContain('{bot_character_name} на месте');
+    expect(getBotSpeechEditableTemplate('POLICE', 'linkBotMessageText', 'female')).toBe(
+      'Товарищ {user}, ссылочку изъяла 👮‍♀️ В этом чате с ними строго. Поправьте и работаем дальше.',
+    );
+    expect(getBotSpeechEditableTemplate('POLICE', 'duplicateBotMessageText', 'female')).toBe(
+      'Товарищ {user}, у нас тут не ксерокс 👮‍♀️ Повтор зафиксировала. {sanction}',
+    );
+    expect(getBotSpeechSystemTemplate('POLICE', 'messageLimitsWarn', 'female')).toBe(
+      'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}.',
+    );
   });
 
   it('keeps system notices on the selected base style when one editable field is overridden', () => {

@@ -14,6 +14,7 @@ import {
   getBotSpeechSystemTemplate,
   normalizeDeleteBotMessagesDelayMinutes,
   type BotSpeechEditableFieldKey,
+  type BotSpeechPersona,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
   type MaxUpdate,
@@ -285,6 +286,10 @@ type GlobalSpammerTrackingResult = {
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
 type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
+type ActiveBotSpeechProfile = {
+  persona: BotSpeechPersona;
+  characterName: string;
+};
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -2108,7 +2113,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return normalizedOverride.length > 0
       ? normalizedOverride
-      : getBotSpeechEditableTemplate(style, fieldKey);
+      : getBotSpeechEditableTemplate(
+          style,
+          fieldKey,
+          this.resolveActiveBotSpeechProfile().persona,
+        );
   }
 
   private renderEditableBotSpeechTemplate(params: {
@@ -2117,12 +2126,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     overrideText: string;
     replacements: Record<string, string>;
   }): string {
-    const fallback = getBotSpeechEditableTemplate(params.style, params.fieldKey);
+    const activeBotSpeechProfile = this.resolveActiveBotSpeechProfile();
+    const fallback = getBotSpeechEditableTemplate(
+      params.style,
+      params.fieldKey,
+      activeBotSpeechProfile.persona,
+    );
 
     return this.renderBotMessageTemplate(
       this.resolveEditableBotSpeechText(params.style, params.fieldKey, params.overrideText),
       fallback,
-      params.replacements,
+      {
+        ...this.buildBotSpeechTemplateReplacements(activeBotSpeechProfile),
+        ...params.replacements,
+      },
     );
   }
 
@@ -2131,9 +2148,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateKey: BotSpeechSystemTemplateKey;
     replacements: Record<string, string>;
   }): string {
-    const template = getBotSpeechSystemTemplate(params.style, params.templateKey);
+    const activeBotSpeechProfile = this.resolveActiveBotSpeechProfile();
+    const template = getBotSpeechSystemTemplate(
+      params.style,
+      params.templateKey,
+      activeBotSpeechProfile.persona,
+    );
 
-    return this.renderBotMessageTemplate(template, template, params.replacements);
+    return this.renderBotMessageTemplate(template, template, {
+      ...this.buildBotSpeechTemplateReplacements(activeBotSpeechProfile),
+      ...params.replacements,
+    });
+  }
+
+  private buildBotSpeechTemplateReplacements(
+    activeBotSpeechProfile: ActiveBotSpeechProfile,
+  ): Record<string, string> {
+    return {
+      bot_character_name: activeBotSpeechProfile.characterName,
+    };
   }
 
   private renderBotMessageTemplate(
@@ -2162,7 +2195,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageStatus: string,
     reason: string,
   ): string {
-    return `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
+    const activeBotSpeechProfile = this.resolveActiveBotSpeechProfile();
+    const badge = activeBotSpeechProfile.persona === 'female' ? '👮‍♀️' : '👮‍♂️';
+    return `Товарищ ${userLabel}, ${activeBotSpeechProfile.characterName} на связи ${badge} ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
   }
 
   private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
@@ -2194,8 +2229,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     muteDurationLabel: string,
   ): string {
     if (style === 'POLICE' || style === null) {
+      const activeBotPersona = this.resolveActiveBotSpeechProfile().persona;
       if (action === 'WARN') {
-        return 'Предупреждение оформил.';
+        return activeBotPersona === 'female'
+          ? 'Предупреждение оформила.'
+          : 'Предупреждение оформил.';
       }
       if (action === 'MUTE') {
         return `Оформляю мут на ${muteDurationLabel}.`;
@@ -2244,7 +2282,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildDuplicatePassiveSanctionLabel(style: BotSpeechStyle | null): string {
     if (style === 'POLICE' || style === null) {
-      return 'Повтор изъял, пока без протокола.';
+      return this.resolveActiveBotSpeechProfile().persona === 'female'
+        ? 'Повтор изъяла, пока без протокола.'
+        : 'Повтор изъял, пока без протокола.';
     }
 
     if (style === 'ROBOT') {
@@ -2488,6 +2528,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return `Товарищ ${userLabel}, оформляю бан до ручного разбана.`;
+  }
+
+  private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    const bot = this.maxBotLinkService?.getResolvedBotSync(activeBotId);
+    const characterName = bot?.characterName?.trim() || bot?.label?.trim() || 'Майор Максимов';
+
+    return {
+      persona: bot?.speechPersona ?? 'male',
+      characterName,
+    };
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
