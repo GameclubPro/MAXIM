@@ -56,6 +56,11 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     exact: ['сукин', 'сукина', 'сукину', 'сукины', 'сукиным', 'сукину', 'сукино', 'сукины'],
   },
   {
+    stems: ['сцук'],
+    suffixes: CYRILLIC_FEM_A_SUFFIXES,
+    exact: ['сцука', 'сцуки', 'сцуке', 'сцуку', 'сцукой', 'сцукою', 'сцукам', 'сцуками'],
+  },
+  {
     stems: ['суч'],
     suffixes: [
       'ка',
@@ -105,6 +110,11 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     exact: ['шлюшка', 'шлюшки', 'шлюшке', 'шлюшку', 'шлюшкой', 'шлюшками', 'шлюшках'],
   },
   {
+    stems: ['шлух'],
+    suffixes: CYRILLIC_FEM_A_SUFFIXES,
+    exact: ['шлушка', 'шлушки', 'шлушке', 'шлушку', 'шлушкой'],
+  },
+  {
     stems: ['мудак'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
     exact: [
@@ -124,9 +134,34 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     ],
   },
   {
+    stems: ['мудаг'],
+    suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
+    exact: ['мудажье', 'мудажья', 'мудажью', 'мудажьем'],
+  },
+  {
     stems: ['мудил'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
     exact: ['мудила', 'мудилы', 'мудиле', 'мудилу', 'мудилой', 'мудилою', 'мудилам', 'мудилами'],
+  },
+  {
+    stems: ['дибил'],
+    suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
+    exact: [
+      'дибилка',
+      'дибилки',
+      'дибилке',
+      'дибилку',
+      'дибилкой',
+      'дибильный',
+      'дибильная',
+      'дибильное',
+      'дибильные',
+      'дибильного',
+      'дибильному',
+      'дибильную',
+      'дибильным',
+      'дибильных',
+    ],
   },
   {
     stems: ['долбоеб'],
@@ -145,6 +180,22 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     ],
   },
   {
+    stems: ['далбаеб', 'далбоеб', 'долбаеп', 'далбаеп'],
+    suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
+    exact: [
+      'далбаебка',
+      'далбаебки',
+      'далбаебке',
+      'далбаебку',
+      'далбаепка',
+      'далбаепки',
+      'долбаепка',
+      'долбаепки',
+      'далбоебка',
+      'далбоебки',
+    ],
+  },
+  {
     stems: ['ублюд'],
     suffixes: CYRILLIC_OK_SUFFIXES,
     exact: [
@@ -158,6 +209,11 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'ублюдочным',
       'ублюдочных',
     ],
+  },
+  {
+    stems: ['ублют'],
+    suffixes: CYRILLIC_OK_SUFFIXES,
+    exact: ['ублюток', 'ублютка', 'ублютку', 'ублютке', 'ублютки', 'ублютков'],
   },
   {
     stems: ['твар'],
@@ -292,6 +348,25 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     stems: ['пидорас'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
     exact: ['пидарас', 'пидарасы', 'пидараса', 'пидарасу', 'пидарасом', 'пидарасами'],
+  },
+  {
+    stems: ['педор', 'педар'],
+    suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
+    exact: [
+      'педорский',
+      'педорская',
+      'педорское',
+      'педорские',
+      'педорского',
+      'педорскому',
+      'педорскую',
+      'педорским',
+      'педорских',
+      'педарский',
+      'педарская',
+      'педарское',
+      'педарские',
+    ],
   },
   {
     stems: ['педик'],
@@ -536,6 +611,11 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     exact: ['suchka', 'suchki', 'suchku', 'suchkoy', 'suchara', 'sucharu', 'suchonok'],
   },
   {
+    stems: ['scuk'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['scuka', 'scuki', 'scuke', 'scuku', 'scukoy', 'scukami'],
+  },
+  {
     stems: ['mraz'],
     suffixes: ['', 'i', 'yu', 'ey', 'yam', 'yami', 'yah'],
     exact: ['mrazota', 'mrazoty', 'mrazotu', 'mrazina', 'mrazinu'],
@@ -546,6 +626,11 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     exact: ['shlyushka', 'shlyushki', 'shlyushku', 'shlyushkoy'],
   },
   {
+    stems: ['shluh'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['shluka', 'shluki', 'shluku', 'shlukoy'],
+  },
+  {
     stems: ['gandon'],
     suffixes: LATIN_HARD_MASC_SUFFIXES,
     exact: ['gandonishche', 'gandonam', 'gandonami'],
@@ -554,6 +639,31 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     stems: ['ublyud'],
     suffixes: LATIN_OK_SUFFIXES,
     exact: ['ublyudochnyy', 'ublyudochnaya', 'ublyudochnoe'],
+  },
+  {
+    stems: ['ublyut'],
+    suffixes: LATIN_OK_SUFFIXES,
+    exact: ['ublyutok', 'ublyutka', 'ublyutku', 'ublyutke'],
+  },
+  {
+    stems: ['dibil'],
+    suffixes: LATIN_HARD_MASC_SUFFIXES,
+    exact: ['dibilka', 'dibilki', 'dibilku', 'dibilnyy', 'dibilnaya', 'dibilnoe'],
+  },
+  {
+    stems: ['mudag'],
+    suffixes: LATIN_HARD_MASC_SUFFIXES,
+    exact: ['mudazhyo', 'mudazhya', 'mudazhyu', 'mudazhyem'],
+  },
+  {
+    stems: ['dalbaeb', 'dalboeb', 'dolbaep', 'dalbaep'],
+    suffixes: LATIN_HARD_MASC_SUFFIXES,
+    exact: ['dalbaebka', 'dalboebka', 'dolbaepka', 'dalbaepka'],
+  },
+  {
+    stems: ['pedor', 'pedar'],
+    suffixes: LATIN_HARD_MASC_SUFFIXES,
+    exact: ['pedorskiy', 'pedorskaya', 'pedarskiy', 'pedarskaya'],
   },
 ];
 

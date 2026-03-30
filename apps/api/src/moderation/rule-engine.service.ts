@@ -108,7 +108,6 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^г[ао]нд(?:он|ош)[а-я0-9]*$/u,
   /^пид(?:ор|ар|р|ерас|орас|рила|рищ)[а-я0-9]*$/u,
   /^педик[а-я0-9]*$/u,
-  /^педр[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
@@ -128,7 +127,6 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^g[ao]nd(?:on|osh)[a-z0-9]*$/i,
   /^pid(?:or|ar|r|eras|oras|rila|rish)[a-z0-9]*$/i,
   /^pedik[a-z0-9]*$/i,
-  /^pedr[a-z0-9]*$/i,
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',

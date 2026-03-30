@@ -616,6 +616,45 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
+  it('detects PROFANITY for narrow typo spellings and colloquial misspellings', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ну ты сцука, дибил и далбаеп',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('detects PROFANITY for narrow transliterated typo spellings', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'nu ty pedor i mudag',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('does not detect PROFANITY for safe names like Pedro', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Педро и Pedro пришли на тренировку вовремя',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
   it('detects COMMERCIAL_AD when russian ad markers are present', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
