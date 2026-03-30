@@ -38,7 +38,10 @@ jest.mock('ioredis', () => {
             exec: jest.fn().mockImplementation(async () => {
               const results: Array<[null, unknown]> = [];
               for (const [method, ...args] of operations) {
-                results.push([null, await (instance[method] as (...values: unknown[]) => Promise<unknown>)(...args)]);
+                results.push([
+                  null,
+                  await (instance[method] as (...values: unknown[]) => Promise<unknown>)(...args),
+                ]);
               }
               return results;
             }),
@@ -253,6 +256,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             success: true,
+            message: {
+              message_id: 'mid-reply-1',
+            },
           },
         }),
       ),
@@ -741,6 +747,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             success: true,
+            message: {
+              message_id: 'mid-reply-1',
+            },
           },
         }),
       ),
@@ -883,12 +892,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
       request: jest.fn().mockReturnValueOnce(throwError(() => error)),
     };
     const service = createService(httpService);
-    const actionHealthService = (service as unknown as {
-      actionHealthService: {
-        recordSuccess: jest.Mock;
-        recordFailure: jest.Mock;
-      };
-    }).actionHealthService;
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordSuccess: jest.Mock;
+          recordFailure: jest.Mock;
+        };
+      }
+    ).actionHealthService;
 
     await expect(
       service.sendMessageImmediateWithId('chat-1', 'Правила', undefined, {
@@ -1234,7 +1245,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
             {
               type: 'inline_keyboard',
               payload: {
-                buttons: [[{ type: 'callback', text: '✅ Подтвердить', payload: 'review|publish' }]],
+                buttons: [
+                  [{ type: 'callback', text: '✅ Подтвердить', payload: 'review|publish' }],
+                ],
               },
             },
           ],
@@ -1659,12 +1672,14 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_API_GLOBAL_RPS: '30',
       MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
     });
-    const actionHealthService = (service as unknown as {
-      actionHealthService: {
-        recordSuccess: jest.Mock;
-        recordFailure: jest.Mock;
-      };
-    }).actionHealthService;
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordSuccess: jest.Mock;
+          recordFailure: jest.Mock;
+        };
+      }
+    ).actionHealthService;
 
     const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
     limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);

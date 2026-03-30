@@ -1,6 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { WebhookSubscriptionSnapshot } from '@maxim/contracts';
+import { createHash } from 'node:crypto';
 import { getAppRole, roleRunsIngress } from '../runtime/app-role';
 import { WebhookSubscriptionStatusService } from '../system/webhook-subscription-status.service';
 import { MaxClientService } from './max-client.service';
@@ -14,6 +15,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
   private readonly logger = new Logger(MaxWebhookSubscriptionReconcilerService.name);
   private readonly enabled = roleRunsIngress(getAppRole());
   private readonly reconcileIntervalMs: number;
+  private readonly webhookHeaderSecretFingerprint: string | null;
+  private readonly allowPreviousWebhookHeaderSecret: boolean;
   private timer: NodeJS.Timeout | null = null;
   private inFlight = false;
 
@@ -26,6 +29,12 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       'MAX_WEBHOOK_RECONCILE_INTERVAL_MS',
       DEFAULT_RECONCILE_INTERVAL_MS,
     );
+    this.webhookHeaderSecretFingerprint = this.computeSecretFingerprint(
+      configService.get<string>('MAX_WEBHOOK_HEADER_SECRET'),
+    );
+    this.allowPreviousWebhookHeaderSecret =
+      typeof configService.get<string>('MAX_WEBHOOK_HEADER_SECRET_PREVIOUS') === 'string' &&
+      configService.get<string>('MAX_WEBHOOK_HEADER_SECRET_PREVIOUS')!.trim().length > 0;
   }
 
   async onModuleInit(): Promise<void> {
@@ -69,6 +78,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       const existing = await this.maxClient.listWebhookSubscriptions({
         trafficClass: 'background',
       });
+      const syncState = await this.webhookSubscriptionStatusService.getSyncState();
       const current = existing.find((item) => this.maxClient.matchesConfiguredWebhookUrl(item.url));
       const actualUpdateTypes = [...(current?.updateTypes ?? [])].sort();
       const missingUpdateTypes = MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.filter(
@@ -80,26 +90,60 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       const otherSubscriptionsCount = existing.filter(
         (item) => !this.maxClient.matchesConfiguredWebhookUrl(item.url),
       ).length;
+      const previousConfiguredUrl =
+        syncState?.configuredUrl && syncState.configuredUrl !== target.url
+          ? syncState.configuredUrl
+          : null;
+      const shouldRotateWebhookSecret =
+        Boolean(current) &&
+        this.allowPreviousWebhookHeaderSecret &&
+        (!syncState?.headerSecretFingerprint ||
+          syncState.headerSecretFingerprint !== this.webhookHeaderSecretFingerprint);
 
       let reconciledAt: string | null = null;
-      if (!current || missingUpdateTypes.length > 0) {
+      let effectiveOtherSubscriptionsCount = otherSubscriptionsCount;
+      if (shouldRotateWebhookSecret) {
+        await this.maxClient.deleteWebhookSubscription(target.url, {
+          trafficClass: 'background',
+        });
+        await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
+          trafficClass: 'background',
+        });
+        reconciledAt = new Date().toISOString();
+      } else if (!current || missingUpdateTypes.length > 0) {
         await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
           trafficClass: 'background',
         });
         reconciledAt = new Date().toISOString();
       }
 
+      if (previousConfiguredUrl) {
+        const hasPreviousConfiguredUrl = existing.some(
+          (item) => item.url === previousConfiguredUrl,
+        );
+        if (hasPreviousConfiguredUrl) {
+          await this.maxClient.deleteWebhookSubscription(previousConfiguredUrl, {
+            trafficClass: 'background',
+          });
+          reconciledAt = reconciledAt ?? new Date().toISOString();
+          effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);
+        }
+      }
+
       const refreshedCurrent =
-        !current || missingUpdateTypes.length > 0
+        !current || missingUpdateTypes.length > 0 || shouldRotateWebhookSecret
           ? {
               url: target.url,
-              updateTypes: Array.from(
-                new Set([...(current?.updateTypes ?? []), ...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES]),
-              ).sort(),
+              updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES].sort(),
             }
           : current;
       const refreshedActualUpdateTypes = [...refreshedCurrent.updateTypes].sort();
 
+      await this.webhookSubscriptionStatusService.writeSyncState({
+        configuredUrl: target.url,
+        headerSecretFingerprint: this.webhookHeaderSecretFingerprint,
+        updatedAt: new Date().toISOString(),
+      });
       await this.webhookSubscriptionStatusService.writeSnapshot({
         status: this.resolveStatus({
           configured: true,
@@ -113,7 +157,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           extraUpdateTypes: refreshedActualUpdateTypes.filter(
             (type) => !REQUIRED_WEBHOOK_UPDATE_TYPES_SET.has(type),
           ),
-          otherSubscriptionsCount,
+          otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
         }),
         configured: true,
         url: target.maskedUrl,
@@ -127,7 +171,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         extraUpdateTypes: refreshedActualUpdateTypes.filter(
           (type) => !REQUIRED_WEBHOOK_UPDATE_TYPES_SET.has(type),
         ),
-        otherSubscriptionsCount,
+        otherSubscriptionsCount: effectiveOtherSubscriptionsCount,
         lastError: null,
         note:
           reason === 'startup'
@@ -192,5 +236,14 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       lastError: null,
       note,
     };
+  }
+
+  private computeSecretFingerprint(secret: string | undefined): string | null {
+    const normalized = typeof secret === 'string' ? secret.trim() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    return createHash('sha256').update(normalized).digest('hex');
   }
 }

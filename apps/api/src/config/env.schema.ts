@@ -22,6 +22,7 @@ const envSchema = z.object({
   MAX_BOT_TOKEN_PREVIOUS: z.string().min(10).optional(),
   MAX_WEBHOOK_SECRET_PATH: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),
+  MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: z.string().min(8).optional(),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api.max.ru'),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
 
@@ -90,7 +91,11 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
     for (const [key, value] of [
       ['MAX_WEBHOOK_SECRET_PATH', parsed.data.MAX_WEBHOOK_SECRET_PATH],
       ['MAX_WEBHOOK_HEADER_SECRET', parsed.data.MAX_WEBHOOK_HEADER_SECRET],
+      ['MAX_WEBHOOK_HEADER_SECRET_PREVIOUS', parsed.data.MAX_WEBHOOK_HEADER_SECRET_PREVIOUS],
     ] as const) {
+      if (!value) {
+        continue;
+      }
       const normalized = value.trim();
       if (
         !PRODUCTION_WEBHOOK_SECRET_PATTERN.test(normalized) ||

@@ -40,6 +40,9 @@ export class WebhookController {
     const expectedBotId = this.configService.getOrThrow<string>('MAX_BOT_ID');
     const expectedSecretPath = this.configService.getOrThrow<string>('MAX_WEBHOOK_SECRET_PATH');
     const expectedHeaderSecret = this.configService.getOrThrow<string>('MAX_WEBHOOK_HEADER_SECRET');
+    const previousHeaderSecret = this.configService.get<string>(
+      'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS',
+    );
 
     if (params.botId !== expectedBotId || params.secretPath !== expectedSecretPath) {
       throw new ForbiddenException('Invalid webhook route signature');
@@ -48,7 +51,12 @@ export class WebhookController {
     const providedHeaderSecret = String(
       request.headers['x-max-bot-api-secret'] ?? request.headers['x-max-secret'] ?? '',
     );
-    if (!this.isMatchingWebhookSecret(providedHeaderSecret, expectedHeaderSecret)) {
+    if (
+      !this.isMatchingAnyWebhookSecret(providedHeaderSecret, [
+        expectedHeaderSecret,
+        previousHeaderSecret,
+      ])
+    ) {
       throw new ForbiddenException('Invalid webhook header secret');
     }
 
@@ -66,6 +74,21 @@ export class WebhookController {
       duplicate: result.duplicate,
       acceptedAt: new Date().toISOString(),
     };
+  }
+
+  private isMatchingAnyWebhookSecret(provided: string, expectedValues: Array<string | undefined>) {
+    for (const expectedValue of expectedValues) {
+      const expected = typeof expectedValue === 'string' ? expectedValue.trim() : '';
+      if (!expected) {
+        continue;
+      }
+
+      if (this.isMatchingWebhookSecret(provided, expected)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private isMatchingWebhookSecret(provided: string, expected: string): boolean {

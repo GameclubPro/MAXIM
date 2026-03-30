@@ -878,6 +878,24 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  async deleteWebhookSubscription(url: string, options: MaxApiRequestOptions = {}): Promise<void> {
+    const normalizedUrl = this.readTrimmedString(url);
+    if (!normalizedUrl) {
+      return;
+    }
+
+    await this.executeMutation(
+      null,
+      () =>
+        this.request('delete', '/subscriptions', {
+          params: {
+            url: normalizedUrl,
+          },
+        }),
+      options.trafficClass ?? 'background',
+    );
+  }
+
   async uploadImage(
     data: Buffer,
     fileName = 'broadcast-image.jpg',

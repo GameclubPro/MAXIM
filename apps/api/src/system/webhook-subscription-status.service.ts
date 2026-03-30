@@ -8,7 +8,14 @@ import Redis from 'ioredis';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 
 const WEBHOOK_SUBSCRIPTION_STATUS_KEY = 'system:webhook-subscription:status:v1';
+const WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY = 'system:webhook-subscription:sync-state:v1';
 const LOCAL_SNAPSHOT_CACHE_TTL_MS = 2_000;
+
+export type WebhookSubscriptionSyncState = {
+  configuredUrl: string | null;
+  headerSecretFingerprint: string | null;
+  updatedAt: string;
+};
 
 @Injectable()
 export class WebhookSubscriptionStatusService implements OnModuleDestroy {
@@ -63,6 +70,44 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
   async writeSnapshot(snapshot: WebhookSubscriptionSnapshot): Promise<void> {
     this.cacheSnapshot(snapshot);
     await this.redis.set(WEBHOOK_SUBSCRIPTION_STATUS_KEY, JSON.stringify(snapshot));
+  }
+
+  async getSyncState(): Promise<WebhookSubscriptionSyncState | null> {
+    try {
+      const raw = await this.redis.get(WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY);
+      if (!raw) {
+        return null;
+      }
+
+      const parsed = JSON.parse(raw) as Partial<WebhookSubscriptionSyncState>;
+      return {
+        configuredUrl:
+          typeof parsed.configuredUrl === 'string' && parsed.configuredUrl.trim().length > 0
+            ? parsed.configuredUrl
+            : null,
+        headerSecretFingerprint:
+          typeof parsed.headerSecretFingerprint === 'string' &&
+          parsed.headerSecretFingerprint.trim().length > 0
+            ? parsed.headerSecretFingerprint
+            : null,
+        updatedAt:
+          typeof parsed.updatedAt === 'string' && parsed.updatedAt.trim().length > 0
+            ? parsed.updatedAt
+            : new Date(0).toISOString(),
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to parse cached webhook subscription sync state',
+      );
+      return null;
+    }
+  }
+
+  async writeSyncState(state: WebhookSubscriptionSyncState): Promise<void> {
+    await this.redis.set(WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY, JSON.stringify(state));
   }
 
   createPendingSnapshot(

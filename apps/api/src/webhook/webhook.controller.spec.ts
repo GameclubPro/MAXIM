@@ -12,6 +12,12 @@ describe('WebhookController', () => {
       };
       return values[key];
     }),
+    get: jest.fn((key: string) => {
+      if (key === 'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS') {
+        return 'secret-header-prev';
+      }
+      return undefined;
+    }),
   } as unknown as ConfigService;
 
   const parser = {
@@ -31,11 +37,10 @@ describe('WebhookController', () => {
     );
 
     await expect(
-      controller.receive(
-        { botId: 'wrong', secretPath: 'bad' },
-        {},
-        { headers: { 'x-max-bot-api-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
-      ),
+      controller.receive({ botId: 'wrong', secretPath: 'bad' }, {}, {
+        headers: { 'x-max-bot-api-secret': 'secret-header' },
+        ip: '127.0.0.1',
+      } as never),
     ).rejects.toThrow(ForbiddenException);
   });
 
@@ -48,11 +53,31 @@ describe('WebhookController', () => {
     );
 
     await expect(
-      controller.receive(
-        { botId: 'bot-1', secretPath: 'secret-path' },
-        {},
-        { headers: { 'x-max-bot-api-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
-      ),
+      controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
+        headers: { 'x-max-bot-api-secret': 'secret-header' },
+        ip: '127.0.0.1',
+      } as never),
     ).rejects.toThrow('Webhook rate limit exceeded');
+  });
+
+  it('accepts the previous webhook header secret during rotation', async () => {
+    const controller = new WebhookController(
+      configService,
+      parser as never,
+      webhookService as never,
+      { isAllowed: jest.fn().mockResolvedValue(true) } as never,
+    );
+
+    await expect(
+      controller.receive({ botId: 'bot-1', secretPath: 'secret-path' }, {}, {
+        headers: { 'x-max-bot-api-secret': 'secret-header-prev' },
+        ip: '127.0.0.1',
+      } as never),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        ok: true,
+        duplicate: false,
+      }),
+    );
   });
 });

@@ -17,7 +17,9 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     process.env.APP_ROLE = 'ingress';
 
     const statusService = {
+      getSyncState: jest.fn().mockResolvedValue(null),
       writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn(),
     };
     const maxClient = {
@@ -34,6 +36,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
         return url === 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path';
       }),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
         url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
         updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
@@ -58,6 +61,11 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       { trafficClass: 'background' },
     );
+    expect(statusService.writeSyncState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+      }),
+    );
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
       expect.objectContaining({
         status: 'healthy',
@@ -75,13 +83,16 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     process.env.APP_ROLE = 'admin';
 
     const statusService = {
+      getSyncState: jest.fn(),
       writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn(),
       getSnapshot: jest.fn(),
     };
     const maxClient = {
       getConfiguredWebhookSubscriptionTarget: jest.fn(),
       listWebhookSubscriptions: jest.fn(),
       matchesConfiguredWebhookUrl: jest.fn(),
+      deleteWebhookSubscription: jest.fn(),
       ensureWebhookSubscription: jest.fn(),
     };
     const service = new MaxWebhookSubscriptionReconcilerService(
@@ -101,5 +112,77 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         configured: false,
       }),
     );
+  });
+
+  it('recreates the current webhook subscription once when header secret rotation is pending', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue({
+        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        headerSecretFingerprint: null,
+        updatedAt: '2026-03-30T00:00:00.000Z',
+      }),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockReturnValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      }),
+      listWebhookSubscriptions: jest.fn().mockResolvedValue([
+        {
+          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+        },
+      ]),
+      matchesConfiguredWebhookUrl: jest.fn().mockImplementation((url: string) => {
+        return url === 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path';
+      }),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      }),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      statusService as never,
+      {
+        get: jest.fn((key: string, fallback?: number | string) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          if (key === 'MAX_WEBHOOK_HEADER_SECRET') {
+            return 'secret-header-current';
+          }
+          if (key === 'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS') {
+            return 'secret-header-previous';
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
+      'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+      { trafficClass: 'background' },
+    );
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+      { trafficClass: 'background' },
+    );
+    expect(statusService.writeSyncState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        headerSecretFingerprint: expect.any(String),
+      }),
+    );
+
+    await service.onModuleDestroy();
   });
 });

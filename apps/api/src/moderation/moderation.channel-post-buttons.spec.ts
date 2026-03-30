@@ -348,9 +348,13 @@ describe('ModerationService channel auto post buttons', () => {
         ],
       }),
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-channel-forward-no-sender-1', {
-      immediate: true,
-    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-no-sender-1',
+      {
+        immediate: true,
+      },
+    );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -810,6 +814,9 @@ describe('ModerationService channel auto post buttons', () => {
             },
           },
         },
+      },
+      orderBy: {
+        updatedAt: 'desc',
       },
     });
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
