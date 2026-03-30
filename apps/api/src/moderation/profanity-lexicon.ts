@@ -19,6 +19,18 @@ const CYRILLIC_ADJECTIVE_SUFFIXES = [
   'ых',
   'ыми',
 ];
+const CYRILLIC_HARD_ADJECTIVE_SUFFIXES = [
+  'ый',
+  'ая',
+  'ое',
+  'ые',
+  'ого',
+  'ому',
+  'ую',
+  'ым',
+  'ых',
+  'ыми',
+];
 const CYRILLIC_OK_SUFFIXES = ['ок', 'ка', 'ку', 'ке', 'ком', 'ки', 'ков', 'кам', 'ками', 'ках'];
 const CYRILLIC_EC_SUFFIXES = ['ец', 'ца', 'цу', 'це', 'цем', 'цы', 'цев', 'цам', 'цами', 'цах'];
 const CYRILLIC_UK_SUFFIXES = ['к', 'ка', 'ку', 'ке', 'ком', 'ки', 'ков', 'кам', 'ками', 'ках'];
@@ -132,6 +144,10 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'мудачью',
       'мудачьем',
     ],
+  },
+  {
+    stems: ['мудачин'],
+    suffixes: CYRILLIC_FEM_A_SUFFIXES,
   },
   {
     stems: ['мудаг'],
@@ -254,6 +270,12 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'дебилоиды',
       'дебилоида',
       'дебилоиду',
+      'дебилизм',
+      'дебилизма',
+      'дебилизму',
+      'дебилизме',
+      'дебилизмы',
+      'дебилизмом',
     ],
   },
   {
@@ -342,12 +364,32 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'пидрильник',
       'пидрильника',
       'пидрильнику',
+      'пидорок',
+      'пидорка',
+      'пидорку',
+      'пидорки',
     ],
+  },
+  {
+    stems: ['пидорнут', 'пидарнут'],
+    suffixes: CYRILLIC_HARD_ADJECTIVE_SUFFIXES,
   },
   {
     stems: ['пидорас'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
-    exact: ['пидарас', 'пидарасы', 'пидараса', 'пидарасу', 'пидарасом', 'пидарасами'],
+    exact: [
+      'пидарас',
+      'пидарасы',
+      'пидараса',
+      'пидарасу',
+      'пидарасом',
+      'пидарасами',
+      'пидорасина',
+      'пидорасины',
+      'пидорасине',
+      'пидорасину',
+      'пидорасиной',
+    ],
   },
   {
     stems: ['педор', 'педар'],
