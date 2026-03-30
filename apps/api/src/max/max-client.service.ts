@@ -3275,7 +3275,7 @@ export class MaxClientService implements OnModuleDestroy {
       keys.length,
       ...keys,
       String(this.globalRpsLimit),
-      String(this.resolveTrafficClassGlobalRpsLimit(trafficClass)),
+      String(this.resolveTrafficClassEffectiveRpsLimit(trafficClass)),
       ...(chatId ? [String(this.chatRpsLimit)] : []),
       String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
     );
@@ -3312,6 +3312,26 @@ export class MaxClientService implements OnModuleDestroy {
       default:
         return this.interactiveGlobalRpsLimit;
     }
+  }
+
+  private resolveTrafficClassEffectiveRpsLimit(trafficClass: MaxApiTrafficClass): number {
+    const configuredLimit = this.resolveTrafficClassGlobalRpsLimit(trafficClass);
+    const reservedForOtherClasses = (() => {
+      switch (trafficClass) {
+        case 'critical':
+          return this.interactiveGlobalRpsLimit + this.backgroundGlobalRpsLimit;
+        case 'background':
+          return this.criticalGlobalRpsLimit + this.interactiveGlobalRpsLimit;
+        case 'interactive':
+        default:
+          return this.criticalGlobalRpsLimit + this.backgroundGlobalRpsLimit;
+      }
+    })();
+
+    return Math.max(
+      configuredLimit,
+      Math.max(1, this.globalRpsLimit - reservedForOtherClasses),
+    );
   }
 
   private resolveTrafficClassRateLimitWaitMs(trafficClass: MaxApiTrafficClass): number {

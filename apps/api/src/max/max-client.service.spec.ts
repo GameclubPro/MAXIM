@@ -1826,6 +1826,24 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('lets traffic classes borrow spare global headroom without exceeding the global MAX API cap', async () => {
+    const service = createService(
+      {},
+      {
+        MAX_API_GLOBAL_RPS: '30',
+        MAX_API_GLOBAL_RPS_CRITICAL: '12',
+        MAX_API_GLOBAL_RPS_INTERACTIVE: '10',
+        MAX_API_GLOBAL_RPS_BACKGROUND: '4',
+      },
+    );
+
+    expect((service as any).resolveTrafficClassEffectiveRpsLimit('critical')).toBe(16);
+    expect((service as any).resolveTrafficClassEffectiveRpsLimit('interactive')).toBe(14);
+    expect((service as any).resolveTrafficClassEffectiveRpsLimit('background')).toBe(8);
+
+    await service.onModuleDestroy();
+  });
+
   it('reuses Redis cache for bot chat discovery across service instances', async () => {
     const firstHttpService = {
       request: jest.fn().mockReturnValueOnce(
