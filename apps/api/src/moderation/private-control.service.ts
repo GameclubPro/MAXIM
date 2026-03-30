@@ -29,8 +29,17 @@ import {
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
+import { collectBotTokenSecrets } from '../common/bot-token.util';
 import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import {
+  buildCompactGiveawayHandoffStartPayload,
+  buildCompactProfileMentionStartPayload,
+  isValidMaxBotStartPayload,
+  isValidMaxMiniappStartPayload,
+  parseCompactGiveawayHandoffStartPayload,
+  parseCompactProfileMentionStartPayload,
+} from '../max/max-deep-link.util';
 import {
   MaxClientService,
   type MaxCustomMessagePayload,
@@ -195,6 +204,9 @@ type PrivateSession = {
   lastRulesHandoffDeliveredAt: number | null;
   lastProfileMentionHandoffDeliveredChatId: string | null;
   lastProfileMentionHandoffDeliveredAt: number | null;
+  pendingProfileMentionChatId: string | null;
+  pendingProfileMentionUserId: string | null;
+  pendingProfileMentionDisplayName: string | null;
   selectedChatId: string | null;
   selectedEntityType: ManagedEntityType | null;
   managedGiveawayId: string | null;
@@ -1096,6 +1108,8 @@ export class PrivateControlService {
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
+  private readonly maxBotToken: string;
+  private readonly maxBotTokenValidationSecrets: readonly string[];
   private readonly memorySession = new Map<
     string,
     { expiresAt: number; session: PrivateSession }
@@ -1120,6 +1134,13 @@ export class PrivateControlService {
     );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
+    const configuredBotTokens = collectBotTokenSecrets(
+      configService?.get<string>('MAX_BOT_TOKEN'),
+      configService?.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
+    );
+    this.maxBotToken = configuredBotTokens[0] ?? this.botDeepLinkId ?? 'max-bot';
+    this.maxBotTokenValidationSecrets =
+      configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
   }
 
   async handleUpdate(update: MaxUpdate): Promise<void> {
@@ -1204,17 +1225,29 @@ export class PrivateControlService {
     if (profileMentionPayload) {
       const session = await this.loadSession(context.actor.userId);
       this.rememberPrivateChatId(session, context.chatId);
+      const pendingDisplayName = this.readPendingProfileMentionDisplayName(
+        session,
+        profileMentionPayload.chatId,
+        profileMentionPayload.userId,
+      );
 
       if (this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
         this.clearDeliveredProfileMentionHandoff(session);
+        this.clearPendingProfileMentionHandoff(session);
         await this.saveSession(context.actor.userId, session);
         return;
       }
 
+      this.clearPendingProfileMentionHandoff(session);
       await this.saveSession(context.actor.userId, session);
+      const resolvedDisplayName = await this.resolveProfileMentionDisplayName(
+        profileMentionPayload.chatId,
+        profileMentionPayload.userId,
+        pendingDisplayName ?? profileMentionPayload.displayName,
+      );
       await this.sendProfileMentionToPrivateChat(
         context.chatId,
-        profileMentionPayload.displayName,
+        resolvedDisplayName,
         profileMentionPayload.userId,
       );
       return;
@@ -1621,6 +1654,12 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(user.userId);
+    this.rememberPendingProfileMentionHandoff(session, {
+      chatId: sourceChatId,
+      displayName: resolvedDisplayName,
+      userId: normalizedTargetUserId,
+    });
+    await this.saveSession(user.userId, session);
     await this.deliverProfileMentionHandoffToKnownPrivateChat(user, session, {
       displayName: resolvedDisplayName,
       userId: normalizedTargetUserId,
@@ -9207,6 +9246,36 @@ export class PrivateControlService {
     session.lastProfileMentionHandoffDeliveredAt = null;
   }
 
+  private rememberPendingProfileMentionHandoff(
+    session: PrivateSession,
+    payload: { chatId: string; userId: string; displayName: string },
+  ): void {
+    session.pendingProfileMentionChatId = payload.chatId.trim() || null;
+    session.pendingProfileMentionUserId = payload.userId.trim() || null;
+    session.pendingProfileMentionDisplayName = payload.displayName.trim() || null;
+  }
+
+  private readPendingProfileMentionDisplayName(
+    session: PrivateSession,
+    chatId: string,
+    userId: string,
+  ): string | null {
+    if (
+      session.pendingProfileMentionChatId !== chatId ||
+      session.pendingProfileMentionUserId !== userId
+    ) {
+      return null;
+    }
+
+    return session.pendingProfileMentionDisplayName?.trim() || null;
+  }
+
+  private clearPendingProfileMentionHandoff(session: PrivateSession): void {
+    session.pendingProfileMentionChatId = null;
+    session.pendingProfileMentionUserId = null;
+    session.pendingProfileMentionDisplayName = null;
+  }
+
   private createSyntheticPrivateContext(user: AuthUser, privateChatId: string): PrivateContext {
     return {
       update: {
@@ -9309,6 +9378,33 @@ export class PrivateControlService {
         textFormat: 'markdown',
       },
     );
+  }
+
+  private async resolveProfileMentionDisplayName(
+    sourceChatId: string,
+    userId: string,
+    fallbackDisplayName: string,
+  ): Promise<string> {
+    const fallback = fallbackDisplayName.trim() || 'Пользователь';
+    if (fallback !== 'Пользователь') {
+      return fallback;
+    }
+
+    try {
+      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [userId]);
+      const resolvedDisplayName = this.readString(profiles.get(userId)?.displayName);
+      return resolvedDisplayName || fallback;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: sourceChatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve compact profile mention display name from MAX',
+      );
+      return fallback;
+    }
   }
 
   private async deliverProfileMentionHandoffToKnownPrivateChat(
@@ -10121,12 +10217,18 @@ export class PrivateControlService {
     if (!this.botDeepLinkId) {
       return null;
     }
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
 
     return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
     if (!this.botDeepLinkId) {
+      return null;
+    }
+    if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
@@ -10138,6 +10240,11 @@ export class PrivateControlService {
     entityType: ManagedEntityType;
     giveawayId: string | null;
   }): string {
+    const compactPayload = buildCompactGiveawayHandoffStartPayload(params, this.maxBotToken);
+    if (compactPayload) {
+      return compactPayload;
+    }
+
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -10158,6 +10265,18 @@ export class PrivateControlService {
     userId: string;
     displayName: string;
   }): string {
+    const compactPayload = buildCompactProfileMentionStartPayload(
+      {
+        chatId: params.chatId,
+        entityType: params.entityType,
+        userId: params.userId,
+      },
+      this.maxBotToken,
+    );
+    if (compactPayload) {
+      return compactPayload;
+    }
+
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -10176,6 +10295,14 @@ export class PrivateControlService {
   private parseGiveawayHandoffStartPayload(
     startPayload: string | null,
   ): { chatId: string; entityType: ManagedEntityType; giveawayId: string | null } | null {
+    const compactPayload = parseCompactGiveawayHandoffStartPayload(
+      startPayload,
+      this.maxBotTokenValidationSecrets,
+    );
+    if (compactPayload) {
+      return compactPayload;
+    }
+
     if (!startPayload || startPayload === GIVEAWAY_HANDOFF_START_PAYLOAD) {
       return null;
     }
@@ -10215,6 +10342,17 @@ export class PrivateControlService {
   private parseProfileMentionStartPayload(
     startPayload: string | null,
   ): { chatId: string; entityType: ManagedEntityType; userId: string; displayName: string } | null {
+    const compactPayload = parseCompactProfileMentionStartPayload(
+      startPayload,
+      this.maxBotTokenValidationSecrets,
+    );
+    if (compactPayload) {
+      return {
+        ...compactPayload,
+        displayName: 'Пользователь',
+      };
+    }
+
     if (!startPayload || !startPayload.startsWith(PROFILE_MENTION_START_PREFIX)) {
       return null;
     }
@@ -11433,6 +11571,9 @@ export class PrivateControlService {
       lastRulesHandoffDeliveredAt: null,
       lastProfileMentionHandoffDeliveredChatId: null,
       lastProfileMentionHandoffDeliveredAt: null,
+      pendingProfileMentionChatId: null,
+      pendingProfileMentionUserId: null,
+      pendingProfileMentionDisplayName: null,
       selectedChatId: null,
       selectedEntityType: null,
       managedGiveawayId: null,
@@ -11513,6 +11654,21 @@ export class PrivateControlService {
         typeof row.lastProfileMentionHandoffDeliveredAt === 'number' &&
         Number.isFinite(row.lastProfileMentionHandoffDeliveredAt)
           ? row.lastProfileMentionHandoffDeliveredAt
+          : null,
+      pendingProfileMentionChatId:
+        typeof row.pendingProfileMentionChatId === 'string' &&
+        row.pendingProfileMentionChatId.trim().length > 0
+          ? row.pendingProfileMentionChatId.trim()
+          : null,
+      pendingProfileMentionUserId:
+        typeof row.pendingProfileMentionUserId === 'string' &&
+        row.pendingProfileMentionUserId.trim().length > 0
+          ? row.pendingProfileMentionUserId.trim()
+          : null,
+      pendingProfileMentionDisplayName:
+        typeof row.pendingProfileMentionDisplayName === 'string' &&
+        row.pendingProfileMentionDisplayName.trim().length > 0
+          ? row.pendingProfileMentionDisplayName.trim()
           : null,
       selectedChatId,
       selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),

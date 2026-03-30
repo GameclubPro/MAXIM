@@ -938,6 +938,12 @@ function createHarness(
         if (key === 'MAX_BOT_ID') {
           return '777000_bot';
         }
+        if (key === 'MAX_BOT_TOKEN') {
+          return 'test-token';
+        }
+        if (key === 'MAX_BOT_TOKEN_PREVIOUS') {
+          return undefined;
+        }
         if (key === 'APP_BASE_URL') {
           return 'https://maxim.play-team.ru';
         }
@@ -2853,6 +2859,7 @@ describe('PrivateControlService', () => {
     );
 
     expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
+    expect(extractStartPayload(result.botUrl).length).toBeLessThanOrEqual(128);
 
     await service.handleBotStarted(
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
@@ -2915,6 +2922,7 @@ describe('PrivateControlService', () => {
     );
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(chats[0].id, ['user-42']);
     expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
+    expect(extractStartPayload(result.botUrl).length).toBeLessThanOrEqual(128);
 
     await service.handleBotStarted(
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
@@ -2955,6 +2963,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
     );
     expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
+    expect(extractStartPayload(result.botUrl).length).toBeLessThanOrEqual(128);
 
     await service.handleBotStarted(
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),

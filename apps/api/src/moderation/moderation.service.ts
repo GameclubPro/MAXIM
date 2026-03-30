@@ -37,6 +37,10 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import {
+  isValidMaxBotStartPayload,
+  isValidMaxMiniappStartPayload,
+} from '../max/max-deep-link.util';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -9623,12 +9627,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!this.ownBotUserId) {
       return null;
     }
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
 
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
     if (!this.ownBotUserId) {
+      return null;
+    }
+    if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 

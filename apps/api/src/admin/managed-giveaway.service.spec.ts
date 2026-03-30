@@ -846,6 +846,8 @@ describe('ManagedGiveawayService', () => {
     const claimUrl = legacyService.buildGiveawayClaimBotStartUrl('giveaway-1', 'winner-1');
     const claimPayload = claimUrl ? new URL(claimUrl).searchParams.get('start') : null;
 
+    expect(claimPayload).not.toBeNull();
+    expect(claimPayload!.length).toBeLessThanOrEqual(128);
     expect(service.parseClaimStartPayload(claimPayload)).toEqual({
       giveawayId: 'giveaway-1',
       winnerId: 'winner-1',

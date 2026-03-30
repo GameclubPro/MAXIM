@@ -123,6 +123,11 @@ import {
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
+  buildCompactProfileMentionStartPayload,
+  isValidMaxBotStartPayload,
+  isValidMaxMiniappStartPayload,
+} from '../max/max-deep-link.util';
+import {
   MaxClientService,
   type MaxAttachmentPayload,
   type MaxBotChat,
@@ -13104,12 +13109,18 @@ export class AdminService {
     if (!this.ownBotUserId) {
       return null;
     }
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
 
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
     if (!this.ownBotUserId) {
+      return null;
+    }
+    if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
@@ -13190,6 +13201,18 @@ export class AdminService {
     userId: string;
     displayName: string;
   }): string {
+    const compactPayload = buildCompactProfileMentionStartPayload(
+      {
+        chatId: params.chatId,
+        entityType: params.entityType,
+        userId: params.userId,
+      },
+      this.maxBotToken,
+    );
+    if (compactPayload) {
+      return compactPayload;
+    }
+
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,

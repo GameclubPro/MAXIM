@@ -55,6 +55,12 @@ import {
   MaxMembershipLookupService,
   type MaxMembershipLookupPolicy,
 } from '../max/max-membership-lookup.service';
+import {
+  buildCompactGiveawayClaimStartPayload,
+  isValidMaxBotStartPayload,
+  isValidMaxMiniappStartPayload,
+  parseCompactGiveawayClaimStartPayload,
+} from '../max/max-deep-link.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
@@ -845,6 +851,14 @@ export class ManagedGiveawayService {
   }
 
   parseClaimStartPayload(payload: string | null): { giveawayId: string; winnerId: string } | null {
+    const compactPayload = parseCompactGiveawayClaimStartPayload(
+      payload,
+      this.maxBotTokenValidationSecrets,
+    );
+    if (compactPayload) {
+      return compactPayload;
+    }
+
     if (!payload || !payload.startsWith(GIVEAWAY_CLAIM_START_PREFIX)) {
       return null;
     }
@@ -914,21 +928,27 @@ export class ManagedGiveawayService {
       return null;
     }
 
-    const signature = this.buildGiveawayClaimSignature(giveawayId, winnerId);
-    const payload = Buffer.from(
-      JSON.stringify({
-        v: 1,
-        k: 'giveaway-claim',
-        g: giveawayId,
-        w: winnerId,
-        s: signature,
-      }),
-      'utf8',
-    ).toString('base64url');
+    const compactPayload = buildCompactGiveawayClaimStartPayload(
+      { giveawayId, winnerId },
+      this.maxBotToken,
+    );
+    const payload =
+      compactPayload ??
+      `${GIVEAWAY_CLAIM_START_PREFIX}${Buffer.from(
+        JSON.stringify({
+          v: 1,
+          k: 'giveaway-claim',
+          g: giveawayId,
+          w: winnerId,
+          s: this.buildGiveawayClaimSignature(giveawayId, winnerId),
+        }),
+        'utf8',
+      ).toString('base64url')}`;
+    if (!isValidMaxBotStartPayload(payload)) {
+      return null;
+    }
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(
-      `${GIVEAWAY_CLAIM_START_PREFIX}${payload}`,
-    )}`;
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(payload)}`;
   }
 
   getGiveawayPublicMiniappUrl(giveawayId: string): string | null {
@@ -2446,9 +2466,12 @@ export class ManagedGiveawayService {
       'utf8',
     ).toString('base64url');
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(
-      `${GIVEAWAY_START_PARAM_PREFIX}${payload}`,
-    )}`;
+    const startParam = `${GIVEAWAY_START_PARAM_PREFIX}${payload}`;
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildGiveawayDirectWebAppUrl(giveawayId: string): string | null {
