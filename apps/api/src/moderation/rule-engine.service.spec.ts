@@ -722,6 +722,44 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
+  it('keeps borderline commercial copy below detection on soft sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Скидка на курс, пишите в лс',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'BALANCED',
+        commercialAdsWarnThreshold: 60,
+        commercialAdsDeleteThreshold: 82,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('catches the same borderline commercial copy on strict sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Скидка на курс, пишите в лс',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+        commercialAdsWarnThreshold: 40,
+        commercialAdsDeleteThreshold: 58,
+      }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).toBe('HIGH');
+  });
+
   it('does not detect COMMERCIAL_AD for private sale without promo context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

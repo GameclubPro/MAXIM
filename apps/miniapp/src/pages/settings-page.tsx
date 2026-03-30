@@ -155,6 +155,7 @@ const NIGHT_FORCE_CLOSE_MIN_DAYS = 0;
 const NIGHT_FORCE_CLOSE_MAX_DAYS = 30;
 const COMMERCIAL_SENSITIVITY_MIN = 0;
 const COMMERCIAL_SENSITIVITY_MAX = 100;
+const COMMERCIAL_SOFT_MAX = 24;
 const COMMERCIAL_BALANCED_MAX = 69;
 const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
@@ -1365,6 +1366,39 @@ function clampCommercialSlider(value: number): number {
   return Math.max(COMMERCIAL_SENSITIVITY_MIN, Math.min(COMMERCIAL_SENSITIVITY_MAX, value));
 }
 
+function resolveCommercialSensitivityConfig(value: number): {
+  sensitivity: ChatSettings['commercialAdsSensitivity'];
+  warnThreshold: number;
+  deleteThreshold: number;
+} {
+  const safe = clampCommercialSlider(value);
+
+  if (safe <= COMMERCIAL_SOFT_MAX) {
+    const progress = safe / COMMERCIAL_SOFT_MAX;
+    return {
+      sensitivity: 'BALANCED',
+      warnThreshold: Math.round(60 + (54 - 60) * progress),
+      deleteThreshold: Math.round(82 + (74 - 82) * progress),
+    };
+  }
+
+  if (safe <= COMMERCIAL_BALANCED_MAX) {
+    const progress = (safe - (COMMERCIAL_SOFT_MAX + 1)) / (COMMERCIAL_BALANCED_MAX - 25);
+    return {
+      sensitivity: 'BALANCED',
+      warnThreshold: Math.round(53 + (45 - 53) * progress),
+      deleteThreshold: Math.round(73 + (65 - 73) * progress),
+    };
+  }
+
+  const progress = (safe - 70) / 30;
+  return {
+    sensitivity: 'STRICT',
+    warnThreshold: Math.round(44 + (38 - 44) * progress),
+    deleteThreshold: Math.round(63 + (55 - 63) * progress),
+  };
+}
+
 function getCommercialSensitivityLabel(value: number): string {
   const safe = clampCommercialSlider(value);
   if (safe < 25) {
@@ -1380,12 +1414,17 @@ function inferCommercialSensitivitySliderValue(settings: ChatSettings): number {
   const warn = Math.max(10, Math.min(90, settings.commercialAdsWarnThreshold));
 
   if (settings.commercialAdsSensitivity === 'STRICT') {
-    const strictProgress = Math.max(0, Math.min(1, (44 - warn) / 6));
-    return Math.round(70 + strictProgress * 30);
+    const progress = Math.max(0, Math.min(1, (44 - warn) / 6));
+    return Math.round(70 + progress * 30);
   }
 
-  const balancedProgress = Math.max(0, Math.min(1, (58 - warn) / 13));
-  return Math.round(balancedProgress * COMMERCIAL_BALANCED_MAX);
+  if (warn >= 54) {
+    const progress = Math.max(0, Math.min(1, (60 - warn) / 6));
+    return Math.round(progress * COMMERCIAL_SOFT_MAX);
+  }
+
+  const progress = Math.max(0, Math.min(1, (53 - warn) / 8));
+  return Math.round(25 + progress * (COMMERCIAL_BALANCED_MAX - 25));
 }
 
 function normalizeLegacyChatCommentScope(settings: ChatSettings): ChatSettings {
@@ -3704,23 +3743,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const safeValue = clampCommercialSlider(rawValue);
-    if (safeValue >= 70) {
-      const strictProgress = (safeValue - 70) / 30;
-      const warnThreshold = Math.round(44 - strictProgress * 6);
-      const deleteThreshold = Math.max(warnThreshold + 8, Math.round(62 - strictProgress * 8));
-      setFieldValue('commercialAdsSensitivity', 'STRICT');
-      setFieldValue('commercialAdsWarnThreshold', warnThreshold);
-      setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
-      return;
-    }
-
-    const balancedProgress = safeValue / COMMERCIAL_BALANCED_MAX;
-    const warnThreshold = Math.round(58 - balancedProgress * 13);
-    const deleteThreshold = Math.max(warnThreshold + 10, Math.round(78 - balancedProgress * 13));
-    setFieldValue('commercialAdsSensitivity', 'BALANCED');
-    setFieldValue('commercialAdsWarnThreshold', warnThreshold);
-    setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
+    const config = resolveCommercialSensitivityConfig(rawValue);
+    setFieldValue('commercialAdsSensitivity', config.sensitivity);
+    setFieldValue('commercialAdsWarnThreshold', config.warnThreshold);
+    setFieldValue('commercialAdsDeleteThreshold', config.deleteThreshold);
   }
 
   function toggleHint(key: HintKey) {
@@ -6562,8 +6588,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="commercial-sensitivity-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                Ползунок меняет строгость фильтра и автоматически подбирает
-                                внутренние пороги.
+                                WARN {draft.commercialAdsWarnThreshold} • DELETE{' '}
+                                {draft.commercialAdsDeleteThreshold}.
                               </p>
                             ) : null}
                           </div>

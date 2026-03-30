@@ -57,7 +57,15 @@ type CommercialDetection = {
     warnThreshold: number;
     deleteThreshold: number;
     sensitivity: 'BALANCED' | 'STRICT';
+    strictness: number;
   };
+};
+
+type CommercialThresholdProfile = {
+  warnThreshold: number;
+  deleteThreshold: number;
+  sensitivity: 'BALANCED' | 'STRICT';
+  strictness: number;
 };
 
 type CommercialSignalState = {
@@ -843,13 +851,35 @@ export class RuleEngineService {
     }
 
     const appliedThresholds = this.resolveCommercialThresholds(settings);
-    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, settings);
+    const state = this.collectCommercialSignals(
+      normalizedText,
+      rawLoweredText,
+      appliedThresholds,
+    );
     if (state.matchedSignals.length === 0 || !state.hasCommercialContext || !state.hasDealSignal) {
       return null;
     }
 
+    const hasStandardCommercialEvidence =
+      state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
+    const hasStrongCommercialEvidence =
+      state.hasPrice || state.hasDealChannel || (state.hasContact && state.hasTransactional);
+
+    if (appliedThresholds.strictness < 0.35 && !hasStrongCommercialEvidence) {
+      return null;
+    }
+
+    if (appliedThresholds.strictness < 0.65 && !hasStandardCommercialEvidence) {
+      return null;
+    }
+
     let confidenceScore = Math.round(Math.max(0, Math.min(100, state.score)));
-    if (state.hasStrongNegativeContext && !state.hasPrice && !state.hasContact && !state.hasDealChannel) {
+    if (
+      state.hasStrongNegativeContext &&
+      !state.hasPrice &&
+      !state.hasContact &&
+      !state.hasDealChannel
+    ) {
       confidenceScore = Math.min(confidenceScore, appliedThresholds.warnThreshold - 1);
     }
 
@@ -889,6 +919,7 @@ export class RuleEngineService {
     warnThreshold: number;
     deleteThreshold: number;
     sensitivity: 'BALANCED' | 'STRICT';
+    strictness: number;
   } {
     const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
     const warnBase = Number.isFinite(settings.commercialAdsWarnThreshold)
@@ -897,15 +928,20 @@ export class RuleEngineService {
     const deleteBase = Number.isFinite(settings.commercialAdsDeleteThreshold)
       ? settings.commercialAdsDeleteThreshold
       : 65;
-    const warnThreshold = strict ? Math.max(10, warnBase - 3) : warnBase;
-    const deleteThreshold = strict
-      ? Math.max(warnThreshold + 5, deleteBase - 4)
-      : Math.max(warnThreshold + 5, deleteBase);
+    const warnThreshold = Math.max(10, Math.min(90, warnBase));
+    const deleteThreshold = Math.max(warnThreshold + 5, Math.min(100, deleteBase));
+    const thresholdStrictness =
+      ((60 - warnThreshold) / 22 + (82 - deleteThreshold) / 27) / 2;
+    const strictness = Math.max(
+      0,
+      Math.min(1, thresholdStrictness + (strict ? 0.04 : -0.02)),
+    );
 
     return {
       warnThreshold,
       deleteThreshold,
       sensitivity: strict ? 'STRICT' : 'BALANCED',
+      strictness,
     };
   }
 
@@ -990,11 +1026,10 @@ export class RuleEngineService {
   private collectCommercialSignals(
     normalizedText: string,
     rawLoweredText: string,
-    settings: ChatSettings,
+    profile: CommercialThresholdProfile,
   ): CommercialSignalState {
-    const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
-    const positiveFactor = strict ? 1.15 : 1;
-    const negativeFactor = strict ? 0.85 : 1;
+    const positiveFactor = 0.92 + profile.strictness * 0.28;
+    const negativeFactor = 1.05 - profile.strictness * 0.2;
 
     let score = 0;
     const matchedSignals: string[] = [];

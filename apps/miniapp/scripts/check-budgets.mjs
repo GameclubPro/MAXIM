@@ -7,8 +7,9 @@ const distDir = path.join(workspaceDir, 'dist');
 const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
 const STARTUP_JS_BUDGET_GZIP = 100 * 1024;
-// Small cross-environment headroom for gzip drift and dialog-contract growth in shared chunks.
-const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 3456;
+// Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
+// and sensitivity mapping logic in settings controls.
+const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 3584;
 // Small headroom for MAX-native comment surfaces, messenger-style wallpaper, and cross-environment gzip drift.
 const STARTUP_CSS_BUDGET_GZIP = Math.round(35 * 1024) + 2144;
 const BUDGET_TOLERANCE_GZIP = 64;
