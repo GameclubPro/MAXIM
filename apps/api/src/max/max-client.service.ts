@@ -235,6 +235,41 @@ const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
+const DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS = 1_000;
+const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
+const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
+const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
+const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
+const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
+local ttlMs = tonumber(ARGV[#ARGV])
+local keyCount = #KEYS
+
+for index = 1, keyCount do
+  local limit = tonumber(ARGV[index])
+  local count = tonumber(redis.call('GET', KEYS[index]) or '0')
+  if count >= limit then
+    local ttl = redis.call('PTTL', KEYS[index])
+    if ttl == nil or ttl < 1 then
+      ttl = ttlMs
+    end
+    return {0, index, ttl}
+  end
+end
+
+for index = 1, keyCount do
+  local nextCount = redis.call('INCR', KEYS[index])
+  if nextCount == 1 then
+    redis.call('PEXPIRE', KEYS[index], ttlMs)
+  else
+    local ttl = redis.call('PTTL', KEYS[index])
+    if ttl == nil or ttl < 1 then
+      redis.call('PEXPIRE', KEYS[index], ttlMs)
+    end
+  end
+end
+
+return {1, 0, 0}
+`;
 
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
@@ -247,6 +282,10 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
   private readonly chatRpsLimit: number;
+  private readonly criticalRateLimitWaitMs: number;
+  private readonly interactiveRateLimitWaitMs: number;
+  private readonly backgroundRateLimitWaitMs: number;
+  private readonly rateLimitRetryFloorMs: number;
   private readonly listBotChatsCacheTtlSec: number;
   private readonly chatSnapshotCacheTtlSec: number;
   private readonly circuitFailureThreshold: number;
@@ -292,6 +331,26 @@ export class MaxClientService implements OnModuleDestroy {
       ),
     );
     this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
+    this.criticalRateLimitWaitMs = this.readConfigInt(
+      configService.get('MAX_API_RATE_LIMIT_WAIT_MS_CRITICAL'),
+      DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS,
+      0,
+    );
+    this.interactiveRateLimitWaitMs = this.readConfigInt(
+      configService.get('MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE'),
+      DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS,
+      0,
+    );
+    this.backgroundRateLimitWaitMs = this.readConfigInt(
+      configService.get('MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND'),
+      DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS,
+      0,
+    );
+    this.rateLimitRetryFloorMs = this.readConfigInt(
+      configService.get('MAX_API_RATE_LIMIT_RETRY_FLOOR_MS'),
+      DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS,
+      1,
+    );
     this.listBotChatsCacheTtlSec = this.readConfigInt(
       configService.get('MAX_API_LIST_BOT_CHATS_CACHE_SEC'),
       DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC,
@@ -2942,7 +3001,7 @@ export class MaxClientService implements OnModuleDestroy {
     } = {},
   ): Promise<T> {
     await this.ensureCircuitClosed();
-    await this.enforceRateLimit(options.chatId ?? null, options.trafficClass ?? 'interactive');
+    await this.reserveRateLimitSlot(options.chatId ?? null, options.trafficClass ?? 'interactive');
 
     try {
       const result = await operation();
@@ -3169,59 +3228,78 @@ export class MaxClientService implements OnModuleDestroy {
     return fallback;
   }
 
-  private async enforceRateLimit(chatId: string | null, trafficClass: MaxApiTrafficClass) {
-    const nowSec = Math.floor(Date.now() / 1_000);
-    const globalKey = `maxapi:rps:global:${nowSec}`;
-    const trafficKey = `maxapi:rps:global:${trafficClass}:${nowSec}`;
-    const [globalCount, trafficCount] = await this.incrementRateLimitCounters([
-      { key: globalKey, ttlSec: 2 },
-      { key: trafficKey, ttlSec: 2 },
-    ]);
+  private async reserveRateLimitSlot(chatId: string | null, trafficClass: MaxApiTrafficClass) {
+    const maxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
+    const startedAtMs = Date.now();
 
-    if (globalCount > this.globalRpsLimit) {
-      throw new Error('MAX API global rate limit exceeded');
-    }
-    if (trafficCount > this.resolveTrafficClassGlobalRpsLimit(trafficClass)) {
-      throw new Error(`MAX API ${trafficClass} rate limit exceeded`);
-    }
+    while (true) {
+      const reservation = await this.tryReserveRateLimitSlot(chatId, trafficClass);
+      if (reservation.ok) {
+        return;
+      }
 
-    if (!chatId) {
-      return;
-    }
+      const elapsedMs = Date.now() - startedAtMs;
+      const remainingWaitMs = maxWaitMs - elapsedMs;
+      if (remainingWaitMs <= 0) {
+        throw new Error(reservation.reason);
+      }
 
-    const chatKey = `maxapi:rps:chat:${chatId}:${nowSec}`;
-    const [chatCount] = await this.incrementRateLimitCounters([{ key: chatKey, ttlSec: 2 }]);
-    if (chatCount > this.chatRpsLimit) {
-      throw new Error(`MAX API per-chat rate limit exceeded for chat ${chatId}`);
+      await this.sleep(
+        Math.max(
+          this.rateLimitRetryFloorMs,
+          Math.min(reservation.retryAfterMs, remainingWaitMs),
+        ),
+      );
     }
   }
 
-  private async incrementRateLimitCounters(
-    counters: Array<{ key: string; ttlSec: number }>,
-  ): Promise<number[]> {
-    const pipeline = this.limiterRedis.multi();
-    for (const counter of counters) {
-      pipeline.incr(counter.key);
-      pipeline.expire(counter.key, counter.ttlSec);
-    }
-
-    const result = await pipeline.exec();
-    if (!result) {
-      throw new Error('Failed to execute MAX API rate limit pipeline');
-    }
-
-    const counts: number[] = [];
-    for (let index = 0; index < counters.length; index += 1) {
-      const value = result[index * 2]?.[1];
-      if (typeof value !== 'number') {
-        throw new Error(
-          `Failed to increment MAX API rate limit counter for ${counters[index].key}`,
-        );
+  private async tryReserveRateLimitSlot(
+    chatId: string | null,
+    trafficClass: MaxApiTrafficClass,
+  ): Promise<
+    | { ok: true }
+    | {
+        ok: false;
+        retryAfterMs: number;
+        reason: string;
       }
-      counts.push(value);
+  > {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const keys = [
+      `maxapi:rps:global:${nowSec}`,
+      `maxapi:rps:global:${trafficClass}:${nowSec}`,
+      ...(chatId ? [`maxapi:rps:chat:${chatId}:${nowSec}`] : []),
+    ];
+    const raw = await this.limiterRedis.eval(
+      MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
+      keys.length,
+      ...keys,
+      String(this.globalRpsLimit),
+      String(this.resolveTrafficClassGlobalRpsLimit(trafficClass)),
+      ...(chatId ? [String(this.chatRpsLimit)] : []),
+      String(MAX_API_RATE_LIMIT_SLOT_TTL_MS),
+    );
+    const result = Array.isArray(raw) ? raw : null;
+    const ok = typeof result?.[0] === 'number' ? result[0] : Number.NaN;
+    const rejectedKeyIndex = typeof result?.[1] === 'number' ? result[1] : Number.NaN;
+    const retryAfterMs = typeof result?.[2] === 'number' ? result[2] : Number.NaN;
+
+    if (ok === 1) {
+      return { ok: true };
     }
 
-    return counts;
+    if (ok !== 0 || !Number.isFinite(rejectedKeyIndex)) {
+      throw new Error('Failed to execute MAX API rate limit reservation script');
+    }
+
+    const normalizedRetryAfterMs = Number.isFinite(retryAfterMs)
+      ? Math.max(1, Math.trunc(retryAfterMs))
+      : MAX_API_RATE_LIMIT_SLOT_TTL_MS;
+    return {
+      ok: false,
+      retryAfterMs: normalizedRetryAfterMs,
+      reason: this.buildRateLimitExceededMessage(chatId, trafficClass, Math.trunc(rejectedKeyIndex)),
+    };
   }
 
   private resolveTrafficClassGlobalRpsLimit(trafficClass: MaxApiTrafficClass): number {
@@ -3234,6 +3312,48 @@ export class MaxClientService implements OnModuleDestroy {
       default:
         return this.interactiveGlobalRpsLimit;
     }
+  }
+
+  private resolveTrafficClassRateLimitWaitMs(trafficClass: MaxApiTrafficClass): number {
+    switch (trafficClass) {
+      case 'critical':
+        return this.criticalRateLimitWaitMs;
+      case 'background':
+        return this.backgroundRateLimitWaitMs;
+      case 'interactive':
+      default:
+        return this.interactiveRateLimitWaitMs;
+    }
+  }
+
+  private buildRateLimitExceededMessage(
+    chatId: string | null,
+    trafficClass: MaxApiTrafficClass,
+    rejectedKeyIndex: number,
+  ): string {
+    switch (rejectedKeyIndex) {
+      case 1:
+        return 'MAX API global rate limit exceeded';
+      case 2:
+        return `MAX API ${trafficClass} rate limit exceeded`;
+      case 3:
+        return chatId
+          ? `MAX API per-chat rate limit exceeded for chat ${chatId}`
+          : `MAX API ${trafficClass} rate limit exceeded`;
+      default:
+        return `MAX API ${trafficClass} rate limit exceeded`;
+    }
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.pendingTimeouts.delete(timeout);
+        resolve();
+      }, ms);
+      timeout.unref?.();
+      this.pendingTimeouts.add(timeout);
+    });
   }
 
   private async ensureCircuitClosed() {

@@ -7023,6 +7023,89 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
+  it('batches concurrent remote chat admin lookups within the same chat', async () => {
+    const prisma = {};
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+    };
+    const chatContextCache = {
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    const [first, second] = await Promise.all([
+      (service as any).getRemoteChatAdminAccess('chat-1', 'user-1'),
+      (service as any).getRemoteChatAdminAccess('chat-1', 'user-2'),
+    ]);
+
+    expect(first).toBe('granted');
+    expect(second).toBe('user_denied');
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1', 'user-2'], {
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies chat-level backoff after a throttled remote chat admin batch lookup', async () => {
+    const prisma = {};
+    const maxClient = {
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValue(new Error('MAX API interactive rate limit exceeded')),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    const [first, second] = await Promise.all([
+      (service as any).getRemoteChatAdminAccess('chat-1', 'user-1'),
+      (service as any).getRemoteChatAdminAccess('chat-1', 'user-2'),
+    ]);
+    const third = await (service as any).getRemoteChatAdminAccess('chat-1', 'user-3');
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(third).toBeNull();
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
     const prisma = {
       chat: {

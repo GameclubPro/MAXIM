@@ -3,15 +3,83 @@ import { of, throwError } from 'rxjs';
 import Redis from 'ioredis';
 
 jest.mock('ioredis', () => {
-  const store = new Map<string, string>();
+  const store = new Map<string, { value: string; expiresAtMs: number | null }>();
+  const readEntry = (key: string) => {
+    const entry = store.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAtMs !== null && entry.expiresAtMs <= Date.now()) {
+      store.delete(key);
+      return null;
+    }
+    return entry;
+  };
   const RedisMock = Object.assign(
     jest.fn().mockImplementation(() => {
       const instance = {
-        incr: jest.fn().mockResolvedValue(1),
-        expire: jest.fn().mockResolvedValue(1),
-        get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
-        set: jest.fn().mockImplementation(async (key: string, value: string) => {
-          store.set(key, value);
+        incr: jest.fn().mockImplementation(async (key: string) => {
+          const current = Number(readEntry(key)?.value ?? '0');
+          const next = current + 1;
+          store.set(key, {
+            value: String(next),
+            expiresAtMs: readEntry(key)?.expiresAtMs ?? null,
+          });
+          return next;
+        }),
+        expire: jest.fn().mockImplementation(async (key: string, ttlSec: number) => {
+          const entry = readEntry(key);
+          if (!entry) {
+            return 0;
+          }
+          store.set(key, {
+            ...entry,
+            expiresAtMs: Date.now() + ttlSec * 1_000,
+          });
+          return 1;
+        }),
+        pexpire: jest.fn().mockImplementation(async (key: string, ttlMs: number) => {
+          const entry = readEntry(key);
+          if (!entry) {
+            return 0;
+          }
+          store.set(key, {
+            ...entry,
+            expiresAtMs: Date.now() + ttlMs,
+          });
+          return 1;
+        }),
+        pttl: jest.fn().mockImplementation(async (key: string) => {
+          const entry = readEntry(key);
+          if (!entry) {
+            return -2;
+          }
+          if (entry.expiresAtMs === null) {
+            return -1;
+          }
+          return Math.max(0, entry.expiresAtMs - Date.now());
+        }),
+        get: jest.fn().mockImplementation(async (key: string) => readEntry(key)?.value ?? null),
+        set: jest.fn().mockImplementation(async (key: string, value: string, ...args: unknown[]) => {
+          let expiresAtMs: number | null = null;
+          if (
+            args[0] === 'EX' &&
+            typeof args[1] === 'number' &&
+            Number.isFinite(args[1])
+          ) {
+            expiresAtMs = Date.now() + args[1] * 1_000;
+          }
+          if (
+            args[0] === 'PX' &&
+            typeof args[1] === 'number' &&
+            Number.isFinite(args[1])
+          ) {
+            expiresAtMs = Date.now() + args[1];
+          }
+          store.set(key, {
+            value,
+            expiresAtMs,
+          });
           return 'OK';
         }),
         del: jest.fn().mockImplementation(async (...keys: string[]) => {
@@ -23,6 +91,40 @@ jest.mock('ioredis', () => {
           }
           return deleted;
         }),
+        eval: jest.fn().mockImplementation(
+          async (script: string, numKeys: number, ...args: Array<string | number>) => {
+            if (!script.includes('PTTL') || !script.includes('INCR')) {
+              throw new Error('Unexpected Redis eval script');
+            }
+
+            const keys = args.slice(0, numKeys).map((value) => String(value));
+            const argValues = args.slice(numKeys);
+            const ttlMs = Number(argValues[argValues.length - 1] ?? 0);
+
+            for (let index = 0; index < numKeys; index += 1) {
+              const count = Number(readEntry(keys[index])?.value ?? '0');
+              const limit = Number(argValues[index] ?? 0);
+              if (count >= limit) {
+                const entry = readEntry(keys[index]);
+                const retryAfterMs =
+                  entry?.expiresAtMs !== null && entry?.expiresAtMs !== undefined
+                    ? Math.max(1, entry.expiresAtMs - Date.now())
+                    : ttlMs;
+                return [0, index + 1, retryAfterMs];
+              }
+            }
+
+            for (const key of keys) {
+              const current = Number(readEntry(key)?.value ?? '0') + 1;
+              store.set(key, {
+                value: String(current),
+                expiresAtMs: Date.now() + ttlMs,
+              });
+            }
+
+            return [1, 0, 0];
+          },
+        ),
         quit: jest.fn().mockResolvedValue(undefined),
         multi: jest.fn().mockImplementation(() => {
           const operations: Array<['incr' | 'expire', ...unknown[]]> = [];
@@ -65,7 +167,7 @@ jest.mock('ioredis', () => {
 
 describe('MaxClientService inline keyboard guardrails', () => {
   beforeEach(() => {
-    (Redis as unknown as { __store: Map<string, string> }).__store.clear();
+    (Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }).__store.clear();
   });
 
   function createService(
@@ -1632,11 +1734,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService, {
       MAX_API_GLOBAL_RPS: '30',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
 
-    (
-      service as unknown as { limiterRedis: { incr: jest.Mock } }
-    ).limiterRedis.incr.mockResolvedValueOnce(31);
+    (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis.eval.mockResolvedValue(
+      [0, 1, 1],
+    );
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API global rate limit exceeded',
@@ -1653,10 +1756,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService, {
       MAX_API_GLOBAL_RPS: '30',
       MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
 
-    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
-    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
     expect(httpService.request).not.toHaveBeenCalled();
@@ -1671,6 +1775,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService, {
       MAX_API_GLOBAL_RPS: '30',
       MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
     const actionHealthService = (
       service as unknown as {
@@ -1681,13 +1786,42 @@ describe('MaxClientService inline keyboard guardrails', () => {
       }
     ).actionHealthService;
 
-    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
-    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
 
     await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
 
     expect(actionHealthService.recordFailure).not.toHaveBeenCalled();
     expect(actionHealthService.recordSuccess).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('waits briefly for a MAX API slot before executing the request', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            chats: [],
+            marker: null,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '10',
+      MAX_API_RATE_LIMIT_RETRY_FLOOR_MS: '1',
+    });
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValueOnce([0, 2, 1]).mockResolvedValueOnce([1, 0, 0]);
+
+    await expect(service.listBotChats()).resolves.toEqual([]);
+
+    expect(limiterRedis.eval).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
   });
@@ -1788,10 +1922,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService, {
       MAX_API_GLOBAL_RPS: '30',
       MAX_API_GLOBAL_RPS_BACKGROUND: '2',
+      MAX_API_RATE_LIMIT_WAIT_MS_BACKGROUND: '0',
     });
 
-    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
-    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(3);
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 2, 1]);
 
     await expect(service.getChatSnapshot('chat-1', { trafficClass: 'background' })).rejects.toThrow(
       'MAX API background rate limit exceeded',
@@ -1808,10 +1943,11 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const service = createService(httpService, {
       MAX_API_GLOBAL_RPS: '100',
       MAX_API_CHAT_RPS: '1',
+      MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
 
-    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
-    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    const limiterRedis = (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis;
+    limiterRedis.eval.mockResolvedValue([0, 3, 1]);
 
     await expect(service.getChatMemberProfiles('chat-1', ['user-1'])).rejects.toThrow(
       'MAX API per-chat rate limit exceeded for chat chat-1',

@@ -98,6 +98,19 @@ type ChannelAutoPostScanState = {
   nextScanAtMs: number;
 };
 
+type PendingChatAdminLookup = {
+  cacheKey: string;
+  userId: string;
+  staleCached: RemoteChatAdminAccessState | null;
+  resolve: (value: RemoteChatAdminAccessState | null) => void;
+};
+
+type PendingChatAdminLookupBatch = {
+  chatId: string;
+  lookups: Map<string, PendingChatAdminLookup>;
+  scheduled: boolean;
+};
+
 type RulesButtonReference = {
   publishedUrl: string | null;
   publishedMessageId: string | null;
@@ -273,6 +286,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<RemoteChatAdminAccessState | null>
   >();
   private readonly chatAdminLookupBackoffUntilMs = new Map<string, number>();
+  private readonly chatAdminChatBackoffUntilMs = new Map<string, number>();
+  private readonly pendingChatAdminLookupBatches = new Map<string, PendingChatAdminLookupBatch>();
   private readonly requiredSubscriptionMembershipCache = new Map<
     string,
     {
@@ -7321,49 +7336,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return staleCached;
     }
 
+    const chatBackoffUntilMs = this.chatAdminChatBackoffUntilMs.get(chatId) ?? 0;
+    if (chatBackoffUntilMs > now) {
+      return staleCached;
+    }
+
     const inFlight = this.chatAdminLookupInFlight.get(cacheKey);
     if (inFlight) {
       return inFlight;
     }
 
-    const lookupPromise = (async () => {
-      try {
-        const accessState = await this.loadRemoteChatAdminAccess(chatId, userId);
-        if (!accessState) {
-          return staleCached;
-        }
-        this.chatAdminAccessCache.set(cacheKey, {
-          expiresAt: Date.now() + CHAT_ADMIN_CACHE_TTL_MS,
-          state: accessState,
-        });
-        this.chatAdminLookupBackoffUntilMs.delete(cacheKey);
-        await this.writeChatAdminAccessToSharedCache(chatId, userId, accessState);
+    return this.enqueueChatAdminLookupBatch(chatId, userId, cacheKey, staleCached);
+  }
 
-        if (accessState === 'granted') {
-          await this.persistRemoteAdminGrant(chatId, userId);
-        }
+  private enqueueChatAdminLookupBatch(
+    chatId: string,
+    userId: string,
+    cacheKey: string,
+    staleCached: RemoteChatAdminAccessState | null,
+  ): Promise<RemoteChatAdminAccessState | null> {
+    let batch = this.pendingChatAdminLookupBatches.get(chatId);
+    if (!batch) {
+      batch = {
+        chatId,
+        lookups: new Map(),
+        scheduled: false,
+      };
+      this.pendingChatAdminLookupBatches.set(chatId, batch);
+    }
 
-        return accessState;
-      } catch (error: unknown) {
-        const transient = this.isTransientMaxApiLookupError(error);
-        if (transient) {
-          this.chatAdminLookupBackoffUntilMs.set(
-            cacheKey,
-            Date.now() + CHAT_ADMIN_LOOKUP_BACKOFF_MS,
-          );
-        }
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            backoffMs: transient ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to resolve chat admins for moderation bypass',
-        );
-        return staleCached;
-      }
-    })();
+    const lookupPromise = new Promise<RemoteChatAdminAccessState | null>((resolve) => {
+      batch!.lookups.set(cacheKey, {
+        cacheKey,
+        userId,
+        staleCached,
+        resolve,
+      });
+    });
+
     let trackedLookupPromise!: Promise<RemoteChatAdminAccessState | null>;
     trackedLookupPromise = lookupPromise.finally(() => {
       if (this.chatAdminLookupInFlight.get(cacheKey) === trackedLookupPromise) {
@@ -7372,16 +7382,97 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.chatAdminLookupInFlight.set(cacheKey, trackedLookupPromise);
+
+    if (!batch.scheduled) {
+      batch.scheduled = true;
+      void Promise.resolve().then(() => this.flushPendingChatAdminLookupBatch(chatId));
+    }
+
     return trackedLookupPromise;
   }
 
-  private async loadRemoteChatAdminAccess(
+  private async flushPendingChatAdminLookupBatch(chatId: string): Promise<void> {
+    const batch = this.pendingChatAdminLookupBatches.get(chatId);
+    if (!batch) {
+      return;
+    }
+
+    this.pendingChatAdminLookupBatches.delete(chatId);
+    const lookups = [...batch.lookups.values()];
+    if (lookups.length === 0) {
+      return;
+    }
+
+    const normalizedUserIds = Array.from(
+      new Set(lookups.map((lookup) => lookup.userId.trim()).filter((value) => value.length > 0)),
+    );
+    if (normalizedUserIds.length === 0) {
+      for (const lookup of lookups) {
+        lookup.resolve('user_denied');
+      }
+      return;
+    }
+
+    try {
+      const accessStates = await this.loadRemoteChatAdminAccessBatch(chatId, normalizedUserIds);
+      this.chatAdminChatBackoffUntilMs.delete(chatId);
+
+      for (const lookup of lookups) {
+        const normalizedUserId = lookup.userId.trim();
+        const accessState = accessStates.get(normalizedUserId) ?? lookup.staleCached;
+        if (!accessState) {
+          lookup.resolve(null);
+          continue;
+        }
+
+        this.chatAdminAccessCache.set(lookup.cacheKey, {
+          expiresAt: Date.now() + CHAT_ADMIN_CACHE_TTL_MS,
+          state: accessState,
+        });
+        this.chatAdminLookupBackoffUntilMs.delete(lookup.cacheKey);
+        void this.writeChatAdminAccessToSharedCache(chatId, lookup.userId, accessState);
+
+        if (accessState === 'granted') {
+          void this.persistRemoteAdminGrant(chatId, lookup.userId);
+        }
+
+        lookup.resolve(accessState);
+      }
+    } catch (error: unknown) {
+      const transient = this.isTransientMaxApiLookupError(error);
+      if (transient) {
+        const backoffUntilMs = Date.now() + CHAT_ADMIN_LOOKUP_BACKOFF_MS;
+        this.chatAdminChatBackoffUntilMs.set(chatId, backoffUntilMs);
+        for (const lookup of lookups) {
+          this.chatAdminLookupBackoffUntilMs.set(lookup.cacheKey, backoffUntilMs);
+        }
+      }
+
+      this.logger.warn(
+        {
+          chatId,
+          userIds: lookups.map((lookup) => lookup.userId),
+          backoffMs: transient ? CHAT_ADMIN_LOOKUP_BACKOFF_MS : 0,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to resolve chat admins for moderation bypass',
+      );
+      for (const lookup of lookups) {
+        lookup.resolve(lookup.staleCached);
+      }
+    }
+  }
+
+  private async loadRemoteChatAdminAccessBatch(
     chatId: string,
-    userId: string,
-  ): Promise<RemoteChatAdminAccessState | null> {
-    const normalizedUserId = userId.trim();
-    if (!normalizedUserId) {
-      return 'user_denied';
+    userIds: readonly string[],
+  ): Promise<Map<string, RemoteChatAdminAccessState>> {
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
+    );
+    const results = new Map<string, RemoteChatAdminAccessState>();
+    if (normalizedUserIds.length === 0) {
+      return results;
     }
 
     const requestOptions = { trafficClass: 'interactive' as const };
@@ -7390,9 +7481,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (typeof maxClientWithAccess.getChatMembersAccess === 'function') {
       const lookupIds =
-        botContactId && botContactId !== normalizedUserId
-          ? [normalizedUserId, botContactId]
-          : [normalizedUserId];
+        botContactId && !normalizedUserIds.includes(botContactId)
+          ? [...normalizedUserIds, botContactId]
+          : normalizedUserIds;
       const accessByUserId = await maxClientWithAccess.getChatMembersAccess.call(
         this.maxClient,
         chatId,
@@ -7408,29 +7499,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               requestOptions,
             )
           : null);
-      const userAccess =
-        accessByUserId.get(normalizedUserId) ??
-        (botContactId === normalizedUserId ? botAccess : null);
-      const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
+      for (const normalizedUserId of normalizedUserIds) {
+        const userAccess =
+          accessByUserId.get(normalizedUserId) ??
+          (botContactId === normalizedUserId ? botAccess : null);
+        const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
+        const accessState: RemoteChatAdminAccessState = hasUserAccess ? 'granted' : 'user_denied';
 
-      if (botAccess && !botAccess.isAdmin && !botAccess.isOwner) {
-        return hasUserAccess ? 'granted' : 'user_denied';
+        if (botAccess && !botAccess.isAdmin && !botAccess.isOwner) {
+          results.set(normalizedUserId, accessState);
+          continue;
+        }
+
+        results.set(normalizedUserId, accessState);
       }
 
-      return hasUserAccess ? 'granted' : 'user_denied';
+      return results;
     }
 
     const getChatAdminIds = maxClientWithAccess.getChatAdminIds;
     if (typeof getChatAdminIds !== 'function') {
-      return null;
+      return results;
     }
 
     const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId, requestOptions);
     if (!Array.isArray(rawAdminUserIds)) {
-      return null;
+      return results;
     }
 
-    return this.isSenderChatAdmin(rawAdminUserIds, userId) ? 'granted' : 'user_denied';
+    for (const normalizedUserId of normalizedUserIds) {
+      results.set(
+        normalizedUserId,
+        this.isSenderChatAdmin(rawAdminUserIds, normalizedUserId) ? 'granted' : 'user_denied',
+      );
+    }
+
+    return results;
   }
 
   private async readChatAdminAccessFromSharedCache(
