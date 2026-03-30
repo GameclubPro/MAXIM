@@ -184,6 +184,9 @@ const DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 30_000;
 const DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS = 8;
 const DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS = 150;
 const DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
+const DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS = 30_000;
+const DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS = 15_000;
+const DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN = 3;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
@@ -286,6 +289,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
+  private channelAutoPostStartupTimer: NodeJS.Timeout | null = null;
   private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
@@ -299,6 +303,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostScanMaxChannels: number;
   private readonly channelAutoPostInterChannelDelayMs: number;
   private readonly channelAutoPostIdleBackoffMaxMs: number;
+  private readonly channelAutoPostStartupDelayMs: number;
+  private readonly channelAutoPostStartupJitterMs: number;
+  private readonly channelAutoPostMaxNewMessagesPerScan: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
 
   constructor(
@@ -342,6 +349,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS,
       this.channelAutoPostScanIntervalMs,
     );
+    this.channelAutoPostStartupDelayMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_STARTUP_DELAY_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS,
+    );
+    this.channelAutoPostStartupJitterMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_STARTUP_JITTER_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS,
+    );
+    this.channelAutoPostMaxNewMessagesPerScan = this.readPositiveConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN'),
+      DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN,
+    );
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
       DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
@@ -362,7 +381,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.channelAutoPostTimer = setInterval(() => {
         void this.processChannelAutoPostButtons();
       }, this.channelAutoPostScanIntervalMs);
-      void this.processChannelAutoPostButtons();
+      this.scheduleChannelAutoPostStartupScan();
     }
   }
 
@@ -374,6 +393,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.channelAutoPostTimer) {
       clearInterval(this.channelAutoPostTimer);
       this.channelAutoPostTimer = null;
+    }
+    if (this.channelAutoPostStartupTimer) {
+      clearTimeout(this.channelAutoPostStartupTimer);
+      this.channelAutoPostStartupTimer = null;
     }
   }
 
@@ -8677,6 +8700,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     let scanState = existingScanState;
     let sawNewMessages = false;
+    let autoAttachAttempts = 0;
 
     for (const normalized of normalizedMessages) {
       if (!this.isChannelAutoPostScanMessageNew(scanState, normalized)) {
@@ -8698,6 +8722,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.channelAutoPostScanState.set(chatId, scanState);
         continue;
       }
+      if (autoAttachAttempts >= this.channelAutoPostMaxNewMessagesPerScan) {
+        break;
+      }
 
       await this.tryAutoAttachChannelMessageButtons({
         chatId,
@@ -8708,6 +8735,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source: 'poll',
         senderId: null,
       });
+      autoAttachAttempts += 1;
       scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
       this.channelAutoPostScanState.set(chatId, scanState);
     }
@@ -10307,6 +10335,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       idleStreak: 0,
       nextScanAtMs: 0,
     };
+  }
+
+  private scheduleChannelAutoPostStartupScan() {
+    const startupDelayMs =
+      this.channelAutoPostStartupDelayMs +
+      (this.channelAutoPostStartupJitterMs > 0
+        ? Math.floor(Math.random() * (this.channelAutoPostStartupJitterMs + 1))
+        : 0);
+    this.channelAutoPostStartupTimer = setTimeout(() => {
+      this.channelAutoPostStartupTimer = null;
+      void this.processChannelAutoPostButtons();
+    }, startupDelayMs);
+    this.channelAutoPostStartupTimer.unref();
   }
 
   private readPositiveConfigInt(value: unknown, fallback: number, min = 1): number {

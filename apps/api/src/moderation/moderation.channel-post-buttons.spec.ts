@@ -1364,6 +1364,124 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
+  it('limits background auto-attach work per channel scan and catches up gradually', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T03:00:00.000Z'));
+
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1774810000000,
+          sender: { user_id: 'admin-1' },
+          body: { mid: 'mid-polled-batch-1', text: 'Пост 1', attachments: [] },
+        },
+        {
+          timestamp: 1774810001000,
+          sender: { user_id: 'admin-1' },
+          body: { mid: 'mid-polled-batch-2', text: 'Пост 2', attachments: [] },
+        },
+        {
+          timestamp: 1774810002000,
+          sender: { user_id: 'admin-1' },
+          body: { mid: 'mid-polled-batch-3', text: 'Пост 3', attachments: [] },
+        },
+        {
+          timestamp: 1774810003000,
+          sender: { user_id: 'admin-1' },
+          body: { mid: 'mid-polled-batch-4', text: 'Пост 4', attachments: [] },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_SCAN_INTERVAL_MS: 30_000,
+        CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN: 2,
+      }) as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+    jest.advanceTimersByTime(30_000);
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(4);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      1,
+      'channel-1',
+      'mid-polled-batch-1',
+      'Пост 1',
+      expect.any(Object),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      2,
+      'channel-1',
+      'mid-polled-batch-2',
+      'Пост 2',
+      expect.any(Object),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      3,
+      'channel-1',
+      'mid-polled-batch-3',
+      'Пост 3',
+      expect.any(Object),
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
+      4,
+      'channel-1',
+      'mid-polled-batch-4',
+      'Пост 4',
+      expect.any(Object),
+    );
+  });
+
   it('pauses channel polling while the shared system mode is degraded', async () => {
     const prisma = {
       channelSettings: {
