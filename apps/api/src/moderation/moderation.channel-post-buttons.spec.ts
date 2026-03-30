@@ -90,9 +90,14 @@ function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
-function createConfigMock() {
+function createConfigMock(
+  overrides: Partial<Record<string, string | number | boolean>> = {},
+) {
   return {
     get: jest.fn((key: string) => {
+      if (key in overrides) {
+        return overrides[key];
+      }
       if (key === 'MAX_BOT_TOKEN') {
         return 'test-max-bot-token';
       }
@@ -846,6 +851,97 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('records a terminal skip marker for non-retryable channel post edit failures', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue({
+        response: {
+          status: 400,
+        },
+        message: 'Error on message edit',
+      }),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(prisma.auditLog.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'channel-1',
+        action: {
+          in: ['AUTO_ATTACH_CHANNEL_ENGAGEMENT', 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED'],
+        },
+        payload: {
+          path: ['messageId'],
+          equals: 'mid-channel-1',
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: {
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED',
+        payload: {
+          messageId: 'mid-channel-1',
+          reason: 'terminal_delivery_failure',
+          linkType: null,
+          source: 'webhook',
+          deliveryMode: 'edit_message',
+          status: 400,
+          error: 'Error on message edit',
+        },
+      },
+    });
+  });
+
   it('skips polled channel posts from non-admin authors', async () => {
     const prisma = {
       channelSettings: {
@@ -1180,6 +1276,92 @@ describe('ModerationService channel auto post buttons', () => {
       count: 10,
       trafficClass: 'background',
     });
+  });
+
+  it('applies idle backoff to channel polling when no new posts appear', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T02:00:00.000Z'));
+
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1774810100000,
+          sender: {
+            user_id: 'admin-1',
+          },
+          body: {
+            mid: 'mid-polled-idle-1',
+            text: 'Пост из канала',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_SCAN_INTERVAL_MS: 30_000,
+        CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS: 120_000,
+      }) as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+    jest.advanceTimersByTime(30_000);
+    await (service as any).processChannelAutoPostButtons();
+    jest.advanceTimersByTime(30_000);
+    await (service as any).processChannelAutoPostButtons();
+    jest.advanceTimersByTime(30_000);
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(3);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
   });
 
   it('pauses channel polling while the shared system mode is degraded', async () => {

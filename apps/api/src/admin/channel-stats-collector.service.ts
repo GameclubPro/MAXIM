@@ -21,6 +21,9 @@ const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY = 'channel-stats:background-sync-backoff:v1';
 const CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES = [404] as const;
+const DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS = 30_000;
+const DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS = 15_000;
+const DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES = 20;
 type ChannelStatsSyncResult = {
   audienceSynced: boolean;
   viewsSynced: boolean;
@@ -43,8 +46,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private readonly startupSyncEnabled: boolean;
   private readonly startupSyncMaxChannels: number;
   private readonly startupSyncStaleMs: number;
+  private readonly startupSyncDelayMs: number;
+  private readonly startupSyncJitterMs: number;
+  private readonly startupSyncMaxPages: number;
   private readonly syncIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
+  private startupTimer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
   private backgroundSyncBackoffUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
@@ -66,6 +73,27 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       1,
       configService.get<number>('CHANNEL_STATS_STARTUP_STALE_MS', 6 * 60 * 60 * 1_000),
     );
+    this.startupSyncDelayMs = Math.max(
+      0,
+      configService.get<number>(
+        'CHANNEL_STATS_STARTUP_DELAY_MS',
+        DEFAULT_CHANNEL_STATS_STARTUP_DELAY_MS,
+      ),
+    );
+    this.startupSyncJitterMs = Math.max(
+      0,
+      configService.get<number>(
+        'CHANNEL_STATS_STARTUP_JITTER_MS',
+        DEFAULT_CHANNEL_STATS_STARTUP_JITTER_MS,
+      ),
+    );
+    this.startupSyncMaxPages = Math.max(
+      1,
+      configService.get<number>(
+        'CHANNEL_STATS_STARTUP_MAX_PAGES',
+        DEFAULT_CHANNEL_STATS_STARTUP_MAX_PAGES,
+      ),
+    );
     this.syncIntervalMs = CHANNEL_STATS_SYNC_INTERVAL_MS;
   }
 
@@ -79,13 +107,17 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }, this.syncIntervalMs);
     this.timer.unref();
 
-    void this.syncStartupChannels();
+    this.scheduleStartupSync();
   }
 
   async onModuleDestroy() {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+    if (this.startupTimer) {
+      clearTimeout(this.startupTimer);
+      this.startupTimer = null;
     }
 
     await this.redis.quit();
@@ -157,6 +189,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     });
     const candidates = channels
       .filter((channel) => this.shouldSyncChannelOnStartup(channel))
+      .sort((left, right) => this.compareStartupSyncCandidates(left, right))
       .slice(0, this.startupSyncMaxChannels)
       .map((channel) => ({ id: channel.id }));
 
@@ -244,6 +277,39 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     return Date.now() - freshestSyncAtMs >= this.startupSyncStaleMs;
   }
 
+  private compareStartupSyncCandidates(
+    left: ChannelStartupSyncCandidate,
+    right: ChannelStartupSyncCandidate,
+  ): number {
+    const leftFreshestSyncAtMs = this.resolveStartupFreshestSyncAtMs(left);
+    const rightFreshestSyncAtMs = this.resolveStartupFreshestSyncAtMs(right);
+    if (leftFreshestSyncAtMs === null && rightFreshestSyncAtMs !== null) {
+      return -1;
+    }
+    if (leftFreshestSyncAtMs !== null && rightFreshestSyncAtMs === null) {
+      return 1;
+    }
+    if (leftFreshestSyncAtMs === null && rightFreshestSyncAtMs === null) {
+      return left.id.localeCompare(right.id);
+    }
+
+    return (
+      (leftFreshestSyncAtMs ?? Number.NEGATIVE_INFINITY) -
+        (rightFreshestSyncAtMs ?? Number.NEGATIVE_INFINITY) ||
+      left.id.localeCompare(right.id)
+    );
+  }
+
+  private resolveStartupFreshestSyncAtMs(channel: ChannelStartupSyncCandidate): number | null {
+    const lastAudienceSyncAt = channel.channelStatsSyncState?.lastAudienceSyncAt ?? null;
+    const lastViewsSyncAt = channel.channelStatsSyncState?.lastViewsSyncAt ?? null;
+    if (!lastAudienceSyncAt || !lastViewsSyncAt) {
+      return null;
+    }
+
+    return Math.max(lastAudienceSyncAt.getTime(), lastViewsSyncAt.getTime());
+  }
+
   async syncChannel(
     chatId: string,
     options?: {
@@ -317,7 +383,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               from: lookbackFrom,
               to: now,
               count: 100,
-              maxPages: 80,
+              maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
               trafficClass: 'background',
               ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
             });
@@ -502,6 +568,27 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     return reason === 'startup'
       ? CHANNEL_STATS_STARTUP_INTER_CHANNEL_DELAY_MS
       : CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS;
+  }
+
+  private resolveMessageSnapshotMaxPages(reason?: string): number {
+    return reason === 'startup' ? this.startupSyncMaxPages : 80;
+  }
+
+  private scheduleStartupSync() {
+    if (!this.startupSyncEnabled || this.startupSyncMaxChannels === 0) {
+      return;
+    }
+
+    const startupDelayMs =
+      this.startupSyncDelayMs +
+      (this.startupSyncJitterMs > 0
+        ? Math.floor(Math.random() * (this.startupSyncJitterMs + 1))
+        : 0);
+    this.startupTimer = setTimeout(() => {
+      this.startupTimer = null;
+      void this.syncStartupChannels();
+    }, startupDelayMs);
+    this.startupTimer.unref();
   }
 
   private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {

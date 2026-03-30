@@ -87,6 +87,13 @@ type ManagedChannelContext = {
   adminUserIds: string[];
 };
 
+type ChannelAutoPostScanState = {
+  latestTimestampMs: number;
+  latestMessageIdsAtTimestamp: string[];
+  idleStreak: number;
+  nextScanAtMs: number;
+};
+
 type RulesButtonReference = {
   publishedUrl: string | null;
   publishedMessageId: string | null;
@@ -176,11 +183,13 @@ const MAX_FORWARD_SCAN_DEPTH = 8;
 const DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 30_000;
 const DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS = 8;
 const DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS = 150;
+const DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
+const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
 const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
 const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
@@ -277,6 +286,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
+  private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
   private channelAutoPostPausedLogAtMs = 0;
@@ -288,6 +298,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostScanIntervalMs: number;
   private readonly channelAutoPostScanMaxChannels: number;
   private readonly channelAutoPostInterChannelDelayMs: number;
+  private readonly channelAutoPostIdleBackoffMaxMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
 
   constructor(
@@ -325,6 +336,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.channelAutoPostInterChannelDelayMs = this.readNonNegativeConfigInt(
       configService?.get<number>('CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS'),
       DEFAULT_CHANNEL_AUTO_POST_INTER_CHANNEL_DELAY_MS,
+    );
+    this.channelAutoPostIdleBackoffMaxMs = this.readPositiveConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS,
+      this.channelAutoPostScanIntervalMs,
     );
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
@@ -8638,28 +8654,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async processManagedChannelAutoPostButtons(
     managedChannel: ManagedChannelContext,
   ): Promise<void> {
-    const messages = await this.maxClient.listMessages(managedChannel.channelSettings.chatId, {
+    const chatId = managedChannel.channelSettings.chatId;
+    const existingScanState = this.channelAutoPostScanState.get(chatId) ?? null;
+    if (existingScanState && Date.now() < existingScanState.nextScanAtMs) {
+      return;
+    }
+
+    const messages = await this.maxClient.listMessages(chatId, {
       count: 10,
       trafficClass: 'background',
     });
+    const normalizedMessages = messages
+      .map((message) => this.parseChannelListedMessage(message))
+      .filter(
+        (
+          item,
+        ): item is NonNullable<ReturnType<typeof this.parseChannelListedMessage>> => item !== null,
+      )
+      .sort(
+        (left, right) =>
+          left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
+      );
+    let scanState = existingScanState;
+    let sawNewMessages = false;
 
-    for (const message of messages) {
-      const normalized = this.parseChannelListedMessage(message);
-      if (!normalized) {
+    for (const normalized of normalizedMessages) {
+      if (!this.isChannelAutoPostScanMessageNew(scanState, normalized)) {
         continue;
       }
+      sawNewMessages = true;
       if (normalized.senderId && !managedChannel.adminUserIds.includes(normalized.senderId)) {
+        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
+        this.channelAutoPostScanState.set(chatId, scanState);
         continue;
       }
       if (normalized.timestampMs < managedChannel.channelSettings.updatedAt.getTime()) {
+        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
+        this.channelAutoPostScanState.set(chatId, scanState);
         continue;
       }
       if (normalized.hasInlineKeyboard) {
+        scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
+        this.channelAutoPostScanState.set(chatId, scanState);
         continue;
       }
 
       await this.tryAutoAttachChannelMessageButtons({
-        chatId: managedChannel.channelSettings.chatId,
+        chatId,
         messageId: normalized.messageId,
         text: normalized.text,
         linkType: normalized.linkType,
@@ -8667,7 +8708,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source: 'poll',
         senderId: null,
       });
+      scanState = this.advanceChannelAutoPostScanState(scanState, normalized);
+      this.channelAutoPostScanState.set(chatId, scanState);
     }
+
+    this.channelAutoPostScanState.set(
+      chatId,
+      this.scheduleChannelAutoPostScanState(scanState, sawNewMessages),
+    );
   }
 
   private parseChannelListedMessage(message: Record<string, unknown>): {
@@ -8750,7 +8798,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const alreadyAttached = await this.prisma.auditLog.findFirst({
       where: {
         chatId,
-        action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
+        action: {
+          in: [CHANNEL_DIALOG_AUTO_ATTACH_ACTION, CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION],
+        },
         payload: {
           path: ['messageId'],
           equals: messageId,
@@ -8843,26 +8893,64 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             : 'Failed to auto-attach channel post buttons; skipping retry',
         );
         if (linkType !== 'forward') {
+          await this.recordChannelAutoPostTerminalSkip({
+            chatId,
+            messageId,
+            senderId,
+            linkType,
+            source,
+            deliveryMode: 'edit_message',
+            status,
+            error,
+          });
           return;
         }
 
-        const sent = await this.maxClient.sendMessageReplyWithInlineKeyboard(
-          chatId,
-          messageId,
-          CHANNEL_FORWARD_REPLY_TEXT,
-          {
-            buttons,
-            debugContext: {
-              screen: 'channel-auto-post',
-              action:
-                source === 'poll'
-                  ? 'scan-attach-buttons-reply-fallback'
-                  : 'attach-buttons-reply-fallback',
+        try {
+          const sent = await this.maxClient.sendMessageReplyWithInlineKeyboard(
+            chatId,
+            messageId,
+            CHANNEL_FORWARD_REPLY_TEXT,
+            {
+              buttons,
+              debugContext: {
+                screen: 'channel-auto-post',
+                action:
+                  source === 'poll'
+                    ? 'scan-attach-buttons-reply-fallback'
+                    : 'attach-buttons-reply-fallback',
+              },
             },
-          },
-        );
-        deliveryMode = 'reply_message';
-        replyMessageId = sent?.messageId ?? null;
+          );
+          deliveryMode = 'reply_message';
+          replyMessageId = sent?.messageId ?? null;
+        } catch (fallbackError: unknown) {
+          const fallbackStatus = this.extractStatusCode(fallbackError);
+          if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
+            this.logger.warn(
+              {
+                chatId,
+                messageId,
+                status: fallbackStatus,
+                error:
+                  fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
+              },
+              'Failed to publish fallback reply for channel post buttons; skipping retry',
+            );
+            await this.recordChannelAutoPostTerminalSkip({
+              chatId,
+              messageId,
+              senderId,
+              linkType,
+              source,
+              deliveryMode: 'reply_message',
+              status: fallbackStatus,
+              error: fallbackError,
+            });
+            return;
+          }
+          throw fallbackError;
+        }
       } else {
         throw error;
       }
@@ -8890,6 +8978,52 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+  }
+
+  private async recordChannelAutoPostTerminalSkip(params: {
+    chatId: string;
+    messageId: string;
+    senderId: string | null;
+    linkType: string | null;
+    source: 'webhook' | 'poll';
+    deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message';
+    status: number | null;
+    error: unknown;
+  }): Promise<void> {
+    try {
+      const errorRecord = this.asRecord(params.error);
+      const errorMessage =
+        typeof errorRecord?.message === 'string' && errorRecord.message.trim().length > 0
+          ? errorRecord.message.trim()
+          : params.error instanceof Error
+            ? params.error.message
+            : String(params.error ?? '');
+      await this.prisma.auditLog.create({
+        data: {
+          chatId: params.chatId,
+          actorUserId: params.senderId ?? 'system',
+          action: CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION,
+          payload: {
+            messageId: params.messageId,
+            reason: 'terminal_delivery_failure',
+            linkType: params.linkType,
+            source: params.source,
+            deliveryMode: params.deliveryMode,
+            status: params.status,
+            error: errorMessage,
+          },
+        },
+      });
+    } catch (skipError: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          messageId: params.messageId,
+          error: skipError instanceof Error ? skipError.message : 'Unknown error',
+        },
+        'Failed to persist channel auto-post terminal skip marker',
+      );
+    }
   }
 
   private async loadManagedChannelContext(
@@ -10091,6 +10225,88 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.channelAutoPostCursor = (startIndex + batch.length) % channels.length;
     return batch;
+  }
+
+  private isChannelAutoPostScanMessageNew(
+    scanState: ChannelAutoPostScanState | null,
+    message: {
+      messageId: string;
+      timestampMs: number;
+    },
+  ): boolean {
+    if (!scanState || scanState.latestTimestampMs <= 0) {
+      return true;
+    }
+    if (message.timestampMs > scanState.latestTimestampMs) {
+      return true;
+    }
+    if (message.timestampMs < scanState.latestTimestampMs) {
+      return false;
+    }
+
+    return !scanState.latestMessageIdsAtTimestamp.includes(message.messageId);
+  }
+
+  private advanceChannelAutoPostScanState(
+    scanState: ChannelAutoPostScanState | null,
+    message: {
+      messageId: string;
+      timestampMs: number;
+    },
+  ): ChannelAutoPostScanState {
+    const current = scanState ?? this.createChannelAutoPostScanState();
+    if (message.timestampMs > current.latestTimestampMs) {
+      return {
+        ...current,
+        latestTimestampMs: message.timestampMs,
+        latestMessageIdsAtTimestamp: [message.messageId],
+      };
+    }
+    if (message.timestampMs < current.latestTimestampMs) {
+      return current;
+    }
+    if (current.latestMessageIdsAtTimestamp.includes(message.messageId)) {
+      return current;
+    }
+
+    return {
+      ...current,
+      latestMessageIdsAtTimestamp: [...current.latestMessageIdsAtTimestamp, message.messageId].slice(
+        -10,
+      ),
+    };
+  }
+
+  private scheduleChannelAutoPostScanState(
+    scanState: ChannelAutoPostScanState | null,
+    sawNewMessages: boolean,
+  ): ChannelAutoPostScanState {
+    const current = scanState ?? this.createChannelAutoPostScanState();
+    const idleStreak = sawNewMessages ? 0 : current.idleStreak + 1;
+    const nextDelayMs = sawNewMessages
+      ? this.channelAutoPostScanIntervalMs
+      : Math.max(
+          this.channelAutoPostScanIntervalMs,
+          Math.min(
+            this.channelAutoPostIdleBackoffMaxMs,
+            this.channelAutoPostScanIntervalMs * 2 ** Math.min(idleStreak, 8),
+          ),
+        );
+
+    return {
+      ...current,
+      idleStreak,
+      nextScanAtMs: Date.now() + nextDelayMs,
+    };
+  }
+
+  private createChannelAutoPostScanState(): ChannelAutoPostScanState {
+    return {
+      latestTimestampMs: 0,
+      latestMessageIdsAtTimestamp: [],
+      idleStreak: 0,
+      nextScanAtMs: 0,
+    };
   }
 
   private readPositiveConfigInt(value: unknown, fallback: number, min = 1): number {
