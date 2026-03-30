@@ -192,7 +192,7 @@ describe('WebhookRoutingService', () => {
     ).resolves.toBe('moderation-default-7');
 
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('rebalances an expired idle chat onto the least-pressured default queue', async () => {
@@ -322,6 +322,84 @@ describe('WebhookRoutingService', () => {
       service.resolveQueueName('evt-1', {
         type: 'message_created',
         message: { chatId: 'chat-hot-worker' },
+      }),
+    ).resolves.toBe('moderation-default-2');
+  });
+
+  it('rebalances a still-fresh assignment early when its worker group becomes dominant', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T17:30:00.000Z'));
+
+    const firstSnapshot = buildDefaultShardSnapshot();
+    firstSnapshot['moderation-default-7'] = {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    const secondSnapshot = buildDefaultShardSnapshot();
+    secondSnapshot['moderation-default-7'] = {
+      waiting: 1,
+      active: 1,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    secondSnapshot['moderation-default-2'] = {
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    };
+    const { service, prisma, queueMetricsService } = createService({
+      queueSnapshot: {
+        webhookDefaultShards: firstSnapshot,
+        webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
+          'api-moderation-realtime-d': { waiting: 0, active: 0 },
+        }),
+      },
+      config: {
+        WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: 90,
+        WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: 12_000,
+        WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE: 0.7,
+        WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_MIN: 4,
+      },
+    });
+
+    await expect(
+      service.resolveQueueName('evt-1', {
+        type: 'message_created',
+        message: { chatId: 'chat-burst-rebalance' },
+      }),
+    ).resolves.toBe('moderation-default-7');
+
+    prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 0 }]);
+    queueMetricsService.getSnapshot.mockResolvedValueOnce({
+      webhookDefaultShards: secondSnapshot,
+      webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
+        'api-moderation-realtime-d': { waiting: 10, active: 2 },
+        'api-moderation-realtime-c': { waiting: 0, active: 0 },
+        'api-moderation': { waiting: 0, active: 0 },
+        'api-moderation-realtime-b': { waiting: 0, active: 0 },
+      }),
+    });
+    queueMetricsService.getSnapshot.mockResolvedValueOnce({
+      webhookDefaultShards: secondSnapshot,
+      webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
+        'api-moderation-realtime-d': { waiting: 10, active: 2 },
+        'api-moderation-realtime-c': { waiting: 0, active: 0 },
+        'api-moderation': { waiting: 0, active: 0 },
+        'api-moderation-realtime-b': { waiting: 0, active: 0 },
+      }),
+    });
+
+    jest.advanceTimersByTime(15_000);
+
+    await expect(
+      service.resolveQueueName('evt-2', {
+        type: 'message_created',
+        message: { chatId: 'chat-burst-rebalance' },
       }),
     ).resolves.toBe('moderation-default-2');
   });

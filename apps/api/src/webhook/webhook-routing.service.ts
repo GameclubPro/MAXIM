@@ -22,6 +22,7 @@ import {
 
 type ChatQueueAssignment = {
   queueName: DefaultWebhookQueueName;
+  assignedAtMs: number;
   expiresAtMs: number;
 };
 
@@ -41,11 +42,17 @@ const DEFAULT_QUEUE_SNAPSHOT_MAX_AGE_MS = 1_000;
 const ACTIVE_QUEUE_PRESSURE_WEIGHT = 4;
 const ACTIVE_WORKER_PRESSURE_WEIGHT = 6;
 const ADAPTIVE_TTL_HOT_QUEUE_MS = 30_000;
+const DEFAULT_HOT_WORKER_REBALANCE_MIN_AGE_MS = 12_000;
+const DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_SHARE = 0.7;
+const DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_MIN = 4;
 
 @Injectable()
 export class WebhookRoutingService {
   private readonly chatAssignmentTtlMs: number;
   private readonly queueSnapshotMaxAgeMs: number;
+  private readonly hotWorkerRebalanceMinAgeMs: number;
+  private readonly hotWorkerRebalancePressureShare: number;
+  private readonly hotWorkerRebalancePressureMin: number;
   private readonly chatAssignments = new Map<string, ChatQueueAssignment>();
   private readonly assignmentRefreshes = new Map<string, Promise<DefaultWebhookQueueName>>();
   private readonly workerGroupByQueue = this.buildWorkerGroupByQueue();
@@ -64,6 +71,20 @@ export class WebhookRoutingService {
       configService.get('WEBHOOK_ROUTING_QUEUE_SNAPSHOT_MAX_AGE_MS'),
       DEFAULT_QUEUE_SNAPSHOT_MAX_AGE_MS,
       50,
+    );
+    this.hotWorkerRebalanceMinAgeMs = this.readConfigInt(
+      configService.get('WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS'),
+      DEFAULT_HOT_WORKER_REBALANCE_MIN_AGE_MS,
+      1_000,
+    );
+    this.hotWorkerRebalancePressureShare = this.readFractionConfig(
+      configService.get('WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE'),
+      DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_SHARE,
+    );
+    this.hotWorkerRebalancePressureMin = this.readConfigInt(
+      configService.get('WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_MIN'),
+      DEFAULT_HOT_WORKER_REBALANCE_PRESSURE_MIN,
+      1,
     );
   }
 
@@ -103,7 +124,30 @@ export class WebhookRoutingService {
     const now = Date.now();
     const currentAssignment = this.readFreshAssignment(assignmentKey, now);
     if (currentAssignment) {
-      return currentAssignment.queueName;
+      const hotAssignmentSnapshot = await this.readHotWorkerSnapshotForAssignment(currentAssignment, now);
+      if (!hotAssignmentSnapshot) {
+        return currentAssignment.queueName;
+      }
+
+      const refresh = this.assignmentRefreshes.get(assignmentKey);
+      if (refresh) {
+        return refresh;
+      }
+
+      const refreshPromise = this.refreshChatAssignment(
+        assignmentKey,
+        chatId,
+        botId,
+        webhookEventId,
+        now,
+        hotAssignmentSnapshot,
+      ).finally(() => {
+        if (this.assignmentRefreshes.get(assignmentKey) === refreshPromise) {
+          this.assignmentRefreshes.delete(assignmentKey);
+        }
+      });
+      this.assignmentRefreshes.set(assignmentKey, refreshPromise);
+      return refreshPromise;
     }
 
     const refresh = this.assignmentRefreshes.get(assignmentKey);
@@ -132,6 +176,7 @@ export class WebhookRoutingService {
     botId: string | null,
     webhookEventId: string,
     now: number,
+    preloadedSnapshot?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>,
   ): Promise<DefaultWebhookQueueName> {
     const previousAssignment = this.chatAssignments.get(assignmentKey);
     const fallbackQueue =
@@ -146,9 +191,11 @@ export class WebhookRoutingService {
       return this.storeAssignment(assignmentKey, fallbackQueue, now);
     }
 
-    const snapshot = await this.queueMetricsService.getSnapshot({
-      maxAgeMs: this.queueSnapshotMaxAgeMs,
-    });
+    const snapshot =
+      preloadedSnapshot ??
+      (await this.queueMetricsService.getSnapshot({
+        maxAgeMs: this.queueSnapshotMaxAgeMs,
+      }));
     const nextQueue = this.selectLeastPressuredQueue(chatId, snapshot, fallbackQueue, now);
     return this.storeAssignment(assignmentKey, nextQueue, now);
   }
@@ -292,14 +339,53 @@ export class WebhookRoutingService {
     queueName: DefaultWebhookQueueName,
     now: number,
   ): DefaultWebhookQueueName {
-    const cachedSnapshot = this.chatAssignments.get(assignmentKey);
+    const cachedAssignment = this.chatAssignments.get(assignmentKey);
     this.chatAssignments.set(assignmentKey, {
       queueName,
+      assignedAtMs: now,
       expiresAtMs:
         now +
-        (cachedSnapshot?.queueName === queueName ? this.chatAssignmentTtlMs : this.resolveAdaptiveTtlMs(queueName)),
+        (cachedAssignment?.queueName === queueName
+          ? this.chatAssignmentTtlMs
+          : this.resolveAdaptiveTtlMs(queueName)),
     });
     return queueName;
+  }
+
+  private async readHotWorkerSnapshotForAssignment(
+    assignment: ChatQueueAssignment,
+    now: number,
+  ): Promise<Awaited<ReturnType<QueueMetricsService['getSnapshot']>> | null> {
+    if (now - assignment.assignedAtMs < this.hotWorkerRebalanceMinAgeMs) {
+      return null;
+    }
+
+    const workerGroupName = this.workerGroupByQueue[assignment.queueName];
+    if (!workerGroupName) {
+      return null;
+    }
+
+    const snapshot = await this.queueMetricsService.getSnapshot({
+      maxAgeMs: this.queueSnapshotMaxAgeMs,
+    });
+    const workerGroups = Object.values(snapshot.webhookDefaultWorkerGroups);
+    const totalPressure = workerGroups.reduce(
+      (sum, metrics) => sum + metrics.counters.waiting + metrics.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT,
+      0,
+    );
+    if (totalPressure < this.hotWorkerRebalancePressureMin) {
+      return null;
+    }
+
+    const currentWorker = snapshot.webhookDefaultWorkerGroups[workerGroupName];
+    if (!currentWorker) {
+      return null;
+    }
+
+    const currentPressure =
+      currentWorker.counters.waiting + currentWorker.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT;
+    const workerPressureShare = currentPressure / totalPressure;
+    return workerPressureShare >= this.hotWorkerRebalancePressureShare ? snapshot : null;
   }
 
   private resolveAdaptiveTtlMs(queueName: DefaultWebhookQueueName): number {
@@ -390,6 +476,20 @@ export class WebhookRoutingService {
           : Number.NaN;
     if (Number.isFinite(numericValue) && numericValue >= min) {
       return Math.trunc(numericValue);
+    }
+
+    return fallback;
+  }
+
+  private readFractionConfig(value: unknown, fallback: number): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue > 0 && numericValue <= 1) {
+      return numericValue;
     }
 
     return fallback;
