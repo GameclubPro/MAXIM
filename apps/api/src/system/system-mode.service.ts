@@ -22,6 +22,7 @@ const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
+const RECOVERY_WINDOW_REASON = 'recovery window in progress';
 
 @Injectable()
 export class SystemModeService implements OnModuleInit, OnModuleDestroy {
@@ -132,6 +133,8 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
       if (this.mode === 'degrade') {
         if (!this.healthySinceMs) {
           this.healthySinceMs = Date.now();
+          this.applyMode('degrade', RECOVERY_WINDOW_REASON);
+          this.source = 'auto';
           await this.persistSnapshot(action);
           return;
         }
@@ -139,9 +142,12 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         if (Date.now() - this.healthySinceMs >= this.stabilizeSec * 1_000) {
           this.applyMode('normal', 'stability window reached');
           this.source = 'auto';
+        } else {
+          this.applyMode('degrade', RECOVERY_WINDOW_REASON);
+          this.source = 'auto';
         }
       } else {
-        this.reason = 'system healthy';
+        this.applyMode('normal', 'system healthy');
       }
 
       await this.persistSnapshot(action);

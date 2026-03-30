@@ -33,6 +33,21 @@ type MembershipLookupPolicyConfig = {
   allowStaleOnError: boolean;
 };
 
+type PendingSingleLookup = {
+  cacheKey: string;
+  cacheEpoch: number;
+  allowStaleOnError: boolean;
+  resolve: (value: boolean | null) => void;
+};
+
+type PendingSingleLookupBatch = {
+  chatId: string;
+  policy: MembershipLookupPolicyConfig;
+  policyName: MaxMembershipLookupPolicy;
+  lookups: Map<string, PendingSingleLookup>;
+  scheduled: boolean;
+};
+
 const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLookupPolicyConfig> =
   {
     moderation_required_subscription: {
@@ -90,7 +105,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
+  private readonly chatBackoffUntilMs = new Map<string, number>();
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
+  private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
   private lastRedisWriteFailureLogAtMs = 0;
 
   constructor(
@@ -198,6 +215,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
     const allowStaleOnError = options.allowStaleOnError ?? policy.allowStaleOnError;
+    const chatBackoffKey = this.buildChatPolicyKey(normalizedChatId, policyName);
     const now = Date.now();
     const pendingPromises = new Map<string, Promise<boolean | null>>();
     const usersToLookup: string[] = [];
@@ -259,6 +277,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         continue;
       }
 
+      const chatBackoffUntilMs = this.chatBackoffUntilMs.get(chatBackoffKey) ?? 0;
+      if (chatBackoffUntilMs > now) {
+        results.set(userId, this.resolveLookupFallback(cacheKey, allowStaleOnError));
+        continue;
+      }
+
       usersToLookup.push(userId);
     }
 
@@ -266,7 +290,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const [userId] = usersToLookup;
       pendingPromises.set(
         userId,
-        this.createSingleLookupPromise(normalizedChatId, userId, policyName, allowStaleOnError),
+        this.enqueueSingleLookupBatch(normalizedChatId, userId, policyName, allowStaleOnError),
       );
     } else if (usersToLookup.length > 1) {
       const batchPromises = this.createBatchLookupPromises(
@@ -292,6 +316,110 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return results;
   }
 
+  private enqueueSingleLookupBatch(
+    chatId: string,
+    userId: string,
+    policyName: MaxMembershipLookupPolicy,
+    allowStaleOnError: boolean,
+  ): Promise<boolean | null> {
+    const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
+    const batchKey = this.buildChatPolicyKey(chatId, policyName);
+    let batch = this.pendingSingleLookupBatches.get(batchKey);
+    if (!batch) {
+      batch = {
+        chatId,
+        policy,
+        policyName,
+        lookups: new Map(),
+        scheduled: false,
+      };
+      this.pendingSingleLookupBatches.set(batchKey, batch);
+    }
+
+    const cacheKey = this.buildCacheKey(chatId, userId);
+    const cacheEpoch = this.readCacheEpoch(cacheKey);
+    const lookupPromise = new Promise<boolean | null>((resolve) => {
+      batch!.lookups.set(userId, {
+        cacheKey,
+        cacheEpoch,
+        allowStaleOnError,
+        resolve,
+      });
+    });
+
+    let trackedPromise!: Promise<boolean | null>;
+    trackedPromise = lookupPromise.finally(() => {
+      if (this.inFlight.get(cacheKey) === trackedPromise) {
+        this.inFlight.delete(cacheKey);
+      }
+    });
+
+    this.inFlight.set(cacheKey, trackedPromise);
+
+    if (!batch.scheduled) {
+      batch.scheduled = true;
+      void Promise.resolve().then(() => this.flushPendingSingleLookupBatch(batchKey));
+    }
+
+    return trackedPromise;
+  }
+
+  private async flushPendingSingleLookupBatch(batchKey: string): Promise<void> {
+    const batch = this.pendingSingleLookupBatches.get(batchKey);
+    if (!batch) {
+      return;
+    }
+
+    this.pendingSingleLookupBatches.delete(batchKey);
+    const userIds = [...batch.lookups.keys()];
+    if (userIds.length === 0) {
+      return;
+    }
+
+    try {
+      const accessByUserId = await this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
+        trafficClass: batch.policy.trafficClass,
+      });
+      const checkedAtMs = Date.now();
+      this.clearChatBackoff(batch.chatId, batch.policyName);
+
+      for (const [userId, lookup] of batch.lookups.entries()) {
+        const isMember = accessByUserId.has(userId);
+        const snapshot: MembershipCacheSnapshot = {
+          isMember,
+          checkedAtMs,
+        };
+        if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
+          this.storeSnapshot(lookup.cacheKey, snapshot);
+          this.backoffUntilMs.delete(lookup.cacheKey);
+        }
+        lookup.resolve(isMember);
+      }
+    } catch (error: unknown) {
+      const transient = this.isTransientLookupError(error);
+      if (transient) {
+        const backoffUntilMs = Date.now() + batch.policy.backoffMs;
+        this.chatBackoffUntilMs.set(batchKey, backoffUntilMs);
+        for (const lookup of batch.lookups.values()) {
+          if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
+            this.backoffUntilMs.set(lookup.cacheKey, backoffUntilMs);
+          }
+        }
+      }
+
+      this.logLookupError(batch.policy, error, {
+        chatId: batch.chatId,
+        userIds,
+        policyName: batch.policyName,
+        transient,
+      });
+
+      for (const lookup of batch.lookups.values()) {
+        lookup.resolve(this.resolveLookupFallback(lookup.cacheKey, lookup.allowStaleOnError));
+      }
+    }
+  }
+
   private createSingleLookupPromise(
     chatId: string,
     userId: string,
@@ -311,6 +439,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           this.storeSnapshot(cacheKey, snapshot);
           this.backoffUntilMs.delete(cacheKey);
         }
+        this.clearChatBackoff(chatId, policyName);
         return isMember;
       } catch (error: unknown) {
         this.handleLookupError(cacheKey, cacheEpoch, policy, error, {
@@ -358,6 +487,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         );
         const checkedAtMs = Date.now();
         const results = new Map<string, boolean | null>();
+        this.clearChatBackoff(chatId, policyName);
 
         for (const userId of normalizedUserIds) {
           const cacheKey = this.buildCacheKey(chatId, userId);
@@ -377,6 +507,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       } catch (error: unknown) {
         const transient = this.isTransientLookupError(error);
         if (transient) {
+          this.applyChatBackoff(chatId, policyName, policy.backoffMs);
           for (const userId of normalizedUserIds) {
             const cacheKey = this.buildCacheKey(chatId, userId);
             if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
@@ -434,6 +565,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const transient = this.isTransientLookupError(error);
     if (transient && this.hasSameCacheEpoch(cacheKey, cacheEpoch)) {
       this.backoffUntilMs.set(cacheKey, Date.now() + policy.backoffMs);
+      this.applyChatBackoff(context.chatId, context.policyName, policy.backoffMs);
     }
 
     this.logLookupError(policy, error, {
@@ -688,6 +820,25 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private buildCacheKey(chatId: string, userId: string): string {
     return `max:membership:v1:${chatId}:${userId}`;
+  }
+
+  private buildChatPolicyKey(chatId: string, policyName: MaxMembershipLookupPolicy): string {
+    return `max:membership:chat:v1:${policyName}:${chatId}`;
+  }
+
+  private applyChatBackoff(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    backoffMs: number,
+  ) {
+    this.chatBackoffUntilMs.set(
+      this.buildChatPolicyKey(chatId, policyName),
+      Date.now() + backoffMs,
+    );
+  }
+
+  private clearChatBackoff(chatId: string, policyName: MaxMembershipLookupPolicy) {
+    this.chatBackoffUntilMs.delete(this.buildChatPolicyKey(chatId, policyName));
   }
 
   private logRedisWriteFailure(cacheKey: string, error: unknown) {

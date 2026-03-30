@@ -100,8 +100,10 @@ describe('MaxMembershipLookupService', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:00:00.000Z'));
 
     const maxClient = {
-      hasChatMember: jest.fn().mockResolvedValue(true),
-      getChatMembersAccess: jest.fn(),
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['user-1', { userId: 'user-1', isAdmin: false }]])),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 
@@ -115,15 +117,16 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-1', 'moderation_required_subscription'),
     ).resolves.toBe(true);
 
-    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
   it('expires negative snapshots sooner than positive ones', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:05:00.000Z'));
 
     const maxClient = {
-      hasChatMember: jest.fn().mockResolvedValue(false),
-      getChatMembersAccess: jest.fn(),
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(new Map()),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 
@@ -141,7 +144,8 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-2', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
   it('uses MAX batch membership lookups for shared chat checks and reuses the cached result later', async () => {
@@ -175,19 +179,98 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('coalesces concurrent single-user lookups for the same chat into one MAX batch request', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:12:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          ['user-1', { userId: 'user-1', isAdmin: false }],
+          ['user-3', { userId: 'user-3', isAdmin: false }],
+        ]),
+      ),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      Promise.all([
+        service.getMembership('channel-1', 'user-1', 'moderation_required_subscription', {
+          forceRefresh: true,
+        }),
+        service.getMembership('channel-1', 'user-2', 'moderation_required_subscription', {
+          forceRefresh: true,
+        }),
+        service.getMembership('channel-1', 'user-3', 'moderation_required_subscription', {
+          forceRefresh: true,
+        }),
+      ]),
+    ).resolves.toEqual([true, false, true]);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'channel-1',
+      ['user-1', 'user-2', 'user-3'],
+      { trafficClass: 'critical' },
+    );
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
+  it('backs off repeated lookups for the same chat after a transient batch failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:00.000Z'));
+
+    const throttleError = Object.assign(new Error('MAX API rate limit exceeded'), {
+      response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValueOnce(throttleError)
+        .mockResolvedValueOnce(new Map([['user-3', { userId: 'user-3', isAdmin: false }]])),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      Promise.all([
+        service.getMembership('channel-1', 'user-1', 'moderation_required_subscription', {
+          forceRefresh: true,
+        }),
+        service.getMembership('channel-1', 'user-2', 'moderation_required_subscription', {
+          forceRefresh: true,
+        }),
+      ]),
+    ).resolves.toEqual([null, null]);
+
+    await expect(
+      service.getMembership('channel-1', 'user-3', 'moderation_required_subscription'),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(15_001);
+
+    await expect(
+      service.getMembership('channel-1', 'user-3', 'moderation_required_subscription'),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('returns stale membership on transient errors only when the policy allows it', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
 
     const maxClient = {
-      hasChatMember: jest
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
         .fn()
-        .mockResolvedValueOnce(true)
+        .mockResolvedValueOnce(new Map([['user-3', { userId: 'user-3', isAdmin: false }]]))
         .mockRejectedValueOnce(
           Object.assign(new Error('MAX API rate limit exceeded'), {
             response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
           }),
         ),
-      getChatMembersAccess: jest.fn(),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 
@@ -215,8 +298,11 @@ describe('MaxMembershipLookupService', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:20:00.000Z'));
 
     const maxClient = {
-      hasChatMember: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
-      getChatMembersAccess: jest.fn(),
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map([['user-4', { userId: 'user-4', isAdmin: false }]]))
+        .mockResolvedValueOnce(new Map()),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 
@@ -228,24 +314,27 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-4', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
   it('starts a fresh lookup instead of reusing an invalidated in-flight promise', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:25:00.000Z'));
 
-    let resolveLookup: ((value: boolean) => void) | null = null;
+    let resolveLookup:
+      | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
+      | null = null;
     const maxClient = {
-      hasChatMember: jest
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
         .fn()
         .mockImplementationOnce(
           () =>
-            new Promise<boolean>((resolve) => {
+            new Promise<Map<string, { userId: string; isAdmin: boolean }>>((resolve) => {
               resolveLookup = resolve;
             }),
         )
-        .mockResolvedValueOnce(false),
-      getChatMembersAccess: jest.fn(),
+        .mockResolvedValueOnce(new Map()),
     };
     const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
 
@@ -258,26 +347,33 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-5', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    const finishLookup = resolveLookup as ((value: boolean) => void) | null;
+    const finishLookup =
+      resolveLookup as
+        | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
+        | null;
     if (!finishLookup) {
       throw new Error('Expected pending membership lookup resolver');
     }
-    finishLookup(true);
+    finishLookup(new Map([['user-5', { userId: 'user-5', isAdmin: false }]]));
     await expect(pendingLookup).resolves.toBe(true);
 
     await expect(
       service.getMembership('channel-1', 'user-5', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
   it('propagates membership invalidations across instances via Redis pub/sub', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:30:00.000Z'));
 
     const maxClientA = {
-      hasChatMember: jest.fn().mockResolvedValueOnce(true).mockResolvedValueOnce(false),
-      getChatMembersAccess: jest.fn(),
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map([['user-6', { userId: 'user-6', isAdmin: false }]]))
+        .mockResolvedValueOnce(new Map()),
     };
     const maxClientB = {
       hasChatMember: jest.fn(),
@@ -305,7 +401,8 @@ describe('MaxMembershipLookupService', () => {
       serviceA.getMembership('channel-1', 'user-6', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    expect(maxClientA.hasChatMember).toHaveBeenCalledTimes(2);
+    expect(maxClientA.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClientA.hasChatMember).not.toHaveBeenCalled();
     expect(maxClientB.hasChatMember).not.toHaveBeenCalled();
 
     await serviceA.onModuleDestroy();

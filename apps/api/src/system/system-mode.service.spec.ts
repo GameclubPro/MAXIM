@@ -277,4 +277,54 @@ describe('SystemModeService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('marks the recovery window explicitly while waiting for stabilization', async () => {
+    process.env.APP_ROLE = 'ingress';
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T11:00:00.000Z'));
+
+    const queueMetricsService = {
+      getSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce({ effectiveLagSec: 18 })
+        .mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 10,
+        success: 10,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.evaluateAutoMode();
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        reason: 'queue lag 18.0s',
+      }),
+    );
+
+    jest.advanceTimersByTime(5_000);
+    await service.evaluateAutoMode();
+
+    expect(service.getSnapshot()).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        reason: 'recovery window in progress',
+        queueLagSec: 0,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
 });
