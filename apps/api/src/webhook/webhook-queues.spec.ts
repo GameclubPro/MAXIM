@@ -1,7 +1,9 @@
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   resolveDefaultWebhookQueueIndexForChatId,
   resolveDefaultWebhookQueueNameForChatId,
+  resolveJoinWebhookQueueNameForChatId,
   resolveWebhookQueueName,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -45,5 +47,13 @@ describe('webhook-queues', () => {
   it('keeps critical and background events out of default shards', () => {
     expect(resolveWebhookQueueName({ type: 'message_callback' })).toBe(WEBHOOK_QUEUE_CRITICAL);
     expect(resolveWebhookQueueName({ type: 'user_removed' })).toBe(WEBHOOK_QUEUE_BACKGROUND);
+  });
+
+  it('routes user_added updates into deterministic join shards', () => {
+    const chatId = '-72826040868309';
+    expect(resolveWebhookQueueName({ type: 'user_added', message: { chatId } })).toBe(
+      resolveJoinWebhookQueueNameForChatId(chatId),
+    );
+    expect(JOIN_WEBHOOK_QUEUE_NAMES).toContain(resolveJoinWebhookQueueNameForChatId(chatId));
   });
 });

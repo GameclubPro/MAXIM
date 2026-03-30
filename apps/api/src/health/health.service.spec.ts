@@ -142,12 +142,12 @@ describe('HealthService', () => {
         degraded: true,
         action: {
           windowSec: 60,
-          total: 12,
-          success: 12,
-          failure: 0,
-          critical: 0,
-          errorRate: 0,
-          criticalRate: 0,
+          total: 200,
+          success: 192,
+          failure: 8,
+          critical: 2,
+          errorRate: 0.04,
+          criticalRate: 0.01,
         },
       }),
     );
@@ -263,7 +263,7 @@ describe('HealthService', () => {
         breachDurationSec: 0,
       }),
     );
-    expect(first.checks.queueLag.softWarningDetail).toContain('Raw queue lag 12.0s');
+    expect(first.checks.queueLag.softWarningDetail).toContain('Raw user-facing queue lag 12.0s');
 
     jest.setSystemTime(new Date('2026-03-29T10:00:21.000Z'));
 

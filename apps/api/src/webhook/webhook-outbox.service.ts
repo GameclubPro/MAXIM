@@ -10,6 +10,8 @@ import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
+  JOIN_WEBHOOK_QUEUE_NAMES,
+  type JoinWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
@@ -48,6 +50,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private draining = false;
   private cleaning = false;
   private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
+  private readonly joinShardQueuesByName: Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
   private readonly defaultShardQueuesByName: Record<
     DefaultWebhookQueueName,
     Queue<ProcessWebhookJob>
@@ -72,19 +75,23 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
+    this.joinShardQueuesByName = Object.fromEntries(
+      JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveShardQueue(queueName)]),
+    ) as Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
     this.defaultShardQueuesByName = Object.fromEntries(
-      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveDefaultShardQueue(queueName)]),
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveShardQueue(queueName)]),
     ) as Record<DefaultWebhookQueueName, Queue<ProcessWebhookJob>>;
     this.queuesByName = {
       [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
+      ...this.joinShardQueuesByName,
       ...this.defaultShardQueuesByName,
       [WEBHOOK_QUEUE_BACKGROUND]: this.backgroundQueue,
       [LEGACY_WEBHOOK_QUEUE]: this.legacyQueue,
     };
   }
 
-  private resolveDefaultShardQueue(
-    queueName: DefaultWebhookQueueName,
+  private resolveShardQueue(
+    queueName: DefaultWebhookQueueName | JoinWebhookQueueName,
   ): Queue<ProcessWebhookJob> {
     try {
       return this.moduleRef.get<Queue<ProcessWebhookJob>>(getQueueToken(queueName), {

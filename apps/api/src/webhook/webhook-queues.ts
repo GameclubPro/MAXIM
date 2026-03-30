@@ -5,6 +5,14 @@ export type ProcessWebhookJob = {
 export const LEGACY_WEBHOOK_QUEUE = 'moderation';
 export const WEBHOOK_QUEUE_CRITICAL = 'moderation-critical';
 export const WEBHOOK_QUEUE_BACKGROUND = 'moderation-background';
+export const JOIN_WEBHOOK_SHARD_COUNT = 4;
+export type JoinWebhookQueueName = `moderation-join-${number}`;
+export const JOIN_WEBHOOK_QUEUE_NAMES = Object.freeze(
+  Array.from(
+    { length: JOIN_WEBHOOK_SHARD_COUNT },
+    (_, index) => `moderation-join-${index}` as JoinWebhookQueueName,
+  ),
+);
 export const DEFAULT_WEBHOOK_SHARD_COUNT = 16;
 export type DefaultWebhookQueueName = `moderation-default-${number}`;
 export const DEFAULT_WEBHOOK_QUEUE_NAMES = Object.freeze(
@@ -16,6 +24,7 @@ export const DEFAULT_WEBHOOK_QUEUE_NAMES = Object.freeze(
 
 export const ACTIVE_WEBHOOK_QUEUE_NAMES = [
   WEBHOOK_QUEUE_CRITICAL,
+  ...JOIN_WEBHOOK_QUEUE_NAMES,
   ...DEFAULT_WEBHOOK_QUEUE_NAMES,
   WEBHOOK_QUEUE_BACKGROUND,
 ] as const;
@@ -57,10 +66,11 @@ export function resolveWebhookJobPriority(payload: unknown): number {
 export function resolveWebhookQueueName(payload: unknown): ActiveWebhookQueueName {
   switch (readWebhookType(payload)) {
     case 'message_callback':
-    case 'user_added':
     case 'bot_added':
     case 'bot_started':
       return WEBHOOK_QUEUE_CRITICAL;
+    case 'user_added':
+      return resolveJoinWebhookQueueName(payload);
     case 'user_removed':
     case 'bot_removed':
       return WEBHOOK_QUEUE_BACKGROUND;
@@ -100,6 +110,23 @@ export function resolveDefaultWebhookQueueNameForChatId(chatId: string): Default
 
 export function resolveDefaultWebhookQueueIndexForChatId(chatId: string): number {
   return hashChatId(chatId) % DEFAULT_WEBHOOK_QUEUE_NAMES.length;
+}
+
+function resolveJoinWebhookQueueName(payload: unknown): JoinWebhookQueueName {
+  const chatId = readWebhookChatId(payload);
+  if (!chatId) {
+    return JOIN_WEBHOOK_QUEUE_NAMES[0];
+  }
+
+  return resolveJoinWebhookQueueNameForChatId(chatId);
+}
+
+export function resolveJoinWebhookQueueNameForChatId(chatId: string): JoinWebhookQueueName {
+  return JOIN_WEBHOOK_QUEUE_NAMES[resolveJoinWebhookQueueIndexForChatId(chatId)]!;
+}
+
+export function resolveJoinWebhookQueueIndexForChatId(chatId: string): number {
+  return hashChatId(chatId) % JOIN_WEBHOOK_QUEUE_NAMES.length;
 }
 
 function readWebhookChatId(payload: unknown): string {

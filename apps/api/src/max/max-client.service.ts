@@ -3049,12 +3049,13 @@ export class MaxClientService implements OnModuleDestroy {
     } = {},
   ): Promise<T> {
     const bot = this.resolveBot(options.botId);
+    const trafficClass = options.trafficClass ?? 'interactive';
     await this.ensureCircuitClosed(bot.id);
-    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, options.trafficClass ?? 'interactive');
+    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, trafficClass);
 
     try {
       const result = await this.botContext.runWithBot(bot.id, () => operation());
-      this.actionHealthService.recordSuccess(bot.id);
+      this.actionHealthService.recordSuccessForLane(trafficClass, bot.id);
       return result;
     } catch (error: unknown) {
       if (this.shouldIgnoreActionHealthFailure(error, options)) {
@@ -3069,7 +3070,7 @@ export class MaxClientService implements OnModuleDestroy {
         throw error;
       }
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
-      this.actionHealthService.recordFailure(isCritical, bot.id);
+      this.actionHealthService.recordFailureForLane(trafficClass, isCritical, bot.id);
       if (isCritical) {
         this.registerCriticalFailure(bot.id);
       }

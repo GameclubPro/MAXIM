@@ -13,6 +13,7 @@ import {
   BackgroundWebhookProcessor,
   CriticalWebhookProcessor,
   DEFAULT_WEBHOOK_SHARD_PROCESSORS,
+  JOIN_WEBHOOK_SHARD_PROCESSORS,
   LegacyModerationProcessor,
   ModerationService,
 } from './moderation.service';
@@ -20,6 +21,7 @@ import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manag
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -43,6 +45,9 @@ const moderationProviders = [
     ? [
         ...(enabledModerationQueues.has(LEGACY_WEBHOOK_QUEUE) ? [LegacyModerationProcessor] : []),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_CRITICAL) ? [CriticalWebhookProcessor] : []),
+        ...JOIN_WEBHOOK_QUEUE_NAMES.flatMap((queueName, index) =>
+          enabledModerationQueues.has(queueName) ? [JOIN_WEBHOOK_SHARD_PROCESSORS[index]!] : [],
+        ),
         ...(dynamicDefaultWorkerGroup
           ? []
           : DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName, index) =>

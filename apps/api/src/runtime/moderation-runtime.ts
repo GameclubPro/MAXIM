@@ -1,13 +1,15 @@
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
+  type JoinWebhookQueueName,
   type AnyWebhookQueueName,
   type DefaultWebhookQueueName,
 } from '../webhook/webhook-queues';
 
-export type ModerationQueueAlias = 'legacy' | 'critical' | 'default' | 'background';
+export type ModerationQueueAlias = 'legacy' | 'critical' | 'join' | 'default' | 'background';
 export type DefaultWebhookWorkerGroupName =
   | 'api-moderation'
   | 'api-moderation-realtime-b'
@@ -18,6 +20,7 @@ export type WebhookDynamicLeasesMode = 'off' | 'shadow' | 'canary' | 'on';
 const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_CRITICAL,
+  ...JOIN_WEBHOOK_QUEUE_NAMES,
   ...DEFAULT_WEBHOOK_QUEUE_NAMES,
   WEBHOOK_QUEUE_BACKGROUND,
 ];
@@ -25,6 +28,7 @@ const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
 const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyWebhookQueueName[]> = {
   legacy: [LEGACY_WEBHOOK_QUEUE],
   critical: [WEBHOOK_QUEUE_CRITICAL],
+  join: JOIN_WEBHOOK_QUEUE_NAMES,
   default: DEFAULT_WEBHOOK_QUEUE_NAMES,
   background: [WEBHOOK_QUEUE_BACKGROUND],
 };
@@ -95,23 +99,27 @@ function readPositiveInt(rawValue: unknown, fallback: number): number {
 
 function resolveModerationConcurrencySplit(total: number): {
   critical: number;
+  join: number;
   default: number;
   background: number;
 } {
-  if (total <= 3) {
+  if (total <= 4) {
     return {
       critical: 1,
+      join: 1,
       default: 1,
       background: 1,
     };
   }
 
   const background = total >= 8 ? 2 : 1;
-  const critical = Math.max(1, Math.ceil(total * 0.35));
-  const defaultQueue = Math.max(1, total - critical - background);
+  const join = total >= 8 ? 2 : 1;
+  const critical = Math.max(1, Math.ceil(total * 0.25));
+  const defaultQueue = Math.max(1, total - critical - join - background);
 
   return {
     critical,
+    join,
     default: defaultQueue,
     background,
   };
@@ -268,4 +276,21 @@ export function getDefaultWebhookShardConcurrencies(
       readPositiveInt(env[`MODERATION_CONCURRENCY_DEFAULT_SHARD_${index}`], defaults[index] ?? 1),
     ]),
   ) as Record<DefaultWebhookQueueName, number>;
+}
+
+export function getJoinWebhookShardConcurrencies(
+  env: Record<string, unknown> = process.env,
+): Record<JoinWebhookQueueName, number> {
+  const concurrencySplit = resolveModerationConcurrencySplit(
+    readPositiveInt(env.MODERATION_CONCURRENCY, 24),
+  );
+  const joinConcurrency = readPositiveInt(env.MODERATION_CONCURRENCY_JOIN, concurrencySplit.join);
+  const distribution = resolveShardConcurrencyDistribution(
+    joinConcurrency,
+    JOIN_WEBHOOK_QUEUE_NAMES.length,
+  );
+
+  return Object.fromEntries(
+    JOIN_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [queueName, distribution[index] ?? 1]),
+  ) as Record<JoinWebhookQueueName, number>;
 }

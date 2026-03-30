@@ -19,6 +19,8 @@ const DEFAULT_WORKER_SKEW_WARNING_PRESSURE = 4;
 const DEFAULT_WORKER_SKEW_WARNING_RATIO = 0.7;
 const DEFAULT_WORKER_SKEW_CRITICAL_PRESSURE = 8;
 const DEFAULT_WORKER_SKEW_CRITICAL_RATIO = 0.85;
+const JOIN_BURST_WARNING_PRESSURE = 6;
+const JOIN_BURST_CRITICAL_PRESSURE = 16;
 
 @Injectable()
 export class SystemDashboardService {
@@ -44,7 +46,7 @@ export class SystemDashboardService {
       webhookSubscriptionPromise,
     ]);
     const alerts: SystemDashboardAlert[] = [];
-    const queueLagSec = queues.effectiveLagSec;
+    const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
     const failedCount = queues.webhookEvents.failed.count;
     const criticalRate = mode.action.criticalRate;
     const errorRate = mode.action.errorRate;
@@ -151,6 +153,18 @@ export class SystemDashboardService {
     );
     if (dynamicLeaseAlert) {
       alerts.push(dynamicLeaseAlert);
+    }
+
+    const joinBurstAlert = this.buildJoinBurstAlert(
+      (
+        queues as {
+          webhookJoin?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookJoin'];
+        }
+      ).webhookJoin,
+      queueLagSec,
+    );
+    if (joinBurstAlert) {
+      alerts.push(joinBurstAlert);
     }
 
     const status = this.resolveStatus({
@@ -426,5 +440,31 @@ export class SystemDashboardService {
     }
 
     return null;
+  }
+
+  private buildJoinBurstAlert(
+    joinCounters: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookJoin'] | undefined,
+    userFacingLagSec: number,
+  ): SystemDashboardAlert | null {
+    if (!joinCounters) {
+      return null;
+    }
+
+    const pressure = joinCounters.waiting + joinCounters.active;
+    if (pressure < JOIN_BURST_WARNING_PRESSURE || userFacingLagSec > QUEUE_LAG_WARNING_SEC) {
+      return null;
+    }
+
+    const critical = pressure >= JOIN_BURST_CRITICAL_PRESSURE;
+    return {
+      code: 'join-burst-isolated',
+      level: critical ? 'warning' : 'info',
+      title: critical
+        ? 'Join lane держит заметный burst'
+        : 'Join lane принял локальный всплеск без влияния на ответы бота',
+      detail: `В join lane сейчас ${pressure} active+waiting, при этом user-facing lag остаётся ${userFacingLagSec.toFixed(1)} сек.`,
+      recommendedAction:
+        'Проверьте hot chat по user_added и greeting/join path. Realtime default path сейчас изолирован и не требует срочного вмешательства.',
+    };
   }
 }

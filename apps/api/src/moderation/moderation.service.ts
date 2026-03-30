@@ -51,7 +51,10 @@ import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
-import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
+import {
+  getJoinWebhookShardConcurrencies,
+  moderationBackgroundTasksEnabled,
+} from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
@@ -71,7 +74,9 @@ import {
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
+  type JoinWebhookQueueName,
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
   WEBHOOK_QUEUE_BACKGROUND,
@@ -184,6 +189,10 @@ const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(process.env.MODERATION_CON
 const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_CRITICAL,
   MODERATION_CONCURRENCY_SPLIT.critical,
+);
+const JOIN_MODERATION_SHARD_CONCURRENCIES_BY_NAME = getJoinWebhookShardConcurrencies();
+const JOIN_MODERATION_SHARD_CONCURRENCIES = JOIN_WEBHOOK_QUEUE_NAMES.map(
+  (queueName) => JOIN_MODERATION_SHARD_CONCURRENCIES_BY_NAME[queueName],
 );
 const DEFAULT_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_DEFAULT,
@@ -11018,6 +11027,14 @@ export const CriticalWebhookProcessor = createWebhookProcessor(
   WEBHOOK_QUEUE_CRITICAL,
   CRITICAL_MODERATION_CONCURRENCY,
   'CriticalWebhookProcessor',
+);
+
+export const JOIN_WEBHOOK_SHARD_PROCESSORS = JOIN_WEBHOOK_QUEUE_NAMES.map((queueName, index) =>
+  createWebhookProcessor(
+    queueName,
+    JOIN_MODERATION_SHARD_CONCURRENCIES[index] ?? 1,
+    `JoinWebhookShard${index}Processor`,
+  ),
 );
 
 export const DEFAULT_WEBHOOK_SHARD_PROCESSORS = DEFAULT_WEBHOOK_QUEUE_NAMES.map(

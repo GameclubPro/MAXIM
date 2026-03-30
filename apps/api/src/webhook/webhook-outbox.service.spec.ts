@@ -3,7 +3,9 @@ import { getQueueToken } from '@nestjs/bullmq';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   resolveDefaultWebhookQueueNameForChatId,
+  resolveJoinWebhookQueueNameForChatId,
   resolveWebhookQueueName,
 } from './webhook-queues';
 
@@ -18,11 +20,13 @@ type QueueMock = {
 };
 
 type DefaultShardQueueMocks = Record<(typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number], QueueMock>;
+type JoinShardQueueMocks = Record<(typeof JOIN_WEBHOOK_QUEUE_NAMES)[number], QueueMock>;
 type QueueSet = {
   criticalQueue: QueueMock;
   backgroundQueue: QueueMock;
   legacyQueue: QueueMock;
-} & DefaultShardQueueMocks;
+} & DefaultShardQueueMocks &
+  JoinShardQueueMocks;
 
 function createService(params?: {
   findManyResult?: Array<{
@@ -74,6 +78,9 @@ function createService(params?: {
   });
 
   const criticalQueue = createQueue(params?.addError, params?.criticalJob);
+  const joinShardQueues = Object.fromEntries(
+    JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, createQueue(params?.addError, null)]),
+  ) as JoinShardQueueMocks;
   const defaultShardQueues = Object.fromEntries(
     DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
       queueName,
@@ -83,7 +90,12 @@ function createService(params?: {
   const backgroundQueue = createQueue(params?.addError, params?.backgroundJob);
   const legacyQueue = createQueue(params?.addError, params?.legacyJob);
   const queueTokens = Object.fromEntries(
-    DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [getQueueToken(queueName), defaultShardQueues[queueName]]),
+    [...JOIN_WEBHOOK_QUEUE_NAMES, ...DEFAULT_WEBHOOK_QUEUE_NAMES].map((queueName) => [
+      getQueueToken(queueName),
+      queueName in joinShardQueues
+        ? joinShardQueues[queueName as keyof JoinShardQueueMocks]
+        : defaultShardQueues[queueName as keyof DefaultShardQueueMocks],
+    ]),
   );
   const moduleRef = {
     get: jest.fn((token: string) => queueTokens[token]),
@@ -105,6 +117,7 @@ function createService(params?: {
 
   const queues: QueueSet = {
     criticalQueue,
+    ...joinShardQueues,
     ...defaultShardQueues,
     backgroundQueue,
     legacyQueue,
@@ -355,6 +368,8 @@ describe('WebhookOutboxService', () => {
   });
 
   it('enqueues high-priority membership joins before older message_created events', async () => {
+    const joinChatId = '-72826040868309';
+    const joinQueueName = resolveJoinWebhookQueueNameForChatId(joinChatId);
     const { service, queues } = createService({
       findManyResult: [
         {
@@ -367,14 +382,14 @@ describe('WebhookOutboxService', () => {
           id: 'evt-user-added',
           enqueueAttempts: 0,
           createdAt: new Date('2026-03-24T00:00:05.000Z'),
-          normalizedPayload: { type: 'user_added' },
+          normalizedPayload: { type: 'user_added', message: { chatId: joinChatId } },
         },
       ],
     });
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues.criticalQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+    expect(queues[joinQueueName].add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-user-added',
     ]);
     expect(

@@ -105,6 +105,7 @@ const envSchema = z.object({
   MODERATION_BACKGROUND_TASKS_ENABLED: z.coerce.boolean().default(true),
   MODERATION_CONCURRENCY_LEGACY: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_CRITICAL: z.coerce.number().int().positive().optional(),
+  MODERATION_CONCURRENCY_JOIN: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_DEFAULT: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_DEFAULT_SHARD_0: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_DEFAULT_SHARD_1: z.coerce.number().int().positive().optional(),

@@ -1,7 +1,7 @@
 import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Optional } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
-import { WebhookStatus } from '@prisma/client';
+import { Prisma, WebhookStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
@@ -17,6 +17,8 @@ import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
+  JOIN_WEBHOOK_QUEUE_NAMES,
+  type JoinWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -69,6 +71,11 @@ export type BotQueueMetricsSnapshot = {
     queued: WebhookStatusMetrics;
     failed: WebhookStatusMetrics;
   };
+  userFacingWebhookEvents: {
+    received: WebhookStatusMetrics;
+    queued: WebhookStatusMetrics;
+    failed: WebhookStatusMetrics;
+  };
   queuedByQueue: Record<string, number>;
   actionHealth: ActionHealthSnapshot;
   oldestQueuedEventId: string | null;
@@ -78,11 +85,20 @@ export type BotQueueMetricsSnapshot = {
   oldestReceivedCreatedAt: string | null;
   oldestReceivedLagSec: number;
   effectiveLagSec: number;
+  userFacingOldestQueuedEventId: string | null;
+  userFacingOldestQueuedCreatedAt: string | null;
+  userFacingOldestQueuedLagSec: number;
+  userFacingOldestReceivedEventId: string | null;
+  userFacingOldestReceivedCreatedAt: string | null;
+  userFacingOldestReceivedLagSec: number;
+  userFacingEffectiveLagSec: number;
 };
 
 export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   webhookCritical: QueueCounters;
+  webhookJoin: QueueCounters;
+  webhookJoinShards: Record<JoinWebhookQueueName, QueueCounters>;
   webhookDefault: QueueCounters;
   webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
   webhookDefaultWorkerGroups: Record<
@@ -97,6 +113,11 @@ export type QueueMetricsSnapshot = {
     queued: WebhookStatusMetrics;
     failed: WebhookStatusMetrics;
   };
+  userFacingWebhookEvents: {
+    received: WebhookStatusMetrics;
+    queued: WebhookStatusMetrics;
+    failed: WebhookStatusMetrics;
+  };
   actionHealth: ActionHealthSnapshot;
   webhookDynamicLeases: WebhookDynamicLeaseMetricsSnapshot | null;
   bots: Record<string, BotQueueMetricsSnapshot>;
@@ -107,6 +128,13 @@ export type QueueMetricsSnapshot = {
   oldestReceivedCreatedAt: string | null;
   oldestReceivedLagSec: number;
   effectiveLagSec: number;
+  userFacingOldestQueuedEventId: string | null;
+  userFacingOldestQueuedCreatedAt: string | null;
+  userFacingOldestQueuedLagSec: number;
+  userFacingOldestReceivedEventId: string | null;
+  userFacingOldestReceivedCreatedAt: string | null;
+  userFacingOldestReceivedLagSec: number;
+  userFacingEffectiveLagSec: number;
   generatedAt: string;
 };
 
@@ -128,12 +156,14 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
   oldestCreatedAt: null,
   oldestLagSec: 0,
 };
+const USER_FACING_WEBHOOK_TYPES = ['message_created', 'message_callback', 'bot_started', 'bot_added'] as const;
 
 @Injectable()
 export class QueueMetricsService {
   private snapshotCache: QueueMetricsSnapshot | null = null;
   private snapshotCacheAtMs = 0;
   private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+  private readonly webhookJoinQueuesByName: Record<JoinWebhookQueueName, Queue | undefined>;
   private readonly webhookDefaultQueuesByName: Record<DefaultWebhookQueueName, Queue | undefined>;
 
   constructor(
@@ -150,12 +180,15 @@ export class QueueMetricsService {
     @Optional() @InjectQueue(LEGACY_WEBHOOK_QUEUE) private readonly webhookLegacyQueue?: Queue,
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
   ) {
+    this.webhookJoinQueuesByName = Object.fromEntries(
+      JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
+    ) as Record<JoinWebhookQueueName, Queue | undefined>;
     this.webhookDefaultQueuesByName = Object.fromEntries(
       DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
     ) as Record<DefaultWebhookQueueName, Queue | undefined>;
   }
 
-  private resolveOptionalQueue(queueName: DefaultWebhookQueueName): Queue | undefined {
+  private resolveOptionalQueue(queueName: DefaultWebhookQueueName | JoinWebhookQueueName): Queue | undefined {
     try {
       return this.moduleRef.get<Queue>(getQueueToken(queueName), { strict: false });
     } catch {
@@ -213,6 +246,9 @@ export class QueueMetricsService {
 
     const queueSnapshots = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
+      ...JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) =>
+        this.readQueueCounters(this.webhookJoinQueuesByName[queueName]),
+      ),
       ...DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) =>
         this.readQueueCounters(this.webhookDefaultQueuesByName[queueName]),
       ),
@@ -220,18 +256,39 @@ export class QueueMetricsService {
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.actionQueue),
     ]);
-    const [received, queued, failed] = await Promise.all([
+    const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed] =
+      await Promise.all([
       this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
       this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
       this.readWebhookStatusMetrics(WebhookStatus.FAILED),
-    ]);
+      this.readWebhookStatusMetricsByTypes(WebhookStatus.RECEIVED, USER_FACING_WEBHOOK_TYPES),
+      this.readWebhookStatusMetricsByTypes(WebhookStatus.QUEUED, USER_FACING_WEBHOOK_TYPES),
+      this.readWebhookStatusMetricsByTypes(WebhookStatus.FAILED, USER_FACING_WEBHOOK_TYPES),
+      ]);
     const bots = await this.buildPerBotSnapshots(botIds);
 
     const [webhookCritical, ...restSnapshots] = queueSnapshots;
-    const webhookBackground = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
-    const webhookLegacy = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length + 1] ?? EMPTY_COUNTERS;
-    const actions = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length + 2] ?? EMPTY_COUNTERS;
-    const webhookDefaultShardSnapshots = restSnapshots.slice(0, DEFAULT_WEBHOOK_QUEUE_NAMES.length);
+    const webhookJoinShardSnapshots = restSnapshots.slice(0, JOIN_WEBHOOK_QUEUE_NAMES.length);
+    const webhookJoinShards = Object.fromEntries(
+      JOIN_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        webhookJoinShardSnapshots[index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<JoinWebhookQueueName, QueueCounters>;
+    const webhookJoin = this.sumQueueCounters(...Object.values(webhookJoinShards));
+    const defaultSnapshotOffset = JOIN_WEBHOOK_QUEUE_NAMES.length;
+    const webhookBackground =
+      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
+    const webhookLegacy =
+      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length + 1] ??
+      EMPTY_COUNTERS;
+    const actions =
+      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length + 2] ??
+      EMPTY_COUNTERS;
+    const webhookDefaultShardSnapshots = restSnapshots.slice(
+      defaultSnapshotOffset,
+      defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length,
+    );
     const webhookDefaultShards = Object.fromEntries(
       DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
         queueName,
@@ -248,8 +305,15 @@ export class QueueMetricsService {
     const oldestQueuedLagSec = queued.oldestLagSec;
     const oldestReceivedLagSec = received.oldestLagSec;
     const effectiveLagSec = Math.max(oldestQueuedLagSec, oldestReceivedLagSec);
+    const userFacingOldestQueuedLagSec = userFacingQueued.oldestLagSec;
+    const userFacingOldestReceivedLagSec = userFacingReceived.oldestLagSec;
+    const userFacingEffectiveLagSec = Math.max(
+      userFacingOldestQueuedLagSec,
+      userFacingOldestReceivedLagSec,
+    );
     const moderation = this.sumQueueCounters(
       webhookCritical,
+      webhookJoin,
       webhookDefault,
       webhookBackground,
       webhookLegacy,
@@ -258,6 +322,8 @@ export class QueueMetricsService {
     return {
       moderation,
       webhookCritical,
+      webhookJoin,
+      webhookJoinShards,
       webhookDefault,
       webhookDefaultShards,
       webhookDefaultWorkerGroups,
@@ -268,6 +334,11 @@ export class QueueMetricsService {
         received,
         queued,
         failed,
+      },
+      userFacingWebhookEvents: {
+        received: userFacingReceived,
+        queued: userFacingQueued,
+        failed: userFacingFailed,
       },
       actionHealth,
       webhookDynamicLeases: dynamicLeaseSummary
@@ -286,6 +357,13 @@ export class QueueMetricsService {
       oldestReceivedCreatedAt: received.oldestCreatedAt,
       oldestReceivedLagSec,
       effectiveLagSec,
+      userFacingOldestQueuedEventId: userFacingQueued.oldestEventId,
+      userFacingOldestQueuedCreatedAt: userFacingQueued.oldestCreatedAt,
+      userFacingOldestQueuedLagSec,
+      userFacingOldestReceivedEventId: userFacingReceived.oldestEventId,
+      userFacingOldestReceivedCreatedAt: userFacingReceived.oldestCreatedAt,
+      userFacingOldestReceivedLagSec,
+      userFacingEffectiveLagSec,
       generatedAt: new Date().toISOString(),
     };
   }
@@ -364,19 +442,113 @@ export class QueueMetricsService {
     return this.readWebhookStatusMetricsForBot(status, null);
   }
 
+  private async readWebhookStatusMetricsByTypes(
+    status: WebhookStatus,
+    types: readonly string[],
+    botId: string | null = null,
+  ): Promise<WebhookStatusMetrics> {
+    if (types.length === 0) {
+      return { ...EMPTY_WEBHOOK_STATUS_METRICS };
+    }
+
+    if (typeof this.prisma.$queryRaw !== 'function') {
+      return this.readWebhookStatusMetricsForBot(status, botId);
+    }
+
+    const normalizedBotId = typeof botId === 'string' ? botId.trim() : '';
+    const conditions: Prisma.Sql[] = [Prisma.sql`status = ${status}`];
+    if (normalizedBotId) {
+      if (normalizedBotId === this.maxBotRegistry.getDefaultBot().id) {
+        conditions.push(Prisma.sql`("bot_id" = ${normalizedBotId} OR "bot_id" IS NULL)`);
+      } else {
+        conditions.push(Prisma.sql`"bot_id" = ${normalizedBotId}`);
+      }
+    }
+    conditions.push(
+      Prisma.sql`COALESCE("normalized_payload"->>'type', '') IN (${Prisma.join(types)})`,
+    );
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        count: bigint | number;
+        oldestEventId: string | null;
+        oldestCreatedAt: Date | null;
+      }>
+    >(Prisma.sql`
+      WITH filtered AS (
+        SELECT id, created_at
+        FROM webhook_events
+        WHERE ${Prisma.join(conditions, ' AND ')}
+      )
+      SELECT
+        COUNT(*)::bigint AS count,
+        (
+          SELECT id
+          FROM filtered
+          ORDER BY created_at ASC
+          LIMIT 1
+        ) AS "oldestEventId",
+        (
+          SELECT created_at
+          FROM filtered
+          ORDER BY created_at ASC
+          LIMIT 1
+        ) AS "oldestCreatedAt"
+    `);
+    const row = rows[0];
+    const count =
+      typeof row?.count === 'bigint'
+        ? Number(row.count)
+        : typeof row?.count === 'number'
+          ? row.count
+          : 0;
+
+    if (!row?.oldestCreatedAt) {
+      return {
+        ...EMPTY_WEBHOOK_STATUS_METRICS,
+        count,
+      };
+    }
+
+    return {
+      count,
+      oldestEventId: row.oldestEventId ?? null,
+      oldestCreatedAt: row.oldestCreatedAt.toISOString(),
+      oldestLagSec: Math.max(0, (Date.now() - row.oldestCreatedAt.getTime()) / 1_000),
+    };
+  }
+
   private async buildPerBotSnapshots(
     botIds: readonly string[],
   ): Promise<Record<string, BotQueueMetricsSnapshot>> {
     const snapshots = await Promise.all(
       botIds.map(async (botId) => {
-        const [received, queued, failed, queuedByQueue] = await Promise.all([
+        const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed, queuedByQueue] =
+          await Promise.all([
           this.readWebhookStatusMetricsForBot(WebhookStatus.RECEIVED, botId),
           this.readWebhookStatusMetricsForBot(WebhookStatus.QUEUED, botId),
           this.readWebhookStatusMetricsForBot(WebhookStatus.FAILED, botId),
+          this.readWebhookStatusMetricsByTypes(
+            WebhookStatus.RECEIVED,
+            USER_FACING_WEBHOOK_TYPES,
+            botId,
+          ),
+          this.readWebhookStatusMetricsByTypes(
+            WebhookStatus.QUEUED,
+            USER_FACING_WEBHOOK_TYPES,
+            botId,
+          ),
+          this.readWebhookStatusMetricsByTypes(
+            WebhookStatus.FAILED,
+            USER_FACING_WEBHOOK_TYPES,
+            botId,
+          ),
           this.readQueuedByQueue(botId),
-        ]);
+          ]);
         const oldestQueuedLagSec = queued.oldestLagSec;
         const oldestReceivedLagSec = received.oldestLagSec;
+        const userFacingOldestQueuedLagSec = userFacingQueued.oldestLagSec;
+        const userFacingOldestReceivedLagSec = userFacingReceived.oldestLagSec;
 
         return [
           botId,
@@ -385,6 +557,11 @@ export class QueueMetricsService {
               received,
               queued,
               failed,
+            },
+            userFacingWebhookEvents: {
+              received: userFacingReceived,
+              queued: userFacingQueued,
+              failed: userFacingFailed,
             },
             queuedByQueue,
             actionHealth: this.actionHealthService.getSnapshot(60, botId),
@@ -395,6 +572,16 @@ export class QueueMetricsService {
             oldestReceivedCreatedAt: received.oldestCreatedAt,
             oldestReceivedLagSec,
             effectiveLagSec: Math.max(oldestQueuedLagSec, oldestReceivedLagSec),
+            userFacingOldestQueuedEventId: userFacingQueued.oldestEventId,
+            userFacingOldestQueuedCreatedAt: userFacingQueued.oldestCreatedAt,
+            userFacingOldestQueuedLagSec,
+            userFacingOldestReceivedEventId: userFacingReceived.oldestEventId,
+            userFacingOldestReceivedCreatedAt: userFacingReceived.oldestCreatedAt,
+            userFacingOldestReceivedLagSec,
+            userFacingEffectiveLagSec: Math.max(
+              userFacingOldestQueuedLagSec,
+              userFacingOldestReceivedLagSec,
+            ),
           } satisfies BotQueueMetricsSnapshot,
         ] as const;
       }),

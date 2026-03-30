@@ -11,6 +11,7 @@ import {
 } from './moderation-runtime';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  JOIN_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -22,6 +23,7 @@ describe('moderation-runtime', () => {
       new Set([
         LEGACY_WEBHOOK_QUEUE,
         WEBHOOK_QUEUE_CRITICAL,
+        ...JOIN_WEBHOOK_QUEUE_NAMES,
         ...DEFAULT_WEBHOOK_QUEUE_NAMES,
         WEBHOOK_QUEUE_BACKGROUND,
       ]),
@@ -32,6 +34,7 @@ describe('moderation-runtime', () => {
     expect(getEnabledModerationProcessorQueues('critical,background')).toEqual(
       new Set([WEBHOOK_QUEUE_CRITICAL, WEBHOOK_QUEUE_BACKGROUND]),
     );
+    expect(getEnabledModerationProcessorQueues('join')).toEqual(new Set(JOIN_WEBHOOK_QUEUE_NAMES));
     expect(moderationProcessorQueueEnabled(WEBHOOK_QUEUE_CRITICAL, 'critical,background')).toBe(
       true,
     );
@@ -51,6 +54,7 @@ describe('moderation-runtime', () => {
       new Set([
         LEGACY_WEBHOOK_QUEUE,
         WEBHOOK_QUEUE_CRITICAL,
+        ...JOIN_WEBHOOK_QUEUE_NAMES,
         ...DEFAULT_WEBHOOK_QUEUE_NAMES,
         WEBHOOK_QUEUE_BACKGROUND,
       ]),

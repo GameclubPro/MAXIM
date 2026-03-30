@@ -316,7 +316,7 @@ describe('SystemModeService', () => {
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'degrade',
-        reason: 'queue lag 18.0s',
+        reason: 'user-facing queue lag 18.0s',
       }),
     );
 

@@ -1,4 +1,5 @@
 import { WebhookRoutingService } from './webhook-routing.service';
+import { resolveJoinWebhookQueueNameForChatId } from './webhook-queues';
 
 function createConfigMock(overrides: Partial<Record<string, number>> = {}) {
   return {
@@ -123,10 +124,14 @@ describe('WebhookRoutingService', () => {
 
   it('routes critical and background update types without touching adaptive chat routing', async () => {
     const { service, prisma, queueMetricsService } = createService();
+    const joinChatId = '-72826040868309';
 
     await expect(service.resolveQueueName('evt-1', { type: 'message_callback' })).resolves.toBe(
       'moderation-critical',
     );
+    await expect(
+      service.resolveQueueName('evt-join', { type: 'user_added', message: { chatId: joinChatId } }),
+    ).resolves.toBe(resolveJoinWebhookQueueNameForChatId(joinChatId));
     await expect(service.resolveQueueName('evt-2', { type: 'user_removed' })).resolves.toBe(
       'moderation-background',
     );

@@ -138,9 +138,25 @@ export class HealthService implements OnModuleDestroy {
       this.systemModeService.getEffectiveSnapshot(),
     ]);
 
+    const effectiveLagSec = queueMetrics.userFacingEffectiveLagSec ?? queueMetrics.effectiveLagSec ?? 0;
+    const queuedMetrics = queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued;
+    const receivedMetrics =
+      queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received;
+    const oldestQueuedEventId =
+      queueMetrics.userFacingOldestQueuedEventId ?? queueMetrics.oldestQueuedEventId;
+    const oldestQueuedCreatedAt =
+      queueMetrics.userFacingOldestQueuedCreatedAt ?? queueMetrics.oldestQueuedCreatedAt;
+    const oldestQueuedLagSec =
+      queueMetrics.userFacingOldestQueuedLagSec ?? queueMetrics.oldestQueuedLagSec;
+    const oldestReceivedEventId =
+      queueMetrics.userFacingOldestReceivedEventId ?? queueMetrics.oldestReceivedEventId;
+    const oldestReceivedCreatedAt =
+      queueMetrics.userFacingOldestReceivedCreatedAt ?? queueMetrics.oldestReceivedCreatedAt;
+    const oldestReceivedLagSec =
+      queueMetrics.userFacingOldestReceivedLagSec ?? queueMetrics.oldestReceivedLagSec;
     const evaluatedAtMs = Date.now();
-    const rawQueueLagOk = queueMetrics.effectiveLagSec <= this.queueLagThresholdSec;
-    const severeQueueLag = queueMetrics.effectiveLagSec > this.queueLagSevereSec;
+    const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
+    const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
     const breachStartedAtMs = this.updateQueueLagBreachState(rawQueueLagOk, evaluatedAtMs);
     const breachDurationSec = breachStartedAtMs
       ? Math.max(0, (evaluatedAtMs - breachStartedAtMs) / 1_000)
@@ -156,10 +172,15 @@ export class HealthService implements OnModuleDestroy {
         Object.entries(queueMetrics.bots ?? {}).map(([botId, botMetrics]) => [
           botId,
           {
-            queueLagSec: botMetrics.effectiveLagSec,
-            rawOk: botMetrics.effectiveLagSec <= this.queueLagThresholdSec,
-            queuedEvents: botMetrics.webhookEvents.queued.count,
-            receivedEvents: botMetrics.webhookEvents.received.count,
+            queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
+            rawOk:
+              (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
+              this.queueLagThresholdSec,
+            queuedEvents:
+              botMetrics.userFacingWebhookEvents?.queued.count ?? botMetrics.webhookEvents.queued.count,
+            receivedEvents:
+              botMetrics.userFacingWebhookEvents?.received.count ??
+              botMetrics.webhookEvents.received.count,
             failedEvents: botMetrics.webhookEvents.failed.count,
             action: botMetrics.actionHealth,
           },
@@ -167,8 +188,8 @@ export class HealthService implements OnModuleDestroy {
       ),
       systemMode: {
         ...systemMode,
-        queueLagSec: queueMetrics.effectiveLagSec,
-        action: queueMetrics.actionHealth,
+        queueLagSec: effectiveLagSec,
+        action: systemMode.action,
         degraded: systemMode.mode === 'degrade',
       },
       checks: {
@@ -180,21 +201,21 @@ export class HealthService implements OnModuleDestroy {
           softWarning,
           softWarningCode: softWarning ? 'queue-lag-hysteresis' : null,
           softWarningDetail: softWarning
-            ? `Raw queue lag ${queueMetrics.effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
+            ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
             : null,
           thresholdSec: this.queueLagThresholdSec,
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
-          effectiveLagSec: queueMetrics.effectiveLagSec,
+          effectiveLagSec,
           sampleGeneratedAt: queueMetrics.generatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,
-          oldestQueuedEventId: queueMetrics.oldestQueuedEventId,
-          oldestQueuedCreatedAt: queueMetrics.oldestQueuedCreatedAt,
-          oldestQueuedLagSec: queueMetrics.oldestQueuedLagSec,
-          oldestReceivedEventId: queueMetrics.oldestReceivedEventId,
-          oldestReceivedCreatedAt: queueMetrics.oldestReceivedCreatedAt,
-          oldestReceivedLagSec: queueMetrics.oldestReceivedLagSec,
+          oldestQueuedEventId,
+          oldestQueuedCreatedAt,
+          oldestQueuedLagSec,
+          oldestReceivedEventId,
+          oldestReceivedCreatedAt,
+          oldestReceivedLagSec,
         },
       },
     };

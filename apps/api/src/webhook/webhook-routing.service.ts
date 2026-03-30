@@ -14,6 +14,8 @@ import {
   extractWebhookBotId,
   extractWebhookChatId,
   extractWebhookType,
+  JOIN_WEBHOOK_QUEUE_NAMES,
+  resolveJoinWebhookQueueNameForChatId,
   resolveDefaultWebhookQueueIndexForChatId,
   resolveDefaultWebhookQueueNameForChatId,
   WEBHOOK_QUEUE_BACKGROUND,
@@ -95,10 +97,13 @@ export class WebhookRoutingService {
   ): Promise<ActiveWebhookQueueName> {
     switch (extractWebhookType(payload)) {
       case 'message_callback':
-      case 'user_added':
       case 'bot_added':
       case 'bot_started':
         return WEBHOOK_QUEUE_CRITICAL;
+      case 'user_added': {
+        const chatId = extractWebhookChatId(payload);
+        return chatId ? resolveJoinWebhookQueueNameForChatId(chatId) : JOIN_WEBHOOK_QUEUE_NAMES[0];
+      }
       case 'user_removed':
       case 'bot_removed':
         return WEBHOOK_QUEUE_BACKGROUND;

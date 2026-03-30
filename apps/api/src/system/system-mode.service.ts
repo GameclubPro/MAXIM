@@ -104,23 +104,24 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
 
     try {
       const queue = await this.queueMetricsService.getSnapshot();
-      this.lastQueueLagSec = queue.effectiveLagSec;
+      const queueLagSec = queue.userFacingEffectiveLagSec ?? queue.effectiveLagSec ?? 0;
+      this.lastQueueLagSec = queueLagSec;
       await this.actionHealthService.refreshSnapshots(60);
-      const action = this.actionHealthService.getSnapshot(60);
+      const action = this.getUserFacingActionSnapshot();
       const actionErrorRateDegraded = this.shouldDegradeForActionErrorRate(action);
       const shouldDegrade =
-        queue.effectiveLagSec > this.queueLagThresholdSec ||
+        queueLagSec > this.queueLagThresholdSec ||
         actionErrorRateDegraded ||
         action.criticalRate > this.actionCriticalThreshold;
 
       if (shouldDegrade) {
         this.healthySinceMs = null;
         const reasons: string[] = [];
-        if (queue.effectiveLagSec > this.queueLagThresholdSec) {
-          reasons.push(`queue lag ${queue.effectiveLagSec.toFixed(1)}s`);
+        if (queueLagSec > this.queueLagThresholdSec) {
+          reasons.push(`user-facing queue lag ${queueLagSec.toFixed(1)}s`);
         }
         if (actionErrorRateDegraded) {
-          reasons.push(`action error rate ${(action.errorRate * 100).toFixed(2)}%`);
+          reasons.push(`user-facing action error rate ${(action.errorRate * 100).toFixed(2)}%`);
         }
         if (action.criticalRate > this.actionCriticalThreshold) {
           reasons.push(`critical MAX API rate ${(action.criticalRate * 100).toFixed(2)}%`);
@@ -161,13 +162,13 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   getSnapshot(): SystemModeSnapshot {
-    return this.buildSnapshot(this.actionHealthService.getSnapshot(60));
+    return this.buildSnapshot(this.getUserFacingActionSnapshot());
   }
 
   async getEffectiveSnapshot(): Promise<SystemModeSnapshot> {
     if (this.enabled) {
       await this.actionHealthService.refreshSnapshots(60);
-      return this.buildSnapshot(this.actionHealthService.getSnapshot(60));
+      return this.buildSnapshot(this.getUserFacingActionSnapshot());
     }
 
     const cachedSnapshot = this.getCachedSharedSnapshot();
@@ -224,7 +225,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     if (!action) {
       await this.actionHealthService.refreshSnapshots(60);
     }
-    const snapshot = this.buildSnapshot(action ?? this.actionHealthService.getSnapshot(60));
+    const snapshot = this.buildSnapshot(action ?? this.getUserFacingActionSnapshot());
     this.sharedSnapshotCache = snapshot;
     this.sharedSnapshotCacheAtMs = Date.now();
 
@@ -236,6 +237,14 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
         'Failed to persist system mode snapshot',
       );
     }
+  }
+
+  private getUserFacingActionSnapshot(): ActionHealthSnapshot {
+    if (typeof this.actionHealthService.getCombinedSnapshot === 'function') {
+      return this.actionHealthService.getCombinedSnapshot(60, ['critical', 'interactive']);
+    }
+
+    return this.actionHealthService.getSnapshot(60);
   }
 
   private async readSharedSnapshot(): Promise<SystemModeSnapshot | null> {
