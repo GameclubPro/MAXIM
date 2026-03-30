@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, WebhookStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   getDefaultWebhookWorkerGroupQueues,
@@ -246,7 +246,7 @@ export class WebhookRoutingService {
         SELECT COUNT(*)::bigint AS pending_count
         FROM webhook_events
         WHERE id <> ${webhookEventId}
-          AND status IN (${Prisma.join([WebhookStatus.RECEIVED, WebhookStatus.QUEUED])})
+          AND status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
           AND LOWER(
             COALESCE(
               NULLIF(BTRIM(normalized_payload->>'type'), ''),
