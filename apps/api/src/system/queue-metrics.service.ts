@@ -456,7 +456,7 @@ export class QueueMetricsService {
     }
 
     const normalizedBotId = typeof botId === 'string' ? botId.trim() : '';
-    const conditions: Prisma.Sql[] = [Prisma.sql`status = ${status}`];
+    const conditions: Prisma.Sql[] = [Prisma.sql`"status"::text = ${status}`];
     if (normalizedBotId) {
       if (normalizedBotId === this.maxBotRegistry.getDefaultBot().id) {
         conditions.push(Prisma.sql`("bot_id" = ${normalizedBotId} OR "bot_id" IS NULL)`);
