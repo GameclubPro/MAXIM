@@ -81,6 +81,10 @@ function readWebhookType(payload: unknown): string {
   return typeof rawType === 'string' ? rawType.trim().toLowerCase() : '';
 }
 
+export function extractWebhookType(payload: unknown): string {
+  return readWebhookType(payload);
+}
+
 function resolveDefaultWebhookQueueName(payload: unknown): DefaultWebhookQueueName {
   const chatId = readWebhookChatId(payload);
   if (!chatId) {
@@ -144,6 +148,10 @@ function readWebhookChatId(payload: unknown): string {
   }
 
   return '';
+}
+
+export function extractWebhookChatId(payload: unknown): string {
+  return readWebhookChatId(payload);
 }
 
 function hashChatId(chatId: string): number {

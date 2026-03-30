@@ -30,6 +30,12 @@ type ChatBackoffState = {
   lastFailureAtMs: number;
 };
 
+type HotChannelState = {
+  failureCount: number;
+  lastFailureAtMs: number;
+  hotUntilMs: number;
+};
+
 type MembershipLookupPolicyConfig = {
   positiveFreshTtlSec: number;
   negativeFreshTtlSec: number;
@@ -93,10 +99,10 @@ const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLo
     },
   };
 
-const MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC = Math.max(
+const BASE_MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC = Math.max(
   ...Object.values(MEMBERSHIP_LOOKUP_POLICIES).map((policy) => policy.positiveFreshTtlSec),
 );
-const MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
+const BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
   ...Object.values(MEMBERSHIP_LOOKUP_POLICIES).map((policy) => policy.negativeFreshTtlSec),
 );
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
@@ -111,12 +117,20 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly membershipLookupBatchWindowMs: number;
   private readonly maxChatBackoffMs: number;
   private readonly chatBackoffResetMs: number;
+  private readonly hotChannelFailureThreshold: number;
+  private readonly hotChannelWindowMs: number;
+  private readonly hotChannelDurationMs: number;
+  private readonly hotChannelPositiveFreshTtlSec: number;
+  private readonly hotChannelBatchWindowMs: number;
   private readonly lookupTimeoutMsByTrafficClass: Record<MaxApiTrafficClass, number>;
+  private readonly membershipRetentionPositiveTtlSec: number;
+  private readonly membershipRetentionNegativeTtlSec: number;
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
   private readonly chatBackoffUntilMs = new Map<string, number>();
   private readonly chatBackoffState = new Map<string, ChatBackoffState>();
+  private readonly hotChannelStates = new Map<string, HotChannelState>();
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
   private lastRedisWriteFailureLogAtMs = 0;
@@ -142,6 +156,30 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       45_000,
       1_000,
     );
+    this.hotChannelFailureThreshold = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_FAILURE_THRESHOLD'),
+      2,
+    );
+    this.hotChannelWindowMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_WINDOW_MS'),
+      45_000,
+      1_000,
+    );
+    this.hotChannelDurationMs =
+      this.readConfigInt(
+        configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_DURATION_SEC'),
+        120,
+      ) * 1_000;
+    this.hotChannelPositiveFreshTtlSec = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_POSITIVE_TTL_SEC'),
+      90,
+      MEMBERSHIP_LOOKUP_POLICIES.moderation_required_subscription.positiveFreshTtlSec,
+    );
+    this.hotChannelBatchWindowMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_BATCH_WINDOW_MS'),
+      25,
+      this.membershipLookupBatchWindowMs,
+    );
     this.lookupTimeoutMsByTrafficClass = {
       critical: this.readConfigInt(
         configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL'),
@@ -156,6 +194,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         5_000,
       ),
     };
+    this.membershipRetentionPositiveTtlSec = Math.max(
+      BASE_MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC,
+      this.hotChannelPositiveFreshTtlSec,
+    );
+    this.membershipRetentionNegativeTtlSec = BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC;
   }
 
   async onModuleInit(): Promise<void> {
@@ -254,10 +297,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return results;
     }
 
-    const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
+    const now = Date.now();
+    const basePolicy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
+    const policy = this.resolveEffectivePolicy(normalizedChatId, policyName, basePolicy, now);
     const allowStaleOnError = options.allowStaleOnError ?? policy.allowStaleOnError;
     const chatBackoffKey = this.buildChatPolicyKey(normalizedChatId, policyName);
-    const now = Date.now();
     const pendingPromises = new Map<string, Promise<boolean | null>>();
     const usersToLookup: string[] = [];
     const cacheKeyByUserId = new Map(
@@ -305,10 +349,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const cacheKey = cacheKeyByUserId.get(userId)!;
       const backoffUntilMs = this.backoffUntilMs.get(cacheKey) ?? 0;
       if (backoffUntilMs > now) {
-        const staleSnapshot = allowStaleOnError
-          ? this.readRetainedMemorySnapshot(cacheKey, now)
-          : null;
-        results.set(userId, staleSnapshot?.isMember ?? null);
+        results.set(
+          userId,
+          this.resolveLookupFallback(
+            normalizedChatId,
+            policyName,
+            cacheKey,
+            allowStaleOnError,
+            now,
+          ),
+        );
         continue;
       }
 
@@ -320,7 +370,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
       const chatBackoffUntilMs = this.chatBackoffUntilMs.get(chatBackoffKey) ?? 0;
       if (chatBackoffUntilMs > now) {
-        results.set(userId, this.resolveLookupFallback(cacheKey, allowStaleOnError));
+        results.set(
+          userId,
+          this.resolveLookupFallback(
+            normalizedChatId,
+            policyName,
+            cacheKey,
+            allowStaleOnError,
+            now,
+          ),
+        );
         continue;
       }
 
@@ -400,7 +459,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     if (!batch.scheduled) {
       batch.scheduled = true;
-      const batchWindowMs = this.resolveSingleLookupBatchWindowMs(policyName);
+      const batchWindowMs = this.resolveSingleLookupBatchWindowMs(chatId, policyName);
       if (batchWindowMs === 0) {
         void Promise.resolve().then(() => this.flushPendingSingleLookupBatch(batchKey));
       } else {
@@ -438,6 +497,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       });
       const checkedAtMs = Date.now();
       this.clearChatBackoff(batch.chatId, batch.policyName);
+      this.clearHotChannelMode(batch.chatId, batch.policyName);
 
       for (const [userId, lookup] of batch.lookups.entries()) {
         const isMember = accessByUserId.has(userId);
@@ -457,6 +517,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       if (transient) {
         const appliedBackoff = this.applyChatBackoff(batch.chatId, batch.policyName, batch.policy);
         appliedBackoffMs = appliedBackoff.backoffMs;
+        this.recordHotChannelFailure(batch.chatId, batch.policyName);
         for (const lookup of batch.lookups.values()) {
           if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
             this.backoffUntilMs.set(lookup.cacheKey, appliedBackoff.backoffUntilMs);
@@ -472,7 +533,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       });
 
       for (const lookup of batch.lookups.values()) {
-        lookup.resolve(this.resolveLookupFallback(lookup.cacheKey, lookup.allowStaleOnError));
+        lookup.resolve(
+          this.resolveLookupFallback(
+            batch.chatId,
+            batch.policyName,
+            lookup.cacheKey,
+            lookup.allowStaleOnError,
+          ),
+        );
       }
     }
   }
@@ -504,6 +572,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         const checkedAtMs = Date.now();
         const results = new Map<string, boolean | null>();
         this.clearChatBackoff(chatId, policyName);
+        this.clearHotChannelMode(chatId, policyName);
 
         for (const userId of normalizedUserIds) {
           const cacheKey = this.buildCacheKey(chatId, userId);
@@ -526,6 +595,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         if (transient) {
           const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy);
           appliedBackoffMs = appliedBackoff.backoffMs;
+          this.recordHotChannelFailure(chatId, policyName);
           for (const userId of normalizedUserIds) {
             const cacheKey = this.buildCacheKey(chatId, userId);
             if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
@@ -544,7 +614,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         for (const userId of normalizedUserIds) {
           results.set(
             userId,
-            this.resolveLookupFallback(this.buildCacheKey(chatId, userId), allowStaleOnError),
+            this.resolveLookupFallback(
+              chatId,
+              policyName,
+              this.buildCacheKey(chatId, userId),
+              allowStaleOnError,
+            ),
           );
         }
         return results;
@@ -638,12 +713,31 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  private resolveLookupFallback(cacheKey: string, allowStaleOnError: boolean): boolean | null {
+  private resolveLookupFallback(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    cacheKey: string,
+    allowStaleOnError: boolean,
+    now = Date.now(),
+  ): boolean | null {
     if (!allowStaleOnError) {
       return null;
     }
 
-    return this.readRetainedMemorySnapshot(cacheKey)?.isMember ?? null;
+    const snapshot = this.readRetainedMemorySnapshot(cacheKey, now);
+    if (!snapshot) {
+      return null;
+    }
+
+    if (
+      snapshot.isMember ||
+      !this.isHotChannelModeActive(chatId, policyName, now) ||
+      policyName !== 'moderation_required_subscription'
+    ) {
+      return snapshot.isMember;
+    }
+
+    return null;
   }
 
   private storeSnapshot(cacheKey: string, snapshot: MembershipCacheSnapshot) {
@@ -723,8 +817,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       JSON.stringify(snapshot),
       'EX',
       snapshot.isMember
-        ? MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC
-        : MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC,
+        ? this.membershipRetentionPositiveTtlSec
+        : this.membershipRetentionNegativeTtlSec,
     );
   }
 
@@ -800,8 +894,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private resolveRetentionTtlMs(isMember: boolean): number {
     return (
-      (isMember ? MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC : MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC) *
-      1_000
+      (isMember
+        ? this.membershipRetentionPositiveTtlSec
+        : this.membershipRetentionNegativeTtlSec) * 1_000
     );
   }
 
@@ -852,6 +947,83 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     this.chatBackoffUntilMs.delete(cacheKey);
   }
 
+  private resolveEffectivePolicy(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    policy: MembershipLookupPolicyConfig,
+    now = Date.now(),
+  ): MembershipLookupPolicyConfig {
+    if (!this.isHotChannelModeActive(chatId, policyName, now)) {
+      return policy;
+    }
+
+    return {
+      ...policy,
+      positiveFreshTtlSec: Math.max(policy.positiveFreshTtlSec, this.hotChannelPositiveFreshTtlSec),
+    };
+  }
+
+  private recordHotChannelFailure(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    now = Date.now(),
+  ): void {
+    if (policyName !== 'moderation_required_subscription') {
+      return;
+    }
+
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const previousState = this.hotChannelStates.get(cacheKey);
+    const failureCount =
+      previousState && now - previousState.lastFailureAtMs <= this.hotChannelWindowMs
+        ? previousState.failureCount + 1
+        : 1;
+    const hotUntilMs =
+      failureCount >= this.hotChannelFailureThreshold
+        ? Math.max(previousState?.hotUntilMs ?? 0, now + this.hotChannelDurationMs)
+        : Math.max(previousState?.hotUntilMs ?? 0, 0);
+
+    this.hotChannelStates.set(cacheKey, {
+      failureCount,
+      lastFailureAtMs: now,
+      hotUntilMs,
+    });
+  }
+
+  private clearHotChannelMode(chatId: string, policyName: MaxMembershipLookupPolicy) {
+    if (policyName !== 'moderation_required_subscription') {
+      return;
+    }
+
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    this.hotChannelStates.delete(cacheKey);
+  }
+
+  private isHotChannelModeActive(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    now = Date.now(),
+  ): boolean {
+    if (policyName !== 'moderation_required_subscription') {
+      return false;
+    }
+
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const state = this.hotChannelStates.get(cacheKey);
+    if (!state) {
+      return false;
+    }
+
+    if (state.hotUntilMs > now) {
+      return true;
+    }
+
+    if (now - state.lastFailureAtMs > this.hotChannelWindowMs) {
+      this.hotChannelStates.delete(cacheKey);
+    }
+    return false;
+  }
+
   private resolveMaxChatBackoffMs(
     policyName: MaxMembershipLookupPolicy,
     policy: MembershipLookupPolicyConfig,
@@ -889,10 +1061,18 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  private resolveSingleLookupBatchWindowMs(policyName: MaxMembershipLookupPolicy): number {
-    return policyName === 'moderation_required_subscription'
-      ? this.membershipLookupBatchWindowMs
-      : 0;
+  private resolveSingleLookupBatchWindowMs(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    now = Date.now(),
+  ): number {
+    if (policyName !== 'moderation_required_subscription') {
+      return 0;
+    }
+
+    return this.isHotChannelModeActive(chatId, policyName, now)
+      ? Math.max(this.membershipLookupBatchWindowMs, this.hotChannelBatchWindowMs)
+      : this.membershipLookupBatchWindowMs;
   }
 
   private resolveLookupTimeoutMs(trafficClass: MaxApiTrafficClass): number {

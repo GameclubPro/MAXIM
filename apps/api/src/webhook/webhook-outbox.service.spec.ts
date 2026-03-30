@@ -4,6 +4,7 @@ import { WebhookOutboxService } from './webhook-outbox.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   resolveDefaultWebhookQueueNameForChatId,
+  resolveWebhookQueueName,
 } from './webhook-queues';
 
 type JobMock = {
@@ -102,11 +103,15 @@ function createService(params?: {
     backgroundQueue,
     legacyQueue,
   };
+  const webhookRoutingService = {
+    resolveQueueName: jest.fn(async (_eventId: string, payload: unknown) => resolveWebhookQueueName(payload)),
+  };
 
   const service = new WebhookOutboxService(
     prisma as never,
     config as never,
     moduleRef as never,
+    webhookRoutingService as never,
     criticalQueue as never,
     backgroundQueue as never,
     legacyQueue as never,
@@ -115,6 +120,7 @@ function createService(params?: {
     service,
     prisma,
     queues,
+    webhookRoutingService,
   };
 }
 

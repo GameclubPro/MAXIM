@@ -14,10 +14,10 @@ import {
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
   resolveWebhookJobPriority,
-  resolveWebhookQueueName,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
 } from './webhook-queues';
+import { WebhookRoutingService } from './webhook-routing.service';
 
 type WebhookEnqueueCandidate = {
   id: string;
@@ -51,6 +51,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly moduleRef: ModuleRef,
+    private readonly webhookRoutingService: WebhookRoutingService,
     @InjectQueue(WEBHOOK_QUEUE_CRITICAL)
     private readonly criticalQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
@@ -196,7 +197,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           return;
         }
 
-        const queueName = resolveWebhookQueueName(event.normalizedPayload);
+        const queueName = await this.webhookRoutingService.resolveQueueName(
+          event.id,
+          event.normalizedPayload,
+        );
         await this.enqueueOne(
           event.id,
           event.enqueueAttempts,

@@ -17,6 +17,9 @@ export type ReadinessSnapshot = {
     queueLag: {
       ok: boolean;
       rawOk: boolean;
+      softWarning: boolean;
+      softWarningCode: string | null;
+      softWarningDetail: string | null;
       thresholdSec: number;
       sustainSec: number;
       severeThresholdSec: number;
@@ -133,6 +136,7 @@ export class HealthService implements OnModuleDestroy {
       : 0;
     const queueLagOk =
       !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
+    const softWarning = !rawQueueLagOk && queueLagOk;
 
     return {
       ok: database && redis && queueLagOk,
@@ -149,6 +153,11 @@ export class HealthService implements OnModuleDestroy {
         queueLag: {
           ok: queueLagOk,
           rawOk: rawQueueLagOk,
+          softWarning,
+          softWarningCode: softWarning ? 'queue-lag-hysteresis' : null,
+          softWarningDetail: softWarning
+            ? `Raw queue lag ${queueMetrics.effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
+            : null,
           thresholdSec: this.queueLagThresholdSec,
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,

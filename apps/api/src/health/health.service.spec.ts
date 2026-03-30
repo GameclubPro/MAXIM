@@ -155,6 +155,9 @@ describe('HealthService', () => {
       expect.objectContaining({
         ok: true,
         rawOk: true,
+        softWarning: false,
+        softWarningCode: null,
+        softWarningDetail: null,
         thresholdSec: 10,
         sustainSec: 20,
         severeThresholdSec: 30,
@@ -254,10 +257,13 @@ describe('HealthService', () => {
       expect.objectContaining({
         ok: true,
         rawOk: false,
+        softWarning: true,
+        softWarningCode: 'queue-lag-hysteresis',
         breachStartedAt: '2026-03-29T10:00:00.000Z',
         breachDurationSec: 0,
       }),
     );
+    expect(first.checks.queueLag.softWarningDetail).toContain('Raw queue lag 12.0s');
 
     jest.setSystemTime(new Date('2026-03-29T10:00:21.000Z'));
 
@@ -267,6 +273,8 @@ describe('HealthService', () => {
       expect.objectContaining({
         ok: false,
         rawOk: false,
+        softWarning: false,
+        softWarningCode: null,
         breachStartedAt: '2026-03-29T10:00:00.000Z',
       }),
     );

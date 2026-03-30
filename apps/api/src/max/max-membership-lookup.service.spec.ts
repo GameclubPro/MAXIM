@@ -330,7 +330,12 @@ describe('MaxMembershipLookupService', () => {
         .mockRejectedValueOnce(throttleError)
         .mockResolvedValueOnce(new Map([['user-4', { userId: 'user-4', isAdmin: false }]])),
     };
-    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({
+        MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_BATCH_WINDOW_MS: 0,
+      }) as never,
+    );
 
     await expect(
       service.getMembership('channel-hot', 'user-1', 'moderation_required_subscription', {
@@ -404,6 +409,112 @@ describe('MaxMembershipLookupService', () => {
         allowStaleOnError: false,
       }),
     ).resolves.toBeNull();
+  });
+
+  it('extends positive moderation freshness on hot channels after repeated transient failures', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:16:00.000Z'));
+
+    const throttleError = Object.assign(new Error('MAX API rate limit exceeded'), {
+      response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map([['user-stale-positive', { userId: 'user-stale-positive', isAdmin: false }]]))
+        .mockRejectedValueOnce(throttleError)
+        .mockRejectedValueOnce(throttleError),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership(
+        'channel-hot-mode',
+        'user-stale-positive',
+        'moderation_required_subscription',
+      ),
+    ).resolves.toBe(true);
+
+    jest.advanceTimersByTime(31_000);
+
+    await expect(
+      service.getMembership('channel-hot-mode', 'user-trigger-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBeNull();
+    jest.advanceTimersByTime(15_001);
+    await expect(
+      service.getMembership('channel-hot-mode', 'user-trigger-2', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.getMembership(
+        'channel-hot-mode',
+        'user-stale-positive',
+        'moderation_required_subscription',
+      ),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(3);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
+  it('drops stale negative moderation snapshots in hot-channel mode and fails open instead', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:17:00.000Z'));
+
+    const timeoutError = Object.assign(new Error('timeout of 2000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map())
+        .mockRejectedValueOnce(timeoutError)
+        .mockRejectedValueOnce(timeoutError),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership(
+        'channel-hot-negative',
+        'user-stale-negative',
+        'moderation_required_subscription',
+      ),
+    ).resolves.toBe(false);
+
+    jest.advanceTimersByTime(11_000);
+
+    await expect(
+      service.getMembership(
+        'channel-hot-negative',
+        'user-trigger-1',
+        'moderation_required_subscription',
+        { forceRefresh: true },
+      ),
+    ).resolves.toBeNull();
+    jest.advanceTimersByTime(15_001);
+    await expect(
+      service.getMembership(
+        'channel-hot-negative',
+        'user-trigger-2',
+        'moderation_required_subscription',
+        { forceRefresh: true },
+      ),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.getMembership(
+        'channel-hot-negative',
+        'user-stale-negative',
+        'moderation_required_subscription',
+      ),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(3);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
   it('invalidates cached membership snapshots and forces a fresh lookup', async () => {
