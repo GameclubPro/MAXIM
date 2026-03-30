@@ -3,6 +3,9 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
+SCRIPT_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+SCRIPT_REL_PATH="${SCRIPT_PATH#$ROOT_DIR/}"
+ORIGINAL_ARGS=("$@")
 
 SCALE_PROJECT_NAME="infra-scale"
 MAIN_PROJECT_NAME="infra"
@@ -88,6 +91,20 @@ diff_in_paths() {
     1) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+reexec_if_current_script_changed() {
+  if [[ "${MAXIM_DEPLOY_SCRIPT_REEXECED:-0}" == "1" ]]; then
+    return 0
+  fi
+
+  if ! diff_in_paths "$SCRIPT_REL_PATH"; then
+    return 0
+  fi
+
+  echo "Deploy script changed during git pull. Re-executing updated $SCRIPT_REL_PATH..."
+  export MAXIM_DEPLOY_SCRIPT_REEXECED=1
+  exec "$SCRIPT_PATH" "${ORIGINAL_ARGS[@]}"
 }
 
 ensure_compose_env() {
@@ -282,6 +299,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 sync_branch
+reexec_if_current_script_changed
 ensure_compose_env
 stop_conflicting_stacks
 ensure_service_requested_if_down "miniapp-static"
