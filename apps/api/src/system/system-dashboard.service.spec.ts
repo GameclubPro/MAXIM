@@ -45,6 +45,47 @@ function createWebhookSubscriptionSnapshot(
   };
 }
 
+function createDefaultWorkerGroups(
+  overrides: Partial<
+    Record<
+      | 'api-moderation'
+      | 'api-moderation-realtime-b'
+      | 'api-moderation-realtime-c'
+      | 'api-moderation-realtime-d',
+      {
+        queues: string[];
+        counters: {
+          waiting: number;
+          active: number;
+          delayed: number;
+          failed: number;
+          completed: number;
+        };
+      }
+    >
+  > = {},
+) {
+  return {
+    'api-moderation': {
+      queues: ['moderation-default-2', 'moderation-default-6'],
+      counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    },
+    'api-moderation-realtime-b': {
+      queues: ['moderation-default-0', 'moderation-default-4'],
+      counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    },
+    'api-moderation-realtime-c': {
+      queues: ['moderation-default-1', 'moderation-default-5'],
+      counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    },
+    'api-moderation-realtime-d': {
+      queues: ['moderation-default-3', 'moderation-default-7'],
+      counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+    },
+    ...overrides,
+  };
+}
+
 describe('SystemDashboardService', () => {
   it('builds a healthy summary when queues and MAX action health are clean', async () => {
     const service = new SystemDashboardService(
@@ -53,6 +94,7 @@ describe('SystemDashboardService', () => {
           moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
           webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
@@ -122,6 +164,12 @@ describe('SystemDashboardService', () => {
           moderation: { waiting: 2, active: 1, delayed: 0, failed: 0, completed: 120 },
           webhookCritical: { waiting: 0, active: 1, delayed: 0, failed: 0, completed: 25 },
           webhookDefault: { waiting: 4, active: 2, delayed: 0, failed: 1, completed: 90 },
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups({
+            'api-moderation-realtime-c': {
+              queues: ['moderation-default-1', 'moderation-default-5'],
+              counters: { waiting: 4, active: 2, delayed: 0, failed: 0, completed: 45 },
+            },
+          }),
           webhookBackground: { waiting: 3, active: 0, delayed: 0, failed: 0, completed: 10 },
           webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           actions: { waiting: 1, active: 1, delayed: 0, failed: 0, completed: 42 },
@@ -183,6 +231,7 @@ describe('SystemDashboardService', () => {
         expect.objectContaining({ code: 'queue-lag', level: 'critical' }),
         expect.objectContaining({ code: 'failed-webhooks', level: 'critical' }),
         expect.objectContaining({ code: 'critical-rate', level: 'critical' }),
+        expect.objectContaining({ code: 'default-worker-skew', level: 'warning' }),
       ]),
     });
   });
@@ -194,6 +243,7 @@ describe('SystemDashboardService', () => {
           moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
           webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
           actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },

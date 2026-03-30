@@ -1,12 +1,26 @@
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
   type AnyWebhookQueueName,
+  type DefaultWebhookQueueName,
 } from '../webhook/webhook-queues';
 
 export type ModerationQueueAlias = 'legacy' | 'critical' | 'default' | 'background';
+export type DefaultWebhookWorkerGroupName =
+  | 'api-moderation'
+  | 'api-moderation-realtime-b'
+  | 'api-moderation-realtime-c'
+  | 'api-moderation-realtime-d';
 
 const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
   LEGACY_WEBHOOK_QUEUE,
@@ -21,6 +35,17 @@ const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyW
   default: DEFAULT_WEBHOOK_QUEUE_NAMES,
   background: [WEBHOOK_QUEUE_BACKGROUND],
 };
+
+const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze({
+  'api-moderation': [WEBHOOK_QUEUE_DEFAULT_SHARD_2, WEBHOOK_QUEUE_DEFAULT_SHARD_6],
+  'api-moderation-realtime-b': [WEBHOOK_QUEUE_DEFAULT_SHARD_0, WEBHOOK_QUEUE_DEFAULT_SHARD_4],
+  'api-moderation-realtime-c': [WEBHOOK_QUEUE_DEFAULT_SHARD_1, WEBHOOK_QUEUE_DEFAULT_SHARD_5],
+  'api-moderation-realtime-d': [WEBHOOK_QUEUE_DEFAULT_SHARD_3, WEBHOOK_QUEUE_DEFAULT_SHARD_7],
+} satisfies Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>);
+
+export const DEFAULT_WEBHOOK_WORKER_GROUP_NAMES = Object.freeze(
+  Object.keys(DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES) as DefaultWebhookWorkerGroupName[],
+);
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
@@ -92,4 +117,10 @@ export function moderationBackgroundTasksEnabled(
   rawValue: unknown = process.env.MODERATION_BACKGROUND_TASKS_ENABLED,
 ): boolean {
   return normalizeBooleanEnv(rawValue, true);
+}
+
+export function getDefaultWebhookWorkerGroupQueues(): Readonly<
+  Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>
+> {
+  return DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES;
 }

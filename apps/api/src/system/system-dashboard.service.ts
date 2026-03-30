@@ -15,6 +15,10 @@ const FAILED_EVENTS_CRITICAL_COUNT = 100;
 const ACTION_RATE_WARNING_THRESHOLD = 0.02;
 const ACTION_RATE_CRITICAL_THRESHOLD = 0.05;
 const ACTION_ERROR_MIN_TOTAL = 100;
+const DEFAULT_WORKER_SKEW_WARNING_PRESSURE = 4;
+const DEFAULT_WORKER_SKEW_WARNING_RATIO = 0.7;
+const DEFAULT_WORKER_SKEW_CRITICAL_PRESSURE = 8;
+const DEFAULT_WORKER_SKEW_CRITICAL_RATIO = 0.85;
 
 @Injectable()
 export class SystemDashboardService {
@@ -121,6 +125,19 @@ export class SystemDashboardService {
     const webhookSubscriptionAlert = this.buildWebhookSubscriptionAlert(webhookSubscription);
     if (webhookSubscriptionAlert) {
       alerts.push(webhookSubscriptionAlert);
+    }
+
+    const defaultWorkerSkewAlert = this.buildDefaultWorkerSkewAlert(
+      (
+        queues as {
+          webhookDefaultWorkerGroups?: Awaited<
+            ReturnType<QueueMetricsService['getSnapshot']>
+          >['webhookDefaultWorkerGroups'];
+        }
+      ).webhookDefaultWorkerGroups,
+    );
+    if (defaultWorkerSkewAlert) {
+      alerts.push(defaultWorkerSkewAlert);
     }
 
     const status = this.resolveStatus({
@@ -293,6 +310,53 @@ export class SystemDashboardService {
       otherSubscriptionsCount: 0,
       lastError: null,
       note: 'Webhook subscription snapshot пока недоступен.',
+    };
+  }
+
+  private buildDefaultWorkerSkewAlert(
+    workerGroups?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookDefaultWorkerGroups'],
+  ): SystemDashboardAlert | null {
+    if (!workerGroups) {
+      return null;
+    }
+
+    const groupLoads = Object.entries(workerGroups)
+      .map(([groupName, metrics]) => ({
+        groupName,
+        queues: metrics.queues,
+        pressure: metrics.counters.waiting + metrics.counters.active,
+      }))
+      .filter((entry) => entry.pressure > 0)
+      .sort((left, right) => right.pressure - left.pressure);
+
+    const primary = groupLoads[0];
+    if (!primary) {
+      return null;
+    }
+
+    const totalPressure = groupLoads.reduce((sum, entry) => sum + entry.pressure, 0);
+    if (totalPressure < DEFAULT_WORKER_SKEW_WARNING_PRESSURE) {
+      return null;
+    }
+
+    const share = primary.pressure / totalPressure;
+    if (share < DEFAULT_WORKER_SKEW_WARNING_RATIO) {
+      return null;
+    }
+
+    const critical =
+      primary.pressure >= DEFAULT_WORKER_SKEW_CRITICAL_PRESSURE &&
+      share >= DEFAULT_WORKER_SKEW_CRITICAL_RATIO;
+
+    return {
+      code: 'default-worker-skew',
+      level: critical ? 'critical' : 'warning',
+      title: critical
+        ? 'Один realtime worker забирает почти весь default burst'
+        : 'Нагрузка default shard’ов перекошена по worker groups',
+      detail: `${primary.groupName} сейчас держит ${primary.pressure} из ${totalPressure} active+waiting по default webhook (${primary.queues.join(', ')}).`,
+      recommendedAction:
+        'Если перекос держится дольше пары минут, проверьте hot chats и текущую shard ownership map перед ростом concurrency.',
     };
   }
 }

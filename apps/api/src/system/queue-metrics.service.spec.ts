@@ -117,6 +117,36 @@ describe('QueueMetricsService', () => {
       failed: 0,
       completed: 0,
     });
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation']).toEqual({
+      queues: ['moderation-default-2', 'moderation-default-6'],
+      counters: {
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      },
+    });
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-b']).toEqual({
+      queues: ['moderation-default-0', 'moderation-default-4'],
+      counters: {
+        waiting: 1,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 4,
+      },
+    });
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-c']).toEqual({
+      queues: ['moderation-default-1', 'moderation-default-5'],
+      counters: {
+        waiting: 1,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 5,
+      },
+    });
     expect(snapshot.webhookEvents).toMatchObject({
       received: {
         count: 7,

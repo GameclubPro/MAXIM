@@ -24,6 +24,7 @@ else
     "api-moderation"
     "api-moderation-realtime-b"
     "api-moderation-realtime-c"
+    "api-moderation-realtime-d"
     "api-moderation-background"
     "api-action"
     "miniapp-static"
@@ -37,6 +38,7 @@ API_SERVICES=(
   "api-moderation"
   "api-moderation-realtime-b"
   "api-moderation-realtime-c"
+  "api-moderation-realtime-d"
   "api-moderation-background"
   "api-action"
 )
@@ -121,6 +123,7 @@ ensure_compose_env() {
     "infra-scale-api-moderation-1"
     "infra-scale-api-moderation-realtime-b-1"
     "infra-scale-api-moderation-realtime-c-1"
+    "infra-scale-api-moderation-realtime-d-1"
     "infra-scale-api-moderation-background-1"
     "infra-scale-api-action-1"
     "infra-scale-api-1"
@@ -131,6 +134,7 @@ ensure_compose_env() {
     "infra-api-moderation-1"
     "infra-api-moderation-realtime-b-1"
     "infra-api-moderation-realtime-c-1"
+    "infra-api-moderation-realtime-d-1"
     "infra-api-moderation-background-1"
     "infra-api-action-1"
   )
@@ -268,6 +272,20 @@ recreate_service_wave() {
   done
 }
 
+ensure_requested_services_running() {
+  local service
+
+  for service in "${SERVICES[@]}"; do
+    if docker compose "${COMPOSE_FILES[@]}" ps --status running --services | grep -qx "$service"; then
+      continue
+    fi
+
+    echo "Requested service $service is not running after deploy waves. Recreating it explicitly..."
+    docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "$service"
+    wait_for_service_running "$service" 180
+  done
+}
+
 stop_conflicting_stacks() {
   docker compose "${LEGACY_COMPOSE_FILES[@]}" down --remove-orphans >/dev/null 2>&1 || true
 }
@@ -363,9 +381,11 @@ recreate_service_wave "worker" \
   "api-moderation" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
+  "api-moderation-realtime-d" \
   "api-moderation-background"
 recreate_service_wave "support" "api-admin" "miniapp-static"
 recreate_service_wave "ingress" "api-ingress"
+ensure_requested_services_running
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "http://127.0.0.1:3001/api/health/ready" 180

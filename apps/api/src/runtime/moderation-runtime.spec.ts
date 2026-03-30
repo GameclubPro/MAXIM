@@ -1,4 +1,6 @@
 import {
+  DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  getDefaultWebhookWorkerGroupQueues,
   getEnabledModerationProcessorQueues,
   moderationBackgroundTasksEnabled,
   moderationProcessorQueueEnabled,
@@ -57,5 +59,20 @@ describe('moderation-runtime', () => {
     expect(moderationBackgroundTasksEnabled('0')).toBe(false);
     expect(moderationBackgroundTasksEnabled('true')).toBe(true);
     expect(moderationBackgroundTasksEnabled(undefined)).toBe(true);
+  });
+
+  it('exposes the default shard ownership map used by realtime workers', () => {
+    expect(DEFAULT_WEBHOOK_WORKER_GROUP_NAMES).toEqual([
+      'api-moderation',
+      'api-moderation-realtime-b',
+      'api-moderation-realtime-c',
+      'api-moderation-realtime-d',
+    ]);
+    expect(getDefaultWebhookWorkerGroupQueues()).toEqual({
+      'api-moderation': ['moderation-default-2', 'moderation-default-6'],
+      'api-moderation-realtime-b': ['moderation-default-0', 'moderation-default-4'],
+      'api-moderation-realtime-c': ['moderation-default-1', 'moderation-default-5'],
+      'api-moderation-realtime-d': ['moderation-default-3', 'moderation-default-7'],
+    });
   });
 });

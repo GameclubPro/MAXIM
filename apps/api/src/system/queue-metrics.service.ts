@@ -3,6 +3,11 @@ import { Injectable, Optional } from '@nestjs/common';
 import { WebhookStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  getDefaultWebhookWorkerGroupQueues,
+  type DefaultWebhookWorkerGroupName,
+} from '../runtime/moderation-runtime';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -35,11 +40,20 @@ export type WebhookStatusMetrics = {
   oldestLagSec: number;
 };
 
+export type WebhookDefaultWorkerGroupMetrics = {
+  queues: DefaultWebhookQueueName[];
+  counters: QueueCounters;
+};
+
 export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   webhookCritical: QueueCounters;
   webhookDefault: QueueCounters;
   webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
+  webhookDefaultWorkerGroups: Record<
+    DefaultWebhookWorkerGroupName,
+    WebhookDefaultWorkerGroupMetrics
+  >;
   webhookBackground: QueueCounters;
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
@@ -186,6 +200,7 @@ export class QueueMetricsService {
       ]),
     ) as Record<DefaultWebhookQueueName, QueueCounters>;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
+    const webhookDefaultWorkerGroups = this.buildWebhookDefaultWorkerGroups(webhookDefaultShards);
 
     const actionHealth = this.actionHealthService.getSnapshot(60);
     const oldestQueuedLagSec = queued.oldestLagSec;
@@ -203,6 +218,7 @@ export class QueueMetricsService {
       webhookCritical,
       webhookDefault,
       webhookDefaultShards,
+      webhookDefaultWorkerGroups,
       webhookBackground,
       webhookLegacy,
       actions,
@@ -250,6 +266,27 @@ export class QueueMetricsService {
       }),
       { ...EMPTY_COUNTERS },
     );
+  }
+
+  private buildWebhookDefaultWorkerGroups(
+    webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>,
+  ): Record<DefaultWebhookWorkerGroupName, WebhookDefaultWorkerGroupMetrics> {
+    const workerGroupQueues = getDefaultWebhookWorkerGroupQueues();
+
+    return Object.fromEntries(
+      DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName) => {
+        const queues = [...workerGroupQueues[groupName]];
+        return [
+          groupName,
+          {
+            queues,
+            counters: this.sumQueueCounters(
+              ...queues.map((queueName) => webhookDefaultShards[queueName] ?? { ...EMPTY_COUNTERS }),
+            ),
+          },
+        ];
+      }),
+    ) as Record<DefaultWebhookWorkerGroupName, WebhookDefaultWorkerGroupMetrics>;
   }
 
   private async readWebhookStatusMetrics(status: WebhookStatus): Promise<WebhookStatusMetrics> {
