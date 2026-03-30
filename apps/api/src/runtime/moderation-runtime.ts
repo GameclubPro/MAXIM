@@ -1,13 +1,5 @@
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -36,15 +28,23 @@ const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyW
   background: [WEBHOOK_QUEUE_BACKGROUND],
 };
 
-const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze({
-  'api-moderation': [WEBHOOK_QUEUE_DEFAULT_SHARD_2, WEBHOOK_QUEUE_DEFAULT_SHARD_6],
-  'api-moderation-realtime-b': [WEBHOOK_QUEUE_DEFAULT_SHARD_0, WEBHOOK_QUEUE_DEFAULT_SHARD_4],
-  'api-moderation-realtime-c': [WEBHOOK_QUEUE_DEFAULT_SHARD_1, WEBHOOK_QUEUE_DEFAULT_SHARD_5],
-  'api-moderation-realtime-d': [WEBHOOK_QUEUE_DEFAULT_SHARD_3, WEBHOOK_QUEUE_DEFAULT_SHARD_7],
-} satisfies Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>);
-
 export const DEFAULT_WEBHOOK_WORKER_GROUP_NAMES = Object.freeze(
-  Object.keys(DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES) as DefaultWebhookWorkerGroupName[],
+  [
+    'api-moderation',
+    'api-moderation-realtime-b',
+    'api-moderation-realtime-c',
+    'api-moderation-realtime-d',
+  ] as const satisfies readonly DefaultWebhookWorkerGroupName[],
+);
+const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze(
+  Object.fromEntries(
+    DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName, groupIndex) => [
+      groupName,
+      DEFAULT_WEBHOOK_QUEUE_NAMES.filter(
+        (_, shardIndex) => shardIndex % DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.length === groupIndex,
+      ),
+    ]),
+  ) as unknown as Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>,
 );
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);

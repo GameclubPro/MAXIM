@@ -68,11 +68,30 @@ describe('moderation-runtime', () => {
       'api-moderation-realtime-c',
       'api-moderation-realtime-d',
     ]);
-    expect(getDefaultWebhookWorkerGroupQueues()).toEqual({
-      'api-moderation': ['moderation-default-2', 'moderation-default-6'],
-      'api-moderation-realtime-b': ['moderation-default-0', 'moderation-default-4'],
-      'api-moderation-realtime-c': ['moderation-default-1', 'moderation-default-5'],
-      'api-moderation-realtime-d': ['moderation-default-3', 'moderation-default-7'],
-    });
+    const queues = getDefaultWebhookWorkerGroupQueues();
+    expect(queues['api-moderation']).toEqual([
+      'moderation-default-0',
+      'moderation-default-4',
+      'moderation-default-8',
+      'moderation-default-12',
+    ]);
+    expect(queues['api-moderation-realtime-b']).toEqual([
+      'moderation-default-1',
+      'moderation-default-5',
+      'moderation-default-9',
+      'moderation-default-13',
+    ]);
+    expect(queues['api-moderation-realtime-c']).toEqual([
+      'moderation-default-2',
+      'moderation-default-6',
+      'moderation-default-10',
+      'moderation-default-14',
+    ]);
+    expect(queues['api-moderation-realtime-d']).toEqual([
+      'moderation-default-3',
+      'moderation-default-7',
+      'moderation-default-11',
+      'moderation-default-15',
+    ]);
   });
 });

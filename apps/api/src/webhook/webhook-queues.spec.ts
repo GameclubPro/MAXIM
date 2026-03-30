@@ -37,8 +37,8 @@ describe('webhook-queues', () => {
       hotChatIds.map((chatId) => resolveDefaultWebhookQueueIndexForChatId(chatId)),
     );
 
-    expect(DEFAULT_WEBHOOK_QUEUE_NAMES).toHaveLength(8);
-    expect(shardIndexes.size).toBeGreaterThanOrEqual(4);
+    expect(DEFAULT_WEBHOOK_QUEUE_NAMES).toHaveLength(16);
+    expect(shardIndexes.size).toBeGreaterThanOrEqual(6);
     expect([...shardIndexes].every((value) => value === 0 || value === 1)).toBe(false);
   });
 

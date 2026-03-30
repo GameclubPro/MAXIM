@@ -22,6 +22,7 @@ else
     "api-admin"
     "api-enqueue"
     "api-moderation"
+    "api-moderation-critical"
     "api-moderation-realtime-b"
     "api-moderation-realtime-c"
     "api-moderation-realtime-d"
@@ -36,6 +37,7 @@ API_SERVICES=(
   "api-admin"
   "api-enqueue"
   "api-moderation"
+  "api-moderation-critical"
   "api-moderation-realtime-b"
   "api-moderation-realtime-c"
   "api-moderation-realtime-d"
@@ -121,6 +123,7 @@ ensure_compose_env() {
     "infra-api-admin-1"
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
+    "infra-api-moderation-critical-1"
     "infra-api-moderation-realtime-b-1"
     "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-realtime-d-1"
@@ -369,6 +372,7 @@ recreate_service_wave "worker" \
   "api-enqueue" \
   "api-action" \
   "api-moderation" \
+  "api-moderation-critical" \
   "api-moderation-realtime-b" \
   "api-moderation-realtime-c" \
   "api-moderation-realtime-d" \

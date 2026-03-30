@@ -4,25 +4,15 @@ export type ProcessWebhookJob = {
 
 export const LEGACY_WEBHOOK_QUEUE = 'moderation';
 export const WEBHOOK_QUEUE_CRITICAL = 'moderation-critical';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_0 = 'moderation-default-0';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_1 = 'moderation-default-1';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_2 = 'moderation-default-2';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_3 = 'moderation-default-3';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_4 = 'moderation-default-4';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_5 = 'moderation-default-5';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_6 = 'moderation-default-6';
-export const WEBHOOK_QUEUE_DEFAULT_SHARD_7 = 'moderation-default-7';
 export const WEBHOOK_QUEUE_BACKGROUND = 'moderation-background';
-export const DEFAULT_WEBHOOK_QUEUE_NAMES = [
-  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
-] as const;
+export const DEFAULT_WEBHOOK_SHARD_COUNT = 16;
+export type DefaultWebhookQueueName = `moderation-default-${number}`;
+export const DEFAULT_WEBHOOK_QUEUE_NAMES = Object.freeze(
+  Array.from(
+    { length: DEFAULT_WEBHOOK_SHARD_COUNT },
+    (_, index) => `moderation-default-${index}` as DefaultWebhookQueueName,
+  ),
+);
 
 export const ACTIVE_WEBHOOK_QUEUE_NAMES = [
   WEBHOOK_QUEUE_CRITICAL,
@@ -35,7 +25,6 @@ export const ALL_WEBHOOK_QUEUE_NAMES = [
   ...ACTIVE_WEBHOOK_QUEUE_NAMES,
 ] as const;
 
-export type DefaultWebhookQueueName = (typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number];
 export type ActiveWebhookQueueName = (typeof ACTIVE_WEBHOOK_QUEUE_NAMES)[number];
 export type AnyWebhookQueueName = (typeof ALL_WEBHOOK_QUEUE_NAMES)[number];
 

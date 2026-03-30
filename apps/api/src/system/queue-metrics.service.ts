@@ -1,5 +1,6 @@
-import { InjectQueue } from '@nestjs/bullmq';
+import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Optional } from '@nestjs/common';
+import { ModuleRef } from '@nestjs/core';
 import { WebhookStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
@@ -15,14 +16,6 @@ import {
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
 } from '../webhook/webhook-queues';
 
 export type QueueCounters = {
@@ -102,39 +95,25 @@ export class QueueMetricsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly actionHealthService: ActionHealthService,
+    private readonly moduleRef: ModuleRef,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_CRITICAL) private readonly webhookCriticalQueue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_0)
-    private readonly webhookDefaultShard0Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_1)
-    private readonly webhookDefaultShard1Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_2)
-    private readonly webhookDefaultShard2Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
-    private readonly webhookDefaultShard3Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_4)
-    private readonly webhookDefaultShard4Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_5)
-    private readonly webhookDefaultShard5Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_6)
-    private readonly webhookDefaultShard6Queue?: Queue,
-    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_7)
-    private readonly webhookDefaultShard7Queue?: Queue,
     @Optional()
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly webhookBackgroundQueue?: Queue,
     @Optional() @InjectQueue(LEGACY_WEBHOOK_QUEUE) private readonly webhookLegacyQueue?: Queue,
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
   ) {
-    this.webhookDefaultQueuesByName = {
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_0]: this.webhookDefaultShard0Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_1]: this.webhookDefaultShard1Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_2]: this.webhookDefaultShard2Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_3]: this.webhookDefaultShard3Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_4]: this.webhookDefaultShard4Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_5]: this.webhookDefaultShard5Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_6]: this.webhookDefaultShard6Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_7]: this.webhookDefaultShard7Queue,
-    };
+    this.webhookDefaultQueuesByName = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
+    ) as Record<DefaultWebhookQueueName, Queue | undefined>;
+  }
+
+  private resolveOptionalQueue(queueName: DefaultWebhookQueueName): Queue | undefined {
+    try {
+      return this.moduleRef.get<Queue>(getQueueToken(queueName), { strict: false });
+    } catch {
+      return undefined;
+    }
   }
 
   async getSnapshot(options: QueueMetricsSnapshotOptions = {}): Promise<QueueMetricsSnapshot> {

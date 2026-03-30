@@ -1,5 +1,7 @@
 import { WebhookStatus } from '@prisma/client';
+import { getQueueToken } from '@nestjs/bullmq';
 import { QueueMetricsService } from './queue-metrics.service';
+import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 
 function createQueueMock(counts: {
   waiting: number;
@@ -69,19 +71,31 @@ describe('QueueMetricsService', () => {
         criticalRate: 0.02,
       }),
     };
+    const defaultQueues = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        createQueueMock(
+          index === 0
+            ? { waiting: 1, active: 1, delayed: 0, failed: 0, completed: 4 }
+            : index === 1
+              ? { waiting: 1, active: 0, delayed: 0, failed: 0, completed: 5 }
+              : { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        ),
+      ]),
+    );
+    const moduleRef = {
+      get: jest.fn((token: string) =>
+        Object.fromEntries(
+          DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [getQueueToken(queueName), defaultQueues[queueName]]),
+        )[token],
+      ),
+    };
 
     const service = new QueueMetricsService(
       prisma as never,
       actionHealthService as never,
+      moduleRef as never,
       createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
-      createQueueMock({ waiting: 1, active: 1, delayed: 0, failed: 0, completed: 4 }) as never,
-      createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 5 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
       createQueueMock({ waiting: 3, active: 1, delayed: 0, failed: 0, completed: 11 }) as never,
@@ -118,17 +132,12 @@ describe('QueueMetricsService', () => {
       completed: 0,
     });
     expect(snapshot.webhookDefaultWorkerGroups['api-moderation']).toEqual({
-      queues: ['moderation-default-2', 'moderation-default-6'],
-      counters: {
-        waiting: 0,
-        active: 0,
-        delayed: 0,
-        failed: 0,
-        completed: 0,
-      },
-    });
-    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-b']).toEqual({
-      queues: ['moderation-default-0', 'moderation-default-4'],
+      queues: [
+        'moderation-default-0',
+        'moderation-default-4',
+        'moderation-default-8',
+        'moderation-default-12',
+      ],
       counters: {
         waiting: 1,
         active: 1,
@@ -137,14 +146,49 @@ describe('QueueMetricsService', () => {
         completed: 4,
       },
     });
-    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-c']).toEqual({
-      queues: ['moderation-default-1', 'moderation-default-5'],
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-b']).toEqual({
+      queues: [
+        'moderation-default-1',
+        'moderation-default-5',
+        'moderation-default-9',
+        'moderation-default-13',
+      ],
       counters: {
         waiting: 1,
         active: 0,
         delayed: 0,
         failed: 0,
         completed: 5,
+      },
+    });
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-c']).toEqual({
+      queues: [
+        'moderation-default-2',
+        'moderation-default-6',
+        'moderation-default-10',
+        'moderation-default-14',
+      ],
+      counters: {
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      },
+    });
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-d']).toEqual({
+      queues: [
+        'moderation-default-3',
+        'moderation-default-7',
+        'moderation-default-11',
+        'moderation-default-15',
+      ],
+      counters: {
+        waiting: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
       },
     });
     expect(snapshot.webhookEvents).toMatchObject({

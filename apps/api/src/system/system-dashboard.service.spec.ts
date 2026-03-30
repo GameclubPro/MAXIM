@@ -67,19 +67,39 @@ function createDefaultWorkerGroups(
 ) {
   return {
     'api-moderation': {
-      queues: ['moderation-default-2', 'moderation-default-6'],
+      queues: [
+        'moderation-default-0',
+        'moderation-default-4',
+        'moderation-default-8',
+        'moderation-default-12',
+      ],
       counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     },
     'api-moderation-realtime-b': {
-      queues: ['moderation-default-0', 'moderation-default-4'],
+      queues: [
+        'moderation-default-1',
+        'moderation-default-5',
+        'moderation-default-9',
+        'moderation-default-13',
+      ],
       counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     },
     'api-moderation-realtime-c': {
-      queues: ['moderation-default-1', 'moderation-default-5'],
+      queues: [
+        'moderation-default-2',
+        'moderation-default-6',
+        'moderation-default-10',
+        'moderation-default-14',
+      ],
       counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     },
     'api-moderation-realtime-d': {
-      queues: ['moderation-default-3', 'moderation-default-7'],
+      queues: [
+        'moderation-default-3',
+        'moderation-default-7',
+        'moderation-default-11',
+        'moderation-default-15',
+      ],
       counters: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
     },
     ...overrides,
@@ -166,7 +186,12 @@ describe('SystemDashboardService', () => {
           webhookDefault: { waiting: 4, active: 2, delayed: 0, failed: 1, completed: 90 },
           webhookDefaultWorkerGroups: createDefaultWorkerGroups({
             'api-moderation-realtime-c': {
-              queues: ['moderation-default-1', 'moderation-default-5'],
+              queues: [
+                'moderation-default-2',
+                'moderation-default-6',
+                'moderation-default-10',
+                'moderation-default-14',
+              ],
               counters: { waiting: 4, active: 2, delayed: 0, failed: 0, completed: 45 },
             },
           }),

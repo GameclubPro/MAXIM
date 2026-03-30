@@ -1,12 +1,14 @@
-import { InjectQueue } from '@nestjs/bullmq';
+import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { ModuleRef } from '@nestjs/core';
 import { WebhookStatus } from '@prisma/client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
   type AnyWebhookQueueName,
@@ -15,14 +17,6 @@ import {
   resolveWebhookQueueName,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
 } from './webhook-queues';
 
 type WebhookEnqueueCandidate = {
@@ -56,24 +50,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly moduleRef: ModuleRef,
     @InjectQueue(WEBHOOK_QUEUE_CRITICAL)
     private readonly criticalQueue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_0)
-    private readonly defaultShard0Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_1)
-    private readonly defaultShard1Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_2)
-    private readonly defaultShard2Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
-    private readonly defaultShard3Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_4)
-    private readonly defaultShard4Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_5)
-    private readonly defaultShard5Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_6)
-    private readonly defaultShard6Queue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_7)
-    private readonly defaultShard7Queue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly backgroundQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(LEGACY_WEBHOOK_QUEUE)
@@ -86,22 +65,31 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
-    this.defaultShardQueuesByName = {
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_0]: this.defaultShard0Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_1]: this.defaultShard1Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_2]: this.defaultShard2Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_3]: this.defaultShard3Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_4]: this.defaultShard4Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_5]: this.defaultShard5Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_6]: this.defaultShard6Queue,
-      [WEBHOOK_QUEUE_DEFAULT_SHARD_7]: this.defaultShard7Queue,
-    };
+    this.defaultShardQueuesByName = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveDefaultShardQueue(queueName)]),
+    ) as Record<DefaultWebhookQueueName, Queue<ProcessWebhookJob>>;
     this.queuesByName = {
       [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
       ...this.defaultShardQueuesByName,
       [WEBHOOK_QUEUE_BACKGROUND]: this.backgroundQueue,
       [LEGACY_WEBHOOK_QUEUE]: this.legacyQueue,
     };
+  }
+
+  private resolveDefaultShardQueue(
+    queueName: DefaultWebhookQueueName,
+  ): Queue<ProcessWebhookJob> {
+    try {
+      return this.moduleRef.get<Queue<ProcessWebhookJob>>(getQueueToken(queueName), {
+        strict: false,
+      });
+    } catch (error: unknown) {
+      throw new Error(
+        `Missing BullMQ queue provider for ${queueName}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   onModuleInit() {
