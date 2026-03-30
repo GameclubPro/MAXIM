@@ -1827,7 +1827,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const reason =
       ruleCode === 'COMMERCIAL_AD'
-        ? 'рекламу'
+        ? 'коммерческую рекламу'
         : ruleCode === 'PROFANITY'
           ? 'грубую лексику'
           : 'нарушение текстовых правил';

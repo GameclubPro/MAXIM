@@ -699,7 +699,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Продам курс, цена 3000 руб, звоните и пишите в лс https://t.me/example',
+      text: 'Продам курс, скидка 20%, цена 3000 руб, звоните и пишите в лс https://t.me/example',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
       domainAllowlist: [],
     });
@@ -709,7 +709,7 @@ describe('RuleEngineService', () => {
     expect(violation?.metadata?.decisionBand).toBe('HIGH');
   });
 
-  it('classifies weak commercial context as LOW', async () => {
+  it('does not detect COMMERCIAL_AD for promo mention without sale context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -719,12 +719,10 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
-    expect(violation).toBeDefined();
-    expect(violation?.metadata?.decisionBand).toBe('LOW');
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
-  it('classifies intent + contact without price as non-LOW commercial violation', async () => {
+  it('does not detect COMMERCIAL_AD for private sale without promo context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -734,12 +732,10 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
-    expect(violation).toBeDefined();
-    expect(violation?.metadata?.decisionBand).not.toBe('LOW');
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
-  it('classifies intent + link without price as non-LOW commercial violation', async () => {
+  it('does not detect COMMERCIAL_AD for private service without promo context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -749,12 +745,10 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
-    expect(violation).toBeDefined();
-    expect(violation?.metadata?.decisionBand).not.toBe('LOW');
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
-  it('classifies russian phone number as contact signal for commercial ad', async () => {
+  it('does not detect COMMERCIAL_AD for private sale with phone only', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -764,9 +758,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
-    expect(violation).toBeDefined();
-    expect(violation?.metadata?.decisionBand).toBe('MEDIUM');
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
   it('does not detect COMMERCIAL_AD for non-sales request without contacts', async () => {
@@ -787,7 +779,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Pr0dam услуги, пишите в тeлeграм, цена 5000 руб',
+      text: 'Pr0dam курс, скидка 30%, пишите в тeлeграм, цена 5000 руб',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
       domainAllowlist: [],
     });

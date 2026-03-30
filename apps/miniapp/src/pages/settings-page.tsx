@@ -462,7 +462,7 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Ссылки',
   greeting: 'Приветствие',
   profanityFilter: 'Мат и оскорбления',
-  commercialFilter: 'Удаление рекламы',
+  commercialFilter: 'Коммерческая реклама',
   thematicFilters: 'Кодовые слова',
   duplicates: 'Повторы',
   limits: 'Ограничения',
@@ -6418,11 +6418,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '135ms', order: 12 }}
-              aria-label="Удаление рекламы"
+              aria-label="Коммерческая реклама"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Удаление рекламы"
+                  title="Коммерческая реклама"
                   icon="ads"
                   tone="amber"
                   open={expandedSections.commercialFilter}
@@ -6434,7 +6434,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
                 open={expandedSections.commercialFilter}
-                title="Удаление рекламы"
+                title="Коммерческая реклама"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
@@ -6452,7 +6452,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">
-                              Удалять рекламу (RU)
+                              Фильтровать коммерческую рекламу (RU)
                             </span>
                             <button
                               type="button"
@@ -6460,7 +6460,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 'settings-info-button',
                                 openHintKey === 'textFiltersCommercial' && 'is-open',
                               )}
-                              aria-label='Пояснение для "Удалять рекламу (RU)"'
+                              aria-label='Пояснение для "Фильтровать коммерческую рекламу (RU)"'
                               aria-controls="commercial-ads-filter-enabled-hint"
                               aria-expanded={openHintKey === 'textFiltersCommercial'}
                               onClick={() => toggleHint('textFiltersCommercial')}
@@ -6471,7 +6471,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Удалять рекламу (RU)"
+                            aria-label="Фильтровать коммерческую рекламу (RU)"
                           >
                             <input
                               type="checkbox"
@@ -6495,7 +6495,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="commercial-ads-filter-enabled-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Удаляет рекламные и торговые объявления в чате.
+                            Удаляет сообщения с явным коммерческим продвижением: акции,
+                            промо-подачу, витрины, ссылки на продажу и другие бизнес-объявления.
+                            Частные объявления и разовые бытовые предложения старается не трогать.
                           </p>
                         ) : null}
                       </div>
@@ -6507,7 +6509,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="separator"
                             aria-label="Параметры коммерческого фильтра"
                           >
-                            <span>Удаление рекламы</span>
+                            <span>Фильтр коммерческой рекламы</span>
                           </div>
 
                           <div className="settings-native-toggle commercial-settings-panel">
@@ -6571,7 +6573,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="separator"
                             aria-label="Действия бота для коммерческих объявлений"
                           >
-                            <span>Действия бота · Удаление рекламы</span>
+                            <span>Действия бота · Коммерческая реклама</span>
                           </div>
 
                           <div className="settings-native-toggle">

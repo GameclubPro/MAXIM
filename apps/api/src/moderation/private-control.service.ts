@@ -522,7 +522,7 @@ const SECTION_LABELS: Record<PrivateSectionKey, string> = {
   links: 'Модерация ссылок',
   greeting: 'Приветствие',
   profanityFilter: 'Фильтр нецензурной лексики',
-  commercialFilter: 'Фильтр коммерции',
+  commercialFilter: 'Фильтр коммерческой рекламы',
   thematicFilters: 'Тематические фильтры',
   duplicates: 'Дубли сообщений',
   limits: 'Ограничения сообщений',
@@ -6510,7 +6510,7 @@ export class PrivateControlService {
 
     if (settings.commercialAdsFilterEnabled) {
       items.push(
-        'Рекламу и коммерческие предложения публикуйте только по согласованию с администраторами.',
+        'Коммерческую рекламу публикуйте только по согласованию с администраторами.',
       );
     }
 

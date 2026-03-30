@@ -69,6 +69,10 @@ type CommercialSignalState = {
   hasContact: boolean;
   hasDealChannel: boolean;
   hasTransactional: boolean;
+  hasDealSignal: boolean;
+  hasPromoContext: boolean;
+  hasBusinessContext: boolean;
+  hasCommercialContext: boolean;
   hasStrongNegativeContext: boolean;
 };
 
@@ -173,7 +177,6 @@ const ADS_INTENT_MARKERS = [
   'продажа',
   'продается',
   'продаётся',
-  'куплю',
   'купите',
   'сдам',
   'сдаю',
@@ -184,21 +187,38 @@ const ADS_INTENT_MARKERS = [
   'услуги',
   'на заказ',
   'заказ',
+];
+const ADS_PROMO_MARKERS = [
+  'акци',
   'прайс',
   'прайс-лист',
   'прайс лист',
-  'коммерция',
-];
-const ADS_PROMO_MARKERS = [
   'промокод',
   'скидк',
-  'акци',
   'распродаж',
   'доставк',
   'в наличии',
   'опт',
   'розниц',
   'остатк',
+];
+const ADS_BUSINESS_MARKERS = [
+  'коммерция',
+  'магазин',
+  'салон',
+  'студия',
+  'компания',
+  'каталог',
+  'витрина',
+  'ассортимент',
+  'товары',
+  'заказывайте',
+  'оформить заказ',
+  'оформляйте заказ',
+  'менеджер',
+  'подписывайтесь',
+  'поставщик',
+  'производитель',
 ];
 const ADS_CONTACT_MARKERS = [
   'пишите в лс',
@@ -227,6 +247,16 @@ const ADS_NEGATIVE_MARKERS = [
   'кто подскажет',
   'ищу совет',
   'посоветуйте',
+];
+const ADS_PRIVATE_CONTEXT_MARKERS = [
+  'собственник',
+  'личные вещи',
+  'свои вещи',
+  'б/у',
+  'с рук',
+  'отдам',
+  'даром',
+  'обмен',
 ];
 const ADS_QUESTION_CONTEXT_MARKERS = ['кто подскажет', 'посоветуйте', 'как лучше', 'что выбрать'];
 const ADS_LINK_PATTERN = /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|avito|youla)/iu;
@@ -486,14 +516,21 @@ export class RuleEngineService {
     const hasMarker = (marker: string): boolean =>
       normalizedText.includes(marker) || rawLoweredText.includes(marker);
 
-    return (
+    const hasCommercialContext =
+      ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_BUSINESS_MARKERS.some((marker) => hasMarker(marker));
+    const hasDealSignal =
       ADS_LINK_PATTERN.test(rawLoweredText) ||
       ADS_PHONE_PATTERN.test(rawLoweredText) ||
       ADS_PRICE_PATTERN.test(rawLoweredText) ||
       ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
       ADS_INTENT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker))
+      ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
+
+    return (
+      hasCommercialContext &&
+      hasDealSignal &&
+      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker))
     );
   }
 
@@ -807,24 +844,29 @@ export class RuleEngineService {
 
     const appliedThresholds = this.resolveCommercialThresholds(settings);
     const state = this.collectCommercialSignals(normalizedText, rawLoweredText, settings);
-    if (state.matchedSignals.length === 0) {
+    if (state.matchedSignals.length === 0 || !state.hasCommercialContext || !state.hasDealSignal) {
       return null;
     }
 
     let confidenceScore = Math.round(Math.max(0, Math.min(100, state.score)));
-    if (state.hasStrongNegativeContext && !state.hasPrice && !state.hasContact) {
+    if (state.hasStrongNegativeContext && !state.hasPrice && !state.hasContact && !state.hasDealChannel) {
       confidenceScore = Math.min(confidenceScore, appliedThresholds.warnThreshold - 1);
     }
 
     if (confidenceScore >= appliedThresholds.deleteThreshold) {
       const hasStrongCommercialCombo =
-        state.hasIntent && (state.hasTransactional || state.hasContact || state.hasDealChannel);
+        state.hasCommercialContext &&
+        (state.hasTransactional || state.hasContact || state.hasDealChannel || state.hasPrice);
       if (!hasStrongCommercialCombo) {
         confidenceScore = Math.max(
           appliedThresholds.warnThreshold,
           appliedThresholds.deleteThreshold - 1,
         );
       }
+    }
+
+    if (confidenceScore < appliedThresholds.warnThreshold) {
+      return null;
     }
 
     const decisionBand: CommercialDecisionBand =
@@ -975,6 +1017,10 @@ export class RuleEngineService {
     let hasContact = false;
     let hasDealChannel = false;
     let hasTransactional = false;
+    let hasDealSignal = false;
+    let hasPromoContext = false;
+    let hasBusinessContext = false;
+    let hasCommercialContext = false;
     let hasStrongNegativeContext = false;
 
     const hasMarker = (marker: string): boolean =>
@@ -982,48 +1028,63 @@ export class RuleEngineService {
 
     const intentHits = ADS_INTENT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of intentHits.slice(0, 3)) {
-      addPositive(`intent:${marker}`, 18);
+      addPositive(`intent:${marker}`, 10);
       hasIntent = true;
+      hasDealSignal = true;
     }
 
     const promoHits = ADS_PROMO_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of promoHits.slice(0, 3)) {
-      addPositive(`promo:${marker}`, 8);
+      addPositive(`promo:${marker}`, 12);
+      hasPromoContext = true;
+      hasCommercialContext = true;
+    }
+
+    const businessHits = ADS_BUSINESS_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of businessHits.slice(0, 2)) {
+      addPositive(`business:${marker}`, 16);
+      hasBusinessContext = true;
+      hasCommercialContext = true;
     }
 
     if (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_PATTERN.test(normalizedText)) {
-      addPositive('transaction:price', 24);
+      addPositive('transaction:price', 18);
       hasPrice = true;
       hasTransactional = true;
+      hasDealSignal = true;
     }
 
     if (ADS_TRANSACTIONAL_PATTERN.test(normalizedText)) {
-      addPositive('transaction:keywords', 10);
+      addPositive('transaction:keywords', 8);
       hasTransactional = true;
+      hasDealSignal = true;
     }
 
     const contactHits = ADS_CONTACT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of contactHits.slice(0, 2)) {
-      addPositive(`contact:${marker}`, 16);
+      addPositive(`contact:${marker}`, 12);
       hasContact = true;
+      hasDealSignal = true;
     }
 
     if (ADS_PHONE_PATTERN.test(rawLoweredText) || ADS_PHONE_PATTERN.test(normalizedText)) {
-      addPositive('contact:phone', 18);
+      addPositive('contact:phone', 14);
       hasContact = true;
+      hasDealSignal = true;
     }
 
     if (ADS_LINK_PATTERN.test(rawLoweredText)) {
-      addPositive('deal-channel:link', 18);
+      addPositive('deal-channel:link', 12);
       hasDealChannel = true;
+      hasDealSignal = true;
     }
 
     if (ADS_URGENCY_PATTERN.test(normalizedText)) {
-      addPositive('booster:urgency', 9);
+      addPositive('booster:urgency', 6);
     }
 
     if (ADS_QUANTITY_PATTERN.test(normalizedText)) {
-      addPositive('booster:quantity', 8);
+      addPositive('booster:quantity', 6);
     }
 
     for (const marker of ADS_NEGATIVE_MARKERS) {
@@ -1042,16 +1103,32 @@ export class RuleEngineService {
       addNegative(`context:${marker}`, 18, true);
     }
 
-    if (rawLoweredText.includes('?') && !hasPrice && !hasContact) {
+    for (const marker of ADS_PRIVATE_CONTEXT_MARKERS) {
+      if (!hasMarker(marker)) {
+        continue;
+      }
+
+      addNegative(`private:${marker}`, 26, true);
+    }
+
+    if (rawLoweredText.includes('?') && !hasPrice && !hasContact && !hasDealChannel) {
       addNegative('context:question', 10);
     }
 
     if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
-      addPositive('combo:intent+deal', 15);
+      addPositive('combo:intent+deal', 6);
+    }
+
+    if (hasPromoContext && (hasPrice || hasContact || hasDealChannel || hasTransactional)) {
+      addPositive('combo:promo+deal', 18);
+    }
+
+    if (hasBusinessContext && (hasPrice || hasContact || hasDealChannel || hasTransactional)) {
+      addPositive('combo:business+deal', 16);
     }
 
     if (hasContact && hasPrice) {
-      addPositive('combo:contact+price', 8);
+      addPositive('combo:contact+price', 6);
     }
 
     return {
@@ -1063,6 +1140,10 @@ export class RuleEngineService {
       hasContact,
       hasDealChannel,
       hasTransactional,
+      hasDealSignal,
+      hasPromoContext,
+      hasBusinessContext,
+      hasCommercialContext,
       hasStrongNegativeContext,
     };
   }

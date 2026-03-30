@@ -7897,7 +7897,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deletes low confidence COMMERCIAL_AD as regular text-filter violation', async () => {
+  it('does not moderate message when commercial detector returns no violation', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -7930,24 +7930,7 @@ describe('ModerationService', () => {
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
-        violations: [
-          {
-            ruleCode: 'COMMERCIAL_AD',
-            score: 0.34,
-            reason: 'Low confidence ad',
-            metadata: {
-              confidenceScore: 34,
-              decisionBand: 'LOW',
-              matchedSignals: ['promo:скидк'],
-              negativeSignals: ['context:question'],
-              appliedThresholds: {
-                warnThreshold: 45,
-                deleteThreshold: 65,
-                sensitivity: 'BALANCED',
-              },
-            },
-          },
-        ],
+        violations: [],
       }),
     };
     const service = new ModerationService(
@@ -7959,20 +7942,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(prisma.violation.create).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
-      data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
-      }),
-    });
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD',
-        action: SanctionAction.NONE,
-      }),
-    });
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('sends warning on second commercial violation when explanation and warning are enabled', async () => {
@@ -8044,7 +8017,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      textFilterWarnNotice('Алексей', 'рекламу'),
+      textFilterWarnNotice('Алексей', 'коммерческую рекламу'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({

@@ -111,7 +111,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       requiredSubscriptionBan:
         'Система: {user}. Выдан бан до ручного снятия. Для сообщений требуется подписка на {channels}.',
       textFiltersMuteCommercial:
-        'Система: {user}. Выдан мут за повторную рекламу. Новые сообщения будут скрываться до конца ограничения.',
+        'Система: {user}. Выдан мут за повторную коммерческую рекламу. Новые сообщения будут скрываться до конца ограничения.',
       textFiltersMuteProfanity:
         'Система: {user}. Выдан мут за повторную грубую лексику. Новые сообщения будут скрываться до конца ограничения.',
       textFiltersMuteGeneric:
@@ -161,7 +161,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       requiredSubscriptionBan:
         '{user}, выдан бан до ручного разбана. Чтобы писать дальше, сначала подпишитесь на {channels}.',
       textFiltersMuteCommercial:
-        '{user}, реклама повторилась, поэтому выдан мут.',
+        '{user}, коммерческая реклама повторилась, поэтому выдан мут.',
       textFiltersMuteProfanity:
         '{user}, грубая лексика повторилась, поэтому выдан мут.',
       textFiltersMuteGeneric:
@@ -217,7 +217,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       requiredSubscriptionBan:
         'Товарищ {user}, оформляю бан до ручного разбана 👮‍♂️ Для сообщений нужна подписка на {channels}.',
       textFiltersMuteCommercial:
-        'Товарищ {user}, рекламу повторили, а у нас с этим короткий разговор. Оформляю мут.',
+        'Товарищ {user}, коммерческую рекламу повторили, а у нас с этим короткий разговор. Оформляю мут.',
       textFiltersMuteProfanity: 'Товарищ {user}, по лексике пошёл рецидив. Оформляю мут.',
       textFiltersMuteGeneric:
         'Товарищ {user}, нарушения пошли по второму кругу. Оформляю мут.',
@@ -268,7 +268,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, попытки писать без подписки на {channels} уже выглядят как серия, поэтому выдан мут.',
       requiredSubscriptionBan:
         '{user}, бан до ручного разбана. Без подписки на {channels} писать сюда всё равно не получится.',
-      textFiltersMuteCommercial: '{user}, реклама решила задержаться, поэтому выдан мут.',
+      textFiltersMuteCommercial:
+        '{user}, коммерческая реклама решила задержаться, поэтому выдан мут.',
       textFiltersMuteProfanity:
         '{user}, запас резких слов оказался лишним, поэтому выдан мут.',
       textFiltersMuteGeneric: '{user}, текст снова пошел мимо правил, поэтому выдан мут.',
