@@ -4960,6 +4960,139 @@ describe('ModerationService', () => {
     });
   });
 
+  it('uses local admin allowlist during manual group close without live MAX lookup', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+  });
+
+  it('skips live admin lookup in degrade mode to keep manual close moderation moving', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const systemModeService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 45,
+        action: {
+          windowSec: 60,
+          total: 100,
+          success: 96,
+          failure: 4,
+          critical: 0,
+          errorRate: 0.04,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+  });
+
   it('sends scheduled night closed notice once per active window', async () => {
     let noticeCreated = false;
     const nowParts = new Intl.DateTimeFormat('en-GB', {

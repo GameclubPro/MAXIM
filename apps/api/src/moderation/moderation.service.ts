@@ -522,6 +522,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const degradeMode = mode.mode === 'degrade';
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
+    const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
+    const nightModeActiveNow =
+      !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
     const rulesPublishedUrl = chat.rulesPublishedUrl;
     const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
@@ -621,6 +624,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       chat.adminUserIds,
       senderId,
+      {
+        allowRemoteLookup: !degradeMode,
+        skipRemoteLookupWhenLocalAdminsKnown:
+          degradeMode || manualGroupCloseActiveNow || nightModeActiveNow,
+      },
     );
     if (senderChatAdminCheck.isAdmin) {
       const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
@@ -705,7 +713,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.isNightModeForceCloseActiveNow(settings)) {
+    if (manualGroupCloseActiveNow) {
       await this.handleNightModeForceCloseMessage({
         chatId,
         userId: senderId,
@@ -718,7 +726,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.isNightModeActiveNow(settings)) {
+    if (nightModeActiveNow) {
       await this.handleNightModeMessage({
         chatId,
         userId: senderId,
@@ -7216,10 +7224,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     localAdminUserIds: string[] | undefined,
     userId: string,
+    options?: {
+      allowRemoteLookup?: boolean;
+      skipRemoteLookupWhenLocalAdminsKnown?: boolean;
+    },
   ): Promise<ChatAdminCheckResult> {
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
     if (localIsAdmin) {
       return { isAdmin: true, source: 'local' };
+    }
+
+    const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
+    if (options?.allowRemoteLookup === false) {
+      return { isAdmin: false, source: 'local_fallback' };
+    }
+    if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown) {
+      return { isAdmin: false, source: 'local_fallback' };
     }
 
     const remoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId);
@@ -8571,10 +8591,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (senderId) {
+      const mode = await this.resolveSystemModeSnapshot();
       const senderAdminCheck = await this.resolveSenderChatAdminCheck(
         chatId,
         managedChannel.adminUserIds,
         senderId,
+        {
+          allowRemoteLookup: mode.mode !== 'degrade',
+          skipRemoteLookupWhenLocalAdminsKnown: true,
+        },
       );
       if (!senderAdminCheck.isAdmin) {
         return;
