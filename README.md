@@ -18,6 +18,11 @@ Production-ready monorepo for MAX chat moderation bot and admin mini-app.
 4. Run API: `npm run dev --workspace @maxim/api`.
 5. Run mini-app: `npm run dev --workspace @maxim/miniapp`.
 
+The `.env.example` file now includes a multi-bot example:
+- the default bot stays the primary visible bot,
+- additional bots are listed in `MAX_BOTS_JSON`,
+- use `state: "dormant"` for a pre-provisioned second bot that should appear in admin metadata but must not process webhooks or actions yet.
+
 ## Mini-app mobile emulator
 
 - iPhone preview: `npm run emulator:miniapp`
