@@ -14,10 +14,25 @@ PRE_PULL_HEAD=""
 if [[ $# -ge 2 ]]; then
   SERVICES=("${@:2}")
 else
-  SERVICES=("api-ingress" "api-admin" "api-enqueue" "api-moderation" "api-action" "miniapp-static")
+  SERVICES=(
+    "api-ingress"
+    "api-admin"
+    "api-enqueue"
+    "api-moderation"
+    "api-moderation-background"
+    "api-action"
+    "miniapp-static"
+  )
 fi
 
-API_SERVICES=("api-ingress" "api-admin" "api-enqueue" "api-moderation" "api-action")
+API_SERVICES=(
+  "api-ingress"
+  "api-admin"
+  "api-enqueue"
+  "api-moderation"
+  "api-moderation-background"
+  "api-action"
+)
 
 contains_service() {
   local needle="$1"
@@ -83,6 +98,7 @@ ensure_compose_env() {
     "infra-scale-api-admin-1"
     "infra-scale-api-enqueue-1"
     "infra-scale-api-moderation-1"
+    "infra-scale-api-moderation-background-1"
     "infra-scale-api-action-1"
     "infra-scale-api-1"
     "infra-api-1"
@@ -90,6 +106,7 @@ ensure_compose_env() {
     "infra-api-admin-1"
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
+    "infra-api-moderation-background-1"
     "infra-api-action-1"
   )
 
@@ -314,7 +331,11 @@ fi
 
 ensure_compose_env
 remove_stale_service_containers "${SERVICES[@]}"
-recreate_service_wave "worker" "api-enqueue" "api-action" "api-moderation"
+recreate_service_wave "worker" \
+  "api-enqueue" \
+  "api-action" \
+  "api-moderation" \
+  "api-moderation-background"
 recreate_service_wave "support" "api-admin" "miniapp-static"
 recreate_service_wave "ingress" "api-ingress"
 

@@ -46,6 +46,7 @@ type PendingSingleLookupBatch = {
   policyName: MaxMembershipLookupPolicy;
   lookups: Map<string, PendingSingleLookup>;
   scheduled: boolean;
+  timeout: NodeJS.Timeout | null;
 };
 
 const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLookupPolicyConfig> =
@@ -102,6 +103,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly logger = new Logger(MaxMembershipLookupService.name);
   private readonly redis: Redis;
   private readonly subscriber: Redis;
+  private readonly membershipLookupBatchWindowMs: number;
+  private readonly lookupTimeoutMsByTrafficClass: Record<MaxApiTrafficClass, number>;
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
@@ -116,6 +119,25 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.subscriber = this.redis.duplicate();
+    this.membershipLookupBatchWindowMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS'),
+      12,
+      0,
+    );
+    this.lookupTimeoutMsByTrafficClass = {
+      critical: this.readConfigInt(
+        configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL'),
+        2_000,
+      ),
+      interactive: this.readConfigInt(
+        configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE'),
+        3_000,
+      ),
+      background: this.readConfigInt(
+        configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_BACKGROUND'),
+        5_000,
+      ),
+    };
   }
 
   async onModuleInit(): Promise<void> {
@@ -135,6 +157,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   }
 
   async onModuleDestroy() {
+    this.clearPendingSingleLookupBatchTimers();
     await this.subscriber.quit();
     await this.redis.quit();
   }
@@ -332,6 +355,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         policyName,
         lookups: new Map(),
         scheduled: false,
+        timeout: null,
       };
       this.pendingSingleLookupBatches.set(batchKey, batch);
     }
@@ -358,7 +382,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
     if (!batch.scheduled) {
       batch.scheduled = true;
-      void Promise.resolve().then(() => this.flushPendingSingleLookupBatch(batchKey));
+      const batchWindowMs = this.resolveSingleLookupBatchWindowMs(policyName);
+      if (batchWindowMs === 0) {
+        void Promise.resolve().then(() => this.flushPendingSingleLookupBatch(batchKey));
+      } else {
+        batch.timeout = setTimeout(() => {
+          batch!.timeout = null;
+          void this.flushPendingSingleLookupBatch(batchKey);
+        }, batchWindowMs);
+        batch.timeout.unref?.();
+      }
     }
 
     return trackedPromise;
@@ -371,6 +404,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     this.pendingSingleLookupBatches.delete(batchKey);
+    if (batch.timeout) {
+      clearTimeout(batch.timeout);
+      batch.timeout = null;
+    }
     const userIds = [...batch.lookups.keys()];
     if (userIds.length === 0) {
       return;
@@ -379,6 +416,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     try {
       const accessByUserId = await this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
         trafficClass: batch.policy.trafficClass,
+        timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
       });
       const checkedAtMs = Date.now();
       this.clearChatBackoff(batch.chatId, batch.policyName);
@@ -420,48 +458,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
   }
 
-  private createSingleLookupPromise(
-    chatId: string,
-    userId: string,
-    policyName: MaxMembershipLookupPolicy,
-    allowStaleOnError: boolean,
-  ): Promise<boolean | null> {
-    const cacheKey = this.buildCacheKey(chatId, userId);
-    const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
-    const cacheEpoch = this.readCacheEpoch(cacheKey);
-    const lookupPromise = (async () => {
-      try {
-        const isMember = await this.maxClient.hasChatMember(chatId, userId, {
-          trafficClass: policy.trafficClass,
-        });
-        const snapshot = this.buildSnapshot(isMember);
-        if (this.hasSameCacheEpoch(cacheKey, cacheEpoch)) {
-          this.storeSnapshot(cacheKey, snapshot);
-          this.backoffUntilMs.delete(cacheKey);
-        }
-        this.clearChatBackoff(chatId, policyName);
-        return isMember;
-      } catch (error: unknown) {
-        this.handleLookupError(cacheKey, cacheEpoch, policy, error, {
-          chatId,
-          userIds: [userId],
-          policyName,
-        });
-        return this.resolveLookupFallback(cacheKey, allowStaleOnError);
-      }
-    })();
-
-    let trackedPromise!: Promise<boolean | null>;
-    trackedPromise = lookupPromise.finally(() => {
-      if (this.inFlight.get(cacheKey) === trackedPromise) {
-        this.inFlight.delete(cacheKey);
-      }
-    });
-
-    this.inFlight.set(cacheKey, trackedPromise);
-    return trackedPromise;
-  }
-
   private createBatchLookupPromises(
     chatId: string,
     userIds: readonly string[],
@@ -483,6 +479,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           normalizedUserIds,
           {
             trafficClass: policy.trafficClass,
+            timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
           },
         );
         const checkedAtMs = Date.now();
@@ -549,29 +546,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     return promises;
-  }
-
-  private handleLookupError(
-    cacheKey: string,
-    cacheEpoch: number,
-    policy: MembershipLookupPolicyConfig,
-    error: unknown,
-    context: {
-      chatId: string;
-      userIds: readonly string[];
-      policyName: MaxMembershipLookupPolicy;
-    },
-  ) {
-    const transient = this.isTransientLookupError(error);
-    if (transient && this.hasSameCacheEpoch(cacheKey, cacheEpoch)) {
-      this.backoffUntilMs.set(cacheKey, Date.now() + policy.backoffMs);
-      this.applyChatBackoff(context.chatId, context.policyName, policy.backoffMs);
-    }
-
-    this.logLookupError(policy, error, {
-      ...context,
-      transient,
-    });
   }
 
   private logLookupError(
@@ -650,13 +624,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     return this.readRetainedMemorySnapshot(cacheKey)?.isMember ?? null;
-  }
-
-  private buildSnapshot(isMember: boolean): MembershipCacheSnapshot {
-    return {
-      isMember,
-      checkedAtMs: Date.now(),
-    };
   }
 
   private storeSnapshot(cacheKey: string, snapshot: MembershipCacheSnapshot) {
@@ -855,6 +822,40 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       },
       'Failed to write MAX membership snapshot to Redis',
     );
+  }
+
+  private clearPendingSingleLookupBatchTimers() {
+    for (const batch of this.pendingSingleLookupBatches.values()) {
+      if (!batch.timeout) {
+        continue;
+      }
+      clearTimeout(batch.timeout);
+      batch.timeout = null;
+    }
+  }
+
+  private resolveSingleLookupBatchWindowMs(policyName: MaxMembershipLookupPolicy): number {
+    return policyName === 'moderation_required_subscription'
+      ? this.membershipLookupBatchWindowMs
+      : 0;
+  }
+
+  private resolveLookupTimeoutMs(trafficClass: MaxApiTrafficClass): number {
+    return this.lookupTimeoutMsByTrafficClass[trafficClass];
+  }
+
+  private readConfigInt(value: unknown, fallback: number, min = 1): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue >= min) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
   }
 
   private extractStatusCode(error: unknown): number | null {

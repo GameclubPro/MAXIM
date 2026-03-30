@@ -12,6 +12,7 @@ ensure_compose_env() {
     "infra-api-ingress-1"
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
+    "infra-api-moderation-background-1"
     "infra-api-action-1"
     "infra-api-1"
   )

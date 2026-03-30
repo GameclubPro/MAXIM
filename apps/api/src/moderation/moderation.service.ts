@@ -46,6 +46,7 @@ import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
+import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
@@ -326,6 +327,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostStartupJitterMs: number;
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
+  private readonly requiredSubscriptionLookupConcurrency: number;
+  private readonly backgroundTasksEnabled: boolean;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -384,10 +387,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
       DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
     );
+    this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
+      configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
+      2,
+    );
+    this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
+      configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
+    );
   }
 
   onModuleInit() {
     if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    if (!this.backgroundTasksEnabled) {
       return;
     }
 
@@ -542,8 +555,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
-    const nightModeActiveNow =
-      !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
+    const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
     const rulesPublishedUrl = chat.rulesPublishedUrl;
     const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
@@ -5488,7 +5500,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async processNightModeAnnouncements() {
-    if (this.nightModeAnnounceInFlight || !roleRunsModeration(getAppRole())) {
+    if (
+      this.nightModeAnnounceInFlight ||
+      !this.backgroundTasksEnabled ||
+      !roleRunsModeration(getAppRole())
+    ) {
       return;
     }
     if (await this.shouldPauseBackgroundWork('night-mode-announcements')) {
@@ -6141,26 +6157,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     requiredChannelIds: readonly string[],
   ): Promise<{ missingChannelIds: string[] } | null> {
-    const missingChannelIds: string[] = [];
-
-    for (const channelId of requiredChannelIds) {
-      const membership = await this.getRequiredSubscriptionMembership(channelId, userId);
-      if (membership === null) {
-        this.logger.warn(
-          {
-            chatId,
-            userId,
-            channelId,
-          },
-          'Required subscription check failed; skipping enforcement',
-        );
-        return null;
-      }
-
-      if (!membership) {
-        missingChannelIds.push(channelId);
-      }
+    const membershipChecks = await this.mapWithConcurrency(
+      requiredChannelIds,
+      this.requiredSubscriptionLookupConcurrency,
+      async (channelId) => ({
+        channelId,
+        membership: await this.getRequiredSubscriptionMembership(channelId, userId),
+      }),
+    );
+    const failedChannelIds = membershipChecks
+      .filter((item) => item.membership === null)
+      .map((item) => item.channelId);
+    if (failedChannelIds.length > 0) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          failedChannelIds,
+          checkedChannelCount: requiredChannelIds.length,
+        },
+        'Required subscription checks failed; skipping enforcement',
+      );
+      return null;
     }
+
+    const missingChannelIds = membershipChecks
+      .filter((item) => item.membership === false)
+      .map((item) => item.channelId);
 
     return { missingChannelIds };
   }
@@ -6214,6 +6237,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         const isMember = await this.maxClient.hasChatMember(channelId, userId, {
           trafficClass: 'critical',
+          timeoutMs: 2_000,
         });
         const ttlSec = isMember
           ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
@@ -6259,24 +6283,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async resolveRequiredSubscriptionChannels(
     channelIds: readonly string[],
   ): Promise<Array<{ id: string; title: string; link: string | null }>> {
-    const channels: Array<{ id: string; title: string; link: string | null }> = [];
-
-    for (const channelId of channelIds) {
+    return this.mapWithConcurrency(channelIds, 2, async (channelId) => {
       const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
       const cachedLink = cached?.link?.trim() || null;
       const cachedTitle = cached?.title?.trim() || '';
       if (cached && cachedLink) {
-        channels.push({
+        return {
           id: channelId,
           title: cachedTitle || `Канал ${channelId}`,
           link: cachedLink,
-        });
-        continue;
+        };
       }
 
       try {
         const snapshot = await this.maxClient.getChatSnapshot(channelId, {
-          trafficClass: 'critical',
+          trafficClass: 'interactive',
+          timeoutMs: 2_500,
         });
         const title = snapshot.title?.trim() || `Канал ${channelId}`;
         const link = snapshot.link?.trim() || null;
@@ -6287,11 +6309,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           link,
           participantsCount: snapshot.participantsCount,
         });
-        channels.push({
+        return {
           id: channelId,
           title,
           link,
-        });
+        };
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -6300,15 +6322,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to resolve required subscription channel metadata',
         );
-        channels.push({
+        return {
           id: channelId,
           title: cachedTitle || `Канал ${channelId}`,
           link: null,
-        });
+        };
       }
-    }
-
-    return channels;
+    });
   }
 
   private async hasRequiredSubscriptionNoticeCooldown(
@@ -8726,7 +8746,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async processChannelAutoPostButtons(): Promise<void> {
-    if (this.channelAutoPostInFlight) {
+    if (this.channelAutoPostInFlight || !this.backgroundTasksEnabled) {
       return;
     }
     if (Date.now() < this.channelAutoPostBackoffUntilMs) {
@@ -8823,9 +8843,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const normalizedMessages = messages
       .map((message) => this.parseChannelListedMessage(message))
       .filter(
-        (
-          item,
-        ): item is NonNullable<ReturnType<typeof this.parseChannelListedMessage>> => item !== null,
+        (item): item is NonNullable<ReturnType<typeof this.parseChannelListedMessage>> =>
+          item !== null,
       )
       .sort(
         (left, right) =>
@@ -9093,8 +9112,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 chatId,
                 messageId,
                 status: fallbackStatus,
-                error:
-                  fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
+                error: fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
               },
               'Failed to publish fallback reply for channel post buttons; skipping retry',
             );
@@ -10438,9 +10456,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return {
       ...current,
-      latestMessageIdsAtTimestamp: [...current.latestMessageIdsAtTimestamp, message.messageId].slice(
-        -10,
-      ),
+      latestMessageIdsAtTimestamp: [
+        ...current.latestMessageIdsAtTimestamp,
+        message.messageId,
+      ].slice(-10),
     };
   }
 
@@ -10515,6 +10534,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return fallback;
+  }
+
+  private async mapWithConcurrency<T, R>(
+    items: readonly T[],
+    requestedConcurrency: number,
+    mapper: (item: T, index: number) => Promise<R>,
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const results = new Array<R>(items.length);
+    const concurrency = Math.min(items.length, Math.max(1, Math.trunc(requestedConcurrency)));
+    let nextIndex = 0;
+
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await mapper(items[currentIndex]!, currentIndex);
+      }
+    });
+
+    await Promise.all(workers);
+    return results;
   }
 
   private async sleep(ms: number): Promise<void> {

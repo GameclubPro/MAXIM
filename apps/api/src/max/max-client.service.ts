@@ -228,6 +228,7 @@ type MaxApiRequestOptions = {
   trafficClass?: MaxApiTrafficClass;
   bypassCache?: boolean;
   ignoreFailureMetricStatuses?: readonly number[];
+  timeoutMs?: number;
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -1275,6 +1276,10 @@ export class MaxClientService implements OnModuleDestroy {
     options: MaxApiRequestOptions = {},
   ): Promise<MaxChatSnapshot> {
     const normalizedChatId = chatId.trim();
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
     if (!options.bypassCache) {
       const cachedSnapshot = await this.readJsonCache(
         this.buildChatSnapshotCacheKey(normalizedChatId),
@@ -1287,7 +1292,10 @@ export class MaxClientService implements OnModuleDestroy {
 
     const data = await this.executeChatRequest(
       normalizedChatId,
-      async () => this.request<Record<string, unknown>>('get', `/chats/${normalizedChatId}`),
+      async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${normalizedChatId}`, {
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
+        }),
       options,
     );
     const link = this.parseChatLink(data);
@@ -1376,9 +1384,16 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     options: MaxApiRequestOptions = {},
   ): Promise<MaxChatMemberAccess> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
     const data = await this.executeChatRequest(
       chatId,
-      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`),
+      async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`, {
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
+        }),
       options,
     );
     return this.parseChatMemberAccess(data);
@@ -1402,6 +1417,10 @@ export class MaxClientService implements OnModuleDestroy {
     userIds: readonly string[],
     options: MaxApiRequestOptions = {},
   ): Promise<Map<string, MaxChatMemberAccess>> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
     const normalizedUserIds = Array.from(
       new Set(
         userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
@@ -1426,6 +1445,9 @@ export class MaxClientService implements OnModuleDestroy {
           this.request<Record<string, unknown>>(
             'get',
             `/chats/${chatId}/members?${query.toString()}`,
+            {
+              ...(timeoutMs ? { timeout: timeoutMs } : {}),
+            },
           ),
         options,
       );
@@ -1457,11 +1479,16 @@ export class MaxClientService implements OnModuleDestroy {
     if (!normalizedUserId) {
       return false;
     }
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
 
     const data = await this.executeChatRequest(
       chatId,
       async () =>
         this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
           params: {
             user_ids: normalizedUserId,
           },
@@ -2998,6 +3025,7 @@ export class MaxClientService implements OnModuleDestroy {
       chatId?: string | null;
       trafficClass?: MaxApiTrafficClass;
       ignoreFailureMetricStatuses?: readonly number[];
+      timeoutMs?: number;
     } = {},
   ): Promise<T> {
     await this.ensureCircuitClosed();
@@ -3055,12 +3083,14 @@ export class MaxClientService implements OnModuleDestroy {
       chatId,
       trafficClass: normalizedOptions.trafficClass ?? 'critical',
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
+      timeoutMs: normalizedOptions.timeoutMs,
     });
   }
 
   private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
     trafficClass?: MaxApiTrafficClass;
     ignoreFailureMetricStatuses?: readonly number[];
+    timeoutMs?: number;
   } {
     if (typeof options === 'string') {
       return { trafficClass: options };
@@ -3071,6 +3101,10 @@ export class MaxClientService implements OnModuleDestroy {
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         options.ignoreFailureMetricStatuses,
       ),
+      timeoutMs:
+        typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+          ? Math.max(1, Math.trunc(options.timeoutMs))
+          : undefined,
     };
   }
 
@@ -3245,10 +3279,7 @@ export class MaxClientService implements OnModuleDestroy {
       }
 
       await this.sleep(
-        Math.max(
-          this.rateLimitRetryFloorMs,
-          Math.min(reservation.retryAfterMs, remainingWaitMs),
-        ),
+        Math.max(this.rateLimitRetryFloorMs, Math.min(reservation.retryAfterMs, remainingWaitMs)),
       );
     }
   }
@@ -3298,7 +3329,11 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
-      reason: this.buildRateLimitExceededMessage(chatId, trafficClass, Math.trunc(rejectedKeyIndex)),
+      reason: this.buildRateLimitExceededMessage(
+        chatId,
+        trafficClass,
+        Math.trunc(rejectedKeyIndex),
+      ),
     };
   }
 
@@ -3328,10 +3363,7 @@ export class MaxClientService implements OnModuleDestroy {
       }
     })();
 
-    return Math.max(
-      configuredLimit,
-      Math.max(1, this.globalRpsLimit - reservedForOtherClasses),
-    );
+    return Math.max(configuredLimit, Math.max(1, this.globalRpsLimit - reservedForOtherClasses));
   }
 
   private resolveTrafficClassRateLimitWaitMs(trafficClass: MaxApiTrafficClass): number {

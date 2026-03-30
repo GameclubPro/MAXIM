@@ -10983,12 +10983,67 @@ describe('ModerationService', () => {
 
       expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
         trafficClass: 'critical',
+        timeoutMs: 2_000,
       });
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('checks multiple required subscription channels with bounded parallelism', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const resolvers: Array<(value: boolean | null) => void> = [];
+      const membershipLookupService = {
+        getMembership: jest.fn().mockImplementation(
+          () =>
+            new Promise<boolean | null>((resolve) => {
+              resolvers.push(resolve);
+            }),
+        ),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+      );
+
+      const lookupPromise = (
+        service as unknown as {
+          resolveRequiredSubscriptionMembership: (
+            chatId: string,
+            userId: string,
+            requiredChannelIds: string[],
+          ) => Promise<{ missingChannelIds: string[] } | null>;
+        }
+      ).resolveRequiredSubscriptionMembership('chat-1', 'user-1', [
+        'channel-1',
+        'channel-2',
+        'channel-3',
+      ]);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(membershipLookupService.getMembership).toHaveBeenCalledTimes(2);
+
+      resolvers[0]?.(true);
+      resolvers[1]?.(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(membershipLookupService.getMembership).toHaveBeenCalledTimes(3);
+
+      resolvers[2]?.(true);
+      await expect(lookupPromise).resolves.toEqual({ missingChannelIds: [] });
     });
 
     it('deletes the message, records violation, and sends buttons only for missing channels', async () => {

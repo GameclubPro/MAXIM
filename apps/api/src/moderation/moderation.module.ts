@@ -4,6 +4,7 @@ import { AdminModule } from '../admin/admin.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
+import { getEnabledModerationProcessorQueues } from '../runtime/moderation-runtime';
 import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
@@ -12,13 +13,20 @@ import {
   LegacyModerationProcessor,
   ModerationService,
 } from './moderation.service';
-import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
+import {
+  ALL_WEBHOOK_QUEUE_NAMES,
+  LEGACY_WEBHOOK_QUEUE,
+  WEBHOOK_QUEUE_BACKGROUND,
+  WEBHOOK_QUEUE_CRITICAL,
+  WEBHOOK_QUEUE_DEFAULT,
+} from '../webhook/webhook-queues';
 import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 
+const enabledModerationQueues = getEnabledModerationProcessorQueues();
 const moderationProviders = [
   ModerationService,
   PrivateControlService,
@@ -27,10 +35,12 @@ const moderationProviders = [
   SanctionService,
   ...(roleRunsModeration(getAppRole())
     ? [
-        LegacyModerationProcessor,
-        CriticalWebhookProcessor,
-        DefaultWebhookProcessor,
-        BackgroundWebhookProcessor,
+        ...(enabledModerationQueues.has(LEGACY_WEBHOOK_QUEUE) ? [LegacyModerationProcessor] : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_CRITICAL) ? [CriticalWebhookProcessor] : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT) ? [DefaultWebhookProcessor] : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
+          ? [BackgroundWebhookProcessor]
+          : []),
       ]
     : []),
 ];

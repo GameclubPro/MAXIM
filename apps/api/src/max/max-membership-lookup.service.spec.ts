@@ -71,7 +71,7 @@ jest.mock('ioredis', () => {
 
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
 
-function createConfigMock() {
+function createConfigMock(overrides: Partial<Record<string, number | string>> = {}) {
   return {
     getOrThrow: jest.fn((key: string) => {
       if (key === 'REDIS_URL') {
@@ -79,6 +79,15 @@ function createConfigMock() {
       }
 
       throw new Error(`Unexpected config key ${key}`);
+    }),
+    get: jest.fn((key: string) => {
+      if (key in overrides) {
+        return overrides[key];
+      }
+      if (key === 'MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS') {
+        return 0;
+      }
+      return undefined;
     }),
   };
 }
@@ -211,9 +220,58 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'channel-1',
       ['user-1', 'user-2', 'user-3'],
-      { trafficClass: 'critical' },
+      { trafficClass: 'critical', timeoutMs: 2_000 },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
+  it('debounces hot single-user moderation lookups long enough to batch near-simultaneous updates', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:13:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          ['user-7', { userId: 'user-7', isAdmin: false }],
+          ['user-8', { userId: 'user-8', isAdmin: false }],
+        ]),
+      ),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({
+        MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS: 12,
+      }) as never,
+    );
+
+    const firstLookup = service.getMembership(
+      'channel-2',
+      'user-7',
+      'moderation_required_subscription',
+      {
+        forceRefresh: true,
+      },
+    );
+    jest.advanceTimersByTime(6);
+    const secondLookup = service.getMembership(
+      'channel-2',
+      'user-8',
+      'moderation_required_subscription',
+      {
+        forceRefresh: true,
+      },
+    );
+
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+
+    jest.advanceTimersByTime(6);
+
+    await expect(Promise.all([firstLookup, secondLookup])).resolves.toEqual([true, true]);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-2', ['user-7', 'user-8'], {
+      trafficClass: 'critical',
+      timeoutMs: 2_000,
+    });
   });
 
   it('backs off repeated lookups for the same chat after a transient batch failure', async () => {
@@ -321,9 +379,8 @@ describe('MaxMembershipLookupService', () => {
   it('starts a fresh lookup instead of reusing an invalidated in-flight promise', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:25:00.000Z'));
 
-    let resolveLookup:
-      | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
-      | null = null;
+    let resolveLookup: ((value: Map<string, { userId: string; isAdmin: boolean }>) => void) | null =
+      null;
     const maxClient = {
       hasChatMember: jest.fn(),
       getChatMembersAccess: jest
@@ -347,10 +404,9 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-5', 'giveaway_interactive'),
     ).resolves.toBe(false);
 
-    const finishLookup =
-      resolveLookup as
-        | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
-        | null;
+    const finishLookup = resolveLookup as
+      | ((value: Map<string, { userId: string; isAdmin: boolean }>) => void)
+      | null;
     if (!finishLookup) {
       throw new Error('Expected pending membership lookup resolver');
     }

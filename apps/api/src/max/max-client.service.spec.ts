@@ -60,28 +60,22 @@ jest.mock('ioredis', () => {
           return Math.max(0, entry.expiresAtMs - Date.now());
         }),
         get: jest.fn().mockImplementation(async (key: string) => readEntry(key)?.value ?? null),
-        set: jest.fn().mockImplementation(async (key: string, value: string, ...args: unknown[]) => {
-          let expiresAtMs: number | null = null;
-          if (
-            args[0] === 'EX' &&
-            typeof args[1] === 'number' &&
-            Number.isFinite(args[1])
-          ) {
-            expiresAtMs = Date.now() + args[1] * 1_000;
-          }
-          if (
-            args[0] === 'PX' &&
-            typeof args[1] === 'number' &&
-            Number.isFinite(args[1])
-          ) {
-            expiresAtMs = Date.now() + args[1];
-          }
-          store.set(key, {
-            value,
-            expiresAtMs,
-          });
-          return 'OK';
-        }),
+        set: jest
+          .fn()
+          .mockImplementation(async (key: string, value: string, ...args: unknown[]) => {
+            let expiresAtMs: number | null = null;
+            if (args[0] === 'EX' && typeof args[1] === 'number' && Number.isFinite(args[1])) {
+              expiresAtMs = Date.now() + args[1] * 1_000;
+            }
+            if (args[0] === 'PX' && typeof args[1] === 'number' && Number.isFinite(args[1])) {
+              expiresAtMs = Date.now() + args[1];
+            }
+            store.set(key, {
+              value,
+              expiresAtMs,
+            });
+            return 'OK';
+          }),
         del: jest.fn().mockImplementation(async (...keys: string[]) => {
           let deleted = 0;
           for (const key of keys) {
@@ -91,40 +85,42 @@ jest.mock('ioredis', () => {
           }
           return deleted;
         }),
-        eval: jest.fn().mockImplementation(
-          async (script: string, numKeys: number, ...args: Array<string | number>) => {
-            if (!script.includes('PTTL') || !script.includes('INCR')) {
-              throw new Error('Unexpected Redis eval script');
-            }
-
-            const keys = args.slice(0, numKeys).map((value) => String(value));
-            const argValues = args.slice(numKeys);
-            const ttlMs = Number(argValues[argValues.length - 1] ?? 0);
-
-            for (let index = 0; index < numKeys; index += 1) {
-              const count = Number(readEntry(keys[index])?.value ?? '0');
-              const limit = Number(argValues[index] ?? 0);
-              if (count >= limit) {
-                const entry = readEntry(keys[index]);
-                const retryAfterMs =
-                  entry?.expiresAtMs !== null && entry?.expiresAtMs !== undefined
-                    ? Math.max(1, entry.expiresAtMs - Date.now())
-                    : ttlMs;
-                return [0, index + 1, retryAfterMs];
+        eval: jest
+          .fn()
+          .mockImplementation(
+            async (script: string, numKeys: number, ...args: Array<string | number>) => {
+              if (!script.includes('PTTL') || !script.includes('INCR')) {
+                throw new Error('Unexpected Redis eval script');
               }
-            }
 
-            for (const key of keys) {
-              const current = Number(readEntry(key)?.value ?? '0') + 1;
-              store.set(key, {
-                value: String(current),
-                expiresAtMs: Date.now() + ttlMs,
-              });
-            }
+              const keys = args.slice(0, numKeys).map((value) => String(value));
+              const argValues = args.slice(numKeys);
+              const ttlMs = Number(argValues[argValues.length - 1] ?? 0);
 
-            return [1, 0, 0];
-          },
-        ),
+              for (let index = 0; index < numKeys; index += 1) {
+                const count = Number(readEntry(keys[index])?.value ?? '0');
+                const limit = Number(argValues[index] ?? 0);
+                if (count >= limit) {
+                  const entry = readEntry(keys[index]);
+                  const retryAfterMs =
+                    entry?.expiresAtMs !== null && entry?.expiresAtMs !== undefined
+                      ? Math.max(1, entry.expiresAtMs - Date.now())
+                      : ttlMs;
+                  return [0, index + 1, retryAfterMs];
+                }
+              }
+
+              for (const key of keys) {
+                const current = Number(readEntry(key)?.value ?? '0') + 1;
+                store.set(key, {
+                  value: String(current),
+                  expiresAtMs: Date.now() + ttlMs,
+                });
+              }
+
+              return [1, 0, 0];
+            },
+          ),
         quit: jest.fn().mockResolvedValue(undefined),
         multi: jest.fn().mockImplementation(() => {
           const operations: Array<['incr' | 'expire', ...unknown[]]> = [];
@@ -167,7 +163,9 @@ jest.mock('ioredis', () => {
 
 describe('MaxClientService inline keyboard guardrails', () => {
   beforeEach(() => {
-    (Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }).__store.clear();
+    (
+      Redis as unknown as { __store: Map<string, { value: string; expiresAtMs: number | null }> }
+    ).__store.clear();
   });
 
   function createService(
@@ -1601,6 +1599,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('passes timeout override to targeted chat member lookups', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                role: 'member',
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.getChatMembersAccess('chat-1', ['user-1'], {
+      trafficClass: 'critical',
+      timeoutMs: 1_234,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1',
+        timeout: 1_234,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns null when requested chat member is absent', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -1737,9 +1769,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_API_RATE_LIMIT_WAIT_MS_INTERACTIVE: '0',
     });
 
-    (service as unknown as { limiterRedis: { eval: jest.Mock } }).limiterRedis.eval.mockResolvedValue(
-      [0, 1, 1],
-    );
+    (
+      service as unknown as { limiterRedis: { eval: jest.Mock } }
+    ).limiterRedis.eval.mockResolvedValue([0, 1, 1]);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API global rate limit exceeded',
