@@ -27,14 +27,20 @@ type ChatQueueAssignment = {
 
 type QueuePressure = {
   queueName: DefaultWebhookQueueName;
+  queuePressureScore: number;
+  workerPressureScore: number;
   queuePressure: number;
   workerPressure: number;
   leasedChats: number;
+  workerLeasedChats: number;
   tieOrder: number;
 };
 
 const DEFAULT_CHAT_ASSIGNMENT_TTL_SEC = 90;
 const DEFAULT_QUEUE_SNAPSHOT_MAX_AGE_MS = 1_000;
+const ACTIVE_QUEUE_PRESSURE_WEIGHT = 4;
+const ACTIVE_WORKER_PRESSURE_WEIGHT = 6;
+const ADAPTIVE_TTL_HOT_QUEUE_MS = 30_000;
 
 @Injectable()
 export class WebhookRoutingService {
@@ -168,9 +174,19 @@ export class WebhookRoutingService {
     const queuePressureGap = currentCandidate.queuePressure - bestCandidate.queuePressure;
     const workerPressureGap = currentCandidate.workerPressure - bestCandidate.workerPressure;
     const leasedChatsGap = currentCandidate.leasedChats - bestCandidate.leasedChats;
+    const workerLeasedChatsGap = currentCandidate.workerLeasedChats - bestCandidate.workerLeasedChats;
+    const queuePressureScoreGap =
+      currentCandidate.queuePressureScore - bestCandidate.queuePressureScore;
+    const workerPressureScoreGap =
+      currentCandidate.workerPressureScore - bestCandidate.workerPressureScore;
     const keepCurrentQueue =
       this.compareQueuePressure(currentCandidate, bestCandidate) <= 0 ||
-      (queuePressureGap <= 1 && workerPressureGap <= 2 && leasedChatsGap <= 1);
+      (queuePressureGap <= 1 &&
+        workerPressureGap <= 1 &&
+        queuePressureScoreGap <= 2 &&
+        workerPressureScoreGap <= 3 &&
+        leasedChatsGap <= 1 &&
+        workerLeasedChatsGap <= 1);
 
     return keepCurrentQueue ? currentQueueName : bestCandidate.queueName;
   }
@@ -184,6 +200,10 @@ export class WebhookRoutingService {
     const queueCounters = snapshot.webhookDefaultShards[queueName];
     const queuePressure =
       (queueCounters?.waiting ?? 0) + (queueCounters?.active ?? 0) + (queueCounters?.delayed ?? 0);
+    const queuePressureScore =
+      (queueCounters?.waiting ?? 0) +
+      (queueCounters?.active ?? 0) * ACTIVE_QUEUE_PRESSURE_WEIGHT +
+      (queueCounters?.delayed ?? 0);
     const workerGroupName = this.workerGroupByQueue[queueName];
     const workerCounters = workerGroupName
       ? snapshot.webhookDefaultWorkerGroups[workerGroupName]?.counters
@@ -191,30 +211,54 @@ export class WebhookRoutingService {
     const workerPressure = workerCounters
       ? workerCounters.waiting + workerCounters.active
       : queuePressure;
+    const workerPressureScore = workerCounters
+      ? workerCounters.waiting + workerCounters.active * ACTIVE_WORKER_PRESSURE_WEIGHT
+      : queuePressureScore;
 
     let leasedChats = 0;
+    let workerLeasedChats = 0;
     for (const assignment of this.chatAssignments.values()) {
-      if (assignment.queueName !== queueName || assignment.expiresAtMs <= now) {
+      if (assignment.expiresAtMs <= now) {
         continue;
       }
-      leasedChats += 1;
+      if (assignment.queueName === queueName) {
+        leasedChats += 1;
+      }
+      if (
+        workerGroupName &&
+        this.workerGroupByQueue[assignment.queueName] === workerGroupName
+      ) {
+        workerLeasedChats += 1;
+      }
     }
 
     return {
       queueName,
+      queuePressureScore,
+      workerPressureScore,
       queuePressure,
       workerPressure,
       leasedChats,
+      workerLeasedChats,
       tieOrder,
     };
   }
 
   private compareQueuePressure(left: QueuePressure, right: QueuePressure): number {
+    if (left.workerPressureScore !== right.workerPressureScore) {
+      return left.workerPressureScore - right.workerPressureScore;
+    }
+    if (left.queuePressureScore !== right.queuePressureScore) {
+      return left.queuePressureScore - right.queuePressureScore;
+    }
     if (left.queuePressure !== right.queuePressure) {
       return left.queuePressure - right.queuePressure;
     }
     if (left.workerPressure !== right.workerPressure) {
       return left.workerPressure - right.workerPressure;
+    }
+    if (left.workerLeasedChats !== right.workerLeasedChats) {
+      return left.workerLeasedChats - right.workerLeasedChats;
     }
     if (left.leasedChats !== right.leasedChats) {
       return left.leasedChats - right.leasedChats;
@@ -248,11 +292,36 @@ export class WebhookRoutingService {
     queueName: DefaultWebhookQueueName,
     now: number,
   ): DefaultWebhookQueueName {
+    const cachedSnapshot = this.chatAssignments.get(assignmentKey);
     this.chatAssignments.set(assignmentKey, {
       queueName,
-      expiresAtMs: now + this.chatAssignmentTtlMs,
+      expiresAtMs:
+        now +
+        (cachedSnapshot?.queueName === queueName ? this.chatAssignmentTtlMs : this.resolveAdaptiveTtlMs(queueName)),
     });
     return queueName;
+  }
+
+  private resolveAdaptiveTtlMs(queueName: DefaultWebhookQueueName): number {
+    const workerGroupName = this.workerGroupByQueue[queueName];
+    if (!workerGroupName) {
+      return this.chatAssignmentTtlMs;
+    }
+
+    let workerLeasedChats = 0;
+    const now = Date.now();
+    for (const assignment of this.chatAssignments.values()) {
+      if (assignment.expiresAtMs <= now) {
+        continue;
+      }
+      if (this.workerGroupByQueue[assignment.queueName] === workerGroupName) {
+        workerLeasedChats += 1;
+      }
+    }
+
+    return workerLeasedChats >= Math.max(4, DEFAULT_WEBHOOK_QUEUE_NAMES.length / 2)
+      ? Math.min(this.chatAssignmentTtlMs, ADAPTIVE_TTL_HOT_QUEUE_MS)
+      : this.chatAssignmentTtlMs;
   }
 
   private async hasOutstandingMessageQueueWork(

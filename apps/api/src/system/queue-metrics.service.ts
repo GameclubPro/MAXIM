@@ -172,6 +172,15 @@ export class QueueMetricsService {
   }
 
   private async buildSnapshot(): Promise<QueueMetricsSnapshot> {
+    const botIds = (
+      typeof this.maxBotRegistry.getOperationalBots === 'function'
+        ? this.maxBotRegistry.getOperationalBots()
+        : typeof this.maxBotRegistry.getAllBots === 'function'
+          ? this.maxBotRegistry.getAllBots()
+          : []
+    ).map((bot) => bot.id);
+    await this.actionHealthService.refreshSnapshots(60, botIds);
+
     const queueSnapshots = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
       ...DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) =>
@@ -186,7 +195,7 @@ export class QueueMetricsService {
       this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
       this.readWebhookStatusMetrics(WebhookStatus.FAILED),
     ]);
-    const bots = await this.buildPerBotSnapshots();
+    const bots = await this.buildPerBotSnapshots(botIds);
 
     const [webhookCritical, ...restSnapshots] = queueSnapshots;
     const webhookBackground = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
@@ -294,14 +303,9 @@ export class QueueMetricsService {
     return this.readWebhookStatusMetricsForBot(status, null);
   }
 
-  private async buildPerBotSnapshots(): Promise<Record<string, BotQueueMetricsSnapshot>> {
-    const botIds = (
-      typeof this.maxBotRegistry.getOperationalBots === 'function'
-        ? this.maxBotRegistry.getOperationalBots()
-        : typeof this.maxBotRegistry.getAllBots === 'function'
-          ? this.maxBotRegistry.getAllBots()
-          : []
-    ).map((bot) => bot.id);
+  private async buildPerBotSnapshots(
+    botIds: readonly string[],
+  ): Promise<Record<string, BotQueueMetricsSnapshot>> {
     const snapshots = await Promise.all(
       botIds.map(async (botId) => {
         const [received, queued, failed, queuedByQueue] = await Promise.all([

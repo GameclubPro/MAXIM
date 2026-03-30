@@ -289,4 +289,40 @@ describe('WebhookRoutingService', () => {
 
     expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
   });
+
+  it('prefers a queue on a colder worker group even when raw queue depth looks similar', async () => {
+    const queueSnapshot = {
+      webhookDefaultShards: {
+        ...buildDefaultShardSnapshot(),
+        'moderation-default-7': {
+          waiting: 0,
+          active: 1,
+          delayed: 0,
+          failed: 0,
+          completed: 0,
+        },
+        'moderation-default-2': {
+          waiting: 0,
+          active: 0,
+          delayed: 0,
+          failed: 0,
+          completed: 0,
+        },
+      },
+      webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
+        'api-moderation-realtime-d': { waiting: 0, active: 1 },
+        'api-moderation-realtime-c': { waiting: 0, active: 0 },
+      }),
+    };
+    const { service } = createService({
+      queueSnapshot,
+    });
+
+    await expect(
+      service.resolveQueueName('evt-1', {
+        type: 'message_created',
+        message: { chatId: 'chat-hot-worker' },
+      }),
+    ).resolves.toBe('moderation-default-2');
+  });
 });

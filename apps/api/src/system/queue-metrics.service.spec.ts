@@ -69,6 +69,7 @@ describe('QueueMetricsService', () => {
       },
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 50,

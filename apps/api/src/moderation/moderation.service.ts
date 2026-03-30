@@ -52,6 +52,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { moderationBackgroundTasksEnabled } from '../runtime/moderation-runtime';
+import { QueueMetricsService } from '../system/queue-metrics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
@@ -232,6 +233,10 @@ const DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN = 3;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
+const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
+const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC = 5;
+const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE = 0.75;
+const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE = 4;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
@@ -342,6 +347,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostScanState = new Map<string, ChannelAutoPostScanState>();
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
+  private channelAutoPostThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
   private readonly appBaseUrl: string | null;
@@ -355,9 +361,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostStartupDelayMs: number;
   private readonly channelAutoPostStartupJitterMs: number;
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
+  private readonly channelAutoPostThrottleBackoffMaxMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly backgroundTasksEnabled: boolean;
+  private readonly backgroundWorkSoftPauseQueueLagSec: number;
+  private readonly backgroundWorkSoftPauseWorkerShare: number;
+  private readonly backgroundWorkSoftPauseWorkerPressure: number;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -373,6 +383,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotContextService?: MaxBotContextService,
+    @Optional() private readonly queueMetricsService?: QueueMetricsService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -414,6 +425,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN'),
       DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN,
     );
+    this.channelAutoPostThrottleBackoffMaxMs = this.readPositiveConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
+      CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
+    );
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
       DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
@@ -424,6 +440,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
+    );
+    this.backgroundWorkSoftPauseQueueLagSec = this.readPositiveConfigInt(
+      configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC'),
+      DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC,
+      1,
+    );
+    this.backgroundWorkSoftPauseWorkerPressure = this.readPositiveConfigInt(
+      configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE'),
+      DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE,
+      1,
+    );
+    this.backgroundWorkSoftPauseWorkerShare = this.readFractionConfig(
+      configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE'),
+      DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE,
     );
   }
 
@@ -8963,6 +8993,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.channelAutoPostInFlight = true;
     try {
+      let encounteredTransientThrottle = false;
       const channels = await this.prisma.channelSettings.findMany({
         where: {
           OR: [
@@ -8994,7 +9025,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           updatedAt: 'desc',
         },
       });
-      const scanBatch = this.selectChannelAutoPostScanBatch(channels);
+      const scanBatch = this.selectChannelAutoPostScanBatch(
+        channels,
+        this.resolveChannelAutoPostScanBatchSize(),
+      );
 
       for (const [index, channelSettings] of scanBatch.entries()) {
         if (index > 0) {
@@ -9014,12 +9048,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed channel auto post buttons scan',
           );
-          if (this.isMaxApiThrottleError(error)) {
+          if (this.isTransientMaxApiLookupError(error)) {
+            encounteredTransientThrottle = true;
+            this.channelAutoPostThrottleStreak += 1;
             this.channelAutoPostBackoffUntilMs =
-              Date.now() + CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS;
+              Date.now() + this.resolveChannelAutoPostThrottleBackoffMs();
             break;
           }
         }
+      }
+
+      if (!encounteredTransientThrottle) {
+        this.channelAutoPostThrottleStreak = 0;
       }
     } finally {
       this.channelAutoPostInFlight = false;
@@ -10580,8 +10620,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private selectChannelAutoPostScanBatch<T>(channels: T[]): T[] {
-    if (channels.length <= this.channelAutoPostScanMaxChannels) {
+  private selectChannelAutoPostScanBatch<T>(channels: T[], maxChannels = this.channelAutoPostScanMaxChannels): T[] {
+    const normalizedMaxChannels = Math.max(1, Math.min(maxChannels, this.channelAutoPostScanMaxChannels));
+    if (channels.length <= normalizedMaxChannels) {
       this.channelAutoPostCursor = 0;
       return channels;
     }
@@ -10589,7 +10630,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const startIndex = this.channelAutoPostCursor % channels.length;
     const batch: T[] = [];
 
-    for (let index = 0; index < this.channelAutoPostScanMaxChannels; index += 1) {
+    for (let index = 0; index < normalizedMaxChannels; index += 1) {
       batch.push(channels[(startIndex + index) % channels.length]!);
     }
 
@@ -10680,6 +10721,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private resolveChannelAutoPostScanBatchSize(): number {
+    if (this.channelAutoPostThrottleStreak <= 0) {
+      return this.channelAutoPostScanMaxChannels;
+    }
+
+    const divisor = 2 ** Math.min(this.channelAutoPostThrottleStreak, 3);
+    return Math.max(1, Math.ceil(this.channelAutoPostScanMaxChannels / divisor));
+  }
+
+  private resolveChannelAutoPostThrottleBackoffMs(): number {
+    return Math.min(
+      this.channelAutoPostThrottleBackoffMaxMs,
+      CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS *
+        2 ** Math.min(Math.max(0, this.channelAutoPostThrottleStreak - 1), 3),
+    );
+  }
+
   private scheduleChannelAutoPostStartupScan() {
     const startupDelayMs =
       this.channelAutoPostStartupDelayMs +
@@ -10716,6 +10774,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : Number.NaN;
     if (Number.isFinite(numericValue) && numericValue >= 0) {
       return Math.trunc(numericValue);
+    }
+
+    return fallback;
+  }
+
+  private readFractionConfig(value: unknown, fallback: number): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue > 0 && numericValue <= 1) {
+      return numericValue;
     }
 
     return fallback;
@@ -10842,8 +10914,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const mode = await this.resolveSystemModeSnapshot();
+    let pauseReason: string | null = null;
     if (mode.mode !== 'degrade') {
-      return false;
+      pauseReason = await this.resolveBackgroundPressurePauseReason();
+      if (!pauseReason) {
+        return false;
+      }
+    } else {
+      pauseReason = mode.reason;
     }
 
     const now = Date.now();
@@ -10854,12 +10932,51 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           task,
           mode: mode.mode,
           source: mode.source,
-          reason: mode.reason,
+          reason: pauseReason,
         },
-        'Paused moderation background work because the system is degraded',
+        'Paused moderation background work because the system is under pressure',
       );
     }
     return true;
+  }
+
+  private async resolveBackgroundPressurePauseReason(): Promise<string | null> {
+    if (!this.queueMetricsService) {
+      return null;
+    }
+
+    try {
+      const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
+      if (snapshot.effectiveLagSec >= this.backgroundWorkSoftPauseQueueLagSec) {
+        return `queue lag ${snapshot.effectiveLagSec.toFixed(1)}s`;
+      }
+
+      const workerGroups = Object.entries(snapshot.webhookDefaultWorkerGroups).map(
+        ([groupName, metrics]) => ({
+          groupName,
+          pressure: metrics.counters.waiting + metrics.counters.active * 3,
+        }),
+      );
+      const totalPressure = workerGroups.reduce((sum, item) => sum + item.pressure, 0);
+      const primary = workerGroups.reduce(
+        (best, current) => (current.pressure > best.pressure ? current : best),
+        { groupName: 'n/a', pressure: 0 },
+      );
+      const share = totalPressure > 0 ? primary.pressure / totalPressure : 0;
+      if (
+        totalPressure >= this.backgroundWorkSoftPauseWorkerPressure &&
+        share >= this.backgroundWorkSoftPauseWorkerShare
+      ) {
+        return `default worker skew ${primary.groupName} ${primary.pressure}/${totalPressure}`;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to read background pressure snapshot',
+      );
+    }
+
+    return null;
   }
 }
 

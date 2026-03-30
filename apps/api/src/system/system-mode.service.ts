@@ -105,6 +105,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     try {
       const queue = await this.queueMetricsService.getSnapshot();
       this.lastQueueLagSec = queue.effectiveLagSec;
+      await this.actionHealthService.refreshSnapshots(60);
       const action = this.actionHealthService.getSnapshot(60);
       const actionErrorRateDegraded = this.shouldDegradeForActionErrorRate(action);
       const shouldDegrade =
@@ -165,7 +166,8 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
 
   async getEffectiveSnapshot(): Promise<SystemModeSnapshot> {
     if (this.enabled) {
-      return this.getSnapshot();
+      await this.actionHealthService.refreshSnapshots(60);
+      return this.buildSnapshot(this.actionHealthService.getSnapshot(60));
     }
 
     const cachedSnapshot = this.getCachedSharedSnapshot();
@@ -219,6 +221,9 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async persistSnapshot(action?: ActionHealthSnapshot) {
+    if (!action) {
+      await this.actionHealthService.refreshSnapshots(60);
+    }
     const snapshot = this.buildSnapshot(action ?? this.actionHealthService.getSnapshot(60));
     this.sharedSnapshotCache = snapshot;
     this.sharedSnapshotCacheAtMs = Date.now();

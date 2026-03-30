@@ -58,6 +58,7 @@ describe('SystemModeService', () => {
       getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 10,
@@ -97,6 +98,7 @@ describe('SystemModeService', () => {
       createConfigMock() as never,
       { getSnapshot: jest.fn() } as never,
       {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
         getSnapshot: jest.fn().mockReturnValue({
           windowSec: 60,
           total: 0,
@@ -151,6 +153,7 @@ describe('SystemModeService', () => {
       getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 12,
@@ -213,6 +216,7 @@ describe('SystemModeService', () => {
       getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 58,
@@ -249,6 +253,7 @@ describe('SystemModeService', () => {
       getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 150,
@@ -289,6 +294,7 @@ describe('SystemModeService', () => {
         .mockResolvedValue({ effectiveLagSec: 0 }),
     };
     const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 10,
