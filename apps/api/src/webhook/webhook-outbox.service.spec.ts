@@ -27,8 +27,11 @@ type QueueSet = {
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
+    status?: WebhookStatus;
+    queueName?: string | null;
     enqueueAttempts: number;
     createdAt?: Date;
+    queuedAt?: Date | null;
     normalizedPayload?: unknown;
   }>;
   addError?: Error | null;
@@ -43,7 +46,10 @@ function createService(params?: {
       findMany: jest.fn().mockResolvedValue(
         (params?.findManyResult ?? []).map((item) => ({
           ...item,
+          status: item.status ?? WebhookStatus.RECEIVED,
+          queueName: item.queueName ?? null,
           createdAt: item.createdAt ?? new Date('2026-03-24T00:00:00.000Z'),
+          queuedAt: item.queuedAt ?? null,
         })),
       ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -144,6 +150,29 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('also rechecks ancient queued rows by createdAt, not only by queuedAt', async () => {
+    const { service, prisma } = createService();
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(prisma.webhookEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          OR: expect.arrayContaining([
+            expect.objectContaining({
+              status: WebhookStatus.QUEUED,
+              OR: expect.arrayContaining([
+                expect.objectContaining({ queuedAt: { lte: expect.any(Date) } }),
+                expect.objectContaining({ createdAt: { lte: expect.any(Date) } }),
+              ]),
+              processedAt: null,
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
   it('does not increment attempts when existing job is already waiting', async () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('waiting'),
@@ -162,6 +191,58 @@ describe('WebhookOutboxService', () => {
     expect(updateArg.data.queuedAt).toBeInstanceOf(Date);
     expect(updateArg.data.enqueueAttempts).toBeUndefined();
     expect(job.retry).not.toHaveBeenCalled();
+  });
+
+  it('does not refresh queuedAt when reconciling an already queued waiting job', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('waiting'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, prisma } = createService({
+      findManyResult: [
+        {
+          id: 'evt-queued-waiting',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-default-0',
+          queuedAt: new Date('2026-03-24T00:00:00.000Z'),
+          enqueueAttempts: 5,
+        },
+      ],
+      defaultJob: job,
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
+    expect(updateArg.data.status).toBe(WebhookStatus.QUEUED);
+    expect(updateArg.data.queuedAt).toBeUndefined();
+    expect(updateArg.data.enqueueAttempts).toBeUndefined();
+  });
+
+  it('re-enqueues a stale queued event back into its stored queue to preserve ordering', async () => {
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-stale-critical',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-critical',
+          queuedAt: new Date('2026-03-24T00:00:00.000Z'),
+          enqueueAttempts: 1,
+          normalizedPayload: { type: 'message_created', message: { chatId: 'chat-1' } },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.criticalQueue.add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-stale-critical' },
+      expect.objectContaining({
+        jobId: 'evt-stale-critical',
+      }),
+    );
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
   });
 
   it('retries existing failed job and increments attempts once', async () => {
@@ -209,13 +290,34 @@ describe('WebhookOutboxService', () => {
     await (
       service as unknown as {
         enqueueOne: (
-          id: string,
-          attempts: number,
+          event: {
+            id: string;
+            status: WebhookStatus;
+            botId: string | null;
+            queueName: string | null;
+            enqueueAttempts: number;
+            createdAt: Date;
+            queuedAt: Date | null;
+            normalizedPayload: unknown;
+          },
           priority: number,
           queueName: 'moderation-default-0',
         ) => Promise<void>;
       }
-    ).enqueueOne('evt-3', 120, 6, 'moderation-default-0');
+    ).enqueueOne(
+      {
+        id: 'evt-3',
+        status: WebhookStatus.RECEIVED,
+        botId: null,
+        queueName: null,
+        enqueueAttempts: 120,
+        createdAt: new Date('2026-03-24T00:00:00.000Z'),
+        queuedAt: null,
+        normalizedPayload: { type: 'message_created', message: { chatId: 'chat-1' } },
+      },
+      6,
+      'moderation-default-0',
+    );
 
     expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(

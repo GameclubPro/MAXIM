@@ -7,6 +7,7 @@ import { QueueMetricsService } from './queue-metrics.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
+import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
 @Module({
@@ -21,6 +22,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ActionHealthService,
     SystemModeService,
     SystemDashboardService,
+    WebhookDynamicLeaseStatusService,
     WebhookSubscriptionStatusService,
   ],
   exports: [
@@ -28,6 +30,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     ActionHealthService,
     SystemModeService,
     SystemDashboardService,
+    WebhookDynamicLeaseStatusService,
     WebhookSubscriptionStatusService,
   ],
 })

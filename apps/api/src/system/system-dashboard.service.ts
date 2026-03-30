@@ -140,6 +140,19 @@ export class SystemDashboardService {
       alerts.push(defaultWorkerSkewAlert);
     }
 
+    const dynamicLeaseAlert = this.buildDynamicLeaseAlert(
+      (
+        queues as {
+          webhookDynamicLeases?: Awaited<
+            ReturnType<QueueMetricsService['getSnapshot']>
+          >['webhookDynamicLeases'];
+        }
+      ).webhookDynamicLeases,
+    );
+    if (dynamicLeaseAlert) {
+      alerts.push(dynamicLeaseAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -360,5 +373,58 @@ export class SystemDashboardService {
       recommendedAction:
         'Если перекос держится дольше пары минут, проверьте hot chats и текущую shard ownership map перед ростом concurrency.',
     };
+  }
+
+  private buildDynamicLeaseAlert(
+    leaseSnapshot?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookDynamicLeases'],
+  ): SystemDashboardAlert | null {
+    if (!leaseSnapshot) {
+      return null;
+    }
+
+    const queueEntries = Object.values(leaseSnapshot.queues);
+    const recommendedMoves = queueEntries.filter(
+      (entry) => entry.eligibleForDynamicLeases && entry.actualOwner !== entry.desiredOwner,
+    ).length;
+    const pendingHandoffs = queueEntries.filter((entry) => entry.handoffPending).length;
+    const totalExpectedWorkerGroups = 4;
+    const degradedWorkerPool =
+      leaseSnapshot.liveWorkerGroups.length > 0 &&
+      leaseSnapshot.liveWorkerGroups.length < totalExpectedWorkerGroups;
+
+    if (leaseSnapshot.mode === 'shadow' && recommendedMoves > 0) {
+      return {
+        code: 'dynamic-lease-shadow',
+        level: 'info',
+        title: 'Dynamic leases работают в shadow-режиме',
+        detail: `Планировщик уже рекомендовал ${recommendedMoves} перенос(а/ов) default shard’ов, но handoff ещё не включён.`,
+        recommendedAction:
+          'Проверьте suggested ownership и latency перед переходом к canary для небольшой группы shard’ов.',
+      };
+    }
+
+    if ((leaseSnapshot.mode === 'canary' || leaseSnapshot.mode === 'on') && pendingHandoffs > 0) {
+      return {
+        code: 'dynamic-lease-handoff',
+        level: 'info',
+        title: 'Dynamic leases выполняют handoff shard’ов',
+        detail: `Сейчас в handoff pending находится ${pendingHandoffs} shard’ов.`,
+        recommendedAction:
+          'Следите, чтобы handoff быстро сходился и не приводил к росту queue lag или duplicate processing.',
+      };
+    }
+
+    if (degradedWorkerPool) {
+      return {
+        code: 'dynamic-lease-worker-pool',
+        level: 'warning',
+        title: 'Часть realtime worker group не видна в lease heartbeat',
+        detail: `Lease runtime видит только ${leaseSnapshot.liveWorkerGroups.length} worker group(s).`,
+        recommendedAction:
+          'Проверьте health default moderation containers перед расширением canary или полным включением leases.',
+      };
+    }
+
+    return null;
   }
 }

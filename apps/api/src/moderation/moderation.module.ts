@@ -4,7 +4,10 @@ import { AdminModule } from '../admin/admin.module';
 import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
-import { getEnabledModerationProcessorQueues } from '../runtime/moderation-runtime';
+import {
+  getEnabledModerationProcessorQueues,
+  getWebhookDynamicLeasesWorkerGroup,
+} from '../runtime/moderation-runtime';
 import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
@@ -13,6 +16,7 @@ import {
   LegacyModerationProcessor,
   ModerationService,
 } from './moderation.service';
+import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
@@ -27,19 +31,25 @@ import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 
 const enabledModerationQueues = getEnabledModerationProcessorQueues();
+const dynamicDefaultWorkerGroup = getWebhookDynamicLeasesWorkerGroup();
 const moderationProviders = [
   ModerationService,
   PrivateControlService,
   RedisCounterService,
   RuleEngineService,
   SanctionService,
+  ...(dynamicDefaultWorkerGroup ? [DefaultWebhookLeaseManagerService] : []),
   ...(roleRunsModeration(getAppRole())
     ? [
         ...(enabledModerationQueues.has(LEGACY_WEBHOOK_QUEUE) ? [LegacyModerationProcessor] : []),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_CRITICAL) ? [CriticalWebhookProcessor] : []),
-        ...DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName, index) =>
-          enabledModerationQueues.has(queueName) ? [DEFAULT_WEBHOOK_SHARD_PROCESSORS[index]!] : [],
-        ),
+        ...(dynamicDefaultWorkerGroup
+          ? []
+          : DEFAULT_WEBHOOK_QUEUE_NAMES.flatMap((queueName, index) =>
+              enabledModerationQueues.has(queueName)
+                ? [DEFAULT_WEBHOOK_SHARD_PROCESSORS[index]!]
+                : [],
+            )),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
           ? [BackgroundWebhookProcessor]
           : []),

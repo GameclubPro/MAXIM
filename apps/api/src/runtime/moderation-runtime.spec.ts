@@ -1,7 +1,11 @@
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookWorkerGroupQueues,
+  getDefaultWebhookHomeOwnerByQueue,
   getEnabledModerationProcessorQueues,
+  getWebhookDynamicLeaseCanaryQueues,
+  getWebhookDynamicLeasesMode,
+  getWebhookDynamicLeasesWorkerGroup,
   moderationBackgroundTasksEnabled,
   moderationProcessorQueueEnabled,
 } from './moderation-runtime';
@@ -93,5 +97,23 @@ describe('moderation-runtime', () => {
       'moderation-default-11',
       'moderation-default-15',
     ]);
+    expect(getDefaultWebhookHomeOwnerByQueue()['moderation-default-10']).toBe(
+      'api-moderation-realtime-c',
+    );
+  });
+
+  it('parses webhook dynamic lease runtime mode and worker group safely', () => {
+    expect(getWebhookDynamicLeasesMode('shadow')).toBe('shadow');
+    expect(getWebhookDynamicLeasesMode('invalid')).toBe('off');
+    expect(getWebhookDynamicLeasesWorkerGroup('api-moderation-realtime-b')).toBe(
+      'api-moderation-realtime-b',
+    );
+    expect(getWebhookDynamicLeasesWorkerGroup('unknown')).toBeNull();
+  });
+
+  it('accepts canary shard definitions by queue name or numeric shard id', () => {
+    expect(
+      getWebhookDynamicLeaseCanaryQueues('moderation-default-2, 11, moderation-default-2'),
+    ).toEqual(new Set(['moderation-default-2', 'moderation-default-11']));
   });
 });

@@ -109,6 +109,7 @@ describe('QueueMetricsService', () => {
       actionHealthService as never,
       moduleRef as never,
       botRegistry as never,
+      undefined,
       createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
@@ -228,6 +229,7 @@ describe('QueueMetricsService', () => {
       errorRate: 0.04,
       criticalRate: 0.02,
     });
+    expect(snapshot.webhookDynamicLeases).toBeNull();
     expect(snapshot.oldestQueuedEventId).toBe('queued-1');
     expect(snapshot.oldestReceivedEventId).toBe('received-1');
     expect(snapshot.effectiveLagSec).toBeGreaterThanOrEqual(snapshot.oldestQueuedLagSec);
@@ -247,5 +249,124 @@ describe('QueueMetricsService', () => {
         },
       }),
     );
+  });
+
+  it('aggregates default worker group counters by dynamic lease actual owner when available', async () => {
+    const prisma = {
+      webhookEvent: {
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+        groupBy: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const defaultQueues = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        createQueueMock(
+          queueName === 'moderation-default-0'
+            ? { waiting: 2, active: 1, delayed: 0, failed: 0, completed: 0 }
+            : index === 1
+              ? { waiting: 1, active: 0, delayed: 0, failed: 0, completed: 0 }
+              : { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        ),
+      ]),
+    );
+    const moduleRef = {
+      get: jest.fn((token: string) =>
+        Object.fromEntries(
+          DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [getQueueToken(queueName), defaultQueues[queueName]]),
+        )[token],
+      ),
+    };
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+    };
+    const webhookDynamicLeaseStatusService = {
+      getSummary: jest.fn().mockResolvedValue({
+        mode: 'canary',
+        generatedAt: '2026-03-31T00:00:00.000Z',
+        liveWorkerGroups: [
+          'api-moderation',
+          'api-moderation-realtime-b',
+          'api-moderation-realtime-c',
+          'api-moderation-realtime-d',
+        ],
+        workerLoads: {
+          'api-moderation': 1,
+          'api-moderation-realtime-b': 6,
+          'api-moderation-realtime-c': 0,
+          'api-moderation-realtime-d': 0,
+        },
+        queues: Object.fromEntries(
+          DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+            queueName,
+            {
+              queueName,
+              homeOwner:
+                queueName === 'moderation-default-0' ? 'api-moderation' : 'api-moderation-realtime-b',
+              actualOwner:
+                queueName === 'moderation-default-0'
+                  ? 'api-moderation-realtime-b'
+                  : queueName === 'moderation-default-1'
+                    ? 'api-moderation-realtime-b'
+                    : 'api-moderation',
+              desiredOwner:
+                queueName === 'moderation-default-0'
+                  ? 'api-moderation-realtime-b'
+                  : queueName === 'moderation-default-1'
+                    ? 'api-moderation-realtime-b'
+                    : 'api-moderation',
+              eligibleForDynamicLeases: queueName === 'moderation-default-0',
+              handoffPending: false,
+              activeJobs: 0,
+              pressure: 0,
+              reason: 'keep-current-owner',
+              claimFencingToken: null,
+              claimLeaseUntil: null,
+              lastHandoffAt: null,
+            },
+          ]),
+        ),
+      }),
+    };
+
+    const service = new QueueMetricsService(
+      prisma as never,
+      actionHealthService as never,
+      moduleRef as never,
+      botRegistry as never,
+      webhookDynamicLeaseStatusService as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+    );
+
+    const snapshot = await service.getSnapshot();
+
+    expect(snapshot.webhookDynamicLeases?.mode).toBe('canary');
+    expect(snapshot.webhookDefaultWorkerGroups['api-moderation-realtime-b']).toEqual({
+      queues: ['moderation-default-0', 'moderation-default-1'],
+      counters: {
+        waiting: 3,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      },
+    });
   });
 });

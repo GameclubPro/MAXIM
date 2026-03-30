@@ -7,10 +7,13 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
+  getDefaultWebhookHomeOwnerByQueue,
   getDefaultWebhookWorkerGroupQueues,
   type DefaultWebhookWorkerGroupName,
 } from '../runtime/moderation-runtime';
+import type { DefaultWebhookLeaseSummary } from '../runtime/default-webhook-dynamic-leases';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
+import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
@@ -37,6 +40,27 @@ export type WebhookStatusMetrics = {
 export type WebhookDefaultWorkerGroupMetrics = {
   queues: DefaultWebhookQueueName[];
   counters: QueueCounters;
+};
+
+export type WebhookDynamicLeaseQueueMetrics = {
+  homeOwner: DefaultWebhookWorkerGroupName;
+  actualOwner: DefaultWebhookWorkerGroupName;
+  desiredOwner: DefaultWebhookWorkerGroupName;
+  eligibleForDynamicLeases: boolean;
+  handoffPending: boolean;
+  activeJobs: number;
+  pressure: number;
+  reason: string;
+  claimFencingToken: number | null;
+  claimLeaseUntil: string | null;
+  lastHandoffAt: string | null;
+};
+
+export type WebhookDynamicLeaseMetricsSnapshot = {
+  mode: DefaultWebhookLeaseSummary['mode'];
+  generatedAt: string;
+  liveWorkerGroups: DefaultWebhookWorkerGroupName[];
+  queues: Record<DefaultWebhookQueueName, WebhookDynamicLeaseQueueMetrics>;
 };
 
 export type BotQueueMetricsSnapshot = {
@@ -74,6 +98,7 @@ export type QueueMetricsSnapshot = {
     failed: WebhookStatusMetrics;
   };
   actionHealth: ActionHealthSnapshot;
+  webhookDynamicLeases: WebhookDynamicLeaseMetricsSnapshot | null;
   bots: Record<string, BotQueueMetricsSnapshot>;
   oldestQueuedEventId: string | null;
   oldestQueuedCreatedAt: string | null;
@@ -116,6 +141,8 @@ export class QueueMetricsService {
     private readonly actionHealthService: ActionHealthService,
     private readonly moduleRef: ModuleRef,
     private readonly maxBotRegistry: MaxBotRegistryService,
+    @Optional()
+    private readonly webhookDynamicLeaseStatusService?: WebhookDynamicLeaseStatusService,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_CRITICAL) private readonly webhookCriticalQueue?: Queue,
     @Optional()
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
@@ -180,6 +207,9 @@ export class QueueMetricsService {
           : []
     ).map((bot) => bot.id);
     await this.actionHealthService.refreshSnapshots(60, botIds);
+    const dynamicLeaseSummary = this.webhookDynamicLeaseStatusService
+      ? await this.webhookDynamicLeaseStatusService.getSummary(2_000)
+      : null;
 
     const queueSnapshots = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
@@ -209,7 +239,10 @@ export class QueueMetricsService {
       ]),
     ) as Record<DefaultWebhookQueueName, QueueCounters>;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
-    const webhookDefaultWorkerGroups = this.buildWebhookDefaultWorkerGroups(webhookDefaultShards);
+    const webhookDefaultWorkerGroups = this.buildWebhookDefaultWorkerGroups(
+      webhookDefaultShards,
+      dynamicLeaseSummary,
+    );
 
     const actionHealth = this.actionHealthService.getSnapshot(60);
     const oldestQueuedLagSec = queued.oldestLagSec;
@@ -237,6 +270,14 @@ export class QueueMetricsService {
         failed,
       },
       actionHealth,
+      webhookDynamicLeases: dynamicLeaseSummary
+        ? {
+            mode: dynamicLeaseSummary.mode,
+            generatedAt: dynamicLeaseSummary.generatedAt,
+            liveWorkerGroups: [...dynamicLeaseSummary.liveWorkerGroups],
+            queues: dynamicLeaseSummary.queues,
+          }
+        : null,
       bots,
       oldestQueuedEventId: queued.oldestEventId,
       oldestQueuedCreatedAt: queued.oldestCreatedAt,
@@ -280,8 +321,11 @@ export class QueueMetricsService {
 
   private buildWebhookDefaultWorkerGroups(
     webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>,
+    dynamicLeaseSummary: DefaultWebhookLeaseSummary | null,
   ): Record<DefaultWebhookWorkerGroupName, WebhookDefaultWorkerGroupMetrics> {
-    const workerGroupQueues = getDefaultWebhookWorkerGroupQueues();
+    const workerGroupQueues = dynamicLeaseSummary
+      ? this.buildWorkerGroupQueuesFromLeaseSummary(dynamicLeaseSummary)
+      : getDefaultWebhookWorkerGroupQueues();
 
     return Object.fromEntries(
       DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName) => {
@@ -297,6 +341,23 @@ export class QueueMetricsService {
         ];
       }),
     ) as Record<DefaultWebhookWorkerGroupName, WebhookDefaultWorkerGroupMetrics>;
+  }
+
+  private buildWorkerGroupQueuesFromLeaseSummary(
+    dynamicLeaseSummary: DefaultWebhookLeaseSummary,
+  ): Record<DefaultWebhookWorkerGroupName, DefaultWebhookQueueName[]> {
+    const queuesByGroup = Object.fromEntries(
+      DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName) => [groupName, [] as DefaultWebhookQueueName[]]),
+    ) as Record<DefaultWebhookWorkerGroupName, DefaultWebhookQueueName[]>;
+    const homeOwnerByQueue = getDefaultWebhookHomeOwnerByQueue();
+
+    for (const queueName of DEFAULT_WEBHOOK_QUEUE_NAMES) {
+      const entry = dynamicLeaseSummary.queues[queueName];
+      const owner = entry?.actualOwner ?? homeOwnerByQueue[queueName];
+      queuesByGroup[owner].push(queueName);
+    }
+
+    return queuesByGroup;
   }
 
   private async readWebhookStatusMetrics(status: WebhookStatus): Promise<WebhookStatusMetrics> {

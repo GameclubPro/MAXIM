@@ -19,11 +19,16 @@ import {
 } from './webhook-queues';
 import { WebhookRoutingService } from './webhook-routing.service';
 
+const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
+
 type WebhookEnqueueCandidate = {
   id: string;
+  status: WebhookStatus;
   botId: string | null;
+  queueName: string | null;
   enqueueAttempts: number;
   createdAt: Date;
+  queuedAt: Date | null;
   normalizedPayload: unknown;
 };
 
@@ -156,7 +161,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           },
           {
             status: WebhookStatus.QUEUED,
-            queuedAt: { lte: staleQueuedBefore },
+            OR: [{ queuedAt: { lte: staleQueuedBefore } }, { createdAt: { lte: staleQueuedBefore } }],
             processedAt: null,
           },
         ],
@@ -165,9 +170,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       take: this.batchSize,
       select: {
         id: true,
+        status: true,
         botId: true,
+        queueName: true,
         enqueueAttempts: true,
         createdAt: true,
+        queuedAt: true,
         normalizedPayload: true,
       },
     });
@@ -209,11 +217,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           event.normalizedPayload,
           { botId: event.botId },
         );
+        const targetQueueName =
+          event.status === WebhookStatus.QUEUED &&
+          typeof event.queueName === 'string' &&
+          ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
+            ? (event.queueName as AnyWebhookQueueName)
+            : queueName;
         await this.enqueueOne(
-          event.id,
-          event.enqueueAttempts,
+          event,
           resolveWebhookJobPriority(event.normalizedPayload),
-          queueName,
+          targetQueueName,
         );
       }
     };
@@ -222,11 +235,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async enqueueOne(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueCandidate,
     priority: number,
     queueName: AnyWebhookQueueName,
   ) {
+    const { id: webhookEventId, enqueueAttempts } = event;
     if (enqueueAttempts >= this.maxEnqueueAttempts) {
       await this.markExhausted(webhookEventId, enqueueAttempts);
       return;
@@ -234,11 +247,23 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (existingJob) {
-      await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob.job);
+      await this.handleExistingJob(event, existingJob.job);
       return;
     }
 
     try {
+      if (event.status === WebhookStatus.QUEUED) {
+        this.logger.warn(
+          {
+            webhookEventId,
+            storedQueueName: event.queueName,
+            preferredQueueName: queueName,
+            queuedAt: event.queuedAt?.toISOString() ?? null,
+            ageSec: Math.max(0, (Date.now() - event.createdAt.getTime()) / 1_000),
+          },
+          'Repairing stale queued webhook event without a live BullMQ job',
+        );
+      }
       await this.queuesByName[queueName].add(
         'process-webhook-event',
         { webhookEventId },
@@ -255,7 +280,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyExistsError(message)) {
-        await this.handleAlreadyExists(webhookEventId, enqueueAttempts, queueName);
+        await this.handleAlreadyExists(event, queueName);
         return;
       }
 
@@ -264,10 +289,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleAlreadyExists(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueCandidate,
     queueName: AnyWebhookQueueName,
   ) {
+    const { id: webhookEventId, enqueueAttempts } = event;
     const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (!existingJob) {
       await this.markFailedWithBackoff(
@@ -278,14 +303,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob.job);
+    await this.handleExistingJob(event, existingJob.job);
   }
 
   private async handleExistingJob(
-    webhookEventId: string,
-    enqueueAttempts: number,
+    event: WebhookEnqueueCandidate,
     job: Job<ProcessWebhookJob>,
   ) {
+    const { id: webhookEventId, enqueueAttempts } = event;
     const state = await job.getState();
     if (state === 'failed') {
       await this.retryFailedJob(webhookEventId, enqueueAttempts, job);
@@ -304,7 +329,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       state === 'prioritized' ||
       state === 'waiting-children'
     ) {
-      await this.markQueued(webhookEventId, false, true, job.queueName);
+      await this.markQueued(
+        webhookEventId,
+        false,
+        event.status !== WebhookStatus.QUEUED,
+        job.queueName,
+      );
       return;
     }
 

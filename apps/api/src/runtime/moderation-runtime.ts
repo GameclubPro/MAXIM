@@ -13,6 +13,7 @@ export type DefaultWebhookWorkerGroupName =
   | 'api-moderation-realtime-b'
   | 'api-moderation-realtime-c'
   | 'api-moderation-realtime-d';
+export type WebhookDynamicLeasesMode = 'off' | 'shadow' | 'canary' | 'on';
 
 const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
   LEGACY_WEBHOOK_QUEUE,
@@ -49,6 +50,12 @@ const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze(
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+const DEFAULT_WEBHOOK_DYNAMIC_LEASES_MODES = new Set<WebhookDynamicLeasesMode>([
+  'off',
+  'shadow',
+  'canary',
+  'on',
+]);
 
 function normalizeBooleanEnv(rawValue: unknown, fallback: boolean): boolean {
   if (typeof rawValue === 'boolean') {
@@ -71,6 +78,57 @@ function normalizeBooleanEnv(rawValue: unknown, fallback: boolean): boolean {
   }
 
   return fallback;
+}
+
+function readPositiveInt(rawValue: unknown, fallback: number): number {
+  const parsed =
+    typeof rawValue === 'number'
+      ? rawValue
+      : typeof rawValue === 'string' && rawValue.trim().length > 0
+        ? Number(rawValue)
+        : Number.NaN;
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return fallback;
+}
+
+function resolveModerationConcurrencySplit(total: number): {
+  critical: number;
+  default: number;
+  background: number;
+} {
+  if (total <= 3) {
+    return {
+      critical: 1,
+      default: 1,
+      background: 1,
+    };
+  }
+
+  const background = total >= 8 ? 2 : 1;
+  const critical = Math.max(1, Math.ceil(total * 0.35));
+  const defaultQueue = Math.max(1, total - critical - background);
+
+  return {
+    critical,
+    default: defaultQueue,
+    background,
+  };
+}
+
+function resolveShardConcurrencyDistribution(total: number, shardCount: number): number[] {
+  if (shardCount <= 1) {
+    return [Math.max(1, total)];
+  }
+
+  const sanitizedTotal = Math.max(shardCount, total);
+  const baseConcurrency = Math.max(1, Math.floor(sanitizedTotal / shardCount));
+  const remainder = sanitizedTotal % shardCount;
+
+  return Array.from({ length: shardCount }, (_, index) =>
+    baseConcurrency + (index < remainder ? 1 : 0),
+  );
 }
 
 function normalizeQueueToken(rawToken: string): AnyWebhookQueueName[] {
@@ -123,4 +181,91 @@ export function getDefaultWebhookWorkerGroupQueues(): Readonly<
   Record<DefaultWebhookWorkerGroupName, readonly DefaultWebhookQueueName[]>
 > {
   return DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES;
+}
+
+export function getDefaultWebhookHomeOwnerByQueue(): Readonly<
+  Record<DefaultWebhookQueueName, DefaultWebhookWorkerGroupName>
+> {
+  return Object.fromEntries(
+    DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.flatMap((groupName) =>
+      DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES[groupName].map((queueName) => [queueName, groupName]),
+    ),
+  ) as Record<DefaultWebhookQueueName, DefaultWebhookWorkerGroupName>;
+}
+
+export function getWebhookDynamicLeasesMode(
+  rawValue: unknown = process.env.WEBHOOK_DYNAMIC_LEASES_MODE,
+): WebhookDynamicLeasesMode {
+  if (typeof rawValue === 'string') {
+    const normalized = rawValue.trim().toLowerCase();
+    if (DEFAULT_WEBHOOK_DYNAMIC_LEASES_MODES.has(normalized as WebhookDynamicLeasesMode)) {
+      return normalized as WebhookDynamicLeasesMode;
+    }
+  }
+
+  return 'off';
+}
+
+export function getWebhookDynamicLeasesWorkerGroup(
+  rawValue: unknown = process.env.WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP,
+): DefaultWebhookWorkerGroupName | null {
+  if (typeof rawValue !== 'string') {
+    return null;
+  }
+
+  const normalized = rawValue.trim();
+  return DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.includes(normalized as DefaultWebhookWorkerGroupName)
+    ? (normalized as DefaultWebhookWorkerGroupName)
+    : null;
+}
+
+export function getWebhookDynamicLeaseCanaryQueues(
+  rawValue: unknown = process.env.WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS,
+): Set<DefaultWebhookQueueName> {
+  if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+    return new Set();
+  }
+
+  const queues = new Set<DefaultWebhookQueueName>();
+  for (const rawToken of rawValue.split(',')) {
+    const normalized = rawToken.trim().toLowerCase();
+    if (!normalized) {
+      continue;
+    }
+
+    if ((DEFAULT_WEBHOOK_QUEUE_NAMES as readonly string[]).includes(normalized)) {
+      queues.add(normalized as DefaultWebhookQueueName);
+      continue;
+    }
+
+    const shardIndex = Number(normalized);
+    if (Number.isInteger(shardIndex) && shardIndex >= 0 && shardIndex < DEFAULT_WEBHOOK_QUEUE_NAMES.length) {
+      queues.add(DEFAULT_WEBHOOK_QUEUE_NAMES[shardIndex]!);
+    }
+  }
+
+  return queues;
+}
+
+export function getDefaultWebhookShardConcurrencies(
+  env: Record<string, unknown> = process.env,
+): Record<DefaultWebhookQueueName, number> {
+  const concurrencySplit = resolveModerationConcurrencySplit(
+    readPositiveInt(env.MODERATION_CONCURRENCY, 24),
+  );
+  const defaultConcurrency = readPositiveInt(
+    env.MODERATION_CONCURRENCY_DEFAULT,
+    concurrencySplit.default,
+  );
+  const defaults = resolveShardConcurrencyDistribution(
+    defaultConcurrency,
+    DEFAULT_WEBHOOK_QUEUE_NAMES.length,
+  );
+
+  return Object.fromEntries(
+    DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+      queueName,
+      readPositiveInt(env[`MODERATION_CONCURRENCY_DEFAULT_SHARD_${index}`], defaults[index] ?? 1),
+    ]),
+  ) as Record<DefaultWebhookQueueName, number>;
 }

@@ -50,6 +50,21 @@ const envSchema = z.object({
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: z.coerce.number().int().positive().default(12_000),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE: z.coerce.number().min(0.5).max(1).default(0.7),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_MIN: z.coerce.number().int().positive().default(4),
+  WEBHOOK_DYNAMIC_LEASES_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
+  WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: z
+    .enum([
+      'api-moderation',
+      'api-moderation-realtime-b',
+      'api-moderation-realtime-c',
+      'api-moderation-realtime-d',
+    ])
+    .optional(),
+  WEBHOOK_DYNAMIC_LEASES_CANARY_SHARDS: z.string().optional(),
+  WEBHOOK_DYNAMIC_LEASES_HEARTBEAT_MS: z.coerce.number().int().positive().default(3_000),
+  WEBHOOK_DYNAMIC_LEASES_LEASE_TTL_MS: z.coerce.number().int().positive().default(12_000),
+  WEBHOOK_DYNAMIC_LEASES_HANDOFF_TTL_MS: z.coerce.number().int().positive().default(12_000),
+  WEBHOOK_DYNAMIC_LEASES_REBALANCE_COOLDOWN_MS: z.coerce.number().int().positive().default(30_000),
+  WEBHOOK_DYNAMIC_LEASES_SUMMARY_TTL_MS: z.coerce.number().int().positive().default(20_000),
   QUEUE_LAG_DEGRADE_SEC: z.coerce.number().int().positive().default(10),
   READY_QUEUE_LAG_SUSTAIN_SEC: z.coerce.number().int().positive().default(20),
   READY_QUEUE_LAG_SEVERE_SEC: z.coerce.number().int().positive().default(30),

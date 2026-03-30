@@ -337,4 +337,96 @@ describe('SystemDashboardService', () => {
       ]),
     });
   });
+
+  it('adds an informational alert when dynamic leases are in shadow mode with pending recommendations', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
+          webhookDynamicLeases: {
+            mode: 'shadow',
+            generatedAt: '2026-03-31T00:00:00.000Z',
+            liveWorkerGroups: [
+              'api-moderation',
+              'api-moderation-realtime-b',
+              'api-moderation-realtime-c',
+              'api-moderation-realtime-d',
+            ],
+            queues: {
+              'moderation-default-0': {
+                homeOwner: 'api-moderation',
+                actualOwner: 'api-moderation',
+                desiredOwner: 'api-moderation-realtime-b',
+                eligibleForDynamicLeases: true,
+                handoffPending: true,
+                activeJobs: 0,
+                pressure: 8,
+                reason: 'rebalance-least-loaded',
+                claimFencingToken: null,
+                claimLeaseUntil: null,
+                lastHandoffAt: null,
+              },
+            },
+          },
+          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          actionHealth: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          generatedAt: '2026-03-31T00:00:00.000Z',
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-31T00:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      alerts: expect.arrayContaining([
+        expect.objectContaining({ code: 'dynamic-lease-shadow', level: 'info' }),
+      ]),
+    });
+  });
 });
