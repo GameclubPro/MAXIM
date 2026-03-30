@@ -8,12 +8,20 @@ export const WEBHOOK_QUEUE_DEFAULT_SHARD_0 = 'moderation-default-0';
 export const WEBHOOK_QUEUE_DEFAULT_SHARD_1 = 'moderation-default-1';
 export const WEBHOOK_QUEUE_DEFAULT_SHARD_2 = 'moderation-default-2';
 export const WEBHOOK_QUEUE_DEFAULT_SHARD_3 = 'moderation-default-3';
+export const WEBHOOK_QUEUE_DEFAULT_SHARD_4 = 'moderation-default-4';
+export const WEBHOOK_QUEUE_DEFAULT_SHARD_5 = 'moderation-default-5';
+export const WEBHOOK_QUEUE_DEFAULT_SHARD_6 = 'moderation-default-6';
+export const WEBHOOK_QUEUE_DEFAULT_SHARD_7 = 'moderation-default-7';
 export const WEBHOOK_QUEUE_BACKGROUND = 'moderation-background';
 export const DEFAULT_WEBHOOK_QUEUE_NAMES = [
   WEBHOOK_QUEUE_DEFAULT_SHARD_0,
   WEBHOOK_QUEUE_DEFAULT_SHARD_1,
   WEBHOOK_QUEUE_DEFAULT_SHARD_2,
   WEBHOOK_QUEUE_DEFAULT_SHARD_3,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
 ] as const;
 
 export const ACTIVE_WEBHOOK_QUEUE_NAMES = [
@@ -90,7 +98,15 @@ function resolveDefaultWebhookQueueName(payload: unknown): DefaultWebhookQueueNa
     return DEFAULT_WEBHOOK_QUEUE_NAMES[0];
   }
 
-  return DEFAULT_WEBHOOK_QUEUE_NAMES[hashChatId(chatId) % DEFAULT_WEBHOOK_QUEUE_NAMES.length]!;
+  return resolveDefaultWebhookQueueNameForChatId(chatId);
+}
+
+export function resolveDefaultWebhookQueueNameForChatId(chatId: string): DefaultWebhookQueueName {
+  return DEFAULT_WEBHOOK_QUEUE_NAMES[resolveDefaultWebhookQueueIndexForChatId(chatId)]!;
+}
+
+export function resolveDefaultWebhookQueueIndexForChatId(chatId: string): number {
+  return hashChatId(chatId) % DEFAULT_WEBHOOK_QUEUE_NAMES.length;
 }
 
 function readWebhookChatId(payload: unknown): string {
@@ -142,9 +158,16 @@ function readWebhookChatId(payload: unknown): string {
 }
 
 function hashChatId(chatId: string): number {
-  let hash = 0;
+  let hash = 0x811c9dc5;
   for (let index = 0; index < chatId.length; index += 1) {
-    hash = (hash * 31 + chatId.charCodeAt(index)) >>> 0;
+    hash ^= chatId.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
   }
-  return hash;
+
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 0x85ebca6b);
+  hash ^= hash >>> 13;
+  hash = Math.imul(hash, 0xc2b2ae35);
+  hash ^= hash >>> 16;
+  return hash >>> 0;
 }

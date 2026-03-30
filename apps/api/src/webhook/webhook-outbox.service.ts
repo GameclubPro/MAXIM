@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
 import {
   ALL_WEBHOOK_QUEUE_NAMES,
+  type DefaultWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
@@ -18,6 +19,10 @@ import {
   WEBHOOK_QUEUE_DEFAULT_SHARD_1,
   WEBHOOK_QUEUE_DEFAULT_SHARD_2,
   WEBHOOK_QUEUE_DEFAULT_SHARD_3,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
 } from './webhook-queues';
 
 type WebhookEnqueueCandidate = {
@@ -43,6 +48,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private draining = false;
   private cleaning = false;
   private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
+  private readonly defaultShardQueuesByName: Record<
+    DefaultWebhookQueueName,
+    Queue<ProcessWebhookJob>
+  >;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -57,6 +66,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly defaultShard2Queue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
     private readonly defaultShard3Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_4)
+    private readonly defaultShard4Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_5)
+    private readonly defaultShard5Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_6)
+    private readonly defaultShard6Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_7)
+    private readonly defaultShard7Queue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly backgroundQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(LEGACY_WEBHOOK_QUEUE)
@@ -69,12 +86,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
-    this.queuesByName = {
-      [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
+    this.defaultShardQueuesByName = {
       [WEBHOOK_QUEUE_DEFAULT_SHARD_0]: this.defaultShard0Queue,
       [WEBHOOK_QUEUE_DEFAULT_SHARD_1]: this.defaultShard1Queue,
       [WEBHOOK_QUEUE_DEFAULT_SHARD_2]: this.defaultShard2Queue,
       [WEBHOOK_QUEUE_DEFAULT_SHARD_3]: this.defaultShard3Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_4]: this.defaultShard4Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_5]: this.defaultShard5Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_6]: this.defaultShard6Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_7]: this.defaultShard7Queue,
+    };
+    this.queuesByName = {
+      [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
+      ...this.defaultShardQueuesByName,
       [WEBHOOK_QUEUE_BACKGROUND]: this.backgroundQueue,
       [LEGACY_WEBHOOK_QUEUE]: this.legacyQueue,
     };

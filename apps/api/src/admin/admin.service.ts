@@ -1612,7 +1612,7 @@ export class AdminService {
     },
   ): Promise<ManagedEntitiesListResult> {
     try {
-      const discoveryTrafficClass = 'interactive';
+      const discoveryTrafficClass = options.fullScan ? 'background' : 'interactive';
       const adminCheckSpacingMs = options.fullScan
         ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
         : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;

@@ -59,6 +59,10 @@ function createService(params?: {
   const defaultShard1Queue = createQueue(params?.addError, null);
   const defaultShard2Queue = createQueue(params?.addError, null);
   const defaultShard3Queue = createQueue(params?.addError, null);
+  const defaultShard4Queue = createQueue(params?.addError, null);
+  const defaultShard5Queue = createQueue(params?.addError, null);
+  const defaultShard6Queue = createQueue(params?.addError, null);
+  const defaultShard7Queue = createQueue(params?.addError, null);
   const backgroundQueue = createQueue(params?.addError, params?.backgroundJob);
   const legacyQueue = createQueue(params?.addError, params?.legacyJob);
 
@@ -84,6 +88,10 @@ function createService(params?: {
     defaultShard1Queue as never,
     defaultShard2Queue as never,
     defaultShard3Queue as never,
+    defaultShard4Queue as never,
+    defaultShard5Queue as never,
+    defaultShard6Queue as never,
+    defaultShard7Queue as never,
     backgroundQueue as never,
     legacyQueue as never,
   );
@@ -96,6 +104,10 @@ function createService(params?: {
       defaultShard1Queue,
       defaultShard2Queue,
       defaultShard3Queue,
+      defaultShard4Queue,
+      defaultShard5Queue,
+      defaultShard6Queue,
+      defaultShard7Queue,
       backgroundQueue,
       legacyQueue,
     },
@@ -337,6 +349,10 @@ describe('WebhookOutboxService', () => {
       queues.defaultShard1Queue.add,
       queues.defaultShard2Queue.add,
       queues.defaultShard3Queue.add,
+      queues.defaultShard4Queue.add,
+      queues.defaultShard5Queue.add,
+      queues.defaultShard6Queue.add,
+      queues.defaultShard7Queue.add,
     ].flatMap((add) => add.mock.calls.map((call) => call[1].webhookEventId));
 
     expect(shardAdds.sort()).toEqual(['evt-chat-a', 'evt-chat-b']);
@@ -346,6 +362,10 @@ describe('WebhookOutboxService', () => {
         queues.defaultShard1Queue.add,
         queues.defaultShard2Queue.add,
         queues.defaultShard3Queue.add,
+        queues.defaultShard4Queue.add,
+        queues.defaultShard5Queue.add,
+        queues.defaultShard6Queue.add,
+        queues.defaultShard7Queue.add,
       ].filter((add) => add.mock.calls.length > 0).length,
     ).toBeGreaterThan(1);
   });

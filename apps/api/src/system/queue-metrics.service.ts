@@ -5,6 +5,8 @@ import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
 import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
+  type DefaultWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -12,6 +14,10 @@ import {
   WEBHOOK_QUEUE_DEFAULT_SHARD_1,
   WEBHOOK_QUEUE_DEFAULT_SHARD_2,
   WEBHOOK_QUEUE_DEFAULT_SHARD_3,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_4,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_5,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_6,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_7,
 } from '../webhook/webhook-queues';
 
 export type QueueCounters = {
@@ -33,6 +39,7 @@ export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   webhookCritical: QueueCounters;
   webhookDefault: QueueCounters;
+  webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
   webhookBackground: QueueCounters;
   webhookLegacy: QueueCounters;
   actions: QueueCounters;
@@ -76,6 +83,7 @@ export class QueueMetricsService {
   private snapshotCache: QueueMetricsSnapshot | null = null;
   private snapshotCacheAtMs = 0;
   private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+  private readonly webhookDefaultQueuesByName: Record<DefaultWebhookQueueName, Queue | undefined>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -89,12 +97,31 @@ export class QueueMetricsService {
     private readonly webhookDefaultShard2Queue?: Queue,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
     private readonly webhookDefaultShard3Queue?: Queue,
+    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_4)
+    private readonly webhookDefaultShard4Queue?: Queue,
+    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_5)
+    private readonly webhookDefaultShard5Queue?: Queue,
+    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_6)
+    private readonly webhookDefaultShard6Queue?: Queue,
+    @Optional() @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_7)
+    private readonly webhookDefaultShard7Queue?: Queue,
     @Optional()
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly webhookBackgroundQueue?: Queue,
     @Optional() @InjectQueue(LEGACY_WEBHOOK_QUEUE) private readonly webhookLegacyQueue?: Queue,
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
-  ) {}
+  ) {
+    this.webhookDefaultQueuesByName = {
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_0]: this.webhookDefaultShard0Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_1]: this.webhookDefaultShard1Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_2]: this.webhookDefaultShard2Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_3]: this.webhookDefaultShard3Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_4]: this.webhookDefaultShard4Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_5]: this.webhookDefaultShard5Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_6]: this.webhookDefaultShard6Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_7]: this.webhookDefaultShard7Queue,
+    };
+  }
 
   async getSnapshot(options: QueueMetricsSnapshotOptions = {}): Promise<QueueMetricsSnapshot> {
     const maxAgeMs = options.maxAgeMs ?? 0;
@@ -134,7 +161,9 @@ export class QueueMetricsService {
   private async buildSnapshot(): Promise<QueueMetricsSnapshot> {
     const queueSnapshots = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
-      ...this.getDefaultWebhookQueues().map((queue) => this.readQueueCounters(queue)),
+      ...DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) =>
+        this.readQueueCounters(this.webhookDefaultQueuesByName[queueName]),
+      ),
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
       this.readQueueCounters(this.actionQueue),
@@ -145,22 +174,18 @@ export class QueueMetricsService {
       this.readWebhookStatusMetrics(WebhookStatus.FAILED),
     ]);
 
-    const [
-      webhookCritical,
-      webhookDefaultShard0,
-      webhookDefaultShard1,
-      webhookDefaultShard2,
-      webhookDefaultShard3,
-      webhookBackground,
-      webhookLegacy,
-      actions,
-    ] = queueSnapshots;
-    const webhookDefault = this.sumQueueCounters(
-      webhookDefaultShard0,
-      webhookDefaultShard1,
-      webhookDefaultShard2,
-      webhookDefaultShard3,
-    );
+    const [webhookCritical, ...restSnapshots] = queueSnapshots;
+    const webhookBackground = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
+    const webhookLegacy = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length + 1] ?? EMPTY_COUNTERS;
+    const actions = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length + 2] ?? EMPTY_COUNTERS;
+    const webhookDefaultShardSnapshots = restSnapshots.slice(0, DEFAULT_WEBHOOK_QUEUE_NAMES.length);
+    const webhookDefaultShards = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        webhookDefaultShardSnapshots[index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<DefaultWebhookQueueName, QueueCounters>;
+    const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
 
     const actionHealth = this.actionHealthService.getSnapshot(60);
     const oldestQueuedLagSec = queued.oldestLagSec;
@@ -177,6 +202,7 @@ export class QueueMetricsService {
       moderation,
       webhookCritical,
       webhookDefault,
+      webhookDefaultShards,
       webhookBackground,
       webhookLegacy,
       actions,
@@ -195,15 +221,6 @@ export class QueueMetricsService {
       effectiveLagSec,
       generatedAt: new Date().toISOString(),
     };
-  }
-
-  private getDefaultWebhookQueues(): Array<Queue | undefined> {
-    return [
-      this.webhookDefaultShard0Queue,
-      this.webhookDefaultShard1Queue,
-      this.webhookDefaultShard2Queue,
-      this.webhookDefaultShard3Queue,
-    ];
   }
 
   private async readQueueCounters(queue?: Queue): Promise<QueueCounters> {

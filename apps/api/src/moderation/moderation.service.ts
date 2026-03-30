@@ -6,6 +6,7 @@ import {
   OnModuleDestroy,
   OnModuleInit,
   Optional,
+  type Type,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -66,13 +67,10 @@ import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
+  type AnyWebhookQueueName,
   type ProcessWebhookJob,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
-  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
 } from '../webhook/webhook-queues';
 
 type ActiveMute = {
@@ -177,25 +175,15 @@ const DEFAULT_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_DEFAULT,
   MODERATION_CONCURRENCY_SPLIT.default,
 );
-const DEFAULT_MODERATION_SHARD_CONCURRENCIES = resolveShardConcurrencyDistribution(
+const DEFAULT_MODERATION_SHARD_CONCURRENCY_DEFAULTS = resolveShardConcurrencyDistribution(
   DEFAULT_MODERATION_CONCURRENCY,
   DEFAULT_WEBHOOK_QUEUE_NAMES.length,
 );
-const DEFAULT_MODERATION_SHARD_0_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_0,
-  DEFAULT_MODERATION_SHARD_CONCURRENCIES[0] ?? 1,
-);
-const DEFAULT_MODERATION_SHARD_1_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_1,
-  DEFAULT_MODERATION_SHARD_CONCURRENCIES[1] ?? 1,
-);
-const DEFAULT_MODERATION_SHARD_2_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_2,
-  DEFAULT_MODERATION_SHARD_CONCURRENCIES[2] ?? 1,
-);
-const DEFAULT_MODERATION_SHARD_3_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_3,
-  DEFAULT_MODERATION_SHARD_CONCURRENCIES[3] ?? 1,
+const DEFAULT_MODERATION_SHARD_CONCURRENCIES = DEFAULT_WEBHOOK_QUEUE_NAMES.map((_, index) =>
+  readPositiveInt(
+    process.env[`MODERATION_CONCURRENCY_DEFAULT_SHARD_${index}`],
+    DEFAULT_MODERATION_SHARD_CONCURRENCY_DEFAULTS[index] ?? 1,
+  ),
 );
 const BACKGROUND_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_BACKGROUND,
@@ -10669,117 +10657,60 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 }
 
-@Processor(LEGACY_WEBHOOK_QUEUE, {
-  concurrency: LEGACY_MODERATION_CONCURRENCY,
-})
-export class LegacyModerationProcessor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
+function createWebhookProcessor(
+  queueName: AnyWebhookQueueName,
+  concurrency: number,
+  className: string,
+): Type<WorkerHost> {
+  @Processor(queueName, {
+    concurrency,
+  })
+  class QueueWebhookProcessor extends WorkerHost {
+    constructor(private readonly moderationService: ModerationService) {
+      super();
+    }
+
+    async process(job: Job<ProcessWebhookJob>) {
+      if (!roleRunsModeration(getAppRole())) {
+        return;
+      }
+      await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+    }
   }
 
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
+  Object.defineProperty(QueueWebhookProcessor, 'name', {
+    value: className,
+  });
+
+  return QueueWebhookProcessor as Type<WorkerHost>;
 }
 
-@Processor(WEBHOOK_QUEUE_CRITICAL, {
-  concurrency: CRITICAL_MODERATION_CONCURRENCY,
-})
-export class CriticalWebhookProcessor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
+export const LegacyModerationProcessor = createWebhookProcessor(
+  LEGACY_WEBHOOK_QUEUE,
+  LEGACY_MODERATION_CONCURRENCY,
+  'LegacyModerationProcessor',
+);
 
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
+export const CriticalWebhookProcessor = createWebhookProcessor(
+  WEBHOOK_QUEUE_CRITICAL,
+  CRITICAL_MODERATION_CONCURRENCY,
+  'CriticalWebhookProcessor',
+);
 
-@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_0, {
-  concurrency: DEFAULT_MODERATION_SHARD_0_CONCURRENCY,
-})
-export class DefaultWebhookShard0Processor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
+export const DEFAULT_WEBHOOK_SHARD_PROCESSORS = DEFAULT_WEBHOOK_QUEUE_NAMES.map(
+  (queueName, index) =>
+    createWebhookProcessor(
+      queueName,
+      DEFAULT_MODERATION_SHARD_CONCURRENCIES[index] ?? 1,
+      `DefaultWebhookShard${index}Processor`,
+    ),
+);
 
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
-
-@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_1, {
-  concurrency: DEFAULT_MODERATION_SHARD_1_CONCURRENCY,
-})
-export class DefaultWebhookShard1Processor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
-
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
-
-@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_2, {
-  concurrency: DEFAULT_MODERATION_SHARD_2_CONCURRENCY,
-})
-export class DefaultWebhookShard2Processor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
-
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
-
-@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_3, {
-  concurrency: DEFAULT_MODERATION_SHARD_3_CONCURRENCY,
-})
-export class DefaultWebhookShard3Processor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
-
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
-
-@Processor(WEBHOOK_QUEUE_BACKGROUND, {
-  concurrency: BACKGROUND_MODERATION_CONCURRENCY,
-})
-export class BackgroundWebhookProcessor extends WorkerHost {
-  constructor(private readonly moderationService: ModerationService) {
-    super();
-  }
-
-  async process(job: Job<ProcessWebhookJob>) {
-    if (!roleRunsModeration(getAppRole())) {
-      return;
-    }
-    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
-  }
-}
+export const BackgroundWebhookProcessor = createWebhookProcessor(
+  WEBHOOK_QUEUE_BACKGROUND,
+  BACKGROUND_MODERATION_CONCURRENCY,
+  'BackgroundWebhookProcessor',
+);
 
 function readPositiveInt(rawValue: string | undefined, fallback: number): number {
   const parsed = Number(rawValue);

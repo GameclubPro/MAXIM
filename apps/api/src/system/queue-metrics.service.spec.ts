@@ -78,6 +78,10 @@ describe('QueueMetricsService', () => {
       createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 5 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
       createQueueMock({ waiting: 3, active: 1, delayed: 0, failed: 0, completed: 11 }) as never,
@@ -98,6 +102,20 @@ describe('QueueMetricsService', () => {
       delayed: 0,
       failed: 0,
       completed: 11,
+    });
+    expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
+      waiting: 1,
+      active: 1,
+      delayed: 0,
+      failed: 0,
+      completed: 4,
+    });
+    expect(snapshot.webhookDefaultShards['moderation-default-7']).toEqual({
+      waiting: 0,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
     });
     expect(snapshot.webhookEvents).toMatchObject({
       received: {

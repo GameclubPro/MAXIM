@@ -23,6 +23,7 @@ else
     "api-enqueue"
     "api-moderation"
     "api-moderation-realtime-b"
+    "api-moderation-realtime-c"
     "api-moderation-background"
     "api-action"
     "miniapp-static"
@@ -35,6 +36,7 @@ API_SERVICES=(
   "api-enqueue"
   "api-moderation"
   "api-moderation-realtime-b"
+  "api-moderation-realtime-c"
   "api-moderation-background"
   "api-action"
 )
@@ -118,6 +120,7 @@ ensure_compose_env() {
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
     "infra-api-moderation-realtime-b-1"
+    "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-background-1"
     "infra-api-action-1"
     "infra-api-1"
@@ -350,6 +353,7 @@ recreate_service_wave "worker" \
   "api-action" \
   "api-moderation" \
   "api-moderation-realtime-b" \
+  "api-moderation-realtime-c" \
   "api-moderation-background"
 recreate_service_wave "support" "api-admin" "miniapp-static"
 recreate_service_wave "ingress" "api-ingress"

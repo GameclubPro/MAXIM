@@ -13,6 +13,7 @@ ensure_compose_env() {
     "infra-api-enqueue-1"
     "infra-api-moderation-1"
     "infra-api-moderation-realtime-b-1"
+    "infra-api-moderation-realtime-c-1"
     "infra-api-moderation-background-1"
     "infra-api-action-1"
     "infra-api-1"
