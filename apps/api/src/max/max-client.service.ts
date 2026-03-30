@@ -543,8 +543,7 @@ export class MaxClientService implements OnModuleDestroy {
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
     const messageTextPayload = this.buildOutgoingMessageTextPayload(sourceMessage, fallbackText);
-
-    return this.sendCustomMessageImmediateWithResolvedLink(chatId, {
+    const sendResponse = await this.sendCustomMessageImmediate(chatId, {
       ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
         ? { text: messageTextPayload.text }
         : {}),
@@ -552,6 +551,18 @@ export class MaxClientService implements OnModuleDestroy {
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(replyLink ? { messageLink: replyLink } : {}),
     });
+
+    const messageId = this.extractMessageIdFromSendResponse(sendResponse);
+    if (!messageId) {
+      throw new Error('MAX send response is missing message id');
+    }
+
+    const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
+    return {
+      messageId,
+      url: this.parseChatLink(sendResponse),
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+    };
   }
 
   async resolveMessageLink(messageId: string): Promise<string | null> {
@@ -3019,7 +3030,7 @@ export class MaxClientService implements OnModuleDestroy {
       return true;
     }
 
-    if (options.trafficClass !== 'interactive') {
+    if (options.trafficClass === 'critical') {
       return false;
     }
 

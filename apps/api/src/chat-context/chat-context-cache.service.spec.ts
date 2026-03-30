@@ -227,7 +227,7 @@ describe('ChatContextCacheService', () => {
       ChatContextCacheService.adminAccessKey('chat-1', 'user-1'),
       'granted',
       'EX',
-      60,
+      300,
     );
 
     redisInstance.get.mockResolvedValueOnce('bot_denied');

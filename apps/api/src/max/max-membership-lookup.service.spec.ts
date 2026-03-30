@@ -7,6 +7,9 @@ jest.mock('ioredis', () => {
     const messageHandlers = new Set<(channel: string, payload: string) => void>();
     const instance = {
       get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+      mget: jest
+        .fn()
+        .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
       set: jest.fn().mockImplementation(async (key: string, value: string) => {
         store.set(key, value);
         return 'OK';

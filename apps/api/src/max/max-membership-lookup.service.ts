@@ -80,6 +80,7 @@ const MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
 );
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
 const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
+const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
 
 @Injectable()
 export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy {
@@ -90,6 +91,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
+  private lastRedisWriteFailureLogAtMs = 0;
 
   constructor(
     private readonly maxClient: MaxClientService,
@@ -140,14 +142,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const cacheKeys = normalizedUserIds.map((userId) =>
       this.buildCacheKey(normalizedChatId, userId),
     );
-    await this.redis.del(...cacheKeys);
-    await this.redis.publish(
-      MEMBERSHIP_INVALIDATION_CHANNEL,
-      JSON.stringify({
-        chatId: normalizedChatId,
-        userIds: normalizedUserIds,
-      }),
-    );
+    await Promise.all([
+      this.redis.del(...cacheKeys),
+      this.redis.publish(
+        MEMBERSHIP_INVALIDATION_CHANNEL,
+        JSON.stringify({
+          chatId: normalizedChatId,
+          userIds: normalizedUserIds,
+        }),
+      ),
+    ]);
   }
 
   async getMembership(
@@ -197,9 +201,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const now = Date.now();
     const pendingPromises = new Map<string, Promise<boolean | null>>();
     const usersToLookup: string[] = [];
+    const cacheKeyByUserId = new Map(
+      normalizedUserIds.map((userId) => [userId, this.buildCacheKey(normalizedChatId, userId)]),
+    );
+    let unresolvedUserIds: string[] = [];
 
     for (const userId of normalizedUserIds) {
-      const cacheKey = this.buildCacheKey(normalizedChatId, userId);
+      const cacheKey = cacheKeyByUserId.get(userId)!;
       const freshMemorySnapshot = !options.forceRefresh
         ? this.readFreshMemorySnapshot(cacheKey, policy, now)
         : null;
@@ -208,8 +216,18 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         continue;
       }
 
-      if (!options.forceRefresh) {
-        const redisSnapshot = await this.readRedisSnapshot(cacheKey);
+      unresolvedUserIds.push(userId);
+    }
+
+    if (!options.forceRefresh && unresolvedUserIds.length > 0) {
+      const redisSnapshots = await this.readRedisSnapshots(
+        unresolvedUserIds.map((userId) => cacheKeyByUserId.get(userId)!),
+      );
+      const stillUnresolvedUserIds: string[] = [];
+
+      for (const userId of unresolvedUserIds) {
+        const cacheKey = cacheKeyByUserId.get(userId)!;
+        const redisSnapshot = redisSnapshots.get(cacheKey) ?? null;
         if (redisSnapshot) {
           this.memoryCache.set(cacheKey, redisSnapshot);
           if (this.isSnapshotFresh(redisSnapshot, policy, now)) {
@@ -217,8 +235,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             continue;
           }
         }
+
+        stillUnresolvedUserIds.push(userId);
       }
 
+      unresolvedUserIds = stillUnresolvedUserIds;
+    }
+
+    for (const userId of unresolvedUserIds) {
+      const cacheKey = cacheKeyByUserId.get(userId)!;
       const backoffUntilMs = this.backoffUntilMs.get(cacheKey) ?? 0;
       if (backoffUntilMs > now) {
         const staleSnapshot = allowStaleOnError
@@ -504,7 +529,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private storeSnapshot(cacheKey: string, snapshot: MembershipCacheSnapshot) {
     this.memoryCache.set(cacheKey, snapshot);
-    void this.writeRedisSnapshot(cacheKey, snapshot);
+    void this.writeRedisSnapshot(cacheKey, snapshot).catch((error: unknown) => {
+      this.logRedisWriteFailure(cacheKey, error);
+    });
   }
 
   private readCacheEpoch(cacheKey: string, now = Date.now()): number {
@@ -535,11 +562,54 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   }
 
   private async readRedisSnapshot(cacheKey: string): Promise<MembershipCacheSnapshot | null> {
-    const raw = await this.redis.get(cacheKey);
-    if (!raw) {
-      return null;
+    const snapshots = await this.readRedisSnapshots([cacheKey]);
+    return snapshots.get(cacheKey) ?? null;
+  }
+
+  private async readRedisSnapshots(
+    cacheKeys: readonly string[],
+  ): Promise<Map<string, MembershipCacheSnapshot>> {
+    const normalizedCacheKeys = Array.from(
+      new Set(cacheKeys.filter((cacheKey): cacheKey is string => cacheKey.trim().length > 0)),
+    );
+    if (normalizedCacheKeys.length === 0) {
+      return new Map();
     }
 
+    const rawValues = await this.redis.mget(...normalizedCacheKeys);
+    const snapshots = new Map<string, MembershipCacheSnapshot>();
+
+    for (const [index, rawValue] of rawValues.entries()) {
+      if (typeof rawValue !== 'string' || rawValue.length === 0) {
+        continue;
+      }
+
+      const snapshot = this.parseRedisSnapshot(rawValue);
+      if (!snapshot) {
+        continue;
+      }
+
+      snapshots.set(normalizedCacheKeys[index]!, snapshot);
+    }
+
+    return snapshots;
+  }
+
+  private async writeRedisSnapshot(
+    cacheKey: string,
+    snapshot: MembershipCacheSnapshot,
+  ): Promise<void> {
+    await this.redis.set(
+      cacheKey,
+      JSON.stringify(snapshot),
+      'EX',
+      snapshot.isMember
+        ? MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC
+        : MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC,
+    );
+  }
+
+  private parseRedisSnapshot(raw: string): MembershipCacheSnapshot | null {
     try {
       const parsed = JSON.parse(raw) as {
         checkedAtMs?: unknown;
@@ -566,20 +636,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     } catch {
       return null;
     }
-  }
-
-  private async writeRedisSnapshot(
-    cacheKey: string,
-    snapshot: MembershipCacheSnapshot,
-  ): Promise<void> {
-    await this.redis.set(
-      cacheKey,
-      JSON.stringify(snapshot),
-      'EX',
-      snapshot.isMember
-        ? MEMBERSHIP_RETENTION_POSITIVE_TTL_SEC
-        : MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC,
-    );
   }
 
   private readFreshMemorySnapshot(
@@ -632,6 +688,22 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private buildCacheKey(chatId: string, userId: string): string {
     return `max:membership:v1:${chatId}:${userId}`;
+  }
+
+  private logRedisWriteFailure(cacheKey: string, error: unknown) {
+    const nowMs = Date.now();
+    if (nowMs - this.lastRedisWriteFailureLogAtMs < MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.lastRedisWriteFailureLogAtMs = nowMs;
+    this.logger.warn(
+      {
+        cacheKey,
+        err: error instanceof Error ? error.message : String(error),
+      },
+      'Failed to write MAX membership snapshot to Redis',
+    );
   }
 
   private extractStatusCode(error: unknown): number | null {

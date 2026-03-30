@@ -417,7 +417,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
-    await this.invalidateMembershipCacheFromWebhookUpdate(update);
     if (this.isBotStartedUpdate(update)) {
       await this.handleBotStartedInstruction(update, chatId);
       return;
@@ -6336,57 +6335,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private isMembershipLeaveUpdate(update: MaxUpdate): boolean {
     const normalizedType = this.readLowerString(update.type);
     return normalizedType === 'user_removed' || normalizedType === 'bot_removed';
-  }
-
-  private async invalidateMembershipCacheFromWebhookUpdate(update: MaxUpdate): Promise<void> {
-    if (!this.membershipLookupService || !update.message) {
-      return;
-    }
-
-    const chatId = update.message.chatId.trim();
-    if (!chatId) {
-      return;
-    }
-
-    const explicitMemberUserIds = update.membership?.memberUserIds ?? [];
-    const directMembershipUserIds =
-      explicitMemberUserIds.length > 0
-        ? explicitMemberUserIds
-        : this.isDirectMembershipChangeType(update.type) && update.message.senderId
-          ? [update.message.senderId]
-          : [];
-    const memberUserIds =
-      directMembershipUserIds.length > 0
-        ? directMembershipUserIds
-        : this.extractServiceMemberUserIds(update);
-
-    if (memberUserIds.length === 0) {
-      return;
-    }
-
-    try {
-      await this.membershipLookupService.invalidateMemberships(chatId, memberUserIds);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          updateId: update.updateId,
-          chatId,
-          memberUserIds,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to invalidate MAX membership cache from webhook update',
-      );
-    }
-  }
-
-  private isDirectMembershipChangeType(type: string): boolean {
-    const normalizedType = this.readLowerString(type);
-    return (
-      normalizedType === 'user_added' ||
-      normalizedType === 'bot_added' ||
-      normalizedType === 'user_removed' ||
-      normalizedType === 'bot_removed'
-    );
   }
 
   private isBotAddedUpdate(update: MaxUpdate): boolean {

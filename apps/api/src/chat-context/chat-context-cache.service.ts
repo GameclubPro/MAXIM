@@ -23,7 +23,8 @@ type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
-  private static readonly ADMIN_ACCESS_TTL_SEC = 60;
+  private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
+  private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
@@ -133,24 +134,28 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return null;
   }
 
-  async setAdminAccess(
-    chatId: string,
-    userId: string,
-    state: ChatAdminAccessState,
-  ): Promise<void> {
+  async setAdminAccess(chatId: string, userId: string, state: ChatAdminAccessState): Promise<void> {
     await this.redis.set(
       ChatContextCacheService.adminAccessKey(chatId, userId),
       state,
       'EX',
-      ChatContextCacheService.ADMIN_ACCESS_TTL_SEC,
+      this.resolveAdminAccessTtlSec(state),
     );
+  }
+
+  private resolveAdminAccessTtlSec(state: ChatAdminAccessState): number {
+    return state === 'granted'
+      ? ChatContextCacheService.ADMIN_ACCESS_GRANTED_TTL_SEC
+      : ChatContextCacheService.ADMIN_ACCESS_DENIED_TTL_SEC;
   }
 
   async getManagedEntityHeader(
     chatId: string,
     entityType: ManagedEntityType,
   ): Promise<ManagedEntityHeader | null> {
-    const cached = await this.redis.get(ChatContextCacheService.managedEntityHeaderKey(chatId, entityType));
+    const cached = await this.redis.get(
+      ChatContextCacheService.managedEntityHeaderKey(chatId, entityType),
+    );
     if (!cached) {
       return null;
     }
@@ -279,7 +284,9 @@ export class ChatContextCacheService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityType | 'all',
   ): Promise<void> {
-    await this.redis.del(ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType));
+    await this.redis.del(
+      ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType),
+    );
   }
 
   async getManagedEntitiesDiscoverySnapshot(
