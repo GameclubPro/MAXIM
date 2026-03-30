@@ -760,12 +760,38 @@ describe('RuleEngineService', () => {
     expect(violation?.metadata?.decisionBand).toBe('HIGH');
   });
 
+  it('detects commercial beauty ad when salon promo context is present', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Салон маникюра: акция недели, запись открыта, пишите в директ',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
   it('does not detect COMMERCIAL_AD for private sale without promo context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Продам кофемашину, пишите в лс',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('does not detect COMMERCIAL_AD for private sale with marketplace link and self-pickup', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам галоши, самовывоз, авито: https://www.avito.ru/item123',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
       domainAllowlist: [],
     });
@@ -784,6 +810,19 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('detects recruitment ad with salary and contact', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Вакансия: доход от 5000 в смену, отклики в тг',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
   it('does not detect COMMERCIAL_AD for private sale with phone only', async () => {

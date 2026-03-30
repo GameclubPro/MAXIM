@@ -80,7 +80,12 @@ type CommercialSignalState = {
   hasDealSignal: boolean;
   hasPromoContext: boolean;
   hasBusinessContext: boolean;
+  hasRecruitmentContext: boolean;
+  hasInfoProductContext: boolean;
+  hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
+  hasPrivateSaleContext: boolean;
+  hasPrivateServiceContext: boolean;
   hasStrongNegativeContext: boolean;
 };
 
@@ -227,6 +232,40 @@ const ADS_BUSINESS_MARKERS = [
   'подписывайтесь',
   'поставщик',
   'производитель',
+  'вайлдберриз',
+  'wildberries',
+  'озон',
+  'ozon',
+];
+const ADS_RECRUITMENT_MARKERS = [
+  'ваканси',
+  'подработк',
+  'зарплат',
+  'доход',
+  'требует',
+  'набор',
+  'сотрудничеств',
+  'смена',
+  'отклик',
+];
+const ADS_INFO_PRODUCT_MARKERS = [
+  'курс',
+  'вебинар',
+  'марафон',
+  'обучени',
+  'интенсив',
+  'наставнич',
+];
+const ADS_CALL_TO_ACTION_MARKERS = [
+  'успей',
+  'переходите',
+  'оставляйте заявку',
+  'оставьте заявку',
+  'открыта запись',
+  'запись открыта',
+  'места ограничены',
+  'бронируйте',
+  'бронь',
 ];
 const ADS_CONTACT_MARKERS = [
   'пишите в лс',
@@ -265,9 +304,26 @@ const ADS_PRIVATE_CONTEXT_MARKERS = [
   'отдам',
   'даром',
   'обмен',
+  'самовывоз',
+  'торг',
+  'не подошл',
+  'переезд',
+  'разбираю',
+  'после ребен',
+];
+const ADS_PRIVATE_SERVICE_MARKERS = [
+  'маникюр',
+  'педикюр',
+  'ресниц',
+  'бров',
+  'на дому',
+  'у себя',
+  'частный мастер',
 ];
 const ADS_QUESTION_CONTEXT_MARKERS = ['кто подскажет', 'посоветуйте', 'как лучше', 'что выбрать'];
-const ADS_LINK_PATTERN = /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|avito|youla)/iu;
+const ADS_LINK_PATTERN =
+  /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
+const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
 const ADS_PRICE_PATTERN = /\b\d{2,}\s?(₽|руб(\.|лей)?|р\.|р|₸|\$|€)\b/iu;
 const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|предоплата|доставка|в наличии)\b/iu;
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
@@ -526,7 +582,9 @@ export class RuleEngineService {
 
     const hasCommercialContext =
       ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_BUSINESS_MARKERS.some((marker) => hasMarker(marker));
+      ADS_BUSINESS_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
     const hasDealSignal =
       ADS_LINK_PATTERN.test(rawLoweredText) ||
       ADS_PHONE_PATTERN.test(rawLoweredText) ||
@@ -538,7 +596,8 @@ export class RuleEngineService {
     return (
       hasCommercialContext &&
       hasDealSignal &&
-      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker))
+      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) &&
+      !ADS_PRIVATE_SERVICE_MARKERS.some((marker) => hasMarker(marker))
     );
   }
 
@@ -864,12 +923,33 @@ export class RuleEngineService {
       state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
     const hasStrongCommercialEvidence =
       state.hasPrice || state.hasDealChannel || (state.hasContact && state.hasTransactional);
+    const hasStructuredCommercialContext =
+      state.hasPromoContext ||
+      state.hasBusinessContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext;
+    const hasServiceCommercialOverride =
+      state.hasPrivateServiceContext && (state.hasPromoContext || state.hasBusinessContext);
 
-    if (appliedThresholds.strictness < 0.35 && !hasStrongCommercialEvidence) {
+    if (state.hasPrivateSaleContext && !hasStructuredCommercialContext) {
       return null;
     }
 
-    if (appliedThresholds.strictness < 0.65 && !hasStandardCommercialEvidence) {
+    if (state.hasPrivateServiceContext && !hasServiceCommercialOverride) {
+      return null;
+    }
+
+    if (
+      appliedThresholds.strictness < 0.35 &&
+      !(hasStructuredCommercialContext && hasStrongCommercialEvidence)
+    ) {
+      return null;
+    }
+
+    if (
+      appliedThresholds.strictness < 0.65 &&
+      !(hasStructuredCommercialContext && hasStandardCommercialEvidence)
+    ) {
       return null;
     }
 
@@ -1055,7 +1135,12 @@ export class RuleEngineService {
     let hasDealSignal = false;
     let hasPromoContext = false;
     let hasBusinessContext = false;
+    let hasRecruitmentContext = false;
+    let hasInfoProductContext = false;
+    let hasCallToActionContext = false;
     let hasCommercialContext = false;
+    let hasPrivateSaleContext = false;
+    let hasPrivateServiceContext = false;
     let hasStrongNegativeContext = false;
 
     const hasMarker = (marker: string): boolean =>
@@ -1080,6 +1165,26 @@ export class RuleEngineService {
       addPositive(`business:${marker}`, 16);
       hasBusinessContext = true;
       hasCommercialContext = true;
+    }
+
+    const recruitmentHits = ADS_RECRUITMENT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of recruitmentHits.slice(0, 2)) {
+      addPositive(`recruitment:${marker}`, 14);
+      hasRecruitmentContext = true;
+      hasCommercialContext = true;
+    }
+
+    const infoProductHits = ADS_INFO_PRODUCT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of infoProductHits.slice(0, 2)) {
+      addPositive(`info:${marker}`, 12);
+      hasInfoProductContext = true;
+      hasCommercialContext = true;
+    }
+
+    const callToActionHits = ADS_CALL_TO_ACTION_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of callToActionHits.slice(0, 2)) {
+      addPositive(`cta:${marker}`, 8);
+      hasCallToActionContext = true;
     }
 
     if (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_PATTERN.test(normalizedText)) {
@@ -1114,6 +1219,11 @@ export class RuleEngineService {
       hasDealSignal = true;
     }
 
+    if (ADS_MARKETPLACE_LINK_PATTERN.test(rawLoweredText)) {
+      addNegative('private:marketplace-link', 10);
+      hasPrivateSaleContext = true;
+    }
+
     if (ADS_URGENCY_PATTERN.test(normalizedText)) {
       addPositive('booster:urgency', 6);
     }
@@ -1144,6 +1254,16 @@ export class RuleEngineService {
       }
 
       addNegative(`private:${marker}`, 26, true);
+      hasPrivateSaleContext = true;
+    }
+
+    for (const marker of ADS_PRIVATE_SERVICE_MARKERS) {
+      if (!hasMarker(marker)) {
+        continue;
+      }
+
+      addNegative(`private-service:${marker}`, 12);
+      hasPrivateServiceContext = true;
     }
 
     if (rawLoweredText.includes('?') && !hasPrice && !hasContact && !hasDealChannel) {
@@ -1162,6 +1282,14 @@ export class RuleEngineService {
       addPositive('combo:business+deal', 16);
     }
 
+    if (hasRecruitmentContext && (hasContact || hasDealChannel || hasTransactional)) {
+      addPositive('combo:recruitment+deal', 14);
+    }
+
+    if (hasInfoProductContext && (hasContact || hasDealChannel || hasPrice || hasCallToActionContext)) {
+      addPositive('combo:info+deal', 14);
+    }
+
     if (hasContact && hasPrice) {
       addPositive('combo:contact+price', 6);
     }
@@ -1178,7 +1306,12 @@ export class RuleEngineService {
       hasDealSignal,
       hasPromoContext,
       hasBusinessContext,
+      hasRecruitmentContext,
+      hasInfoProductContext,
+      hasCallToActionContext,
       hasCommercialContext,
+      hasPrivateSaleContext,
+      hasPrivateServiceContext,
       hasStrongNegativeContext,
     };
   }
