@@ -8,6 +8,8 @@ import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import { ActionHealthService } from '../system/action-health.service';
+import { MaxBotContextService } from './max-bot-context.service';
+import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
 export type MaxBotChat = {
   chatId: string;
@@ -206,6 +208,7 @@ export type MaxActionType =
 export type MaxActionJob = {
   actionType: MaxActionType;
   chatId: string;
+  botId?: string;
   messageId?: string;
   userId?: string;
   text?: string;
@@ -222,6 +225,7 @@ export type MaxActionDispatchOptions = {
   immediate?: boolean;
   autoDeleteDelayMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
+  botId?: string;
 };
 
 type MaxApiRequestOptions = {
@@ -229,6 +233,7 @@ type MaxApiRequestOptions = {
   bypassCache?: boolean;
   ignoreFailureMetricStatuses?: readonly number[];
   timeoutMs?: number;
+  botId?: string;
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -276,7 +281,6 @@ return {1, 0, 0}
 export class MaxClientService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxClientService.name);
   private readonly baseUrl: string;
-  private readonly token: string;
   private readonly dispatchEnabled: boolean;
   private readonly globalRpsLimit: number;
   private readonly criticalGlobalRpsLimit: number;
@@ -292,25 +296,23 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
-  private readonly webhookUrl: string | null;
-  private readonly webhookSecretPath: string | null;
-  private readonly webhookHeaderSecret: string | null;
   private readonly limiterRedis: Redis;
-  private readonly criticalFailuresMs: number[] = [];
+  private readonly criticalFailuresMsByBot = new Map<string, number[]>();
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
-  private circuitOpenUntilMs = 0;
+  private readonly circuitOpenUntilMsByBot = new Map<string, number>();
 
   constructor(
     private readonly httpService: HttpService,
     configService: ConfigService,
     private readonly actionHealthService: ActionHealthService,
+    private readonly botRegistry: MaxBotRegistryService,
+    private readonly botContext: MaxBotContextService,
     @Optional()
     @InjectQueue('moderation-actions')
     private readonly actionQueue?: Queue<MaxActionJob>,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
-    this.token = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
     this.globalRpsLimit = this.readConfigInt(
       configService.get('MAX_API_GLOBAL_RPS'),
@@ -368,17 +370,6 @@ export class MaxClientService implements OnModuleDestroy {
     );
     this.circuitWindowSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_WINDOW_SEC'), 30);
     this.circuitOpenSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_OPEN_SEC'), 20);
-    this.webhookSecretPath = this.readTrimmedString(
-      configService.get<string>('MAX_WEBHOOK_SECRET_PATH'),
-    );
-    this.webhookUrl = this.buildWebhookUrl(
-      configService.get<string>('APP_BASE_URL'),
-      configService.get<string>('MAX_BOT_ID'),
-      this.webhookSecretPath ?? undefined,
-    );
-    this.webhookHeaderSecret = this.readTrimmedString(
-      configService.get<string>('MAX_WEBHOOK_HEADER_SECRET'),
-    );
     this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
   }
 
@@ -856,27 +847,29 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((item): item is MaxWebhookSubscription => item !== null);
   }
 
-  getConfiguredWebhookSubscriptionTarget(): { url: string | null; maskedUrl: string | null } {
-    return {
-      url: this.webhookUrl,
-      maskedUrl: this.maskWebhookUrl(this.webhookUrl),
-    };
+  getConfiguredWebhookSubscriptionTarget(
+    botId?: string | null,
+  ): { url: string | null; maskedUrl: string | null } {
+    return this.botRegistry.getConfiguredWebhookSubscriptionTarget(
+      this.resolveBot(botId).id,
+    );
   }
 
-  matchesConfiguredWebhookUrl(url: string): boolean {
-    if (!this.webhookUrl) {
+  matchesConfiguredWebhookUrl(url: string, botId?: string | null): boolean {
+    const target = this.getConfiguredWebhookSubscriptionTarget(botId);
+    if (!target.url) {
       return false;
     }
 
-    return url === this.webhookUrl || this.normalizeUrl(url) === this.normalizeUrl(this.webhookUrl);
+    return url === target.url || this.normalizeUrl(url) === this.normalizeUrl(target.url);
   }
 
-  maskWebhookUrl(url: string | null): string | null {
+  maskWebhookUrl(url: string | null, botId?: string | null): string | null {
     if (!url) {
       return null;
     }
 
-    const normalizedSecretPath = this.webhookSecretPath;
+    const normalizedSecretPath = this.resolveBot(botId).webhookSecretPath;
     if (!normalizedSecretPath) {
       return url;
     }
@@ -909,15 +902,16 @@ export class MaxClientService implements OnModuleDestroy {
           .filter((value): value is string => Boolean(value)),
       ),
     );
-    if (normalizedRequired.length === 0 || !this.webhookUrl || !this.webhookHeaderSecret) {
+    const bot = this.resolveBot(options.botId);
+    if (normalizedRequired.length === 0 || !bot.webhookUrl || !bot.webhookHeaderSecret) {
       return null;
     }
 
     const trafficClass = options.trafficClass ?? 'background';
-    const existing = await this.listWebhookSubscriptions({ trafficClass });
+    const existing = await this.listWebhookSubscriptions({ trafficClass, botId: bot.id });
     const current =
-      existing.find((item) => item.url === this.webhookUrl) ??
-      existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(this.webhookUrl!));
+      existing.find((item) => item.url === bot.webhookUrl) ??
+      existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(bot.webhookUrl!));
     const mergedUpdateTypes = Array.from(
       new Set([...(current?.updateTypes ?? []), ...normalizedRequired]),
     ).sort();
@@ -935,16 +929,16 @@ export class MaxClientService implements OnModuleDestroy {
       () =>
         this.request('post', '/subscriptions', {
           data: {
-            url: this.webhookUrl,
+            url: bot.webhookUrl,
             update_types: mergedUpdateTypes,
-            secret: this.webhookHeaderSecret,
+            secret: bot.webhookHeaderSecret,
           },
         }),
-      trafficClass,
+      { trafficClass, botId: bot.id },
     );
 
     return {
-      url: this.webhookUrl,
+      url: bot.webhookUrl,
       updateTypes: mergedUpdateTypes,
     };
   }
@@ -963,7 +957,10 @@ export class MaxClientService implements OnModuleDestroy {
             url: normalizedUrl,
           },
         }),
-      options.trafficClass ?? 'background',
+      {
+        trafficClass: options.trafficClass ?? 'background',
+        botId: options.botId,
+      },
     );
   }
 
@@ -1087,7 +1084,12 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async cancelScheduledUnban(chatId: string, userId: string) {
-    const jobId = this.buildScheduledMemberActionJobId('UNBAN_MEMBER', chatId, userId);
+    const jobId = this.buildScheduledMemberActionJobId(
+      'UNBAN_MEMBER',
+      chatId,
+      userId,
+      this.getCurrentBot().id,
+    );
     if (!jobId) {
       return;
     }
@@ -1117,149 +1119,152 @@ export class MaxClientService implements OnModuleDestroy {
       ...job,
       attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
     };
-    const mutationOptions = this.buildQueuedActionMutationOptions(action);
+    const bot = this.resolveBot(action.botId);
+    const mutationOptions = this.buildQueuedActionMutationOptions(action, bot.id);
 
-    switch (action.actionType) {
-      case 'DELETE_MESSAGE':
-        if (!action.messageId) {
-          throw new Error('messageId is required for DELETE_MESSAGE');
-        }
-        await this.executeMutation(
-          action.chatId,
-          async () => {
-            await this.request('delete', '/messages', {
-              params: {
-                message_id: action.messageId,
-                chat_id: action.chatId,
-              },
-            });
-          },
-          mutationOptions,
-        );
-        return;
-
-      case 'SEND_MESSAGE': {
-        if (typeof action.text !== 'string') {
-          throw new Error('text is required for SEND_MESSAGE');
-        }
-        const attachments = this.buildMessageAttachments(action.options);
-        const sendResponse = await this.executeMutation(
-          action.chatId,
-          async () => {
-            const messageLink = this.buildMessageLinkData(action.options?.messageLink);
-            return this.request<Record<string, unknown>>('post', '/messages', {
-              params: {
-                chat_id: action.chatId,
-              },
-              data: {
-                text: action.text,
-                ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
-                ...(messageLink ? { link: messageLink } : {}),
-                ...(attachments.length > 0 ? { attachments } : {}),
-              },
-            });
-          },
-          mutationOptions,
-        );
-        const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
-        if (autoDeleteDelayMs > 0) {
-          const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
-          if (!sentMessageId) {
-            this.logger.warn(
-              {
-                chatId: action.chatId,
-                autoDeleteDelayMs,
-                sendResponse,
-              },
-              'Failed to schedule auto-delete for sent bot message: response has no message id',
-            );
-            return;
+    await this.botContext.runWithBot(bot.id, async () => {
+      switch (action.actionType) {
+        case 'DELETE_MESSAGE':
+          if (!action.messageId) {
+            throw new Error('messageId is required for DELETE_MESSAGE');
           }
+          await this.executeMutation(
+            action.chatId,
+            async () => {
+              await this.request('delete', '/messages', {
+                params: {
+                  message_id: action.messageId,
+                  chat_id: action.chatId,
+                },
+              });
+            },
+            mutationOptions,
+          );
+          return;
 
-          try {
-            await this.dispatchAction(
-              {
-                actionType: 'DELETE_MESSAGE',
-                chatId: action.chatId,
-                messageId: sentMessageId,
-              },
-              {
-                delayMs: autoDeleteDelayMs,
-              },
-            );
-          } catch (error: unknown) {
-            this.logger.warn(
-              {
-                chatId: action.chatId,
-                messageId: sentMessageId,
-                autoDeleteDelayMs,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              },
-              'Failed to enqueue auto-delete for sent bot message',
-            );
+        case 'SEND_MESSAGE': {
+          if (typeof action.text !== 'string') {
+            throw new Error('text is required for SEND_MESSAGE');
           }
+          const attachments = this.buildMessageAttachments(action.options);
+          const sendResponse = await this.executeMutation(
+            action.chatId,
+            async () => {
+              const messageLink = this.buildMessageLinkData(action.options?.messageLink);
+              return this.request<Record<string, unknown>>('post', '/messages', {
+                params: {
+                  chat_id: action.chatId,
+                },
+                data: {
+                  text: action.text,
+                  ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
+                  ...(messageLink ? { link: messageLink } : {}),
+                  ...(attachments.length > 0 ? { attachments } : {}),
+                },
+              });
+            },
+            mutationOptions,
+          );
+          const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
+          if (autoDeleteDelayMs > 0) {
+            const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
+            if (!sentMessageId) {
+              this.logger.warn(
+                {
+                  chatId: action.chatId,
+                  autoDeleteDelayMs,
+                  sendResponse,
+                },
+                'Failed to schedule auto-delete for sent bot message: response has no message id',
+              );
+              return;
+            }
+
+            try {
+              await this.dispatchAction(
+                {
+                  actionType: 'DELETE_MESSAGE',
+                  chatId: action.chatId,
+                  messageId: sentMessageId,
+                },
+                {
+                  delayMs: autoDeleteDelayMs,
+                  botId: bot.id,
+                },
+              );
+            } catch (error: unknown) {
+              this.logger.warn(
+                {
+                  chatId: action.chatId,
+                  messageId: sentMessageId,
+                  autoDeleteDelayMs,
+                  error: error instanceof Error ? error.message : 'Unknown error',
+                },
+                'Failed to enqueue auto-delete for sent bot message',
+              );
+            }
+          }
+          return;
         }
-        return;
+
+        case 'KICK_MEMBER':
+          if (!action.userId) {
+            throw new Error('userId is required for KICK_MEMBER');
+          }
+          await this.executeMutation(
+            action.chatId,
+            async () => {
+              await this.request('delete', `/chats/${action.chatId}/members`, {
+                params: {
+                  user_id: action.userId,
+                },
+              });
+            },
+            mutationOptions,
+          );
+          return;
+
+        case 'BAN_MEMBER':
+          if (!action.userId) {
+            throw new Error('userId is required for BAN_MEMBER');
+          }
+          await this.executeMutation(
+            action.chatId,
+            async () => {
+              await this.request('delete', `/chats/${action.chatId}/members`, {
+                params: {
+                  user_id: action.userId,
+                  block: true,
+                },
+              });
+            },
+            mutationOptions,
+          );
+          return;
+
+        case 'UNBAN_MEMBER':
+          if (!action.userId) {
+            throw new Error('userId is required for UNBAN_MEMBER');
+          }
+          await this.executeMutation(
+            action.chatId,
+            async () => {
+              await this.request('post', `/chats/${action.chatId}/members`, {
+                data: {
+                  user_ids: [action.userId],
+                },
+              });
+            },
+            mutationOptions,
+          );
+          return;
+
+        case 'NOTIFY_MODERATORS':
+          this.logger.warn({ chatId: action.chatId, text: action.text ?? '' }, 'Moderator alert');
+          this.actionHealthService.recordSuccess(bot.id);
+          return;
       }
-
-      case 'KICK_MEMBER':
-        if (!action.userId) {
-          throw new Error('userId is required for KICK_MEMBER');
-        }
-        await this.executeMutation(
-          action.chatId,
-          async () => {
-            await this.request('delete', `/chats/${action.chatId}/members`, {
-              params: {
-                user_id: action.userId,
-              },
-            });
-          },
-          mutationOptions,
-        );
-        return;
-
-      case 'BAN_MEMBER':
-        if (!action.userId) {
-          throw new Error('userId is required for BAN_MEMBER');
-        }
-        await this.executeMutation(
-          action.chatId,
-          async () => {
-            await this.request('delete', `/chats/${action.chatId}/members`, {
-              params: {
-                user_id: action.userId,
-                block: true,
-              },
-            });
-          },
-          mutationOptions,
-        );
-        return;
-
-      case 'UNBAN_MEMBER': {
-        if (!action.userId) {
-          throw new Error('userId is required for UNBAN_MEMBER');
-        }
-        await this.executeMutation(
-          action.chatId,
-          async () => {
-            await this.request('post', `/chats/${action.chatId}/members`, {
-              data: {
-                user_ids: [action.userId],
-              },
-            });
-          },
-          mutationOptions,
-        );
-        return;
-      }
-
-      case 'NOTIFY_MODERATORS':
-        this.logger.warn({ chatId: action.chatId, text: action.text ?? '' }, 'Moderator alert');
-        this.actionHealthService.recordSuccess();
-        return;
-    }
+    });
   }
 
   async getChatTitle(chatId: string, options: MaxApiRequestOptions = {}): Promise<string | null> {
@@ -1276,13 +1281,14 @@ export class MaxClientService implements OnModuleDestroy {
     options: MaxApiRequestOptions = {},
   ): Promise<MaxChatSnapshot> {
     const normalizedChatId = chatId.trim();
+    const botId = this.resolveBot(options.botId).id;
     const timeoutMs =
       typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
         ? Math.max(1, Math.trunc(options.timeoutMs))
         : undefined;
     if (!options.bypassCache) {
       const cachedSnapshot = await this.readJsonCache(
-        this.buildChatSnapshotCacheKey(normalizedChatId),
+        this.buildChatSnapshotCacheKey(botId, normalizedChatId),
         this.isMaxChatSnapshot.bind(this),
       );
       if (cachedSnapshot) {
@@ -1322,7 +1328,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     if (!options.bypassCache) {
       await this.writeJsonCache(
-        this.buildChatSnapshotCacheKey(normalizedChatId),
+        this.buildChatSnapshotCacheKey(botId, normalizedChatId),
         snapshot,
         this.chatSnapshotCacheTtlSec,
       );
@@ -1556,9 +1562,10 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
+    const botId = this.resolveBot(options.botId).id;
     if (!options.bypassCache) {
       const cachedChats = await this.readJsonCache(
-        this.buildListBotChatsCacheKey(),
+        this.buildListBotChatsCacheKey(botId),
         this.isMaxBotChatList.bind(this),
       );
       if (cachedChats) {
@@ -1632,7 +1639,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     if (!options.bypassCache) {
       await this.writeJsonCache(
-        this.buildListBotChatsCacheKey(),
+        this.buildListBotChatsCacheKey(botId),
         results,
         this.listBotChatsCacheTtlSec,
       );
@@ -1641,12 +1648,12 @@ export class MaxClientService implements OnModuleDestroy {
     return results;
   }
 
-  private buildListBotChatsCacheKey(): string {
-    return 'maxapi:cache:v1:list-bot-chats';
+  private buildListBotChatsCacheKey(botId: string): string {
+    return `maxapi:cache:v1:list-bot-chats:${botId}`;
   }
 
-  private buildChatSnapshotCacheKey(chatId: string): string {
-    return `maxapi:cache:v1:chat-snapshot:${chatId}`;
+  private buildChatSnapshotCacheKey(botId: string, chatId: string): string {
+    return `maxapi:cache:v1:chat-snapshot:${botId}:${chatId}`;
   }
 
   private async readJsonCache<T>(
@@ -2307,6 +2314,7 @@ export class MaxClientService implements OnModuleDestroy {
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
     options?: MaxActionDispatchOptions,
   ) {
+    const bot = this.resolveBot(options?.botId ?? payload.botId);
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const delayMs = this.normalizeDelayMs(options?.delayMs);
     const immediate = options?.immediate === true;
@@ -2315,10 +2323,16 @@ export class MaxClientService implements OnModuleDestroy {
     );
     const scheduledJobId =
       delayMs > 0
-        ? this.buildScheduledMemberActionJobId(payload.actionType, payload.chatId, payload.userId)
+        ? this.buildScheduledMemberActionJobId(
+            payload.actionType,
+            payload.chatId,
+            payload.userId,
+            bot.id,
+          )
         : null;
     const job: MaxActionJob = {
       ...payload,
+      botId: bot.id,
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
@@ -2397,12 +2411,13 @@ export class MaxClientService implements OnModuleDestroy {
     actionType: MaxActionType,
     chatId: string,
     userId: string | undefined,
+    botId: string | null = null,
   ): string | null {
     if (actionType !== 'UNBAN_MEMBER' || !userId) {
       return null;
     }
 
-    return `member-action__${actionType}__${chatId}__${userId}`;
+    return `member-action__${botId ?? this.botRegistry.getDefaultBot().id}__${actionType}__${chatId}__${userId}`;
   }
 
   private async removeQueuedActionJob(jobId: string) {
@@ -3026,14 +3041,16 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass?: MaxApiTrafficClass;
       ignoreFailureMetricStatuses?: readonly number[];
       timeoutMs?: number;
+      botId?: string;
     } = {},
   ): Promise<T> {
-    await this.ensureCircuitClosed();
-    await this.reserveRateLimitSlot(options.chatId ?? null, options.trafficClass ?? 'interactive');
+    const bot = this.resolveBot(options.botId);
+    await this.ensureCircuitClosed(bot.id);
+    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, options.trafficClass ?? 'interactive');
 
     try {
-      const result = await operation();
-      this.actionHealthService.recordSuccess();
+      const result = await this.botContext.runWithBot(bot.id, () => operation());
+      this.actionHealthService.recordSuccess(bot.id);
       return result;
     } catch (error: unknown) {
       if (this.shouldIgnoreActionHealthFailure(error, options)) {
@@ -3048,9 +3065,9 @@ export class MaxClientService implements OnModuleDestroy {
         throw error;
       }
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
-      this.actionHealthService.recordFailure(isCritical);
+      this.actionHealthService.recordFailure(isCritical, bot.id);
       if (isCritical) {
-        this.registerCriticalFailure();
+        this.registerCriticalFailure(bot.id);
       }
       throw error;
     }
@@ -3084,6 +3101,7 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass: normalizedOptions.trafficClass ?? 'critical',
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
       timeoutMs: normalizedOptions.timeoutMs,
+      botId: normalizedOptions.botId,
     });
   }
 
@@ -3091,6 +3109,7 @@ export class MaxClientService implements OnModuleDestroy {
     trafficClass?: MaxApiTrafficClass;
     ignoreFailureMetricStatuses?: readonly number[];
     timeoutMs?: number;
+    botId?: string;
   } {
     if (typeof options === 'string') {
       return { trafficClass: options };
@@ -3105,6 +3124,7 @@ export class MaxClientService implements OnModuleDestroy {
         typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
           ? Math.max(1, Math.trunc(options.timeoutMs))
           : undefined,
+      botId: this.readTrimmedString(options.botId) ?? undefined,
     };
   }
 
@@ -3131,8 +3151,12 @@ export class MaxClientService implements OnModuleDestroy {
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 
-  private buildQueuedActionMutationOptions(action: MaxActionJob): MaxApiRequestOptions {
+  private buildQueuedActionMutationOptions(
+    action: MaxActionJob,
+    botId: string,
+  ): MaxApiRequestOptions {
     return {
+      botId,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         action.ignoreFailureMetricStatuses,
       ),
@@ -3262,12 +3286,16 @@ export class MaxClientService implements OnModuleDestroy {
     return fallback;
   }
 
-  private async reserveRateLimitSlot(chatId: string | null, trafficClass: MaxApiTrafficClass) {
+  private async reserveRateLimitSlot(
+    botId: string,
+    chatId: string | null,
+    trafficClass: MaxApiTrafficClass,
+  ) {
     const maxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
     const startedAtMs = Date.now();
 
     while (true) {
-      const reservation = await this.tryReserveRateLimitSlot(chatId, trafficClass);
+      const reservation = await this.tryReserveRateLimitSlot(botId, chatId, trafficClass);
       if (reservation.ok) {
         return;
       }
@@ -3285,6 +3313,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async tryReserveRateLimitSlot(
+    botId: string,
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
   ): Promise<
@@ -3297,9 +3326,9 @@ export class MaxClientService implements OnModuleDestroy {
   > {
     const nowSec = Math.floor(Date.now() / 1_000);
     const keys = [
-      `maxapi:rps:global:${nowSec}`,
-      `maxapi:rps:global:${trafficClass}:${nowSec}`,
-      ...(chatId ? [`maxapi:rps:chat:${chatId}:${nowSec}`] : []),
+      `maxapi:rps:global:${botId}:${nowSec}`,
+      `maxapi:rps:global:${botId}:${trafficClass}:${nowSec}`,
+      ...(chatId ? [`maxapi:rps:chat:${botId}:${chatId}:${nowSec}`] : []),
     ];
     const raw = await this.limiterRedis.eval(
       MAX_API_RATE_LIMIT_RESERVATION_SCRIPT,
@@ -3330,6 +3359,7 @@ export class MaxClientService implements OnModuleDestroy {
       ok: false,
       retryAfterMs: normalizedRetryAfterMs,
       reason: this.buildRateLimitExceededMessage(
+        botId,
         chatId,
         trafficClass,
         Math.trunc(rejectedKeyIndex),
@@ -3379,21 +3409,22 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private buildRateLimitExceededMessage(
+    botId: string,
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
     rejectedKeyIndex: number,
   ): string {
     switch (rejectedKeyIndex) {
       case 1:
-        return 'MAX API global rate limit exceeded';
+        return `MAX API global rate limit exceeded for bot ${botId}`;
       case 2:
-        return `MAX API ${trafficClass} rate limit exceeded`;
+        return `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
       case 3:
         return chatId
-          ? `MAX API per-chat rate limit exceeded for chat ${chatId}`
-          : `MAX API ${trafficClass} rate limit exceeded`;
+          ? `MAX API per-chat rate limit exceeded for bot ${botId} chat ${chatId}`
+          : `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
       default:
-        return `MAX API ${trafficClass} rate limit exceeded`;
+        return `MAX API ${trafficClass} rate limit exceeded for bot ${botId}`;
     }
   }
 
@@ -3408,29 +3439,51 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  private async ensureCircuitClosed() {
+  private async ensureCircuitClosed(botId: string) {
     const now = Date.now();
-    if (now < this.circuitOpenUntilMs) {
+    const openUntilMs = this.circuitOpenUntilMsByBot.get(botId) ?? 0;
+    if (now < openUntilMs) {
       throw new Error('MAX API circuit breaker is open');
     }
 
+    const failures = this.getCriticalFailures(botId);
     const windowStart = now - this.circuitWindowSec * 1_000;
-    while (this.criticalFailuresMs.length > 0 && this.criticalFailuresMs[0] < windowStart) {
-      this.criticalFailuresMs.shift();
+    while (failures.length > 0 && failures[0] < windowStart) {
+      failures.shift();
     }
 
-    if (this.criticalFailuresMs.length >= this.circuitFailureThreshold) {
-      this.circuitOpenUntilMs = now + this.circuitOpenSec * 1_000;
+    if (failures.length >= this.circuitFailureThreshold) {
+      this.circuitOpenUntilMsByBot.set(botId, now + this.circuitOpenSec * 1_000);
       throw new Error('MAX API circuit breaker opened due to critical failures');
     }
   }
 
-  private registerCriticalFailure(now = Date.now()) {
-    this.criticalFailuresMs.push(now);
+  private registerCriticalFailure(botId: string, now = Date.now()) {
+    const failures = this.getCriticalFailures(botId);
+    failures.push(now);
     const windowStart = now - this.circuitWindowSec * 1_000;
-    while (this.criticalFailuresMs.length > 0 && this.criticalFailuresMs[0] < windowStart) {
-      this.criticalFailuresMs.shift();
+    while (failures.length > 0 && failures[0] < windowStart) {
+      failures.shift();
     }
+  }
+
+  private getCriticalFailures(botId: string): number[] {
+    const existing = this.criticalFailuresMsByBot.get(botId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: number[] = [];
+    this.criticalFailuresMsByBot.set(botId, created);
+    return created;
+  }
+
+  private resolveBot(botId?: string | null): MaxBotDefinition {
+    return this.botRegistry.getBotById(botId) ?? this.botRegistry.getDefaultBot();
+  }
+
+  private getCurrentBot(): MaxBotDefinition {
+    return this.resolveBot(this.botContext.getActiveBotId());
   }
 
   private extractStatusCode(error: unknown): number | null {
@@ -3443,6 +3496,7 @@ export class MaxClientService implements OnModuleDestroy {
     path: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
+    const bot = this.getCurrentBot();
     const url = `${this.baseUrl}${path}`;
     const response = await firstValueFrom(
       this.httpService.request<T>({
@@ -3450,7 +3504,7 @@ export class MaxClientService implements OnModuleDestroy {
         url,
         ...config,
         headers: {
-          Authorization: this.token,
+          Authorization: bot.token,
           ...(config.headers as Record<string, string> | undefined),
         },
       }),
@@ -3465,6 +3519,7 @@ export class MaxClientService implements OnModuleDestroy {
     url: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
+    const bot = this.getCurrentBot();
     const headers = config.headers as Record<string, string> | undefined;
     const response = await firstValueFrom(
       this.httpService.request<T>({
@@ -3472,7 +3527,7 @@ export class MaxClientService implements OnModuleDestroy {
         url,
         ...config,
         headers: {
-          Authorization: this.token,
+          Authorization: bot.token,
           ...(headers ?? {}),
         },
       }),

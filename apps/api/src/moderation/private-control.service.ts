@@ -40,6 +40,7 @@ import {
   parseCompactGiveawayHandoffStartPayload,
   parseCompactProfileMentionStartPayload,
 } from '../max/max-deep-link.util';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import {
   MaxClientService,
   type MaxCustomMessagePayload,
@@ -1126,6 +1127,7 @@ export class PrivateControlService {
     private readonly managedGiveawayService: ManagedGiveawayService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
+    @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -1138,9 +1140,10 @@ export class PrivateControlService {
       configService?.get<string>('MAX_BOT_TOKEN'),
       configService?.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
-    this.maxBotToken = configuredBotTokens[0] ?? this.botDeepLinkId ?? 'max-bot';
+    this.maxBotToken = this.maxBotLinkService?.getBotTokenSync() ?? configuredBotTokens[0] ?? this.botDeepLinkId ?? 'max-bot';
     this.maxBotTokenValidationSecrets =
-      configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
+      this.maxBotLinkService?.getValidationTokens() ??
+      (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
   }
 
   async handleUpdate(update: MaxUpdate): Promise<void> {
@@ -10214,25 +10217,29 @@ export class PrivateControlService {
   }
 
   private buildMiniappStartUrl(startParam: string): string | null {
-    if (!this.botDeepLinkId) {
-      return null;
-    }
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`;
+    return (
+      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
+      (this.botDeepLinkId
+        ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`
+        : null)
+    );
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
-    if (!this.botDeepLinkId) {
-      return null;
-    }
     if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`;
+    return (
+      this.maxBotLinkService?.buildBotStartUrlSync(startPayload) ??
+      (this.botDeepLinkId
+        ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`
+        : null)
+    );
   }
 
   private buildGiveawayHandoffStartPayload(params: {
@@ -10240,7 +10247,7 @@ export class PrivateControlService {
     entityType: ManagedEntityType;
     giveawayId: string | null;
   }): string {
-    const compactPayload = buildCompactGiveawayHandoffStartPayload(params, this.maxBotToken);
+    const compactPayload = buildCompactGiveawayHandoffStartPayload(params, this.getCurrentBotToken());
     if (compactPayload) {
       return compactPayload;
     }
@@ -10271,7 +10278,7 @@ export class PrivateControlService {
         entityType: params.entityType,
         userId: params.userId,
       },
-      this.maxBotToken,
+      this.getCurrentBotToken(),
     );
     if (compactPayload) {
       return compactPayload;
@@ -10387,6 +10394,11 @@ export class PrivateControlService {
   }
 
   private resolveBotContactId(): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+    if (contextAwareContactId) {
+      return contextAwareContactId;
+    }
+
     if (this.explicitBotContactId) {
       return this.explicitBotContactId;
     }
@@ -11383,6 +11395,10 @@ export class PrivateControlService {
   }
 
   private isOwnBotSender(userId: string): boolean {
+    if (this.maxBotLinkService?.isKnownBotUserId(userId)) {
+      return true;
+    }
+
     if (!userId) {
       return false;
     }
@@ -11402,6 +11418,10 @@ export class PrivateControlService {
     }
 
     return this.ownBotUserIdVariants.has(collapsed);
+  }
+
+  private getCurrentBotToken(): string {
+    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
   }
 
   private normalizeAppBaseUrl(value: string | undefined): string | null {

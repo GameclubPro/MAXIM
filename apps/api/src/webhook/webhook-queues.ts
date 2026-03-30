@@ -154,6 +154,21 @@ export function extractWebhookChatId(payload: unknown): string {
   return readWebhookChatId(payload);
 }
 
+export function extractWebhookBotId(payload: unknown): string {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return '';
+  }
+
+  const row = payload as { botId?: unknown; bot_id?: unknown };
+  const rawBotId = row.botId ?? row.bot_id;
+  if (typeof rawBotId !== 'string' && typeof rawBotId !== 'number') {
+    return '';
+  }
+
+  const normalized = String(rawBotId).trim();
+  return normalized.length > 0 ? normalized : '';
+}
+
 function hashChatId(chatId: string): number {
   let hash = 0x811c9dc5;
   for (let index = 0; index < chatId.length; index += 1) {

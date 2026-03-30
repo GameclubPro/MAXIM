@@ -2,6 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookStatus, type Prisma } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -18,6 +19,7 @@ export class WebhookService {
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
+    private readonly maxBotLinkService: MaxBotLinkService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
@@ -25,6 +27,7 @@ export class WebhookService {
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
     await this.invalidateMembershipCacheFromWebhook(update);
+    await this.bindChatToBot(update);
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
@@ -115,12 +118,38 @@ export class WebhookService {
     await this.prisma.webhookEvent.create({
       data: {
         dedupKey: update.updateId,
+        ...(update.botId ? { botId: update.botId } : {}),
         sourceIp: sourceIp ?? undefined,
         rawPayload,
         normalizedPayload: update as Prisma.InputJsonValue,
         status: WebhookStatus.RECEIVED,
       },
     });
+  }
+
+  private async bindChatToBot(update: MaxUpdate): Promise<void> {
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!chatId) {
+      return;
+    }
+
+    try {
+      await this.maxBotLinkService.bindChatToBot({
+        chatId,
+        title: update.message?.chatTitle ?? null,
+        botId: update.botId,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          botId: update.botId ?? null,
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to bind chat to bot during webhook ingest',
+      );
+    }
   }
 
   private async handleDuplicateError(

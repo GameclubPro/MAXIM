@@ -38,10 +38,12 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { MaxBotContextService } from '../max/max-bot-context.service';
 import {
   isValidMaxBotStartPayload,
   isValidMaxMiniappStartPayload,
 } from '../max/max-deep-link.util';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -354,6 +356,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly privateControlService?: PrivateControlService,
     @Optional() private readonly adminService?: AdminService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
+    @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional() private readonly maxBotContextService?: MaxBotContextService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -454,9 +458,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const update = webhookEvent.normalizedPayload as MaxUpdate;
+    const activeBotId =
+      (typeof webhookEvent.botId === 'string' && webhookEvent.botId.trim().length > 0
+        ? webhookEvent.botId.trim()
+        : null) ??
+      (typeof update.botId === 'string' && update.botId.trim().length > 0
+        ? update.botId.trim()
+        : null) ??
+      this.maxBotLinkService?.getDefaultBotId() ??
+      null;
 
     try {
-      await this.handleUpdate(update);
+      if (activeBotId && this.maxBotContextService) {
+        await this.maxBotContextService.runWithBot(activeBotId, () => this.handleUpdate(update));
+      } else {
+        await this.handleUpdate(update);
+      }
       await this.prisma.webhookEvent.update({
         where: { id: webhookEvent.id },
         data: {
@@ -7240,6 +7257,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveBotContactId(): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+    if (contextAwareContactId) {
+      return contextAwareContactId;
+    }
+
     if (this.explicitBotContactId) {
       return this.explicitBotContactId;
     }
@@ -9751,25 +9773,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildMiniappStartUrl(startParam: string): string | null {
-    if (!this.ownBotUserId) {
-      return null;
-    }
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
+    return (
+      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
+      (this.ownBotUserId
+        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
+        : null)
+    );
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
-    if (!this.ownBotUserId) {
-      return null;
-    }
     if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`;
+    return (
+      this.maxBotLinkService?.buildBotStartUrlSync(startPayload) ??
+      (this.ownBotUserId
+        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
+        : null)
+    );
   }
 
   private buildChannelDialogToken(
@@ -9802,7 +9828,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
   ): string {
     const scope = `dialog:${chatId}:${type}:${threadId}`;
-    return createHmac('sha256', this.maxBotToken ?? '')
+    return createHmac('sha256', this.getCurrentBotToken())
       .update(scope)
       .digest('hex');
   }
@@ -9813,9 +9839,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
   ): string {
     const scope = `dialog:chat:${chatId}:${type}:${threadId}`;
-    return createHmac('sha256', this.maxBotToken ?? '')
+    return createHmac('sha256', this.getCurrentBotToken())
       .update(scope)
       .digest('hex');
+  }
+
+  private getCurrentBotToken(): string {
+    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken ?? '';
   }
 
   private async loadChatContext(
@@ -10148,6 +10178,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isOwnBotSender(userId: string): boolean {
+    if (this.maxBotLinkService?.isKnownBotUserId(userId)) {
+      return true;
+    }
+
     if (this.ownBotUserIdVariants.size === 0) {
       return false;
     }

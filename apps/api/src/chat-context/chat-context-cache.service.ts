@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import { Prisma, type ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import type { MaxBotChat } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -33,6 +34,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
+    private readonly maxBotLinkService: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.managedEntityHeaderTtlSec = this.readPositiveInt(
@@ -387,6 +389,8 @@ export class ChatContextCacheService implements OnModuleDestroy {
       throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
     }
 
+    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.botId);
+
     const value: ChatContext = {
       chatId: chat.id,
       title: chat.title,
@@ -413,6 +417,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       await this.prisma.chat.create({
         data: {
           id: chatId,
+          botId: this.maxBotLinkService.getContextOrDefaultBotId(),
           title: resolvedTitle,
         },
       });

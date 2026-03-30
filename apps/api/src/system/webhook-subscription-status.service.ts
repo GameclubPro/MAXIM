@@ -11,10 +11,14 @@ const WEBHOOK_SUBSCRIPTION_STATUS_KEY = 'system:webhook-subscription:status:v1';
 const WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY = 'system:webhook-subscription:sync-state:v1';
 const LOCAL_SNAPSHOT_CACHE_TTL_MS = 2_000;
 
-export type WebhookSubscriptionSyncState = {
+export type WebhookSubscriptionBotSyncState = {
   configuredUrl: string | null;
   headerSecretFingerprint: string | null;
   updatedAt: string;
+};
+
+export type WebhookSubscriptionSyncState = {
+  bots: Record<string, WebhookSubscriptionBotSyncState>;
 };
 
 @Injectable()
@@ -79,21 +83,49 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
         return null;
       }
 
-      const parsed = JSON.parse(raw) as Partial<WebhookSubscriptionSyncState>;
+      const parsed = JSON.parse(raw) as Partial<WebhookSubscriptionSyncState> & {
+        configuredUrl?: unknown;
+        headerSecretFingerprint?: unknown;
+        updatedAt?: unknown;
+      };
+      const parsedBots =
+        parsed.bots && typeof parsed.bots === 'object' && !Array.isArray(parsed.bots)
+          ? Object.fromEntries(
+              Object.entries(parsed.bots).map(([botId, value]) => {
+                const row =
+                  value && typeof value === 'object' && !Array.isArray(value)
+                    ? (value as Partial<WebhookSubscriptionBotSyncState>)
+                    : {};
+                return [
+                  botId,
+                  {
+                    configuredUrl:
+                      typeof row.configuredUrl === 'string' && row.configuredUrl.trim().length > 0
+                        ? row.configuredUrl
+                        : null,
+                    headerSecretFingerprint:
+                      typeof row.headerSecretFingerprint === 'string' &&
+                      row.headerSecretFingerprint.trim().length > 0
+                        ? row.headerSecretFingerprint
+                        : null,
+                    updatedAt:
+                      typeof row.updatedAt === 'string' && row.updatedAt.trim().length > 0
+                        ? row.updatedAt
+                        : new Date(0).toISOString(),
+                  } satisfies WebhookSubscriptionBotSyncState,
+                ];
+              }),
+            )
+          : {};
+
+      if (Object.keys(parsedBots).length > 0) {
+        return {
+          bots: parsedBots,
+        };
+      }
+
       return {
-        configuredUrl:
-          typeof parsed.configuredUrl === 'string' && parsed.configuredUrl.trim().length > 0
-            ? parsed.configuredUrl
-            : null,
-        headerSecretFingerprint:
-          typeof parsed.headerSecretFingerprint === 'string' &&
-          parsed.headerSecretFingerprint.trim().length > 0
-            ? parsed.headerSecretFingerprint
-            : null,
-        updatedAt:
-          typeof parsed.updatedAt === 'string' && parsed.updatedAt.trim().length > 0
-            ? parsed.updatedAt
-            : new Date(0).toISOString(),
+        bots: {},
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -126,6 +158,8 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
       otherSubscriptionsCount: 0,
       lastError: null,
       note,
+      botCount: 0,
+      bots: {},
     };
   }
 

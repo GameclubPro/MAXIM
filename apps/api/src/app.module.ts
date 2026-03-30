@@ -5,6 +5,7 @@ import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module';
 import { validateEnv } from './config/env.schema';
 import { HealthModule } from './health/health.module';
+import { MaxBotModule } from './max/max-bot.module';
 import { MaxModule } from './max/max.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { PrismaModule } from './prisma/prisma.module';
@@ -47,6 +48,7 @@ import { WebhookModule } from './webhook/webhook.module';
       }),
     }),
     PrismaModule,
+    MaxBotModule,
     MaxModule,
     ModerationModule,
     WebhookModule,

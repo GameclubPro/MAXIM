@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { parseAdditionalMaxBotsJson } from '../max/max-bot-config.util';
 
 const PRODUCTION_WEBHOOK_SECRET_PATTERN = /^[A-Za-z0-9_-]{16,128}$/u;
 const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
@@ -23,6 +24,7 @@ const envSchema = z.object({
   MAX_WEBHOOK_SECRET_PATH: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET_PREVIOUS: z.string().min(8).optional(),
+  MAX_BOTS_JSON: z.string().optional(),
   MAX_API_BASE_URL: z.string().url().default('https://platform-api.max.ru'),
   MAX_JOIN_DENY_CHAT_IDS: z.string().optional(),
 
@@ -152,6 +154,42 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
         );
       }
     }
+  }
+
+  try {
+    const additionalBots = parseAdditionalMaxBotsJson(parsed.data.MAX_BOTS_JSON);
+    if (parsed.data.NODE_ENV === 'production') {
+      for (const bot of additionalBots) {
+        for (const [key, value] of [
+          [`MAX_BOTS_JSON.${bot.id}.webhookSecretPath`, bot.webhookSecretPath],
+          [`MAX_BOTS_JSON.${bot.id}.webhookHeaderSecret`, bot.webhookHeaderSecret],
+          [
+            `MAX_BOTS_JSON.${bot.id}.webhookHeaderSecretPrevious`,
+            bot.webhookHeaderSecretPrevious,
+          ],
+        ] as const) {
+          if (!value) {
+            continue;
+          }
+
+          const normalized = value.trim();
+          if (
+            !PRODUCTION_WEBHOOK_SECRET_PATTERN.test(normalized) ||
+            DISALLOWED_PRODUCTION_WEBHOOK_SECRETS.has(normalized.toLowerCase())
+          ) {
+            throw new Error(
+              `Environment validation failed: ${key} must be a non-default URL-safe secret (16-128 chars, A-Z/a-z/0-9/_/-) in production`,
+            );
+          }
+        }
+      }
+    }
+  } catch (error: unknown) {
+    throw new Error(
+      `Environment validation failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
   }
 
   return parsed.data;

@@ -21,6 +21,7 @@ import { WebhookRoutingService } from './webhook-routing.service';
 
 type WebhookEnqueueCandidate = {
   id: string;
+  botId: string | null;
   enqueueAttempts: number;
   createdAt: Date;
   normalizedPayload: unknown;
@@ -162,7 +163,13 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       },
       orderBy: { createdAt: 'asc' },
       take: this.batchSize,
-      select: { id: true, enqueueAttempts: true, createdAt: true, normalizedPayload: true },
+      select: {
+        id: true,
+        botId: true,
+        enqueueAttempts: true,
+        createdAt: true,
+        normalizedPayload: true,
+      },
     });
 
     const prioritizedCandidates = [...candidates].sort((left, right) => {
@@ -200,6 +207,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         const queueName = await this.webhookRoutingService.resolveQueueName(
           event.id,
           event.normalizedPayload,
+          { botId: event.botId },
         );
         await this.enqueueOne(
           event.id,
@@ -243,7 +251,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         },
       );
 
-      await this.markQueued(webhookEventId, true, true);
+      await this.markQueued(webhookEventId, true, true, queueName);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       if (this.isAlreadyExistsError(message)) {
@@ -296,7 +304,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       state === 'prioritized' ||
       state === 'waiting-children'
     ) {
-      await this.markQueued(webhookEventId, false, true);
+      await this.markQueued(webhookEventId, false, true, job.queueName);
       return;
     }
 
@@ -319,7 +327,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await job.retry();
-      await this.markQueued(webhookEventId, true, true);
+      await this.markQueued(webhookEventId, true, true, job.queueName);
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       await this.markFailedWithBackoff(
@@ -334,12 +342,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     webhookEventId: string,
     incrementAttempts: boolean,
     touchQueuedAt: boolean,
+    queueName?: string | null,
   ) {
     const data: {
       status: WebhookStatus;
       queuedAt?: Date;
       nextEnqueueAt: Date | null;
       errorMessage: string | null;
+      queueName?: string | null;
       enqueueAttempts?: {
         increment: number;
       };
@@ -347,6 +357,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       status: WebhookStatus.QUEUED,
       nextEnqueueAt: null,
       errorMessage: null,
+      ...(queueName ? { queueName } : {}),
       ...(touchQueuedAt ? { queuedAt: new Date() } : {}),
       ...(incrementAttempts
         ? {
@@ -383,6 +394,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: message.slice(0, 500),
+        queueName: null,
         nextEnqueueAt: exhausted ? null : new Date(Date.now() + nextDelaySec * 1_000),
         enqueueAttempts: {
           increment: 1,
@@ -401,6 +413,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       data: {
         status: WebhookStatus.FAILED,
         errorMessage: message.slice(0, 500),
+        queueName: null,
         nextEnqueueAt: null,
       },
     });
@@ -415,6 +428,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       data: {
         status: WebhookStatus.PROCESSED,
         processedAt: new Date(),
+        queueName: null,
         nextEnqueueAt: null,
         errorMessage: null,
       },

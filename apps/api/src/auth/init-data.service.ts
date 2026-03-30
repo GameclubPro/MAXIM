@@ -1,8 +1,8 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { collectBotTokenSecrets } from '../common/bot-token.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 
 const INIT_DATA_ALLOWED_CLOCK_SKEW_SEC = 30;
 
@@ -11,13 +11,8 @@ export class InitDataService {
   private readonly botTokens: readonly string[];
   private readonly maxAgeSec: number;
 
-  constructor(configService: ConfigService) {
-    const configuredBotTokens = collectBotTokenSecrets(
-      configService.getOrThrow<string>('MAX_BOT_TOKEN'),
-      configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
-    );
-    const currentBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
-    this.botTokens = configuredBotTokens.length > 0 ? configuredBotTokens : [currentBotToken];
+  constructor(botRegistry: MaxBotRegistryService, configService: ConfigService) {
+    this.botTokens = botRegistry.getValidationTokens();
     this.maxAgeSec = configService.get<number>('INIT_DATA_MAX_AGE_SEC', 300);
   }
 

@@ -157,6 +157,11 @@ function buildSettings(chatId: string): ChatSettings {
 }
 
 describe('ChatContextCacheService', () => {
+  const maxBotLinkService = {
+    getContextOrDefaultBotId: jest.fn().mockReturnValue('777000_bot'),
+    rememberChatBotBinding: jest.fn(),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -184,7 +189,11 @@ describe('ChatContextCacheService', () => {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
     };
 
-    const service = new ChatContextCacheService(prisma as never, config as never);
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results[0].value as {
       get: jest.Mock;
       set: jest.Mock;
@@ -215,7 +224,11 @@ describe('ChatContextCacheService', () => {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
     };
 
-    const service = new ChatContextCacheService({} as never, config as never);
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       set: jest.Mock;
       get: jest.Mock;
@@ -239,7 +252,11 @@ describe('ChatContextCacheService', () => {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
     };
 
-    const service = new ChatContextCacheService({} as never, config as never);
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       set: jest.Mock;
       get: jest.Mock;
@@ -277,7 +294,11 @@ describe('ChatContextCacheService', () => {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
     };
 
-    const service = new ChatContextCacheService({} as never, config as never);
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
       set: jest.Mock;
       get: jest.Mock;

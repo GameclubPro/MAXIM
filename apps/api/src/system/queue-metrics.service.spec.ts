@@ -58,6 +58,14 @@ describe('QueueMetricsService', () => {
                 return null;
             }
           }),
+        groupBy: jest.fn().mockResolvedValue([
+          {
+            queueName: 'moderation-default-0',
+            _count: {
+              _all: 3,
+            },
+          },
+        ]),
       },
     };
     const actionHealthService = {
@@ -90,11 +98,16 @@ describe('QueueMetricsService', () => {
         )[token],
       ),
     };
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([{ id: '777000_bot' }]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+    };
 
     const service = new QueueMetricsService(
       prisma as never,
       actionHealthService as never,
       moduleRef as never,
+      botRegistry as never,
       createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
       createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
@@ -217,5 +230,21 @@ describe('QueueMetricsService', () => {
     expect(snapshot.oldestQueuedEventId).toBe('queued-1');
     expect(snapshot.oldestReceivedEventId).toBe('received-1');
     expect(snapshot.effectiveLagSec).toBeGreaterThanOrEqual(snapshot.oldestQueuedLagSec);
+    expect(snapshot.bots['777000_bot']).toEqual(
+      expect.objectContaining({
+        queuedByQueue: {
+          'moderation-default-0': 3,
+        },
+        actionHealth: {
+          windowSec: 60,
+          total: 50,
+          success: 48,
+          failure: 2,
+          critical: 1,
+          errorRate: 0.04,
+          criticalRate: 0.02,
+        },
+      }),
+    );
   });
 });

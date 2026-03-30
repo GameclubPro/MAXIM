@@ -39,9 +39,19 @@ function createConfigMock(
 }
 
 describe('InitDataService', () => {
+  function createRegistryMock(previousToken?: string) {
+    return {
+      getValidationTokens: jest
+        .fn()
+        .mockReturnValue(
+          previousToken ? [botToken, previousBotToken] : [botToken],
+        ),
+    };
+  }
+
   it('validates correct init data', () => {
     const configService = createConfigMock();
-    const service = new InitDataService(configService);
+    const service = new InitDataService(createRegistryMock() as never, configService);
     const params = new URLSearchParams();
     params.set(
       'user',
@@ -61,7 +71,7 @@ describe('InitDataService', () => {
 
   it('extracts direct MAX profile url from user payload', () => {
     const configService = createConfigMock();
-    const service = new InitDataService(configService);
+    const service = new InitDataService(createRegistryMock() as never, configService);
     const params = new URLSearchParams();
     params.set(
       'user',
@@ -79,7 +89,7 @@ describe('InitDataService', () => {
 
   it('throws on invalid hash', () => {
     const configService = createConfigMock();
-    const service = new InitDataService(configService);
+    const service = new InitDataService(createRegistryMock() as never, configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '42' }));
     params.set('hash', 'bad-hash');
@@ -89,7 +99,7 @@ describe('InitDataService', () => {
 
   it('validates urlencoded payload', () => {
     const configService = createConfigMock();
-    const service = new InitDataService(configService);
+    const service = new InitDataService(createRegistryMock() as never, configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '100' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));
@@ -102,7 +112,7 @@ describe('InitDataService', () => {
 
   it('extracts chat context when chat payload is present', () => {
     const configService = createConfigMock();
-    const service = new InitDataService(configService);
+    const service = new InitDataService(createRegistryMock() as never, configService);
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '777' }));
     params.set('chat', JSON.stringify({ id: '152517912', title: 'MAXIM Chat', type: 'channel' }));
@@ -117,7 +127,7 @@ describe('InitDataService', () => {
   });
 
   it('accepts init data wrapped as WebAppData from the MAX launch fragment', () => {
-    const service = new InitDataService(createConfigMock());
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '701' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));
@@ -129,7 +139,10 @@ describe('InitDataService', () => {
   });
 
   it('accepts init data signed with the previous bot token', () => {
-    const service = new InitDataService(createConfigMock(previousBotToken));
+    const service = new InitDataService(
+      createRegistryMock(previousBotToken) as never,
+      createConfigMock(previousBotToken),
+    );
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '555' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));
@@ -140,7 +153,10 @@ describe('InitDataService', () => {
   });
 
   it('rejects expired init data', () => {
-    const service = new InitDataService(createConfigMock(undefined, { INIT_DATA_MAX_AGE_SEC: 300 }));
+    const service = new InitDataService(
+      createRegistryMock() as never,
+      createConfigMock(undefined, { INIT_DATA_MAX_AGE_SEC: 300 }),
+    );
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '42' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000) - 301));
@@ -150,7 +166,7 @@ describe('InitDataService', () => {
   });
 
   it('rejects duplicated launch parameters before signature verification', () => {
-    const service = new InitDataService(createConfigMock());
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
     const params = new URLSearchParams();
     params.set('user', JSON.stringify({ id: '42' }));
     params.set('auth_date', String(Math.floor(Date.now() / 1000)));

@@ -4,6 +4,7 @@ import { ModuleRef } from '@nestjs/core';
 import { WebhookStatus } from '@prisma/client';
 import type { Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
   getDefaultWebhookWorkerGroupQueues,
@@ -38,6 +39,23 @@ export type WebhookDefaultWorkerGroupMetrics = {
   counters: QueueCounters;
 };
 
+export type BotQueueMetricsSnapshot = {
+  webhookEvents: {
+    received: WebhookStatusMetrics;
+    queued: WebhookStatusMetrics;
+    failed: WebhookStatusMetrics;
+  };
+  queuedByQueue: Record<string, number>;
+  actionHealth: ActionHealthSnapshot;
+  oldestQueuedEventId: string | null;
+  oldestQueuedCreatedAt: string | null;
+  oldestQueuedLagSec: number;
+  oldestReceivedEventId: string | null;
+  oldestReceivedCreatedAt: string | null;
+  oldestReceivedLagSec: number;
+  effectiveLagSec: number;
+};
+
 export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   webhookCritical: QueueCounters;
@@ -56,6 +74,7 @@ export type QueueMetricsSnapshot = {
     failed: WebhookStatusMetrics;
   };
   actionHealth: ActionHealthSnapshot;
+  bots: Record<string, BotQueueMetricsSnapshot>;
   oldestQueuedEventId: string | null;
   oldestQueuedCreatedAt: string | null;
   oldestQueuedLagSec: number;
@@ -96,6 +115,7 @@ export class QueueMetricsService {
     private readonly prisma: PrismaService,
     private readonly actionHealthService: ActionHealthService,
     private readonly moduleRef: ModuleRef,
+    private readonly maxBotRegistry: MaxBotRegistryService,
     @Optional() @InjectQueue(WEBHOOK_QUEUE_CRITICAL) private readonly webhookCriticalQueue?: Queue,
     @Optional()
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
@@ -166,6 +186,7 @@ export class QueueMetricsService {
       this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
       this.readWebhookStatusMetrics(WebhookStatus.FAILED),
     ]);
+    const bots = await this.buildPerBotSnapshots();
 
     const [webhookCritical, ...restSnapshots] = queueSnapshots;
     const webhookBackground = restSnapshots[DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
@@ -207,6 +228,7 @@ export class QueueMetricsService {
         failed,
       },
       actionHealth,
+      bots,
       oldestQueuedEventId: queued.oldestEventId,
       oldestQueuedCreatedAt: queued.oldestCreatedAt,
       oldestQueuedLagSec,
@@ -269,12 +291,58 @@ export class QueueMetricsService {
   }
 
   private async readWebhookStatusMetrics(status: WebhookStatus): Promise<WebhookStatusMetrics> {
+    return this.readWebhookStatusMetricsForBot(status, null);
+  }
+
+  private async buildPerBotSnapshots(): Promise<Record<string, BotQueueMetricsSnapshot>> {
+    const botIds = this.maxBotRegistry.getAllBots().map((bot) => bot.id);
+    const snapshots = await Promise.all(
+      botIds.map(async (botId) => {
+        const [received, queued, failed, queuedByQueue] = await Promise.all([
+          this.readWebhookStatusMetricsForBot(WebhookStatus.RECEIVED, botId),
+          this.readWebhookStatusMetricsForBot(WebhookStatus.QUEUED, botId),
+          this.readWebhookStatusMetricsForBot(WebhookStatus.FAILED, botId),
+          this.readQueuedByQueue(botId),
+        ]);
+        const oldestQueuedLagSec = queued.oldestLagSec;
+        const oldestReceivedLagSec = received.oldestLagSec;
+
+        return [
+          botId,
+          {
+            webhookEvents: {
+              received,
+              queued,
+              failed,
+            },
+            queuedByQueue,
+            actionHealth: this.actionHealthService.getSnapshot(60, botId),
+            oldestQueuedEventId: queued.oldestEventId,
+            oldestQueuedCreatedAt: queued.oldestCreatedAt,
+            oldestQueuedLagSec,
+            oldestReceivedEventId: received.oldestEventId,
+            oldestReceivedCreatedAt: received.oldestCreatedAt,
+            oldestReceivedLagSec,
+            effectiveLagSec: Math.max(oldestQueuedLagSec, oldestReceivedLagSec),
+          } satisfies BotQueueMetricsSnapshot,
+        ] as const;
+      }),
+    );
+
+    return Object.fromEntries(snapshots);
+  }
+
+  private async readWebhookStatusMetricsForBot(
+    status: WebhookStatus,
+    botId: string | null,
+  ): Promise<WebhookStatusMetrics> {
+    const where = this.buildWebhookStatusWhere(status, botId);
     const [count, oldestEvent] = await Promise.all([
       this.prisma.webhookEvent.count({
-        where: { status },
+        where,
       }),
       this.prisma.webhookEvent.findFirst({
-        where: { status },
+        where,
         orderBy: { createdAt: 'asc' },
         select: { id: true, createdAt: true },
       }),
@@ -293,6 +361,45 @@ export class QueueMetricsService {
       oldestEventId: oldestEvent.id,
       oldestCreatedAt: oldestEvent.createdAt.toISOString(),
       oldestLagSec,
+    };
+  }
+
+  private async readQueuedByQueue(botId: string): Promise<Record<string, number>> {
+    const rows = await this.prisma.webhookEvent.groupBy({
+      by: ['queueName'],
+      where: {
+        ...this.buildWebhookStatusWhere(WebhookStatus.QUEUED, botId),
+        queueName: {
+          not: null,
+        },
+      },
+      _count: {
+        _all: true,
+      },
+    });
+
+    return Object.fromEntries(
+      rows
+        .map((row) => [row.queueName, row._count._all] as const)
+        .filter((entry): entry is [string, number] => typeof entry[0] === 'string'),
+    );
+  }
+
+  private buildWebhookStatusWhere(status: WebhookStatus, botId: string | null) {
+    if (!botId) {
+      return { status };
+    }
+
+    if (botId === this.maxBotRegistry.getDefaultBot().id) {
+      return {
+        status,
+        OR: [{ botId }, { botId: null }],
+      };
+    }
+
+    return {
+      status,
+      botId,
     };
   }
 }

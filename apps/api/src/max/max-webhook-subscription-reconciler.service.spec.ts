@@ -16,6 +16,16 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
   it('repairs missing webhook update types and stores a healthy snapshot', async () => {
     process.env.APP_ROLE = 'ingress';
 
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: '777000_bot',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
     const statusService = {
       getSyncState: jest.fn().mockResolvedValue(null),
       writeSnapshot: jest.fn().mockResolvedValue(undefined),
@@ -44,6 +54,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const service = new MaxWebhookSubscriptionReconcilerService(
       maxClient as never,
+      botRegistry as never,
       statusService as never,
       {
         get: jest.fn((key: string, fallback?: number) => {
@@ -59,11 +70,15 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-      { trafficClass: 'background' },
+      { trafficClass: 'background', botId: '777000_bot' },
     );
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
       expect.objectContaining({
-        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        bots: expect.objectContaining({
+          '777000_bot': expect.objectContaining({
+            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+          }),
+        }),
       }),
     );
     expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
@@ -73,6 +88,13 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
         url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
         missingUpdateTypes: [],
         actualUpdateTypes: expect.arrayContaining([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES]),
+        botCount: 1,
+        bots: expect.objectContaining({
+          '777000_bot': expect.objectContaining({
+            configured: true,
+            status: 'healthy',
+          }),
+        }),
       }),
     );
 
@@ -82,6 +104,16 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
   it('stores a disabled snapshot when reconcile is not active on the current app role', async () => {
     process.env.APP_ROLE = 'admin';
 
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: '777000_bot',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
     const statusService = {
       getSyncState: jest.fn(),
       writeSnapshot: jest.fn().mockResolvedValue(undefined),
@@ -97,6 +129,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const service = new MaxWebhookSubscriptionReconcilerService(
       maxClient as never,
+      botRegistry as never,
       statusService as never,
       {
         get: jest.fn((_: string, fallback?: number) => fallback),
@@ -110,6 +143,8 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       expect.objectContaining({
         status: 'disabled',
         configured: false,
+        botCount: 0,
+        bots: {},
       }),
     );
   });
@@ -117,11 +152,25 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
   it('recreates the current webhook subscription once when header secret rotation is pending', async () => {
     process.env.APP_ROLE = 'ingress';
 
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: '777000_bot',
+          webhookHeaderSecrets: ['secret-header-current', 'secret-header-previous'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest.fn().mockReturnValue('fingerprint-777000_bot'),
+    };
     const statusService = {
       getSyncState: jest.fn().mockResolvedValue({
-        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        headerSecretFingerprint: null,
-        updatedAt: '2026-03-30T00:00:00.000Z',
+        bots: {
+          '777000_bot': {
+            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            headerSecretFingerprint: null,
+            updatedAt: '2026-03-30T00:00:00.000Z',
+          },
+        },
       }),
       writeSnapshot: jest.fn().mockResolvedValue(undefined),
       writeSyncState: jest.fn().mockResolvedValue(undefined),
@@ -149,17 +198,12 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     };
     const service = new MaxWebhookSubscriptionReconcilerService(
       maxClient as never,
+      botRegistry as never,
       statusService as never,
       {
         get: jest.fn((key: string, fallback?: number | string) => {
           if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
             return 60_000;
-          }
-          if (key === 'MAX_WEBHOOK_HEADER_SECRET') {
-            return 'secret-header-current';
-          }
-          if (key === 'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS') {
-            return 'secret-header-previous';
           }
           return fallback;
         }),
@@ -170,16 +214,20 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
       'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-      { trafficClass: 'background' },
+      { trafficClass: 'background', botId: '777000_bot' },
     );
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-      { trafficClass: 'background' },
+      { trafficClass: 'background', botId: '777000_bot' },
     );
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
       expect.objectContaining({
-        configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-        headerSecretFingerprint: expect.any(String),
+        bots: expect.objectContaining({
+          '777000_bot': expect.objectContaining({
+            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+            headerSecretFingerprint: expect.any(String),
+          }),
+        }),
       }),
     );
 

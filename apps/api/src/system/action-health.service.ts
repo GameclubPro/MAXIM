@@ -6,6 +6,8 @@ type TimedCounters = {
   critical: number[];
 };
 
+type TimedCountersByBot = Map<string, TimedCounters>;
+
 export type ActionHealthSnapshot = {
   windowSec: number;
   total: number;
@@ -23,30 +25,42 @@ export class ActionHealthService {
     failure: [],
     critical: [],
   };
+  private readonly countersByBot: TimedCountersByBot = new Map();
 
-  recordSuccess(nowMs = Date.now()) {
+  recordSuccess(botId?: string | null, nowMs = Date.now()) {
     this.counters.success.push(nowMs);
+    if (botId) {
+      this.getBotCounters(botId).success.push(nowMs);
+    }
   }
 
-  recordFailure(isCritical: boolean, nowMs = Date.now()) {
+  recordFailure(isCritical: boolean, botId?: string | null, nowMs = Date.now()) {
     this.counters.failure.push(nowMs);
     if (isCritical) {
       this.counters.critical.push(nowMs);
     }
+    if (botId) {
+      const botCounters = this.getBotCounters(botId);
+      botCounters.failure.push(nowMs);
+      if (isCritical) {
+        botCounters.critical.push(nowMs);
+      }
+    }
   }
 
-  getSnapshot(windowSec: number): ActionHealthSnapshot {
+  getSnapshot(windowSec: number, botId?: string | null): ActionHealthSnapshot {
     const now = Date.now();
     const windowMs = windowSec * 1_000;
     const cutoff = now - windowMs;
+    const counters = botId ? this.getBotCounters(botId) : this.counters;
 
-    this.prune(this.counters.success, cutoff);
-    this.prune(this.counters.failure, cutoff);
-    this.prune(this.counters.critical, cutoff);
+    this.prune(counters.success, cutoff);
+    this.prune(counters.failure, cutoff);
+    this.prune(counters.critical, cutoff);
 
-    const success = this.counters.success.length;
-    const failure = this.counters.failure.length;
-    const critical = this.counters.critical.length;
+    const success = counters.success.length;
+    const failure = counters.failure.length;
+    const critical = counters.critical.length;
     const total = success + failure;
 
     return {
@@ -64,5 +78,20 @@ export class ActionHealthService {
     while (values.length > 0 && values[0] < cutoff) {
       values.shift();
     }
+  }
+
+  private getBotCounters(botId: string): TimedCounters {
+    const existing = this.countersByBot.get(botId);
+    if (existing) {
+      return existing;
+    }
+
+    const created: TimedCounters = {
+      success: [],
+      failure: [],
+      critical: [],
+    };
+    this.countersByBot.set(botId, created);
+    return created;
   }
 }

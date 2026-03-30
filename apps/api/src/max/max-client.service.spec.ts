@@ -196,12 +196,45 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const actionHealthService = {
       recordSuccess: jest.fn(),
       recordFailure: jest.fn(),
+      getSnapshot: jest.fn(),
+    };
+    const botRegistry = {
+      getDefaultBot: jest.fn().mockReturnValue({
+        id: '777000_bot',
+        token: 'test-token',
+        webhookSecretPath: 'secret-path',
+        webhookHeaderSecret: 'header-secret',
+        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      }),
+      getBotById: jest.fn((botId?: string | null) =>
+        !botId || botId === '777000_bot'
+          ? {
+              id: '777000_bot',
+              token: 'test-token',
+              webhookSecretPath: 'secret-path',
+              webhookHeaderSecret: 'header-secret',
+              webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+              maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+            }
+          : null,
+      ),
+      getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
+        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      })),
+    };
+    const botContext = {
+      getActiveBotId: jest.fn().mockReturnValue(null),
+      runWithBot: jest.fn((_botId: string, callback: () => unknown) => callback()),
     };
 
     return new MaxClientService(
       httpService as never,
       configService as never,
       actionHealthService as never,
+      botRegistry as never,
+      botContext as never,
       actionQueue as never,
     );
   }
@@ -2000,7 +2033,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     limiterRedis.eval.mockResolvedValue([0, 3, 1]);
 
     await expect(service.getChatMemberProfiles('chat-1', ['user-1'])).rejects.toThrow(
-      'MAX API per-chat rate limit exceeded for chat chat-1',
+      'MAX API per-chat rate limit exceeded for bot 777000_bot chat chat-1',
     );
     expect(httpService.request).not.toHaveBeenCalled();
 
@@ -2095,12 +2128,45 @@ describe('MaxClientService delayed member actions', () => {
     const actionHealthService = {
       recordSuccess: jest.fn(),
       recordFailure: jest.fn(),
+      getSnapshot: jest.fn(),
+    };
+    const botRegistry = {
+      getDefaultBot: jest.fn().mockReturnValue({
+        id: '777000_bot',
+        token: 'test-token',
+        webhookSecretPath: 'secret-path',
+        webhookHeaderSecret: 'header-secret',
+        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      }),
+      getBotById: jest.fn((botId?: string | null) =>
+        !botId || botId === '777000_bot'
+          ? {
+              id: '777000_bot',
+              token: 'test-token',
+              webhookSecretPath: 'secret-path',
+              webhookHeaderSecret: 'header-secret',
+              webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+              maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+            }
+          : null,
+      ),
+      getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
+        url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
+        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+      })),
+    };
+    const botContext = {
+      getActiveBotId: jest.fn().mockReturnValue(null),
+      runWithBot: jest.fn((_botId: string, callback: () => unknown) => callback()),
     };
 
     return new MaxClientService(
       {} as never,
       configService as never,
       actionHealthService as never,
+      botRegistry as never,
+      botContext as never,
       queue as never,
     );
   }
@@ -2111,7 +2177,7 @@ describe('MaxClientService delayed member actions', () => {
       getJob: jest.fn().mockResolvedValue(null),
     };
     const service = createServiceWithQueue(queue);
-    const expectedJobId = 'member-action__UNBAN_MEMBER__chat-1__user-1';
+    const expectedJobId = 'member-action__777000_bot__UNBAN_MEMBER__chat-1__user-1';
 
     await service.unbanMember('chat-1', 'user-1', { delayMs: 60_000 });
 
@@ -2144,7 +2210,9 @@ describe('MaxClientService delayed member actions', () => {
 
     await service.cancelScheduledUnban('chat-1', 'user-2');
 
-    expect(queue.getJob).toHaveBeenCalledWith('member-action__UNBAN_MEMBER__chat-1__user-2');
+    expect(queue.getJob).toHaveBeenCalledWith(
+      'member-action__777000_bot__UNBAN_MEMBER__chat-1__user-2',
+    );
     expect(remove).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();

@@ -61,6 +61,7 @@ import {
   isValidMaxMiniappStartPayload,
   parseCompactGiveawayClaimStartPayload,
 } from '../max/max-deep-link.util';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
@@ -127,6 +128,7 @@ export class ManagedGiveawayService {
     private readonly adminService: AdminService,
     configService: ConfigService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
+    @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -137,9 +139,13 @@ export class ManagedGiveawayService {
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
-    this.maxBotToken = configuredBotTokens[0] ?? configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.maxBotToken =
+      this.maxBotLinkService?.getBotTokenSync() ??
+      configuredBotTokens[0] ??
+      configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.maxBotTokenValidationSecrets =
-      configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken];
+      this.maxBotLinkService?.getValidationTokens() ??
+      (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
   }
 
   async listManagedGiveaways(
@@ -924,13 +930,9 @@ export class ManagedGiveawayService {
   }
 
   buildGiveawayClaimBotStartUrl(giveawayId: string, winnerId: string): string | null {
-    if (!this.ownBotUserId) {
-      return null;
-    }
-
     const compactPayload = buildCompactGiveawayClaimStartPayload(
       { giveawayId, winnerId },
-      this.maxBotToken,
+      this.getCurrentBotToken(),
     );
     const payload =
       compactPayload ??
@@ -948,7 +950,12 @@ export class ManagedGiveawayService {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(payload)}`;
+    return (
+      this.maxBotLinkService?.buildBotStartUrlSync(payload) ??
+      (this.ownBotUserId
+        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(payload)}`
+        : null)
+    );
   }
 
   getGiveawayPublicMiniappUrl(giveawayId: string): string | null {
@@ -2400,14 +2407,22 @@ export class ManagedGiveawayService {
   private async upsertParticipantChatAccess(
     giveaway: PersistedGiveawayWithRelations,
   ): Promise<void> {
+    const resolvedBotId =
+      (await this.maxBotLinkService?.resolveBotId({ chatId: giveaway.sourceChatId })) ?? undefined;
+
     await this.prisma.chat.upsert({
       where: { id: giveaway.sourceChatId },
       create: {
         id: giveaway.sourceChatId,
         title: await this.resolveSourceTitle(giveaway.sourceChatId),
         entityType: giveaway.entityType,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       },
-      update: {},
+      update: resolvedBotId
+        ? {
+            botId: resolvedBotId,
+          }
+        : {},
     });
   }
 
@@ -2453,10 +2468,6 @@ export class ManagedGiveawayService {
   }
 
   private buildGiveawayLaunchUrl(giveawayId: string): string | null {
-    if (!this.ownBotUserId) {
-      return null;
-    }
-
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -2471,7 +2482,12 @@ export class ManagedGiveawayService {
       return null;
     }
 
-    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
+    return (
+      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
+      (this.ownBotUserId
+        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
+        : null)
+    );
   }
 
   private buildGiveawayDirectWebAppUrl(giveawayId: string): string | null {
@@ -2485,7 +2501,7 @@ export class ManagedGiveawayService {
   private buildGiveawayClaimSignature(
     giveawayId: string,
     winnerId: string,
-    botToken = this.maxBotToken,
+    botToken = this.getCurrentBotToken(),
   ): string {
     return createHmac('sha256', botToken)
       .update(`giveaway-claim:${giveawayId}:${winnerId}`)
@@ -2585,6 +2601,11 @@ export class ManagedGiveawayService {
   }
 
   private resolveBotContactId(): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+    if (contextAwareContactId) {
+      return contextAwareContactId;
+    }
+
     if (this.explicitBotContactId) {
       return this.explicitBotContactId;
     }
@@ -2595,5 +2616,9 @@ export class ManagedGiveawayService {
 
     const [candidate] = this.ownBotUserId.split('_');
     return /^\d+$/u.test(candidate) ? candidate : null;
+  }
+
+  private getCurrentBotToken(): string {
+    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
   }
 }

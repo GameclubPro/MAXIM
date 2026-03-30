@@ -1,6 +1,10 @@
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
+  const maxBotLinkService = {
+    bindChatToBot: jest.fn().mockResolvedValue(undefined),
+  };
+
   it('stores new webhook event in RECEIVED state', async () => {
     const prisma = {
       webhookEvent: {
@@ -13,7 +17,11 @@ describe('WebhookService', () => {
       get: jest.fn().mockReturnValue(1),
     };
 
-    const service = new WebhookService(prisma as never, config as never);
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const result = await service.ingest(
       {
         updateId: 'u-1',
@@ -38,7 +46,11 @@ describe('WebhookService', () => {
       get: jest.fn().mockReturnValue(1),
     };
 
-    const service = new WebhookService(prisma as never, config as never);
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const result = await service.ingest(
       {
         updateId: 'u-1',
@@ -69,7 +81,11 @@ describe('WebhookService', () => {
       get: jest.fn().mockReturnValue(1),
     };
 
-    const service = new WebhookService(prisma as never, config as never);
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
     const result = await service.ingest(
       {
         updateId: 'u-2',
@@ -127,7 +143,12 @@ describe('WebhookService', () => {
       invalidateMemberships: jest.fn().mockResolvedValue(undefined),
     };
 
-    const service = new WebhookService(prisma as never, config as never, membershipLookup as never);
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      membershipLookup as never,
+    );
 
     await expect(
       service.ingest(

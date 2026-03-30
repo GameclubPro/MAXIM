@@ -8,6 +8,17 @@ import { SystemModeService, type SystemModeSnapshot } from '../system/system-mod
 export type ReadinessSnapshot = {
   ok: boolean;
   timestamp: string;
+  bots: Record<
+    string,
+    {
+      queueLagSec: number;
+      rawOk: boolean;
+      queuedEvents: number;
+      receivedEvents: number;
+      failedEvents: number;
+      action: SystemModeSnapshot['action'];
+    }
+  >;
   systemMode: SystemModeSnapshot & {
     degraded: boolean;
   };
@@ -141,6 +152,19 @@ export class HealthService implements OnModuleDestroy {
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
+      bots: Object.fromEntries(
+        Object.entries(queueMetrics.bots ?? {}).map(([botId, botMetrics]) => [
+          botId,
+          {
+            queueLagSec: botMetrics.effectiveLagSec,
+            rawOk: botMetrics.effectiveLagSec <= this.queueLagThresholdSec,
+            queuedEvents: botMetrics.webhookEvents.queued.count,
+            receivedEvents: botMetrics.webhookEvents.received.count,
+            failedEvents: botMetrics.webhookEvents.failed.count,
+            action: botMetrics.actionHealth,
+          },
+        ]),
+      ),
       systemMode: {
         ...systemMode,
         queueLagSec: queueMetrics.effectiveLagSec,

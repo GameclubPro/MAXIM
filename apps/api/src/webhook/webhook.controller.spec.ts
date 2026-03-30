@@ -1,24 +1,20 @@
 import { ForbiddenException } from '@nestjs/common';
-import type { ConfigService } from '@nestjs/config';
 import { WebhookController } from './webhook.controller';
 
 describe('WebhookController', () => {
-  const configService = {
-    getOrThrow: jest.fn((key: string) => {
-      const values: Record<string, string> = {
-        MAX_BOT_ID: 'bot-1',
-        MAX_WEBHOOK_SECRET_PATH: 'secret-path',
-        MAX_WEBHOOK_HEADER_SECRET: 'secret-header',
-      };
-      return values[key];
-    }),
-    get: jest.fn((key: string) => {
-      if (key === 'MAX_WEBHOOK_HEADER_SECRET_PREVIOUS') {
-        return 'secret-header-prev';
+  const botRegistry = {
+    resolveWebhookBot: jest.fn(({ botId, secretPath, providedHeaderSecret }) => {
+      if (
+        botId === 'bot-1' &&
+        secretPath === 'secret-path' &&
+        (providedHeaderSecret === 'secret-header' ||
+          providedHeaderSecret === 'secret-header-prev')
+      ) {
+        return { id: 'bot-1' };
       }
-      return undefined;
+      return null;
     }),
-  } as unknown as ConfigService;
+  };
 
   const parser = {
     parse: jest.fn().mockReturnValue({ updateId: '1', type: 'message_created' }),
@@ -30,7 +26,7 @@ describe('WebhookController', () => {
 
   it('rejects invalid route signature', async () => {
     const controller = new WebhookController(
-      configService,
+      botRegistry as never,
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(true) } as never,
@@ -46,7 +42,7 @@ describe('WebhookController', () => {
 
   it('rejects when rate limit exceeded', async () => {
     const controller = new WebhookController(
-      configService,
+      botRegistry as never,
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(false) } as never,
@@ -62,7 +58,7 @@ describe('WebhookController', () => {
 
   it('accepts the previous webhook header secret during rotation', async () => {
     const controller = new WebhookController(
-      configService,
+      botRegistry as never,
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(true) } as never,

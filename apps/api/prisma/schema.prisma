@@ -118,6 +118,7 @@ enum ManagedBroadcastDeliveryStatus {
 
 model Chat {
   id         String         @id
+  botId      String?        @map("bot_id")
   title      String
   entityType ChatEntityType @default(CHAT) @map("entity_type")
   createdAt  DateTime       @default(now()) @map("created_at")
@@ -138,6 +139,7 @@ model Chat {
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
 
+  @@index([botId], map: "chats_bot_id_idx")
   @@map("chats")
 }
 
@@ -472,6 +474,8 @@ model ModerationEvent {
 model WebhookEvent {
   id                String        @id @default(cuid())
   dedupKey          String        @unique @map("dedup_key")
+  botId             String?       @map("bot_id")
+  queueName         String?       @map("queue_name")
   status            WebhookStatus @default(RECEIVED)
   sourceIp          String?       @map("source_ip")
   rawPayload        Json          @map("raw_payload")
@@ -484,6 +488,7 @@ model WebhookEvent {
   processedAt       DateTime?     @map("processed_at")
 
   @@index([status, createdAt])
+  @@index([botId, status, createdAt], map: "webhook_events_bot_id_status_created_at_idx")
   @@index([status, nextEnqueueAt, createdAt])
   @@map("webhook_events")
 }

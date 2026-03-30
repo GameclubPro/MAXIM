@@ -11,6 +11,7 @@ import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type ActiveWebhookQueueName,
   type DefaultWebhookQueueName,
+  extractWebhookBotId,
   extractWebhookChatId,
   extractWebhookType,
   resolveDefaultWebhookQueueIndexForChatId,
@@ -63,6 +64,7 @@ export class WebhookRoutingService {
   async resolveQueueName(
     webhookEventId: string,
     payload: unknown,
+    options: { botId?: string | null } = {},
   ): Promise<ActiveWebhookQueueName> {
     switch (extractWebhookType(payload)) {
       case 'message_callback':
@@ -75,58 +77,74 @@ export class WebhookRoutingService {
         return WEBHOOK_QUEUE_BACKGROUND;
       case 'message_created':
       default:
-        return this.resolveDefaultQueueName(webhookEventId, payload);
+        return this.resolveDefaultQueueName(webhookEventId, payload, options);
     }
   }
 
   private async resolveDefaultQueueName(
     webhookEventId: string,
     payload: unknown,
+    options: { botId?: string | null } = {},
   ): Promise<DefaultWebhookQueueName> {
     const chatId = extractWebhookChatId(payload);
     if (!chatId) {
       return DEFAULT_WEBHOOK_QUEUE_NAMES[0];
     }
 
+    const botId = options.botId?.trim() || extractWebhookBotId(payload) || null;
+    const assignmentKey = this.buildAssignmentKey(chatId, botId);
+
     const now = Date.now();
-    const currentAssignment = this.readFreshAssignment(chatId, now);
+    const currentAssignment = this.readFreshAssignment(assignmentKey, now);
     if (currentAssignment) {
       return currentAssignment.queueName;
     }
 
-    const refresh = this.assignmentRefreshes.get(chatId);
+    const refresh = this.assignmentRefreshes.get(assignmentKey);
     if (refresh) {
       return refresh;
     }
 
-    const refreshPromise = this.refreshChatAssignment(chatId, webhookEventId, now).finally(() => {
-      if (this.assignmentRefreshes.get(chatId) === refreshPromise) {
-        this.assignmentRefreshes.delete(chatId);
+    const refreshPromise = this.refreshChatAssignment(
+      assignmentKey,
+      chatId,
+      botId,
+      webhookEventId,
+      now,
+    ).finally(() => {
+      if (this.assignmentRefreshes.get(assignmentKey) === refreshPromise) {
+        this.assignmentRefreshes.delete(assignmentKey);
       }
     });
-    this.assignmentRefreshes.set(chatId, refreshPromise);
+    this.assignmentRefreshes.set(assignmentKey, refreshPromise);
     return refreshPromise;
   }
 
   private async refreshChatAssignment(
+    assignmentKey: string,
     chatId: string,
+    botId: string | null,
     webhookEventId: string,
     now: number,
   ): Promise<DefaultWebhookQueueName> {
-    const previousAssignment = this.chatAssignments.get(chatId);
+    const previousAssignment = this.chatAssignments.get(assignmentKey);
     const fallbackQueue =
       previousAssignment?.queueName ?? resolveDefaultWebhookQueueNameForChatId(chatId);
 
-    const hasOutstandingWork = await this.hasOutstandingMessageQueueWork(chatId, webhookEventId);
+    const hasOutstandingWork = await this.hasOutstandingMessageQueueWork(
+      chatId,
+      botId,
+      webhookEventId,
+    );
     if (hasOutstandingWork) {
-      return this.storeAssignment(chatId, fallbackQueue, now);
+      return this.storeAssignment(assignmentKey, fallbackQueue, now);
     }
 
     const snapshot = await this.queueMetricsService.getSnapshot({
       maxAgeMs: this.queueSnapshotMaxAgeMs,
     });
     const nextQueue = this.selectLeastPressuredQueue(chatId, snapshot, fallbackQueue, now);
-    return this.storeAssignment(chatId, nextQueue, now);
+    return this.storeAssignment(assignmentKey, nextQueue, now);
   }
 
   private selectLeastPressuredQueue(
@@ -212,8 +230,8 @@ export class WebhookRoutingService {
     );
   }
 
-  private readFreshAssignment(chatId: string, now: number): ChatQueueAssignment | null {
-    const assignment = this.chatAssignments.get(chatId);
+  private readFreshAssignment(assignmentKey: string, now: number): ChatQueueAssignment | null {
+    const assignment = this.chatAssignments.get(assignmentKey);
     if (!assignment) {
       return null;
     }
@@ -226,11 +244,11 @@ export class WebhookRoutingService {
   }
 
   private storeAssignment(
-    chatId: string,
+    assignmentKey: string,
     queueName: DefaultWebhookQueueName,
     now: number,
   ): DefaultWebhookQueueName {
-    this.chatAssignments.set(chatId, {
+    this.chatAssignments.set(assignmentKey, {
       queueName,
       expiresAtMs: now + this.chatAssignmentTtlMs,
     });
@@ -239,6 +257,7 @@ export class WebhookRoutingService {
 
   private async hasOutstandingMessageQueueWork(
     chatId: string,
+    botId: string | null,
     webhookEventId: string,
   ): Promise<boolean> {
     const rows = await this.prisma.$queryRaw<Array<{ pending_count?: bigint | number }>>(
@@ -246,6 +265,7 @@ export class WebhookRoutingService {
         SELECT COUNT(*)::bigint AS pending_count
         FROM webhook_events
         WHERE id <> ${webhookEventId}
+          AND COALESCE(bot_id, '') = ${botId ?? ''}
           AND status = ANY(ARRAY['RECEIVED', 'QUEUED']::"WebhookStatus"[])
           AND LOWER(
             COALESCE(
@@ -266,6 +286,10 @@ export class WebhookRoutingService {
     }
 
     return typeof pendingCount === 'number' ? pendingCount > 0 : false;
+  }
+
+  private buildAssignmentKey(chatId: string, botId: string | null): string {
+    return botId ? `${botId}:${chatId}` : `default:${chatId}`;
   }
 
   private buildWorkerGroupByQueue(): Record<

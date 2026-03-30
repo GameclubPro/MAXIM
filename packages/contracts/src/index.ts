@@ -1489,6 +1489,25 @@ export const queueMetricsSnapshotSchema = z.object({
     failed: webhookStatusMetricsSchema,
   }),
   actionHealth: actionHealthSnapshotSchema,
+  bots: z.record(
+    z.string(),
+    z.object({
+      webhookEvents: z.object({
+        received: webhookStatusMetricsSchema,
+        queued: webhookStatusMetricsSchema,
+        failed: webhookStatusMetricsSchema,
+      }),
+      queuedByQueue: z.record(z.string(), z.number().int().min(0)),
+      actionHealth: actionHealthSnapshotSchema,
+      oldestQueuedEventId: z.string().nullable(),
+      oldestQueuedCreatedAt: z.string().datetime().nullable(),
+      oldestQueuedLagSec: z.number().min(0),
+      oldestReceivedEventId: z.string().nullable(),
+      oldestReceivedCreatedAt: z.string().datetime().nullable(),
+      oldestReceivedLagSec: z.number().min(0),
+      effectiveLagSec: z.number().min(0),
+    }),
+  ),
   oldestQueuedEventId: z.string().nullable(),
   oldestQueuedCreatedAt: z.string().datetime().nullable(),
   oldestQueuedLagSec: z.number().min(0),
@@ -1525,6 +1544,25 @@ export type WebhookSubscriptionSnapshotStatus = z.infer<
   typeof webhookSubscriptionSnapshotStatusSchema
 >;
 
+export const botWebhookSubscriptionSnapshotSchema = z.object({
+  botId: z.string(),
+  status: webhookSubscriptionSnapshotStatusSchema,
+  configured: z.boolean(),
+  url: z.string().nullable(),
+  checkedAt: z.string().datetime().nullable(),
+  reconciledAt: z.string().datetime().nullable(),
+  requiredUpdateTypes: z.array(z.string()),
+  actualUpdateTypes: z.array(z.string()),
+  missingUpdateTypes: z.array(z.string()),
+  extraUpdateTypes: z.array(z.string()),
+  otherSubscriptionsCount: z.number().int().min(0),
+  lastError: z.string().nullable(),
+  note: z.string().nullable(),
+});
+export type BotWebhookSubscriptionSnapshot = z.infer<
+  typeof botWebhookSubscriptionSnapshotSchema
+>;
+
 export const webhookSubscriptionSnapshotSchema = z.object({
   status: webhookSubscriptionSnapshotStatusSchema,
   configured: z.boolean(),
@@ -1538,6 +1576,8 @@ export const webhookSubscriptionSnapshotSchema = z.object({
   otherSubscriptionsCount: z.number().int().min(0),
   lastError: z.string().nullable(),
   note: z.string().nullable(),
+  botCount: z.number().int().min(0),
+  bots: z.record(z.string(), botWebhookSubscriptionSnapshotSchema),
 });
 export type WebhookSubscriptionSnapshot = z.infer<typeof webhookSubscriptionSnapshotSchema>;
 
@@ -2369,6 +2409,7 @@ export const maxMembershipChangeSchema = z.object({
 
 export const maxUpdateSchema = z.object({
   updateId: z.string(),
+  botId: z.string().optional(),
   type: z.string(),
   message: maxMessagePayloadSchema.optional(),
   membership: maxMembershipChangeSchema.optional(),

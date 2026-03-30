@@ -310,6 +310,8 @@ export class SystemDashboardService {
       otherSubscriptionsCount: 0,
       lastError: null,
       note: 'Webhook subscription snapshot пока недоступен.',
+      botCount: 0,
+      bots: {},
     };
   }
 

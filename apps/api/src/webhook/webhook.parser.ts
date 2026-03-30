@@ -8,7 +8,7 @@ import {
 
 @Injectable()
 export class WebhookParser {
-  parse(payload: Record<string, unknown>): MaxUpdate {
+  parse(payload: Record<string, unknown>, options: { botId?: string } = {}): MaxUpdate {
     const type = this.extractUpdateType(payload);
     const updateId = String(
       payload.updateId ?? payload.update_id ?? payload.eventId ?? payload.event_id ?? randomUUID(),
@@ -37,6 +37,7 @@ export class WebhookParser {
 
     const normalized: MaxUpdate = {
       updateId,
+      ...(options.botId ? { botId: options.botId } : {}),
       type,
       message: hasMessage
         ? {
