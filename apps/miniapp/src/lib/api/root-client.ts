@@ -2,7 +2,6 @@ import type {
   ChatSummary,
   ManagedEntitiesListResponse,
   Me,
-  ManagedEntityAssignedBot,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -44,38 +43,32 @@ function parseChannelOverview(value: unknown): ChatSummary['channelOverview'] {
   };
 }
 
-function parseAssignedBots(value: unknown): ManagedEntityAssignedBot[] {
-  if (value === null || value === undefined) {
+function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
+  if (!Array.isArray(value)) {
     return [];
   }
 
-  if (!Array.isArray(value)) {
-    throw new Error('Invalid managed entity bot assignments');
-  }
-
-  return value.map((item) => {
-    if (!isRecord(item)) {
-      throw new Error('Invalid managed entity bot assignment');
+  const assignedBots: ChatSummary['assignedBots'] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.botId !== 'string' || typeof item.label !== 'string') {
+      continue;
     }
 
-    if (
-      typeof item.botId !== 'string' ||
-      typeof item.label !== 'string' ||
-      (item.role !== 'primary' && item.role !== 'standby') ||
-      (item.membershipStatus !== 'active' && item.membershipStatus !== 'removed') ||
-      !['active', 'dormant', 'draining', 'disabled'].includes(String(item.lifecycleState))
-    ) {
-      throw new Error('Invalid managed entity bot assignment');
-    }
-
-    return {
+    assignedBots.push({
       botId: item.botId,
       label: item.label,
-      role: item.role,
-      membershipStatus: item.membershipStatus,
-      lifecycleState: item.lifecycleState as ManagedEntityAssignedBot['lifecycleState'],
-    };
-  });
+      role: item.role === 'standby' ? 'standby' : 'primary',
+      membershipStatus: item.membershipStatus === 'removed' ? 'removed' : 'active',
+      lifecycleState:
+        item.lifecycleState === 'dormant' ||
+        item.lifecycleState === 'draining' ||
+        item.lifecycleState === 'disabled'
+          ? item.lifecycleState
+          : 'active',
+    });
+  }
+
+  return assignedBots;
 }
 
 function parseChatSummary(value: unknown): ChatSummary {
