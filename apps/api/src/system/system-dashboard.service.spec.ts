@@ -429,4 +429,118 @@ describe('SystemDashboardService', () => {
       ]),
     });
   });
+
+  it('surfaces ownership foundation gaps as rollout guidance without marking runtime unhealthy', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
+          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          actionHealth: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          generatedAt: '2026-03-31T00:10:00.000Z',
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-31T00:10:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          generatedAt: '2026-03-31T00:10:00.000Z',
+          bots: {
+            configured: 2,
+            adminVisible: 2,
+            active: 1,
+            dormant: 1,
+            draining: 0,
+            disabled: 0,
+          },
+          entities: {
+            total: { total: 100, withPrimary: 72, withoutPrimary: 28, coverageRatio: 0.72 },
+            chats: { total: 90, withPrimary: 66, withoutPrimary: 24, coverageRatio: 0.7333 },
+            channels: { total: 10, withPrimary: 6, withoutPrimary: 4, coverageRatio: 0.6 },
+          },
+          anomalies: {
+            noPrimary: 26,
+            recoverableLegacyOnly: 2,
+            recoverableFromMemberships: 1,
+            unbound: 23,
+            primaryBotUnknown: 0,
+            legacyBotUnknown: 0,
+            activeMembershipBotUnknown: 0,
+            primaryWithoutActiveMembership: 0,
+            sharedChats: 0,
+          },
+          repair: {
+            enabled: true,
+            activeOnThisRole: true,
+            intervalMs: 300_000,
+            lastRunAt: '2026-03-31T00:10:00.000Z',
+            lastSuccessAt: '2026-03-31T00:10:00.000Z',
+            lastError: null,
+            lastAppliedChanges: 3,
+            totalAppliedChanges: 12,
+          },
+        }),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: {
+        status: 'healthy',
+      },
+      alerts: expect.arrayContaining([
+        expect.objectContaining({ code: 'ownership-foundation', level: 'warning' }),
+      ]),
+      ownership: expect.objectContaining({
+        entities: expect.objectContaining({
+          total: expect.objectContaining({ withoutPrimary: 28 }),
+        }),
+      }),
+    });
+  });
 });

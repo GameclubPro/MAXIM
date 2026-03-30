@@ -1,11 +1,13 @@
 import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
+  BotOwnershipFoundationSnapshot,
   SystemDashboardAlert,
   SystemDashboardResponse,
   SystemDashboardStatus,
   WebhookSubscriptionSnapshot,
 } from '@maxim/contracts';
+import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { SystemModeService } from './system-mode.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
@@ -32,6 +34,8 @@ export class SystemDashboardService {
     configService: ConfigService,
     @Optional()
     private readonly webhookSubscriptionStatusService?: WebhookSubscriptionStatusService,
+    @Optional()
+    private readonly ownershipFoundationService?: MaxBotOwnershipFoundationService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
   }
@@ -40,10 +44,14 @@ export class SystemDashboardService {
     const webhookSubscriptionPromise = this.webhookSubscriptionStatusService
       ? this.webhookSubscriptionStatusService.getSnapshot()
       : Promise.resolve(this.buildFallbackWebhookSubscriptionSnapshot());
-    const [queues, mode, webhookSubscription] = await Promise.all([
+    const ownershipPromise = this.ownershipFoundationService
+      ? this.ownershipFoundationService.getSnapshot()
+      : Promise.resolve(this.buildFallbackOwnershipSnapshot());
+    const [queues, mode, webhookSubscription, ownership] = await Promise.all([
       this.queueMetricsService.getSnapshot(),
       this.systemModeService.getEffectiveSnapshot(),
       webhookSubscriptionPromise,
+      ownershipPromise,
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
@@ -167,6 +175,16 @@ export class SystemDashboardService {
       alerts.push(joinBurstAlert);
     }
 
+    const ownershipRepairAlert = this.buildOwnershipRepairAlert(ownership);
+    if (ownershipRepairAlert) {
+      alerts.push(ownershipRepairAlert);
+    }
+
+    const ownershipCoverageAlert = this.buildOwnershipCoverageAlert(ownership);
+    if (ownershipCoverageAlert) {
+      alerts.push(ownershipCoverageAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -188,6 +206,7 @@ export class SystemDashboardService {
       queues,
       mode,
       webhookSubscription,
+      ownership,
     };
   }
 
@@ -339,6 +358,138 @@ export class SystemDashboardService {
       note: 'Webhook subscription snapshot пока недоступен.',
       botCount: 0,
       bots: {},
+    };
+  }
+
+  private buildFallbackOwnershipSnapshot(): BotOwnershipFoundationSnapshot {
+    return {
+      generatedAt: new Date().toISOString(),
+      bots: {
+        configured: 0,
+        adminVisible: 0,
+        active: 0,
+        dormant: 0,
+        draining: 0,
+        disabled: 0,
+      },
+      entities: {
+        total: {
+          total: 0,
+          withPrimary: 0,
+          withoutPrimary: 0,
+          coverageRatio: 1,
+        },
+        chats: {
+          total: 0,
+          withPrimary: 0,
+          withoutPrimary: 0,
+          coverageRatio: 1,
+        },
+        channels: {
+          total: 0,
+          withPrimary: 0,
+          withoutPrimary: 0,
+          coverageRatio: 1,
+        },
+      },
+      anomalies: {
+        noPrimary: 0,
+        recoverableLegacyOnly: 0,
+        recoverableFromMemberships: 0,
+        unbound: 0,
+        primaryBotUnknown: 0,
+        legacyBotUnknown: 0,
+        activeMembershipBotUnknown: 0,
+        primaryWithoutActiveMembership: 0,
+        sharedChats: 0,
+      },
+      repair: {
+        enabled: false,
+        activeOnThisRole: false,
+        intervalMs: 300_000,
+        lastRunAt: null,
+        lastSuccessAt: null,
+        lastError: null,
+        lastAppliedChanges: 0,
+        totalAppliedChanges: 0,
+      },
+    };
+  }
+
+  private buildOwnershipRepairAlert(
+    ownership: BotOwnershipFoundationSnapshot,
+  ): SystemDashboardAlert | null {
+    if (ownership.repair.lastError) {
+      return {
+        code: 'ownership-repair-error',
+        level: 'warning',
+        title: 'Ownership foundation repair не завершился чисто',
+        detail: `Последняя ошибка repair: ${ownership.repair.lastError}. Snapshot остаётся доступным, но dual-bot rollout лучше не продолжать до исправления.`,
+        recommendedAction:
+          'Проверьте api-admin logs и состояние chats/chat_bot_memberships. Не активируйте второй бот, пока repair снова не станет зелёным.',
+      };
+    }
+
+    if (!ownership.repair.enabled || !ownership.repair.lastSuccessAt) {
+      return null;
+    }
+
+    const ageMs = Date.now() - Date.parse(ownership.repair.lastSuccessAt);
+    if (!Number.isFinite(ageMs) || ageMs <= ownership.repair.intervalMs * 2) {
+      return null;
+    }
+
+    return {
+      code: 'ownership-repair-stale',
+      level: 'warning',
+      title: 'Ownership foundation snapshot устарел',
+      detail: `Последний успешный repair был ${ownership.repair.lastSuccessAt}, что заметно старше ожидаемого окна ${Math.round(ownership.repair.intervalMs / 60_000)} мин.`,
+      recommendedAction:
+        'Проверьте, что api-admin работает и Redis lock не завис. До обновления snapshot не используйте ownership цифры как основание для dual-bot rollout.',
+    };
+  }
+
+  private buildOwnershipCoverageAlert(
+    ownership: BotOwnershipFoundationSnapshot,
+  ): SystemDashboardAlert | null {
+    const recoverableNow =
+      ownership.anomalies.recoverableLegacyOnly + ownership.anomalies.recoverableFromMemberships;
+    const unresolvedKnownIssues =
+      ownership.anomalies.primaryBotUnknown +
+      ownership.anomalies.legacyBotUnknown +
+      ownership.anomalies.activeMembershipBotUnknown +
+      ownership.anomalies.primaryWithoutActiveMembership;
+    const totalGaps = ownership.entities.total.withoutPrimary;
+
+    if (totalGaps === 0 && unresolvedKnownIssues === 0) {
+      return null;
+    }
+
+    const secondBotPrepared = ownership.bots.configured > 1 || ownership.bots.dormant > 0;
+    const level =
+      unresolvedKnownIssues > 0 || (secondBotPrepared && totalGaps > 0) ? 'warning' : 'info';
+    const parts = [
+      `valid ownership coverage ${ownership.entities.total.withPrimary}/${ownership.entities.total.total}`,
+      `without primary ${totalGaps}`,
+      `recoverable now ${recoverableNow}`,
+    ];
+    if (ownership.anomalies.unbound > 0) {
+      parts.push(`unbound ${ownership.anomalies.unbound}`);
+    }
+    if (unresolvedKnownIssues > 0) {
+      parts.push(`known anomalies ${unresolvedKnownIssues}`);
+    }
+
+    return {
+      code: 'ownership-foundation',
+      level,
+      title:
+        level === 'warning'
+          ? 'Ownership foundation ещё не готов к dual-bot rollout'
+          : 'Ownership foundation ещё не доведён до полной coverage',
+      detail: `${parts.join(', ')}.`,
+      recommendedAction:
+        'Закройте recoverable ownership gaps и держите shared-chat rollout выключенным, пока unbound/unknown cases не станут понятными оператору.',
     };
   }
 

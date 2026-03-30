@@ -1,4 +1,5 @@
 import type {
+  BotOwnershipFoundationSnapshot,
   BotWebhookSubscriptionSnapshot,
   SystemDashboardAlert,
   SystemDashboardResponse,
@@ -129,6 +130,114 @@ function parseWebhookStatusMetrics(value: unknown) {
     oldestEventId: value.oldestEventId ?? null,
     oldestCreatedAt: value.oldestCreatedAt ?? null,
     oldestLagSec: value.oldestLagSec,
+  };
+}
+
+function parseBotOwnershipCoverage(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.total !== 'number' ||
+    typeof value.withPrimary !== 'number' ||
+    typeof value.withoutPrimary !== 'number' ||
+    typeof value.coverageRatio !== 'number'
+  ) {
+    throw new Error('Invalid bot ownership coverage');
+  }
+
+  return {
+    total: value.total,
+    withPrimary: value.withPrimary,
+    withoutPrimary: value.withoutPrimary,
+    coverageRatio: value.coverageRatio,
+  };
+}
+
+function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnapshot {
+  if (
+    !isRecord(value) ||
+    typeof value.generatedAt !== 'string' ||
+    !isRecord(value.bots) ||
+    !isRecord(value.entities) ||
+    !isRecord(value.anomalies) ||
+    !isRecord(value.repair)
+  ) {
+    throw new Error('Invalid bot ownership foundation snapshot');
+  }
+
+  const { bots, entities, anomalies, repair } = value;
+  if (
+    typeof bots.configured !== 'number' ||
+    typeof bots.adminVisible !== 'number' ||
+    typeof bots.active !== 'number' ||
+    typeof bots.dormant !== 'number' ||
+    typeof bots.draining !== 'number' ||
+    typeof bots.disabled !== 'number' ||
+    !isRecord(entities.total) ||
+    !isRecord(entities.chats) ||
+    !isRecord(entities.channels) ||
+    typeof anomalies.noPrimary !== 'number' ||
+    typeof anomalies.recoverableLegacyOnly !== 'number' ||
+    typeof anomalies.recoverableFromMemberships !== 'number' ||
+    typeof anomalies.unbound !== 'number' ||
+    typeof anomalies.primaryBotUnknown !== 'number' ||
+    typeof anomalies.legacyBotUnknown !== 'number' ||
+    typeof anomalies.activeMembershipBotUnknown !== 'number' ||
+    typeof anomalies.primaryWithoutActiveMembership !== 'number' ||
+    typeof anomalies.sharedChats !== 'number' ||
+    typeof repair.enabled !== 'boolean' ||
+    typeof repair.activeOnThisRole !== 'boolean' ||
+    typeof repair.intervalMs !== 'number' ||
+    (repair.lastRunAt !== null &&
+      repair.lastRunAt !== undefined &&
+      typeof repair.lastRunAt !== 'string') ||
+    (repair.lastSuccessAt !== null &&
+      repair.lastSuccessAt !== undefined &&
+      typeof repair.lastSuccessAt !== 'string') ||
+    (repair.lastError !== null &&
+      repair.lastError !== undefined &&
+      typeof repair.lastError !== 'string') ||
+    typeof repair.lastAppliedChanges !== 'number' ||
+    typeof repair.totalAppliedChanges !== 'number'
+  ) {
+    throw new Error('Invalid bot ownership foundation snapshot');
+  }
+
+  return {
+    generatedAt: value.generatedAt,
+    bots: {
+      configured: bots.configured,
+      adminVisible: bots.adminVisible,
+      active: bots.active,
+      dormant: bots.dormant,
+      draining: bots.draining,
+      disabled: bots.disabled,
+    },
+    entities: {
+      total: parseBotOwnershipCoverage(entities.total),
+      chats: parseBotOwnershipCoverage(entities.chats),
+      channels: parseBotOwnershipCoverage(entities.channels),
+    },
+    anomalies: {
+      noPrimary: anomalies.noPrimary,
+      recoverableLegacyOnly: anomalies.recoverableLegacyOnly,
+      recoverableFromMemberships: anomalies.recoverableFromMemberships,
+      unbound: anomalies.unbound,
+      primaryBotUnknown: anomalies.primaryBotUnknown,
+      legacyBotUnknown: anomalies.legacyBotUnknown,
+      activeMembershipBotUnknown: anomalies.activeMembershipBotUnknown,
+      primaryWithoutActiveMembership: anomalies.primaryWithoutActiveMembership,
+      sharedChats: anomalies.sharedChats,
+    },
+    repair: {
+      enabled: repair.enabled,
+      activeOnThisRole: repair.activeOnThisRole,
+      intervalMs: repair.intervalMs,
+      lastRunAt: typeof repair.lastRunAt === 'string' ? repair.lastRunAt : null,
+      lastSuccessAt: typeof repair.lastSuccessAt === 'string' ? repair.lastSuccessAt : null,
+      lastError: typeof repair.lastError === 'string' ? repair.lastError : null,
+      lastAppliedChanges: repair.lastAppliedChanges,
+      totalAppliedChanges: repair.totalAppliedChanges,
+    },
   };
 }
 
@@ -304,7 +413,8 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     !isRecord(value.summary) ||
     !Array.isArray(value.alerts) ||
     !isRecord(value.queues) ||
-    !isRecord(value.webhookSubscription)
+    !isRecord(value.webhookSubscription) ||
+    !isRecord(value.ownership)
   ) {
     throw new Error('Invalid system dashboard response');
   }
@@ -375,6 +485,7 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     },
     mode: parseSystemModeSnapshot(value.mode),
     webhookSubscription: parseWebhookSubscriptionSnapshot(value.webhookSubscription),
+    ownership: parseBotOwnershipFoundation(value.ownership),
   };
 }
 

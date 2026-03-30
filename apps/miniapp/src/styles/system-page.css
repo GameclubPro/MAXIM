@@ -33,7 +33,9 @@
 .system-hero__stats,
 .system-metric-grid,
 .system-lifecycle-grid,
-.system-subscription-grid {
+.system-subscription-grid,
+.system-ownership-grid,
+.system-ownership-breakdown {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 12px;
@@ -42,7 +44,9 @@
 .system-hero__stat,
 .system-metric-card,
 .system-lifecycle-card,
-.system-subscription-card {
+.system-subscription-card,
+.system-ownership-card,
+.system-ownership-breakdown__card {
   display: grid;
   gap: 6px;
   padding: 14px;
@@ -54,7 +58,9 @@
 .system-hero__stat span,
 .system-metric-card span,
 .system-lifecycle-card span,
-.system-subscription-card span {
+.system-subscription-card span,
+.system-ownership-card span,
+.system-ownership-breakdown__card span {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -64,7 +70,9 @@
 .system-hero__stat strong,
 .system-metric-card strong,
 .system-lifecycle-card strong,
-.system-subscription-card strong {
+.system-subscription-card strong,
+.system-ownership-card strong,
+.system-ownership-breakdown__card strong {
   font-size: 1.15rem;
   line-height: 1.1;
 }
@@ -74,6 +82,8 @@
 .system-metric-card small,
 .system-lifecycle-card small,
 .system-subscription-card small,
+.system-ownership-card small,
+.system-ownership-breakdown__card small,
 .system-alert-card small,
 .system-panel__timestamp {
   margin: 0;
@@ -206,11 +216,25 @@
   gap: 12px;
 }
 
+.system-ownership-grid,
+.system-ownership-breakdown {
+  display: grid;
+  gap: 12px;
+}
+
 .system-subscription-card {
   background:
     linear-gradient(180deg, rgba(248, 252, 255, 0.96), rgba(237, 246, 255, 0.94)),
     rgba(255, 255, 255, 0.92);
   border-color: rgba(65, 133, 180, 0.16);
+}
+
+.system-ownership-card,
+.system-ownership-breakdown__card {
+  background:
+    linear-gradient(180deg, rgba(250, 253, 255, 0.98), rgba(242, 248, 255, 0.94)),
+    rgba(255, 255, 255, 0.94);
+  border-color: rgba(76, 124, 170, 0.16);
 }
 
 .system-subscription-card strong {
@@ -253,7 +277,9 @@
   .system-hero__stats,
   .system-metric-grid,
   .system-lifecycle-grid,
-  .system-subscription-grid {
+  .system-subscription-grid,
+  .system-ownership-grid,
+  .system-ownership-breakdown {
     grid-template-columns: 1fr;
   }
 

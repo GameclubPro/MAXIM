@@ -1632,12 +1632,71 @@ export const systemDashboardSummarySchema = z.object({
 });
 export type SystemDashboardSummary = z.infer<typeof systemDashboardSummarySchema>;
 
+export const botOwnershipCoverageSchema = z.object({
+  total: z.number().int().min(0),
+  withPrimary: z.number().int().min(0),
+  withoutPrimary: z.number().int().min(0),
+  coverageRatio: z.number().min(0).max(1),
+});
+export type BotOwnershipCoverage = z.infer<typeof botOwnershipCoverageSchema>;
+
+export const botOwnershipLifecycleStatsSchema = z.object({
+  configured: z.number().int().min(0),
+  adminVisible: z.number().int().min(0),
+  active: z.number().int().min(0),
+  dormant: z.number().int().min(0),
+  draining: z.number().int().min(0),
+  disabled: z.number().int().min(0),
+});
+export type BotOwnershipLifecycleStats = z.infer<typeof botOwnershipLifecycleStatsSchema>;
+
+export const botOwnershipAnomaliesSchema = z.object({
+  noPrimary: z.number().int().min(0),
+  recoverableLegacyOnly: z.number().int().min(0),
+  recoverableFromMemberships: z.number().int().min(0),
+  unbound: z.number().int().min(0),
+  primaryBotUnknown: z.number().int().min(0),
+  legacyBotUnknown: z.number().int().min(0),
+  activeMembershipBotUnknown: z.number().int().min(0),
+  primaryWithoutActiveMembership: z.number().int().min(0),
+  sharedChats: z.number().int().min(0),
+});
+export type BotOwnershipAnomalies = z.infer<typeof botOwnershipAnomaliesSchema>;
+
+export const botOwnershipRepairSnapshotSchema = z.object({
+  enabled: z.boolean(),
+  activeOnThisRole: z.boolean(),
+  intervalMs: z.number().int().positive(),
+  lastRunAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable(),
+  lastError: z.string().nullable(),
+  lastAppliedChanges: z.number().int().min(0),
+  totalAppliedChanges: z.number().int().min(0),
+});
+export type BotOwnershipRepairSnapshot = z.infer<typeof botOwnershipRepairSnapshotSchema>;
+
+export const botOwnershipFoundationSnapshotSchema = z.object({
+  generatedAt: z.string().datetime(),
+  bots: botOwnershipLifecycleStatsSchema,
+  entities: z.object({
+    total: botOwnershipCoverageSchema,
+    chats: botOwnershipCoverageSchema,
+    channels: botOwnershipCoverageSchema,
+  }),
+  anomalies: botOwnershipAnomaliesSchema,
+  repair: botOwnershipRepairSnapshotSchema,
+});
+export type BotOwnershipFoundationSnapshot = z.infer<
+  typeof botOwnershipFoundationSnapshotSchema
+>;
+
 export const systemDashboardResponseSchema = z.object({
   summary: systemDashboardSummarySchema,
   alerts: z.array(systemDashboardAlertSchema),
   queues: queueMetricsSnapshotSchema,
   mode: systemModeSnapshotSchema,
   webhookSubscription: webhookSubscriptionSnapshotSchema,
+  ownership: botOwnershipFoundationSnapshotSchema,
 });
 export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;
 

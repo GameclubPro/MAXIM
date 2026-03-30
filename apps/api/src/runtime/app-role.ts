@@ -23,6 +23,10 @@ export function roleRunsIngress(role: AppRole): boolean {
   return role === 'all' || role === 'ingress';
 }
 
+export function roleRunsAdmin(role: AppRole): boolean {
+  return role === 'all' || role === 'admin';
+}
+
 export function roleRunsEnqueue(role: AppRole): boolean {
   return role === 'all' || role === 'enqueue';
 }

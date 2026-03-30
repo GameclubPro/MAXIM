@@ -414,6 +414,58 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
         },
       },
     },
+    ownership: {
+      generatedAt,
+      bots: {
+        configured: 2,
+        adminVisible: 2,
+        active: 1,
+        dormant: 1,
+        draining: 0,
+        disabled: 0,
+      },
+      entities: {
+        total: {
+          total: 48,
+          withPrimary: 37,
+          withoutPrimary: 11,
+          coverageRatio: 37 / 48,
+        },
+        chats: {
+          total: 42,
+          withPrimary: 33,
+          withoutPrimary: 9,
+          coverageRatio: 33 / 42,
+        },
+        channels: {
+          total: 6,
+          withPrimary: 4,
+          withoutPrimary: 2,
+          coverageRatio: 4 / 6,
+        },
+      },
+      anomalies: {
+        noPrimary: 9,
+        recoverableLegacyOnly: 2,
+        recoverableFromMemberships: 1,
+        unbound: 6,
+        primaryBotUnknown: 0,
+        legacyBotUnknown: 1,
+        activeMembershipBotUnknown: 0,
+        primaryWithoutActiveMembership: 0,
+        sharedChats: 0,
+      },
+      repair: {
+        enabled: true,
+        activeOnThisRole: true,
+        intervalMs: 300_000,
+        lastRunAt: generatedAt,
+        lastSuccessAt: generatedAt,
+        lastError: null,
+        lastAppliedChanges: 3,
+        totalAppliedChanges: 12,
+      },
+    },
   };
 }
 
