@@ -2068,6 +2068,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         entityType: 'channel',
         link: channel.link?.trim() ?? null,
         participantsCount: null,
+        primaryBotId: channel.primaryBotId ?? null,
+        assignedBots: channel.assignedBots ?? [],
+        sharedMode: channel.sharedMode ?? 'owned',
       });
     }
     for (const channel of resolvedRequiredSubscriptionChannels) {

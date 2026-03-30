@@ -295,7 +295,13 @@ export class QueueMetricsService {
   }
 
   private async buildPerBotSnapshots(): Promise<Record<string, BotQueueMetricsSnapshot>> {
-    const botIds = this.maxBotRegistry.getAllBots().map((bot) => bot.id);
+    const botIds = (
+      typeof this.maxBotRegistry.getOperationalBots === 'function'
+        ? this.maxBotRegistry.getOperationalBots()
+        : typeof this.maxBotRegistry.getAllBots === 'function'
+          ? this.maxBotRegistry.getAllBots()
+          : []
+    ).map((bot) => bot.id);
     const snapshots = await Promise.all(
       botIds.map(async (botId) => {
         const [received, queued, failed, queuedByQueue] = await Promise.all([

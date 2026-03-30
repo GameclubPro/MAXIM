@@ -6,6 +6,11 @@ import {
   buildResolvedMaxBotConfigs,
   type ResolvedMaxBotConfig,
 } from './max-bot-config.util';
+import {
+  canDiscoverChatsForBotState,
+  canExecuteActionsForBotState,
+  isOperationalBotState,
+} from './max-bot-state.util';
 
 export type MaxBotDefinition = ResolvedMaxBotConfig & {
   webhookUrl: string | null;
@@ -25,6 +30,7 @@ export class MaxBotRegistryService {
     this.bots = buildResolvedMaxBotConfigs({
       defaultBot: {
         id: configService.getOrThrow<string>('MAX_BOT_ID'),
+        label: configService.get<string>('MAX_BOT_LABEL'),
         token: configService.getOrThrow<string>('MAX_BOT_TOKEN'),
         tokenPrevious: configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
         webhookSecretPath: configService.getOrThrow<string>('MAX_WEBHOOK_SECRET_PATH'),
@@ -55,6 +61,22 @@ export class MaxBotRegistryService {
     return this.bots;
   }
 
+  getOperationalBots(): readonly MaxBotDefinition[] {
+    return this.bots.filter((bot) => isOperationalBotState(bot.state));
+  }
+
+  getDiscoveryBots(): readonly MaxBotDefinition[] {
+    return this.bots.filter((bot) => canDiscoverChatsForBotState(bot.state));
+  }
+
+  getActionableBots(): readonly MaxBotDefinition[] {
+    return this.bots.filter((bot) => canExecuteActionsForBotState(bot.state));
+  }
+
+  getAdminVisibleBots(): readonly MaxBotDefinition[] {
+    return this.bots.filter((bot) => bot.visibleInAdmin);
+  }
+
   getBotById(botId: string | null | undefined): MaxBotDefinition | null {
     const normalized = typeof botId === 'string' ? botId.trim() : '';
     return normalized ? this.botsById.get(normalized) ?? null : null;
@@ -65,11 +87,14 @@ export class MaxBotRegistryService {
   }
 
   getValidationTokens(): readonly string[] {
-    return this.bots.flatMap((bot) => bot.tokenValidationSecrets);
+    return this.getOperationalBots().flatMap((bot) => bot.tokenValidationSecrets);
   }
 
   getValidationTokensForBot(botId: string | null | undefined): readonly string[] {
     const bot = this.getBotById(botId) ?? this.defaultBot;
+    if (!isOperationalBotState(bot.state)) {
+      return [];
+    }
     return bot.tokenValidationSecrets;
   }
 
@@ -94,7 +119,7 @@ export class MaxBotRegistryService {
     providedHeaderSecret: string;
   }): MaxBotDefinition | null {
     const bot = this.getBotById(params.botId);
-    if (!bot) {
+    if (!bot || !isOperationalBotState(bot.state)) {
       return null;
     }
 
@@ -121,6 +146,12 @@ export class MaxBotRegistryService {
     maskedUrl: string | null;
   } {
     const bot = this.getBotById(botId) ?? this.defaultBot;
+    if (!isOperationalBotState(bot.state)) {
+      return {
+        url: null,
+        maskedUrl: null,
+      };
+    }
     return {
       url: bot.webhookUrl,
       maskedUrl: bot.maskedWebhookUrl,

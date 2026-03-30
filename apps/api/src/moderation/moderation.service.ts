@@ -6330,6 +6330,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           entityType: 'channel',
           link,
           participantsCount: snapshot.participantsCount,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
         });
         return {
           id: channelId,

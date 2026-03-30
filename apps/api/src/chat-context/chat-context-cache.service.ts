@@ -389,7 +389,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
     }
 
-    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.botId);
+    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
 
     const value: ChatContext = {
       chatId: chat.id,
@@ -418,6 +418,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
         data: {
           id: chatId,
           botId: this.maxBotLinkService.getContextOrDefaultBotId(),
+          primaryBotId: this.maxBotLinkService.getContextOrDefaultBotId(),
           title: resolvedTitle,
         },
       });

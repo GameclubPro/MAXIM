@@ -64,11 +64,11 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       return;
     }
 
-    this.inFlight = true;
+      this.inFlight = true;
     try {
       const syncState = await this.webhookSubscriptionStatusService.getSyncState();
       const botResults = await Promise.all(
-        this.maxBotRegistry.getAllBots().map((bot) =>
+        this.getOperationalBots().map((bot) =>
           this.reconcileBot(bot, syncState?.bots?.[bot.id] ?? null, reason),
         ),
       );
@@ -83,7 +83,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         this.buildAggregateSnapshot(botSnapshots, reason),
       );
     } catch (error: unknown) {
-      const previous = await this.webhookSubscriptionStatusService.getSnapshot();
+      const previous =
+        (await this.webhookSubscriptionStatusService.getSnapshot()) ??
+        this.createDisabledSnapshot('Webhook coverage ещё не была синхронизирована.');
       const lastError = error instanceof Error ? error.message : String(error);
       await this.webhookSubscriptionStatusService.writeSnapshot({
         ...previous,
@@ -101,6 +103,18 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     } finally {
       this.inFlight = false;
     }
+  }
+
+  private getOperationalBots(): MaxBotDefinition[] {
+    if (typeof this.maxBotRegistry.getOperationalBots === 'function') {
+      return [...this.maxBotRegistry.getOperationalBots()];
+    }
+
+    if (typeof this.maxBotRegistry.getAllBots === 'function') {
+      return [...this.maxBotRegistry.getAllBots()];
+    }
+
+    return [];
   }
 
   private resolveStatus(input: {
@@ -319,9 +333,12 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       .map((snapshot) => snapshot.reconciledAt)
       .filter((value): value is string => typeof value === 'string');
     const lastError = snapshots.find((snapshot) => snapshot.lastError)?.lastError ?? null;
+    const defaultBotId =
+      typeof this.maxBotRegistry.getDefaultBot === 'function'
+        ? this.maxBotRegistry.getDefaultBot().id
+        : snapshots[0]?.botId ?? null;
     const defaultBotUrl =
-      snapshots.find((snapshot) => snapshot.botId === this.maxBotRegistry.getDefaultBot().id)?.url ??
-      null;
+      snapshots.find((snapshot) => snapshot.botId === defaultBotId)?.url ?? null;
 
     return {
       status: this.resolveAggregateStatus(snapshots),

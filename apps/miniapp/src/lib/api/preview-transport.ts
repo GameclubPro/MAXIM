@@ -110,12 +110,37 @@ type PreviewDialogBucket = {
 
 const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
 const PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY = 'maxim.preview.giveaway.runtime';
+const PREVIEW_PRIMARY_BOT_ID = '777000_bot';
+const PREVIEW_PRIMARY_BOT_LABEL = 'MAXIM';
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
 type PreviewGiveawayParticipantVariant = PreviewGiveawayVariant | 'blocked-entered';
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
+  return [
+    {
+      botId: PREVIEW_PRIMARY_BOT_ID,
+      label: PREVIEW_PRIMARY_BOT_LABEL,
+      role: 'primary',
+      membershipStatus: 'active',
+      lifecycleState: 'active',
+    },
+  ];
+}
+
+function createPreviewChatSummary(
+  params: Omit<ChatSummary, 'primaryBotId' | 'assignedBots' | 'sharedMode'>,
+): ChatSummary {
+  return {
+    ...params,
+    primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+    assignedBots: buildPreviewAssignedBots(),
+    sharedMode: 'owned',
+  };
 }
 
 function buildPreviewSystemMode(state: PreviewState): SystemModeSnapshot {
@@ -222,6 +247,43 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       },
     },
     actionHealth: mode.action,
+    bots: {
+      [PREVIEW_PRIMARY_BOT_ID]: {
+        webhookEvents: {
+          received: {
+            count: inDegrade ? 3 : 0,
+            oldestEventId: inDegrade ? 'preview-received-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 6.1 : 0,
+          },
+          queued: {
+            count: inDegrade ? 4 : 0,
+            oldestEventId: inDegrade ? 'preview-queued-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 11.4 : 0,
+          },
+          failed: {
+            count: inDegrade ? 12 : 0,
+            oldestEventId: inDegrade ? 'preview-failed-1' : null,
+            oldestCreatedAt: inDegrade ? generatedAt : null,
+            oldestLagSec: inDegrade ? 41 : 0,
+          },
+        },
+        queuedByQueue: {
+          'webhook-critical': 0,
+          'webhook-default': inDegrade ? 4 : 0,
+          'webhook-background': inDegrade ? 2 : 0,
+        },
+        actionHealth: mode.action,
+        oldestQueuedEventId: inDegrade ? 'preview-queued-1' : null,
+        oldestQueuedCreatedAt: inDegrade ? generatedAt : null,
+        oldestQueuedLagSec: inDegrade ? 11.4 : 0,
+        oldestReceivedEventId: inDegrade ? 'preview-received-1' : null,
+        oldestReceivedCreatedAt: inDegrade ? generatedAt : null,
+        oldestReceivedLagSec: inDegrade ? 6.1 : 0,
+        effectiveLagSec: inDegrade ? 11.4 : 0,
+      },
+    },
     oldestQueuedEventId: inDegrade ? 'preview-queued-1' : null,
     oldestQueuedCreatedAt: inDegrade ? generatedAt : null,
     oldestQueuedLagSec: inDegrade ? 11.4 : 0,
@@ -304,6 +366,51 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
       note: inDegrade
         ? 'Preview показывает drift webhook coverage.'
         : 'Preview показывает актуальную webhook coverage.',
+      botCount: 1,
+      bots: {
+        [PREVIEW_PRIMARY_BOT_ID]: {
+          botId: PREVIEW_PRIMARY_BOT_ID,
+          status: inDegrade ? 'warning' : 'healthy',
+          configured: true,
+          url: 'https://maxim.play-team.ru/api/webhook/max/777000_bot/***',
+          checkedAt: generatedAt,
+          reconciledAt: inDegrade ? null : generatedAt,
+          requiredUpdateTypes: [
+            'message_created',
+            'message_callback',
+            'user_added',
+            'user_removed',
+            'bot_added',
+            'bot_removed',
+            'bot_started',
+          ],
+          actualUpdateTypes: inDegrade
+            ? [
+                'message_created',
+                'message_callback',
+                'user_added',
+                'user_removed',
+                'bot_added',
+                'bot_started',
+              ]
+            : [
+                'message_created',
+                'message_callback',
+                'user_added',
+                'user_removed',
+                'bot_added',
+                'bot_removed',
+                'bot_started',
+              ],
+          missingUpdateTypes: inDegrade ? ['bot_removed'] : [],
+          extraUpdateTypes: [],
+          otherSubscriptionsCount: 0,
+          lastError: inDegrade ? 'Preview reconcile error' : null,
+          note: inDegrade
+            ? 'Preview показывает drift webhook coverage.'
+            : 'Preview показывает актуальную webhook coverage.',
+        },
+      },
     },
   };
 }
@@ -1607,7 +1714,7 @@ function createInitialState(): PreviewState {
     },
     systemModeSelection: 'auto',
     chats: [
-      {
+      createPreviewChatSummary({
         id: PREVIEW_CHAT_ID,
         title: PREVIEW_CHAT_TITLE,
         createdAt: addDays(now, -280).toISOString(),
@@ -1615,8 +1722,8 @@ function createInitialState(): PreviewState {
         link: null,
         avatarUrl: buildPreviewAvatarDataUrl(PREVIEW_CHAT_TITLE, '#20b7aa', '#117e87'),
         channelOverview: null,
-      },
-      {
+      }),
+      createPreviewChatSummary({
         id: 'preview-chat-2',
         title: 'Клуб соседей',
         createdAt: addDays(now, -120).toISOString(),
@@ -1624,10 +1731,10 @@ function createInitialState(): PreviewState {
         link: null,
         avatarUrl: buildPreviewAvatarDataUrl('Клуб соседей', '#6a8cff', '#4b55dd'),
         channelOverview: null,
-      },
+      }),
     ],
     channels: [
-      {
+      createPreviewChatSummary({
         id: PREVIEW_CHANNEL_ID,
         title: PREVIEW_CHANNEL_TITLE,
         createdAt: addDays(now, -250).toISOString(),
@@ -1640,8 +1747,8 @@ function createInitialState(): PreviewState {
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
         },
-      },
-      {
+      }),
+      createPreviewChatSummary({
         id: 'preview-channel-2',
         title: 'Афиша района',
         createdAt: addDays(now, -90).toISOString(),
@@ -1654,7 +1761,7 @@ function createInitialState(): PreviewState {
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ],
     chatHeaderParticipantsCount: 1_584,
     chatDialogs,

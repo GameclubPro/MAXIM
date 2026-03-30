@@ -32,6 +32,19 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
+export const managedEntityBotRoleSchema = z.enum(['primary', 'standby']);
+export const managedEntityBotMembershipStatusSchema = z.enum(['active', 'removed']);
+export const managedEntityBotLifecycleStateSchema = z.enum([
+  'active',
+  'dormant',
+  'draining',
+  'disabled',
+]);
+export const managedEntitySharedModeSchema = z.enum([
+  'owned',
+  'shared-standby',
+  'shared-failover',
+]);
 export const applySettingsSectionSchema = z.enum([
   'links',
   'greeting',
@@ -64,6 +77,14 @@ export const managedGiveawayWinnerStatusSchema = z.enum([
 ]);
 export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
+export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
+export type ManagedEntityBotMembershipStatus = z.infer<
+  typeof managedEntityBotMembershipStatusSchema
+>;
+export type ManagedEntityBotLifecycleState = z.infer<
+  typeof managedEntityBotLifecycleStateSchema
+>;
+export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ManagedPollStatus = z.infer<typeof managedPollStatusSchema>;
@@ -1359,6 +1380,15 @@ export const channelOverviewSchema = z.object({
 });
 export type ChannelOverview = z.infer<typeof channelOverviewSchema>;
 
+export const managedEntityAssignedBotSchema = z.object({
+  botId: z.string(),
+  label: z.string(),
+  role: managedEntityBotRoleSchema,
+  membershipStatus: managedEntityBotMembershipStatusSchema,
+  lifecycleState: managedEntityBotLifecycleStateSchema,
+});
+export type ManagedEntityAssignedBot = z.infer<typeof managedEntityAssignedBotSchema>;
+
 export const chatSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -1367,6 +1397,9 @@ export const chatSummarySchema = z.object({
   link: z.string().trim().max(2048).nullable().optional().default(null),
   avatarUrl: z.string().trim().url().nullable().optional(),
   channelOverview: channelOverviewSchema.nullable().optional().default(null),
+  primaryBotId: z.string().nullable().optional().default(null),
+  assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
+  sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
@@ -1391,6 +1424,9 @@ export const managedEntityHeaderSchema = z.object({
   link: z.string().trim().max(2048).nullable(),
   participantsCount: z.number().int().min(0).nullable(),
   avatarUrl: z.string().trim().url().nullable().optional(),
+  primaryBotId: z.string().nullable().optional().default(null),
+  assignedBots: z.array(managedEntityAssignedBotSchema).optional().default([]),
+  sharedMode: managedEntitySharedModeSchema.optional().default('owned'),
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
 

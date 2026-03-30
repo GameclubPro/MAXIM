@@ -1,4 +1,9 @@
-import type { ChatSummary, ManagedEntitiesListResponse, Me } from '@maxim/contracts';
+import type {
+  ChatSummary,
+  ManagedEntitiesListResponse,
+  Me,
+  ManagedEntityAssignedBot,
+} from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
 type ManagedEntitiesFetchOptions = {
@@ -39,6 +44,40 @@ function parseChannelOverview(value: unknown): ChatSummary['channelOverview'] {
   };
 }
 
+function parseAssignedBots(value: unknown): ManagedEntityAssignedBot[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  if (!Array.isArray(value)) {
+    throw new Error('Invalid managed entity bot assignments');
+  }
+
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      throw new Error('Invalid managed entity bot assignment');
+    }
+
+    if (
+      typeof item.botId !== 'string' ||
+      typeof item.label !== 'string' ||
+      (item.role !== 'primary' && item.role !== 'standby') ||
+      (item.membershipStatus !== 'active' && item.membershipStatus !== 'removed') ||
+      !['active', 'dormant', 'draining', 'disabled'].includes(String(item.lifecycleState))
+    ) {
+      throw new Error('Invalid managed entity bot assignment');
+    }
+
+    return {
+      botId: item.botId,
+      label: item.label,
+      role: item.role,
+      membershipStatus: item.membershipStatus,
+      lifecycleState: item.lifecycleState as ManagedEntityAssignedBot['lifecycleState'],
+    };
+  });
+}
+
 function parseChatSummary(value: unknown): ChatSummary {
   if (!isRecord(value)) {
     throw new Error('Invalid chat summary');
@@ -47,6 +86,12 @@ function parseChatSummary(value: unknown): ChatSummary {
   const entityType = value.entityType === 'channel' ? 'channel' : 'chat';
   const link = typeof value.link === 'string' ? value.link.trim() || null : null;
   const avatarUrl = typeof value.avatarUrl === 'string' ? value.avatarUrl.trim() || null : null;
+  const primaryBotId =
+    typeof value.primaryBotId === 'string' ? value.primaryBotId.trim() || null : null;
+  const sharedMode =
+    value.sharedMode === 'shared-standby' || value.sharedMode === 'shared-failover'
+      ? value.sharedMode
+      : 'owned';
 
   if (
     typeof value.id !== 'string' ||
@@ -64,6 +109,9 @@ function parseChatSummary(value: unknown): ChatSummary {
     link,
     avatarUrl,
     channelOverview: parseChannelOverview(value.channelOverview),
+    primaryBotId,
+    assignedBots: parseAssignedBots(value.assignedBots),
+    sharedMode,
   };
 }
 

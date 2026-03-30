@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ChatEntityType, Prisma } from '@prisma/client';
+import {
+  ChatBotMembershipRole,
+  ChatBotMembershipStatus,
+  ChatEntityType,
+  Prisma,
+} from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   isValidMaxBotStartPayload,
@@ -52,14 +57,14 @@ export class MaxBotLinkService {
       return explicitBot.id;
     }
 
-    const contextBotId = this.botContext.getActiveBotId();
-    if (contextBotId) {
-      return contextBotId;
-    }
-
     const cachedBotId = this.getCachedChatBotId(chatId);
     if (cachedBotId) {
       return cachedBotId;
+    }
+
+    const contextBotId = this.botContext.getActiveBotId();
+    if (contextBotId) {
+      return contextBotId;
     }
 
     return this.getDefaultBotId();
@@ -81,11 +86,6 @@ export class MaxBotLinkService {
       return explicitBot.id;
     }
 
-    const contextBotId = this.botContext.getActiveBotId();
-    if (contextBotId) {
-      return contextBotId;
-    }
-
     const chatId = typeof options.chatId === 'string' ? options.chatId.trim() : '';
     if (chatId) {
       const cachedBotId = this.getCachedChatBotId(chatId);
@@ -95,13 +95,18 @@ export class MaxBotLinkService {
 
       const chat = await this.prisma.chat.findUnique({
         where: { id: chatId },
-        select: { botId: true },
+        select: { primaryBotId: true, botId: true },
       });
-      const chatBot = this.botRegistry.getBotById(chat?.botId ?? null);
+      const chatBot = this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null);
       if (chatBot) {
         this.rememberChatBotBinding(chatId, chatBot.id);
         return chatBot.id;
       }
+    }
+
+    const contextBotId = this.botContext.getActiveBotId();
+    if (contextBotId) {
+      return contextBotId;
     }
 
     return this.getDefaultBotId();
@@ -183,9 +188,11 @@ export class MaxBotLinkService {
       return;
     }
 
-    const botId = await this.resolveBotId({ chatId, botId: params.botId });
+    const explicitBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const botId = explicitBotId ?? (await this.resolveBotId({ chatId, botId: params.botId }));
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
+    const now = new Date();
 
     try {
       await this.prisma.chat.create({
@@ -193,8 +200,15 @@ export class MaxBotLinkService {
           id: chatId,
           title,
           botId,
+          primaryBotId: botId,
           ...(entityType ? { entityType } : {}),
         },
+      });
+      await this.upsertChatBotMembership(chatId, botId, {
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: now,
+        lastWebhookAt: explicitBotId ? now : null,
       });
       this.rememberChatBotBinding(chatId, botId);
       return;
@@ -204,42 +218,125 @@ export class MaxBotLinkService {
       }
     }
 
-    const updated = await this.prisma.chat.updateMany({
-      where: {
-        id: chatId,
-        ...(params.allowReassign === true
-          ? {}
-          : {
-              OR: [{ botId: null }, { botId }],
-            }),
-      },
+    const existing = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { primaryBotId: true, botId: true },
+    });
+    const existingPrimaryBotId =
+      this.botRegistry.getBotById(existing?.primaryBotId ?? existing?.botId ?? null)?.id ?? null;
+    const nextPrimaryBotId =
+      params.allowReassign === true ? botId : (existingPrimaryBotId ?? botId);
+
+    await this.prisma.chat.update({
+      where: { id: chatId },
       data: {
         title,
-        botId,
+        botId: nextPrimaryBotId,
+        primaryBotId: nextPrimaryBotId,
         ...(entityType ? { entityType } : {}),
       },
     });
 
-    if (updated.count > 0) {
-      this.rememberChatBotBinding(chatId, botId);
-      return;
-    }
-
-    const existing = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: { botId: true },
+    await this.upsertChatBotMembership(chatId, botId, {
+      role:
+        nextPrimaryBotId === botId
+          ? ChatBotMembershipRole.PRIMARY
+          : ChatBotMembershipRole.STANDBY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      lastSeenAt: now,
+      lastWebhookAt: explicitBotId ? now : null,
     });
-    this.rememberChatBotBinding(chatId, existing?.botId ?? null);
-    if ((existing?.botId ?? null) !== botId) {
+
+    if (nextPrimaryBotId && nextPrimaryBotId !== botId) {
+      await this.upsertChatBotMembership(chatId, nextPrimaryBotId, {
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: now,
+      });
+
       this.logger.warn(
         {
           chatId,
-          existingBotId: existing?.botId ?? null,
+          existingBotId: nextPrimaryBotId,
           incomingBotId: botId,
         },
-        'Skipped chat bot reassignment because the chat is already bound to another bot',
+        'Registered shared chat bot presence without changing the primary bot assignment',
       );
     }
+
+    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
+  }
+
+  async bindDiscoveredChatBots(params: {
+    chatId: string;
+    primaryBotId?: string | null;
+    botIds?: readonly string[] | null;
+    title?: string | null;
+    entityType?: ChatEntityType | null;
+  }): Promise<void> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return;
+    }
+
+    const observedBotIds = Array.from(
+      new Set(
+        (params.botIds ?? [])
+          .map((botId) => this.botRegistry.getBotById(botId)?.id ?? null)
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+    const normalizedPrimaryBotId =
+      this.botRegistry.getBotById(params.primaryBotId)?.id ?? observedBotIds[0] ?? null;
+    const title = params.title?.trim() || `Chat ${chatId}`;
+    const entityType = params.entityType ?? undefined;
+    const now = new Date();
+    const existing = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { primaryBotId: true, botId: true },
+    });
+    const existingPrimaryBotId =
+      this.botRegistry.getBotById(existing?.primaryBotId ?? existing?.botId ?? null)?.id ?? null;
+    const nextPrimaryBotId = existingPrimaryBotId ?? normalizedPrimaryBotId;
+
+    await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title,
+        botId: nextPrimaryBotId,
+        primaryBotId: nextPrimaryBotId,
+        ...(entityType ? { entityType } : {}),
+      },
+      update: {
+        title,
+        ...(nextPrimaryBotId
+          ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId }
+          : {}),
+        ...(entityType ? { entityType } : {}),
+      },
+    });
+
+    for (const observedBotId of observedBotIds) {
+      await this.upsertChatBotMembership(chatId, observedBotId, {
+        role:
+          nextPrimaryBotId === observedBotId
+            ? ChatBotMembershipRole.PRIMARY
+            : ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: now,
+      });
+    }
+
+    if (nextPrimaryBotId && !observedBotIds.includes(nextPrimaryBotId)) {
+      await this.upsertChatBotMembership(chatId, nextPrimaryBotId, {
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastSeenAt: now,
+      });
+    }
+
+    this.rememberChatBotBinding(chatId, nextPrimaryBotId);
   }
 
   private isPrismaKnownError(error: unknown, code: string): boolean {
@@ -267,5 +364,39 @@ export class MaxBotLinkService {
     }
 
     return cached.botId;
+  }
+
+  private async upsertChatBotMembership(
+    chatId: string,
+    botId: string,
+    params: {
+      role: ChatBotMembershipRole;
+      status: ChatBotMembershipStatus;
+      lastSeenAt?: Date | null;
+      lastWebhookAt?: Date | null;
+    },
+  ): Promise<void> {
+    await this.prisma.chatBotMembership.upsert({
+      where: {
+        chatId_botId: {
+          chatId,
+          botId,
+        },
+      },
+      create: {
+        chatId,
+        botId,
+        role: params.role,
+        status: params.status,
+        ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
+        ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+      },
+      update: {
+        role: params.role,
+        status: params.status,
+        ...(params.lastSeenAt ? { lastSeenAt: params.lastSeenAt } : {}),
+        ...(params.lastWebhookAt ? { lastWebhookAt: params.lastWebhookAt } : {}),
+      },
+    });
   }
 }

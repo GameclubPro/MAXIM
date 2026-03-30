@@ -1,4 +1,5 @@
 import { useQueryClient } from '@tanstack/react-query';
+import type { ChatSummary } from '@maxim/contracts';
 import {
   Suspense,
   lazy,
@@ -49,6 +50,39 @@ const LazySystemEntryCard = lazy(async () => {
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
+}
+
+function buildEntityBotChips(entity: ChatSummary): Array<{
+  key: string;
+  label: string;
+  className: string;
+}> {
+  const chips = entity.assignedBots.slice(0, 3).map((bot) => {
+    const stateTone =
+      bot.membershipStatus === 'removed'
+        ? 'chip--danger'
+        : bot.role === 'primary'
+          ? 'chip--success'
+          : bot.lifecycleState === 'dormant' || bot.lifecycleState === 'draining'
+            ? 'chip--warning'
+            : '';
+
+    return {
+      key: bot.botId,
+      label: bot.role === 'primary' ? `${bot.label} · осн.` : bot.label,
+      className: ['chip', stateTone, 'chat-card__bot-chip'].filter(Boolean).join(' '),
+    };
+  });
+
+  if (entity.assignedBots.length > chips.length) {
+    chips.push({
+      key: 'more',
+      label: `+${entity.assignedBots.length - chips.length}`,
+      className: 'chip chat-card__bot-chip',
+    });
+  }
+
+  return chips;
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
@@ -509,88 +543,99 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 : { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
 
             return (
-            <GlassCard
-              as="article"
-              key={entity.id}
-              className={className}
-              style={style}
-            >
-              <div className="chat-card__header">
-                <div className="chat-card__identity">
-                  <EntityAvatar
-                    title={entity.title}
-                    entityType={activeTab}
-                    avatarUrl={entity.avatarUrl ?? null}
-                    className="chat-card__avatar"
-                  />
-                  <h3>{entity.title}</h3>
+              <GlassCard
+                as="article"
+                key={entity.id}
+                className={className}
+                style={style}
+              >
+                <div className="chat-card__header">
+                  <div className="chat-card__identity">
+                    <EntityAvatar
+                      title={entity.title}
+                      entityType={activeTab}
+                      avatarUrl={entity.avatarUrl ?? null}
+                      className="chat-card__avatar"
+                    />
+                    <div className="chat-card__title-wrap">
+                      <h3>{entity.title}</h3>
+                      {entity.assignedBots.length > 0 ? (
+                        <div className="chat-card__bot-chips" aria-label="Назначенные боты">
+                          {buildEntityBotChips(entity).map((chip) => (
+                            <span key={chip.key} className={chip.className}>
+                              {chip.label}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
-              </div>
 
-              {activeTab === 'chat' ? (
-                <div className="chat-card__actions">
-                  <Link
-                    to={`/chat/${entity.id}/settings`}
-                    className="button button--accent"
-                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                    onClick={() => {
-                      saveLastEntityId('chat', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                    onPointerEnter={() => prefetchChatSettings(entity.id)}
-                    onTouchStart={() => prefetchChatSettings(entity.id)}
-                  >
-                    Настройки
-                  </Link>
-                  <Link
-                    to={`/chat/${entity.id}/events`}
-                    className="button button--ghost"
-                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                    onClick={() => {
-                      saveLastEntityId('chat', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                    onPointerEnter={() => prefetchChatEvents(entity.id)}
-                    onTouchStart={() => prefetchChatEvents(entity.id)}
-                  >
-                    События
-                  </Link>
-                </div>
-              ) : (
-                <div className="chat-card__actions">
-                  <Link
-                    to={`/channel/${entity.id}/settings`}
-                    className="button button--accent"
-                    state={{
-                      chatTitle: entity.title,
-                      chatLink: entity.link ?? '',
-                      avatarUrl: entity.avatarUrl ?? null,
-                    }}
-                    onClick={() => {
-                      saveLastEntityId('channel', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                    onPointerEnter={() => prefetchChannelSettings(entity.id)}
-                    onTouchStart={() => prefetchChannelSettings(entity.id)}
-                  >
-                    Настройки
-                  </Link>
-                  <Link
-                    to={`/channel/${entity.id}/stats`}
-                    className="button button--ghost"
-                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                    onClick={() => {
-                      saveLastEntityId('channel', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                    onPointerEnter={() => prefetchChannelStats(entity.id)}
-                    onTouchStart={() => prefetchChannelStats(entity.id)}
-                  >
-                    Статистика
-                  </Link>
-                </div>
-              )}
-            </GlassCard>
+                {activeTab === 'chat' ? (
+                  <div className="chat-card__actions">
+                    <Link
+                      to={`/chat/${entity.id}/settings`}
+                      className="button button--accent"
+                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+                      onClick={() => {
+                        saveLastEntityId('chat', entity.id);
+                        saveChatTitle(entity.id, entity.title);
+                      }}
+                      onPointerEnter={() => prefetchChatSettings(entity.id)}
+                      onTouchStart={() => prefetchChatSettings(entity.id)}
+                    >
+                      Настройки
+                    </Link>
+                    <Link
+                      to={`/chat/${entity.id}/events`}
+                      className="button button--ghost"
+                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+                      onClick={() => {
+                        saveLastEntityId('chat', entity.id);
+                        saveChatTitle(entity.id, entity.title);
+                      }}
+                      onPointerEnter={() => prefetchChatEvents(entity.id)}
+                      onTouchStart={() => prefetchChatEvents(entity.id)}
+                    >
+                      События
+                    </Link>
+                  </div>
+                ) : (
+                  <div className="chat-card__actions">
+                    <Link
+                      to={`/channel/${entity.id}/settings`}
+                      className="button button--accent"
+                      state={{
+                        chatTitle: entity.title,
+                        chatLink: entity.link ?? '',
+                        avatarUrl: entity.avatarUrl ?? null,
+                      }}
+                      onClick={() => {
+                        saveLastEntityId('channel', entity.id);
+                        saveChatTitle(entity.id, entity.title);
+                      }}
+                      onPointerEnter={() => prefetchChannelSettings(entity.id)}
+                      onTouchStart={() => prefetchChannelSettings(entity.id)}
+                    >
+                      Настройки
+                    </Link>
+                    <Link
+                      to={`/channel/${entity.id}/stats`}
+                      className="button button--ghost"
+                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+                      onClick={() => {
+                        saveLastEntityId('channel', entity.id);
+                        saveChatTitle(entity.id, entity.title);
+                      }}
+                      onPointerEnter={() => prefetchChannelStats(entity.id)}
+                      onTouchStart={() => prefetchChannelStats(entity.id)}
+                    >
+                      Статистика
+                    </Link>
+                  </div>
+                )}
+              </GlassCard>
             );
           })}
         </section>

@@ -18,6 +18,8 @@ export type MaxBotChat = {
   entityType: 'chat' | 'channel';
   link: string | null;
   avatarUrl: string | null;
+  botId?: string | null;
+  botIds?: string[];
 };
 
 export type MaxChatSnapshot = {
@@ -1617,6 +1619,8 @@ export class MaxClientService implements OnModuleDestroy {
           entityType,
           link,
           avatarUrl: this.parseChatAvatarUrl(row),
+          botId,
+          botIds: [botId],
         });
       }
 

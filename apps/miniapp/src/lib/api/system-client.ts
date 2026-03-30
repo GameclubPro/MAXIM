@@ -1,4 +1,5 @@
 import type {
+  BotWebhookSubscriptionSnapshot,
   SystemDashboardAlert,
   SystemDashboardResponse,
   SystemModeSnapshot,
@@ -131,6 +132,111 @@ function parseWebhookStatusMetrics(value: unknown) {
   };
 }
 
+function parseBotQueueMetricsSnapshot(value: unknown) {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.webhookEvents) ||
+    !isRecord(value.queuedByQueue) ||
+    !isRecord(value.actionHealth) ||
+    (value.oldestQueuedEventId !== null &&
+      value.oldestQueuedEventId !== undefined &&
+      typeof value.oldestQueuedEventId !== 'string') ||
+    (value.oldestQueuedCreatedAt !== null &&
+      value.oldestQueuedCreatedAt !== undefined &&
+      typeof value.oldestQueuedCreatedAt !== 'string') ||
+    typeof value.oldestQueuedLagSec !== 'number' ||
+    (value.oldestReceivedEventId !== null &&
+      value.oldestReceivedEventId !== undefined &&
+      typeof value.oldestReceivedEventId !== 'string') ||
+    (value.oldestReceivedCreatedAt !== null &&
+      value.oldestReceivedCreatedAt !== undefined &&
+      typeof value.oldestReceivedCreatedAt !== 'string') ||
+    typeof value.oldestReceivedLagSec !== 'number' ||
+    typeof value.effectiveLagSec !== 'number'
+  ) {
+    throw new Error('Invalid bot queue metrics');
+  }
+
+  return {
+    webhookEvents: {
+      received: parseWebhookStatusMetrics(value.webhookEvents.received),
+      queued: parseWebhookStatusMetrics(value.webhookEvents.queued),
+      failed: parseWebhookStatusMetrics(value.webhookEvents.failed),
+    },
+    queuedByQueue: Object.fromEntries(
+      Object.entries(value.queuedByQueue).map(([queueName, count]) => [
+        queueName,
+        typeof count === 'number' ? count : 0,
+      ]),
+    ),
+    actionHealth: parseActionHealthSnapshot(value.actionHealth),
+    oldestQueuedEventId: typeof value.oldestQueuedEventId === 'string' ? value.oldestQueuedEventId : null,
+    oldestQueuedCreatedAt:
+      typeof value.oldestQueuedCreatedAt === 'string' ? value.oldestQueuedCreatedAt : null,
+    oldestQueuedLagSec: value.oldestQueuedLagSec,
+    oldestReceivedEventId:
+      typeof value.oldestReceivedEventId === 'string' ? value.oldestReceivedEventId : null,
+    oldestReceivedCreatedAt:
+      typeof value.oldestReceivedCreatedAt === 'string' ? value.oldestReceivedCreatedAt : null,
+    oldestReceivedLagSec: value.oldestReceivedLagSec,
+    effectiveLagSec: value.effectiveLagSec,
+  };
+}
+
+function parseBotWebhookSubscriptionSnapshot(value: unknown): BotWebhookSubscriptionSnapshot {
+  if (
+    !isRecord(value) ||
+    typeof value.botId !== 'string' ||
+    (value.status !== 'healthy' &&
+      value.status !== 'warning' &&
+      value.status !== 'critical' &&
+      value.status !== 'disabled') ||
+    typeof value.configured !== 'boolean' ||
+    (value.url !== null && value.url !== undefined && typeof value.url !== 'string') ||
+    (value.checkedAt !== null &&
+      value.checkedAt !== undefined &&
+      typeof value.checkedAt !== 'string') ||
+    (value.reconciledAt !== null &&
+      value.reconciledAt !== undefined &&
+      typeof value.reconciledAt !== 'string') ||
+    !Array.isArray(value.requiredUpdateTypes) ||
+    !Array.isArray(value.actualUpdateTypes) ||
+    !Array.isArray(value.missingUpdateTypes) ||
+    !Array.isArray(value.extraUpdateTypes) ||
+    typeof value.otherSubscriptionsCount !== 'number' ||
+    (value.lastError !== null &&
+      value.lastError !== undefined &&
+      typeof value.lastError !== 'string') ||
+    (value.note !== null && value.note !== undefined && typeof value.note !== 'string')
+  ) {
+    throw new Error('Invalid bot webhook subscription snapshot');
+  }
+
+  return {
+    botId: value.botId,
+    status: value.status,
+    configured: value.configured,
+    url: typeof value.url === 'string' ? value.url : null,
+    checkedAt: typeof value.checkedAt === 'string' ? value.checkedAt : null,
+    reconciledAt: typeof value.reconciledAt === 'string' ? value.reconciledAt : null,
+    requiredUpdateTypes: value.requiredUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    actualUpdateTypes: value.actualUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    missingUpdateTypes: value.missingUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    extraUpdateTypes: value.extraUpdateTypes.filter(
+      (item): item is string => typeof item === 'string',
+    ),
+    otherSubscriptionsCount: value.otherSubscriptionsCount,
+    lastError: typeof value.lastError === 'string' ? value.lastError : null,
+    note: typeof value.note === 'string' ? value.note : null,
+  };
+}
+
 function parseWebhookSubscriptionSnapshot(value: unknown): WebhookSubscriptionSnapshot {
   if (
     !isRecord(value) ||
@@ -154,7 +260,9 @@ function parseWebhookSubscriptionSnapshot(value: unknown): WebhookSubscriptionSn
     (value.lastError !== null &&
       value.lastError !== undefined &&
       typeof value.lastError !== 'string') ||
-    (value.note !== null && value.note !== undefined && typeof value.note !== 'string')
+    (value.note !== null && value.note !== undefined && typeof value.note !== 'string') ||
+    typeof value.botCount !== 'number' ||
+    !isRecord(value.bots)
   ) {
     throw new Error('Invalid webhook subscription snapshot');
   }
@@ -180,6 +288,13 @@ function parseWebhookSubscriptionSnapshot(value: unknown): WebhookSubscriptionSn
     otherSubscriptionsCount: value.otherSubscriptionsCount,
     lastError: typeof value.lastError === 'string' ? value.lastError : null,
     note: typeof value.note === 'string' ? value.note : null,
+    botCount: value.botCount,
+    bots: Object.fromEntries(
+      Object.entries(value.bots).map(([botId, snapshot]) => [
+        botId,
+        parseBotWebhookSubscriptionSnapshot(snapshot),
+      ]),
+    ),
   };
 }
 
@@ -239,6 +354,12 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
         failed: parseWebhookStatusMetrics(queues.webhookEvents.failed),
       },
       actionHealth: parseActionHealthSnapshot(queues.actionHealth),
+      bots: Object.fromEntries(
+        Object.entries(isRecord(queues.bots) ? queues.bots : {}).map(([botId, snapshot]) => [
+          botId,
+          parseBotQueueMetricsSnapshot(snapshot),
+        ]),
+      ),
       oldestQueuedEventId:
         typeof queues.oldestQueuedEventId === 'string' ? queues.oldestQueuedEventId : null,
       oldestQueuedCreatedAt:

@@ -66,6 +66,7 @@ import {
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
+  type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
   type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
@@ -91,6 +92,7 @@ import {
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
+  ChatBotMembershipStatus,
   ChatEntityType,
   ManagedBroadcastDeliveryStatus as PrismaManagedBroadcastDeliveryStatus,
   EventType,
@@ -136,6 +138,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import {
   buildManagedPollButtons,
   buildManagedPollMessageText,
@@ -180,6 +183,17 @@ type ManagedEntitiesListOptions = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+
+type ManagedEntityBotAssignmentsRow = {
+  id: string;
+  botId: string | null;
+  primaryBotId: string | null;
+  botMemberships: Array<{
+    botId: string;
+    role: 'PRIMARY' | 'STANDBY';
+    status: 'ACTIVE' | 'REMOVED';
+  }>;
+};
 
 type AdminAccessResolution =
   | {
@@ -602,6 +616,7 @@ export class AdminService {
     @InjectQueue(ADMIN_SUGGESTION_DELIVERY_QUEUE)
     private readonly adminSuggestionDeliveryQueue?: Queue<AdminSuggestionDeliveryJob>,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    private readonly maxBotRegistry?: MaxBotRegistryService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -778,7 +793,9 @@ export class AdminService {
         cached,
       );
       if (initial.length > 0) {
-        const items = await this.hydrateManagedEntities(initial);
+        const items = await this.attachManagedEntityBotAssignments(
+          await this.hydrateManagedEntities(initial),
+        );
         this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
         return {
           items,
@@ -789,13 +806,18 @@ export class AdminService {
         };
       }
 
-      return this.discoverManagedEntities(user, entityType, {
+      const discovered = await this.discoverManagedEntities(user, entityType, {
         respectCooldown: true,
         fullScan: false,
         includeRefreshState: options.includeRefreshState === true,
         bypassRemoteCache: options.bypassRemoteCache === true,
         resetRefreshCursor: options.resetRefreshCursor === true,
       });
+
+      return {
+        items: await this.attachManagedEntityBotAssignments(discovered.items),
+        refresh: discovered.refresh,
+      };
     }
 
     const discovered = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
@@ -805,7 +827,7 @@ export class AdminService {
     });
     if (discovered.items.length > 0 || discovered.refresh?.complete === true) {
       return {
-        items: discovered.items,
+        items: await this.attachManagedEntityBotAssignments(discovered.items),
         refresh: discovered.refresh,
       };
     }
@@ -833,8 +855,12 @@ export class AdminService {
     const items =
       fallback.length > 0
         ? skipAvatarHydration
-          ? await this.attachChannelOverview(await this.attachManagedEntityAvatars(fallback))
-          : await this.hydrateManagedEntities(fallback)
+          ? await this.attachManagedEntityBotAssignments(
+              await this.attachChannelOverview(await this.attachManagedEntityAvatars(fallback)),
+            )
+          : await this.attachManagedEntityBotAssignments(
+              await this.hydrateManagedEntities(fallback),
+            )
         : [];
     this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
     return {
@@ -861,24 +887,234 @@ export class AdminService {
     return merged;
   }
 
+  private createManagedEntitySummary(
+    params: {
+      id: string;
+      title: string;
+      createdAt: string;
+      entityType: ManagedEntityType;
+      link?: string | null;
+      avatarUrl?: string | null;
+      channelOverview?: ChannelOverview | null;
+      primaryBotId?: string | null;
+      assignedBots?: ManagedEntityAssignedBot[];
+      sharedMode?: ChatSummary['sharedMode'];
+    },
+  ): ChatSummary {
+    const assignedBots = [...(params.assignedBots ?? [])];
+    return {
+      id: params.id,
+      title: params.title,
+      createdAt: params.createdAt,
+      entityType: params.entityType,
+      link: params.link ?? null,
+      ...(this.readTrimmedString(params.avatarUrl) ? { avatarUrl: params.avatarUrl } : {}),
+      channelOverview: params.channelOverview ?? null,
+      primaryBotId: this.readTrimmedString(params.primaryBotId) ?? null,
+      assignedBots,
+      sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),
+    };
+  }
+
+  private createManagedEntityHeader(
+    params: {
+      id: string;
+      title: string;
+      entityType: ManagedEntityType;
+      link?: string | null;
+      participantsCount?: number | null;
+      avatarUrl?: string | null;
+      primaryBotId?: string | null;
+      assignedBots?: ManagedEntityAssignedBot[];
+      sharedMode?: ManagedEntityHeader['sharedMode'];
+    },
+  ): ManagedEntityHeader {
+    const assignedBots = [...(params.assignedBots ?? [])];
+    return {
+      id: params.id,
+      title: params.title,
+      entityType: params.entityType,
+      link: params.link ?? null,
+      participantsCount: params.participantsCount ?? null,
+      ...(this.readTrimmedString(params.avatarUrl) ? { avatarUrl: params.avatarUrl } : {}),
+      primaryBotId: this.readTrimmedString(params.primaryBotId) ?? null,
+      assignedBots,
+      sharedMode: params.sharedMode ?? (assignedBots.length > 1 ? 'shared-standby' : 'owned'),
+    };
+  }
+
+  private async attachManagedEntityBotAssignments(
+    chats: ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (chats.length === 0) {
+      return chats;
+    }
+
+    const assignmentsByChatId = await this.readManagedEntityBotAssignments(
+      chats.map((chat) => chat.id),
+    );
+
+    return chats.map((chat) => this.applyManagedEntityBotAssignments(chat, assignmentsByChatId));
+  }
+
+  private async attachManagedEntityHeaderBotAssignments(
+    header: ManagedEntityHeader,
+  ): Promise<ManagedEntityHeader> {
+    const assignmentsByChatId = await this.readManagedEntityBotAssignments([header.id]);
+    return this.applyManagedEntityBotAssignments(header, assignmentsByChatId);
+  }
+
+  private async readManagedEntityBotAssignments(
+    chatIds: readonly string[],
+  ): Promise<Map<string, ManagedEntityBotAssignmentsRow>> {
+    if (typeof this.prisma.chat.findMany !== 'function') {
+      return new Map();
+    }
+
+    const normalizedChatIds = Array.from(
+      new Set(chatIds.map((chatId) => chatId.trim()).filter((chatId) => chatId.length > 0)),
+    );
+    if (normalizedChatIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.chat.findMany({
+      where: {
+        id: {
+          in: normalizedChatIds,
+        },
+      },
+      select: {
+        id: true,
+        botId: true,
+        primaryBotId: true,
+        botMemberships: {
+          select: {
+            botId: true,
+            role: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    return new Map(
+      rows.map((row) => [
+        row.id,
+        {
+          id: row.id,
+          botId: row.botId,
+          primaryBotId: row.primaryBotId,
+          botMemberships: row.botMemberships.map((membership) => ({
+            botId: membership.botId,
+            role: membership.role,
+            status: membership.status,
+          })),
+        } satisfies ManagedEntityBotAssignmentsRow,
+      ]),
+    );
+  }
+
+  private applyManagedEntityBotAssignments<T extends ChatSummary | ManagedEntityHeader>(
+    entity: T,
+    assignmentsByChatId: Map<string, ManagedEntityBotAssignmentsRow>,
+  ): T {
+    const persisted = assignmentsByChatId.get(entity.id) ?? null;
+    const primaryBotId =
+      this.readTrimmedString(persisted?.primaryBotId) ??
+      this.readTrimmedString(persisted?.botId) ??
+      null;
+    const botMetaById = new Map(
+      (this.maxBotRegistry?.getAllBots() ?? []).map((bot) => [bot.id, bot] as const),
+    );
+    const seenBotIds = new Set<string>();
+    const assignedBots: ManagedEntityAssignedBot[] = [];
+
+    for (const membership of persisted?.botMemberships ?? []) {
+      const normalizedBotId = this.readTrimmedString(membership.botId);
+      if (!normalizedBotId || seenBotIds.has(normalizedBotId)) {
+        continue;
+      }
+
+      seenBotIds.add(normalizedBotId);
+      const botMeta = botMetaById.get(normalizedBotId);
+      assignedBots.push({
+        botId: normalizedBotId,
+        label: botMeta?.label ?? normalizedBotId,
+        role: membership.role === 'PRIMARY' ? 'primary' : 'standby',
+        membershipStatus: membership.status === 'REMOVED' ? 'removed' : 'active',
+        lifecycleState: botMeta?.state ?? 'disabled',
+      });
+    }
+
+    if (primaryBotId && !seenBotIds.has(primaryBotId)) {
+      const botMeta = botMetaById.get(primaryBotId);
+      assignedBots.unshift({
+        botId: primaryBotId,
+        label: botMeta?.label ?? primaryBotId,
+        role: 'primary',
+        membershipStatus: 'active',
+        lifecycleState: botMeta?.state ?? 'disabled',
+      });
+    }
+
+    assignedBots.sort((left, right) => {
+      if (left.role !== right.role) {
+        return left.role === 'primary' ? -1 : 1;
+      }
+      return left.label.localeCompare(right.label, 'ru');
+    });
+
+    const sharedMode = assignedBots.length > 1 ? 'shared-standby' : 'owned';
+
+    return {
+      ...entity,
+      primaryBotId,
+      assignedBots,
+      sharedMode,
+    };
+  }
+
   private mergeManagedEntitiesDiscoverySnapshots(
     ...groups: readonly ManagedEntitiesDiscoverySnapshot[]
   ): ManagedEntitiesDiscoverySnapshot {
-    const merged: ManagedEntitiesDiscoverySnapshot = [];
-    const seen = new Set<string>();
+    const mergedByChatId = new Map<string, MaxBotChat>();
 
     for (const group of groups) {
       for (const chat of group) {
-        if (!chat.chatId || seen.has(chat.chatId)) {
+        if (!chat.chatId) {
           continue;
         }
 
-        seen.add(chat.chatId);
-        merged.push(chat);
+        const existing = mergedByChatId.get(chat.chatId);
+        const mergedBotIds = Array.from(
+          new Set([...(existing?.botIds ?? []), ...(chat.botIds ?? []), ...(chat.botId ? [chat.botId] : [])]),
+        );
+
+        if (!existing) {
+          mergedByChatId.set(chat.chatId, {
+            ...chat,
+            botIds: mergedBotIds,
+            botId: this.readTrimmedString(chat.botId) ?? mergedBotIds[0] ?? null,
+          });
+          continue;
+        }
+
+        mergedByChatId.set(chat.chatId, {
+          ...existing,
+          title: this.readTrimmedString(existing.title) ?? this.readTrimmedString(chat.title),
+          lastEventTime: Math.max(existing.lastEventTime ?? 0, chat.lastEventTime ?? 0),
+          entityType: existing.entityType,
+          link: this.readTrimmedString(existing.link) ?? this.readTrimmedString(chat.link),
+          avatarUrl:
+            this.readTrimmedString(existing.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl),
+          botId: this.readTrimmedString(existing.botId) ?? this.readTrimmedString(chat.botId),
+          botIds: mergedBotIds,
+        });
       }
     }
 
-    return merged;
+    return [...mergedByChatId.values()];
   }
 
   private toManagedEntitiesDiscoveryCandidate(chat: ChatSummary): MaxBotChat {
@@ -889,6 +1125,8 @@ export class AdminService {
       entityType: chat.entityType,
       link: chat.link ?? null,
       avatarUrl: chat.avatarUrl ?? null,
+      botId: chat.primaryBotId ?? null,
+      botIds: chat.assignedBots.map((bot) => bot.botId),
     };
   }
 
@@ -919,6 +1157,8 @@ export class AdminService {
         entityType: currentContextEntityType,
         link: null,
         avatarUrl: null,
+        botId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? null,
+        botIds: this.maxBotLinkService ? [this.maxBotLinkService.getContextOrDefaultBotId()] : [],
       },
     ];
   }
@@ -1213,14 +1453,12 @@ export class AdminService {
         { updateEntityType: true },
       );
 
-      const chat: ChatSummary = {
+      const chat = this.createManagedEntitySummary({
         id: persistedChat.id,
         title: persistedChat.title,
         createdAt: persistedChat.createdAt.toISOString(),
         entityType: this.fromPrismaEntityType(persistedChat.entityType),
-        link: null,
-        channelOverview: null,
-      };
+      });
 
       bootstrapped.push(chat);
       if (bootstrapped.length >= RECENT_BOT_ADDED_BOOTSTRAP_LIMIT) {
@@ -1413,18 +1651,21 @@ export class AdminService {
             user.userId,
             candidate.title,
             candidate.entityType,
-            { updateEntityType: true },
+            {
+              updateEntityType: true,
+              preferredBotId: candidate.botId ?? null,
+              observedBotIds: candidate.botIds ?? [],
+            },
           );
 
-          const chat: ChatSummary = {
+          const chat = this.createManagedEntitySummary({
             id: persistedChat.id,
             title: persistedChat.title,
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: candidate.link,
-            ...(candidate.avatarUrl?.trim() ? { avatarUrl: candidate.avatarUrl.trim() } : {}),
-            channelOverview: null,
-          };
+            avatarUrl: candidate.avatarUrl?.trim() ?? null,
+          });
 
           return {
             kind: 'include' as const,
@@ -1765,18 +2006,21 @@ export class AdminService {
             user.userId,
             remoteChat.title,
             remoteChat.entityType,
-            { updateEntityType: true },
+            {
+              updateEntityType: true,
+              preferredBotId: remoteChat.botId ?? null,
+              observedBotIds: remoteChat.botIds ?? [],
+            },
           );
 
-          const chat: ChatSummary = {
+          const chat = this.createManagedEntitySummary({
             id: persistedChat.id,
             title: persistedChat.title,
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: remoteChat.link,
-            ...(remoteChat.avatarUrl?.trim() ? { avatarUrl: remoteChat.avatarUrl.trim() } : {}),
-            channelOverview: null,
-          };
+            avatarUrl: remoteChat.avatarUrl?.trim() ?? null,
+          });
 
           return {
             kind: 'include' as const,
@@ -1925,11 +2169,43 @@ export class AdminService {
       bypassCache?: boolean;
     },
   ): Promise<ManagedEntitiesDiscoverySnapshot> {
-    const remoteChats = await this.maxClient.listBotChats({
-      trafficClass: options.trafficClass,
-      ...(options.bypassCache === true ? { bypassCache: true } : {}),
-    });
+    if (typeof this.maxClient.listBotChats !== 'function') {
+      return [];
+    }
 
+    const discoveryBots = this.maxBotRegistry?.getDiscoveryBots() ?? [];
+    if (discoveryBots.length === 0) {
+      const legacyChats = await this.maxClient.listBotChats({
+        trafficClass: options.trafficClass,
+        ...(options.bypassCache === true ? { bypassCache: true } : {}),
+      });
+      const candidateChats =
+        entityType === 'all'
+          ? legacyChats
+          : legacyChats.filter((chat) => chat.entityType === entityType);
+
+      return candidateChats.filter(
+        (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
+      );
+    }
+
+    const remoteGroups = await Promise.all(
+      discoveryBots.map(async (bot) => {
+        const chats = await this.maxClient.listBotChats({
+          trafficClass: options.trafficClass,
+          ...(options.bypassCache === true ? { bypassCache: true } : {}),
+          botId: bot.id,
+        });
+
+        return chats.map((chat) => ({
+          ...chat,
+          botId: bot.id,
+          botIds: Array.from(new Set([...(chat.botIds ?? []), bot.id])),
+        }));
+      }),
+    );
+
+    const remoteChats = this.mergeManagedEntitiesDiscoverySnapshots(...remoteGroups);
     const candidateChats =
       entityType === 'all'
         ? remoteChats
@@ -4127,21 +4403,26 @@ export class AdminService {
 
     const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(normalizedValue);
     if (normalizedLink) {
-      const chatId = await this.resolveRequiredSubscriptionChannelIdByLink(normalizedLink);
-      return this.resolveRequiredSubscriptionChannelById(chatId);
+      const channel = await this.resolveRequiredSubscriptionChannelByLink(normalizedLink);
+      return this.resolveRequiredSubscriptionChannelById(channel.chatId, {
+        preferredBotId: channel.botId ?? null,
+        observedBotIds: channel.botIds ?? [],
+      });
     }
 
     return this.resolveRequiredSubscriptionChannelById(normalizedValue);
   }
 
-  private async resolveRequiredSubscriptionChannelIdByLink(link: string): Promise<string> {
+  private async resolveRequiredSubscriptionChannelByLink(link: string): Promise<MaxBotChat> {
     const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(link);
     if (!normalizedLink) {
       throw new BadRequestException('Укажите корректную ссылку канала MAX.');
     }
 
     try {
-      const chats = await this.maxClient.listBotChats();
+      const chats = await this.loadManagedEntitiesDiscoverySnapshot('channel', {
+        trafficClass: 'interactive',
+      });
       const matched = chats.find(
         (chat) =>
           chat.entityType === 'channel' &&
@@ -4149,7 +4430,7 @@ export class AdminService {
       );
 
       if (matched?.chatId) {
-        return matched.chatId;
+        return matched;
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -4171,15 +4452,27 @@ export class AdminService {
 
   private async resolveRequiredSubscriptionChannelById(
     chatId: string,
+    options: {
+      preferredBotId?: string | null;
+      observedBotIds?: readonly string[] | null;
+    } = {},
   ): Promise<ManagedEntityHeader> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       throw new BadRequestException('Укажите корректный ID канала.');
     }
 
+    const resolvedBotId =
+      this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ??
+      (await this.resolveBotAssignment(normalizedChatId)) ??
+      null;
     let snapshot: Awaited<ReturnType<MaxClientService['getChatSnapshot']>>;
     try {
-      snapshot = await this.maxClient.getChatSnapshot(normalizedChatId);
+      snapshot = resolvedBotId
+        ? await this.maxClient.getChatSnapshot(normalizedChatId, {
+            botId: resolvedBotId,
+          })
+        : await this.maxClient.getChatSnapshot(normalizedChatId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -4202,32 +4495,47 @@ export class AdminService {
       );
     }
 
-    await this.assertBotCanInspectRequiredSubscriptionChannel(normalizedChatId);
+    await this.assertBotCanInspectRequiredSubscriptionChannel(normalizedChatId, {
+      preferredBotId: resolvedBotId,
+      observedBotIds: options.observedBotIds ?? [],
+    });
 
-    const header: ManagedEntityHeader = {
+    const header = this.createManagedEntityHeader({
       id: normalizedChatId,
       title: snapshot.title?.trim() || normalizedChatId,
       entityType: 'channel',
       link,
       participantsCount: snapshot.participantsCount,
       avatarUrl: snapshot.avatarUrl,
-    };
+      primaryBotId: resolvedBotId,
+    });
 
     try {
-      const resolvedBotId = await this.resolveBotAssignment(normalizedChatId);
       await this.prisma.chat.upsert({
         where: { id: normalizedChatId },
         create: {
           id: normalizedChatId,
           title: header.title,
           entityType: ChatEntityType.CHANNEL,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
         },
         update: {
           title: header.title,
           entityType: ChatEntityType.CHANNEL,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
         },
+      });
+      await this.maxBotLinkService?.bindDiscoveredChatBots({
+        chatId: normalizedChatId,
+        primaryBotId: resolvedBotId,
+        botIds:
+          resolvedBotId || (options.observedBotIds?.length ?? 0) > 0
+            ? [resolvedBotId, ...(options.observedBotIds ?? [])].filter(
+                (botId): botId is string => typeof botId === 'string' && botId.trim().length > 0,
+              )
+            : [],
+        title: header.title,
+        entityType: ChatEntityType.CHANNEL,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -4243,39 +4551,74 @@ export class AdminService {
     return header;
   }
 
-  private async assertBotCanInspectRequiredSubscriptionChannel(chatId: string): Promise<void> {
-    try {
-      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
-        trafficClass: 'interactive',
-      });
-      if (access.isAdmin || access.isOwner) {
-        return;
-      }
+  private async assertBotCanInspectRequiredSubscriptionChannel(
+    chatId: string,
+    options: {
+      preferredBotId?: string | null;
+      observedBotIds?: readonly string[] | null;
+    } = {},
+  ): Promise<void> {
+    const candidateBotIds = Array.from(
+      new Set(
+        [
+          this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ?? null,
+          ...((options.observedBotIds ?? []).map(
+            (botId) => this.maxBotRegistry?.getBotById(botId)?.id ?? null,
+          ) as Array<string | null>),
+          ...(await this.resolveCandidateBotIdsForChat(chatId)),
+        ].filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
 
+    let serviceFailure: unknown = null;
+    for (const botId of candidateBotIds) {
+      try {
+        const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+          trafficClass: 'interactive',
+          botId,
+        });
+        if (access.isAdmin || access.isOwner) {
+          return;
+        }
+      } catch (error: unknown) {
+        if (this.isBotAdminLookupDeniedError(error)) {
+          continue;
+        }
+        serviceFailure = serviceFailure ?? error;
+      }
+    }
+
+    if (candidateBotIds.length === 0) {
+      try {
+        const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+          trafficClass: 'interactive',
+        });
+        if (access.isAdmin || access.isOwner) {
+          return;
+        }
+      } catch (error: unknown) {
+        if (!this.isBotAdminLookupDeniedError(error)) {
+          serviceFailure = serviceFailure ?? error;
+        }
+      }
+    }
+
+    if (!serviceFailure) {
       throw new BadRequestException(
         'Бот должен быть администратором этого канала, чтобы проверять подписку.',
       );
-    } catch (error: unknown) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      if (this.isBotAdminLookupDeniedError(error)) {
-        throw new BadRequestException(
-          'Бот должен быть администратором этого канала, чтобы проверять подписку.',
-        );
-      }
-
-      this.logger.warn(
-        {
-          chatId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to verify bot admin access for required subscription channel',
-      );
-      throw new ServiceUnavailableException(
-        'Не удалось проверить права бота в канале MAX. Повторите попытку.',
-      );
     }
+
+    this.logger.warn(
+      {
+        chatId,
+        err: serviceFailure instanceof Error ? serviceFailure.message : String(serviceFailure),
+      },
+      'Failed to verify bot admin access for required subscription channel',
+    );
+    throw new ServiceUnavailableException(
+      'Не удалось проверить права бота в канале MAX. Повторите попытку.',
+    );
   }
 
   private normalizeRequiredSubscriptionChannelLink(
@@ -13462,21 +13805,23 @@ export class AdminService {
     return normalized;
   }
 
-  private resolveBotContactId(): string | null {
-    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+  private resolveBotContactId(botId?: string | null): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync(botId);
     if (contextAwareContactId) {
       return contextAwareContactId;
     }
 
-    if (this.explicitBotContactId) {
+    if (!botId && this.explicitBotContactId) {
       return this.explicitBotContactId;
     }
 
-    if (!this.ownBotUserId) {
+    const resolvedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? null;
+    const fallbackBotUserId = resolvedBotId ?? this.ownBotUserId;
+    if (!fallbackBotUserId) {
       return null;
     }
 
-    const [candidate] = this.ownBotUserId.split('_');
+    const [candidate] = fallbackBotUserId.split('_');
     return /^\d+$/u.test(candidate) ? candidate : null;
   }
 
@@ -13562,34 +13907,76 @@ export class AdminService {
     return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
   }
 
-  private async loadRemoteAdminAccess(
+  private async resolveCandidateBotIdsForChat(chatId: string): Promise<string[]> {
+    const persisted = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        botId: true,
+        primaryBotId: true,
+        botMemberships: {
+          where: {
+            status: ChatBotMembershipStatus.ACTIVE,
+          },
+          select: {
+            botId: true,
+          },
+        },
+      },
+    });
+
+    const resolved = new Set<string>();
+    for (const botId of [
+      this.readTrimmedString(persisted?.primaryBotId),
+      this.readTrimmedString(persisted?.botId),
+      ...((persisted?.botMemberships ?? []).map((membership) =>
+        this.readTrimmedString(membership.botId),
+      ) as Array<string | null>),
+    ]) {
+      const normalizedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? null;
+      if (normalizedBotId) {
+        resolved.add(normalizedBotId);
+      }
+    }
+
+    for (const bot of this.maxBotRegistry?.getDiscoveryBots() ?? []) {
+      resolved.add(bot.id);
+    }
+
+    return [...resolved];
+  }
+
+  private async loadRemoteAdminAccessForBot(
     chatId: string,
     userId: string,
+    botId: string | null,
     options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
   ): Promise<AdminAccessResolution> {
     try {
       const requestOptions =
-        options.trafficClass === undefined ? undefined : { trafficClass: options.trafficClass };
+        options.trafficClass === undefined
+          ? (botId ? ({ botId } as const) : ({} as const))
+          : (botId
+              ? ({ trafficClass: options.trafficClass, botId } as const)
+              : ({ trafficClass: options.trafficClass } as const));
+      const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
-      const botContactId = this.resolveBotContactId();
+      const botContactId = this.resolveBotContactId(botId);
 
       if (typeof this.maxClient.getChatMembersAccess === 'function') {
         const lookupIds =
           botContactId && botContactId !== normalizedUserId
             ? [normalizedUserId, botContactId]
             : [normalizedUserId];
-        const accessByUserId = await this.maxClient.getChatMembersAccess(
-          chatId,
-          lookupIds,
-          requestOptions ?? {},
-        );
+        const accessByUserId = hasRequestOptions
+          ? await this.maxClient.getChatMembersAccess(chatId, lookupIds, requestOptions)
+          : await this.maxClient.getChatMembersAccess(chatId, lookupIds);
         const botAccess =
           (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
-          (await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions ?? {}));
+          (hasRequestOptions
+            ? await this.maxClient.getCurrentChatMemberAccess(chatId, requestOptions)
+            : await this.maxClient.getCurrentChatMemberAccess(chatId));
 
         if (!botAccess.isAdmin && !botAccess.isOwner) {
-          await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-          await this.prunePersistedChatAccess(chatId, userId);
           return {
             status: 'denied',
             source: 'remote',
@@ -13600,35 +13987,13 @@ export class AdminService {
         const userAccess =
           accessByUserId.get(normalizedUserId) ??
           (botContactId === normalizedUserId ? botAccess : null);
-        const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
-        const cacheState: ChatAdminAccessState = hasUserAccess ? 'granted' : 'user_denied';
-        await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
-
-        if (!hasUserAccess) {
-          await this.prunePersistedChatAccess(chatId, userId);
+        if (userAccess?.isAdmin === true || userAccess?.isOwner === true) {
           return {
-            status: 'denied',
+            status: 'granted',
             source: 'remote',
-            reason: 'user_not_admin',
           };
         }
 
-        return {
-          status: 'granted',
-          source: 'remote',
-        };
-      }
-
-      const adminIds =
-        requestOptions === undefined
-          ? await this.maxClient.getChatAdminIds(chatId)
-          : await this.maxClient.getChatAdminIds(chatId, requestOptions);
-      const hasAccess = adminIds.includes(userId);
-      const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
-
-      if (!hasAccess) {
-        await this.prunePersistedChatAccess(chatId, userId);
         return {
           status: 'denied',
           source: 'remote',
@@ -13636,10 +14001,19 @@ export class AdminService {
         };
       }
 
-      return {
-        status: 'granted',
-        source: 'remote',
-      };
+      const adminIds = hasRequestOptions
+        ? await this.maxClient.getChatAdminIds(chatId, requestOptions)
+        : await this.maxClient.getChatAdminIds(chatId);
+      return adminIds.includes(userId)
+        ? {
+            status: 'granted',
+            source: 'remote',
+          }
+        : {
+            status: 'denied',
+            source: 'remote',
+            reason: 'user_not_admin',
+          };
     } catch (error: unknown) {
       if (this.isMaxApiThrottleError(error)) {
         return {
@@ -13649,8 +14023,6 @@ export class AdminService {
       }
 
       if (this.isBotAdminLookupDeniedError(error)) {
-        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-        await this.prunePersistedChatAccess(chatId, userId);
         return {
           status: 'denied',
           source: 'remote',
@@ -13662,15 +14034,100 @@ export class AdminService {
         {
           chatId,
           userId,
+          botId: botId ?? 'legacy',
           err: error instanceof Error ? error.message : String(error),
         },
-        'Chat hidden: failed to validate bot/user admin access',
+        'Chat hidden: failed to validate bot/user admin access for candidate bot',
       );
       return {
         status: 'unknown',
         error,
       };
     }
+  }
+
+  private async loadRemoteAdminAccess(
+    chatId: string,
+    userId: string,
+    options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
+  ): Promise<AdminAccessResolution> {
+    const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
+    if (candidateBotIds.length === 0) {
+      return this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+    }
+
+    let sawUserDenied = false;
+    let sawBotDenied = false;
+    let throttledError: unknown = null;
+    let unknownError: unknown = null;
+
+    for (const botId of candidateBotIds) {
+      const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, botId, options);
+      if (resolution.status === 'granted') {
+        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+        return resolution;
+      }
+
+      if (resolution.status === 'denied') {
+        if (resolution.reason === 'user_not_admin') {
+          sawUserDenied = true;
+        } else {
+          sawBotDenied = true;
+        }
+        continue;
+      }
+
+      if (resolution.status === 'throttled' && throttledError === null) {
+        throttledError = resolution.error;
+        continue;
+      }
+
+      if (resolution.status === 'unknown' && unknownError === null) {
+        unknownError = resolution.error;
+      }
+    }
+
+    if (sawUserDenied) {
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'user_denied');
+      await this.prunePersistedChatAccess(chatId, userId);
+      return {
+        status: 'denied',
+        source: 'remote',
+        reason: 'user_not_admin',
+      };
+    }
+
+    if (sawBotDenied) {
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
+      await this.prunePersistedChatAccess(chatId, userId);
+      return {
+        status: 'denied',
+        source: 'remote',
+        reason: 'bot_not_admin',
+      };
+    }
+
+    if (throttledError) {
+      return {
+        status: 'throttled',
+        error: throttledError,
+      };
+    }
+
+    if (unknownError) {
+      return {
+        status: 'unknown',
+        error: unknownError,
+      };
+    }
+
+    await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
+    await this.prunePersistedChatAccess(chatId, userId);
+    return {
+      status: 'denied',
+      source: 'remote',
+      reason: 'bot_not_admin',
+    };
   }
 
   private async resolveUserAndBotAdminAccess(
@@ -14068,14 +14525,13 @@ export class AdminService {
     const chats = rows.map(
       (row: {
         chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
-      }) => ({
-        id: row.chat.id,
-        title: row.chat.title,
-        createdAt: row.chat.createdAt.toISOString(),
-        entityType: this.fromPrismaEntityType(row.chat.entityType),
-        link: null,
-        channelOverview: null,
-      }),
+      }) =>
+        this.createManagedEntitySummary({
+          id: row.chat.id,
+          title: row.chat.title,
+          createdAt: row.chat.createdAt.toISOString(),
+          entityType: this.fromPrismaEntityType(row.chat.entityType),
+        }),
     );
 
     const unsupportedChatIds = chats
@@ -14224,14 +14680,19 @@ export class AdminService {
           return;
         }
 
-        await this.chatContextCache.setManagedEntityHeader({
-          id: chat.id,
-          title,
-          entityType: chat.entityType,
-          link,
-          participantsCount: null,
-          avatarUrl,
-        });
+        await this.chatContextCache.setManagedEntityHeader(
+          this.createManagedEntityHeader({
+            id: chat.id,
+            title,
+            entityType: chat.entityType,
+            link,
+            participantsCount: null,
+            avatarUrl,
+            primaryBotId: chat.primaryBotId,
+            assignedBots: chat.assignedBots,
+            sharedMode: chat.sharedMode,
+          }),
+        );
       }),
     );
   }
@@ -14351,6 +14812,7 @@ export class AdminService {
         try {
           const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
             trafficClass: 'background',
+            ...(chat.primaryBotId ? { botId: chat.primaryBotId } : {}),
           });
           await this.persistManagedEntityHeaderSnapshot(chat, snapshot);
         } catch (error: unknown) {
@@ -14403,15 +14865,17 @@ export class AdminService {
   }
 
   private toHeaderChatSummary(header: ManagedEntityHeader): ChatSummary {
-    return {
+    return this.createManagedEntitySummary({
       id: header.id,
       title: header.title,
       createdAt: new Date(0).toISOString(),
       entityType: header.entityType,
       link: header.link,
-      ...(this.readTrimmedString(header.avatarUrl) ? { avatarUrl: header.avatarUrl } : {}),
-      channelOverview: null,
-    };
+      avatarUrl: this.readTrimmedString(header.avatarUrl) ?? null,
+      primaryBotId: header.primaryBotId,
+      assignedBots: header.assignedBots,
+      sharedMode: header.sharedMode,
+    });
   }
 
   private async persistManagedEntityHeaderSnapshot(
@@ -14444,14 +14908,19 @@ export class AdminService {
       }
     }
 
-    await this.chatContextCache.setManagedEntityHeader?.({
-      id: chat.id,
-      title,
-      entityType: chat.entityType,
-      link,
-      participantsCount: snapshot.participantsCount ?? null,
-      avatarUrl,
-    });
+    await this.chatContextCache.setManagedEntityHeader?.(
+      this.createManagedEntityHeader({
+        id: chat.id,
+        title,
+        entityType: chat.entityType,
+        link,
+        participantsCount: snapshot.participantsCount ?? null,
+        avatarUrl,
+        primaryBotId: chat.primaryBotId,
+        assignedBots: chat.assignedBots,
+        sharedMode: chat.sharedMode,
+      }),
+    );
   }
 
   private async upsertUserChatAccess(
@@ -14459,22 +14928,38 @@ export class AdminService {
     userId: string,
     chatTitle: string | null,
     entityType: ManagedEntityType | null = null,
-    options: { updateEntityType?: boolean } = {},
+    options: {
+      updateEntityType?: boolean;
+      preferredBotId?: string | null;
+      observedBotIds?: readonly string[] | null;
+    } = {},
   ) {
     const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
     const fallbackTitle = entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`;
     const updateEntityType = options.updateEntityType === true;
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const observedBotIds = Array.from(
+      new Set(
+        (options.observedBotIds ?? [])
+          .map((botId) => this.maxBotRegistry?.getBotById(botId)?.id ?? null)
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+    const resolvedBotId =
+      this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ??
+      observedBotIds[0] ??
+      (await this.resolveBotAssignment(chatId));
     const persistedChat = await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
         title: normalizedTitle ?? fallbackTitle,
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...(resolvedBotId ? { primaryBotId: resolvedBotId } : {}),
         ...(entityType ? { entityType: this.toPrismaEntityType(entityType) } : {}),
       },
       update: {
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...(resolvedBotId ? { primaryBotId: resolvedBotId } : {}),
         ...(normalizedTitle
           ? {
               title: normalizedTitle,
@@ -14499,6 +14984,16 @@ export class AdminService {
       },
       update: {},
     });
+
+    if (this.maxBotLinkService) {
+      await this.maxBotLinkService.bindDiscoveredChatBots({
+        chatId,
+        primaryBotId: resolvedBotId,
+        botIds: resolvedBotId ? [resolvedBotId, ...observedBotIds] : observedBotIds,
+        title: normalizedTitle ?? fallbackTitle,
+        entityType: entityType ? this.toPrismaEntityType(entityType) : null,
+      });
+    }
 
     if (normalizedTitle || updateEntityType) {
       await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
@@ -14540,14 +15035,12 @@ export class AdminService {
       currentContextEntityType,
     );
 
-    const chat: ChatSummary = {
+    const chat = this.createManagedEntitySummary({
       id: user.chatId,
       title: persistedChat.title,
       createdAt: persistedChat.createdAt.toISOString(),
       entityType: this.fromPrismaEntityType(persistedChat.entityType),
-      link: null,
-      channelOverview: null,
-    };
+    });
 
     return chat;
   }
@@ -14613,8 +15106,10 @@ export class AdminService {
     }
 
     try {
+      const resolvedBotId = await this.resolveBotAssignment(chatId);
       const snapshot = await this.maxClient.getChatSnapshot(chatId, {
         trafficClass: 'interactive',
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
       if (snapshot.entityType !== expectedEntityType) {
         throw new BadRequestException(
@@ -14647,7 +15142,7 @@ export class AdminService {
         refreshMissingLink: entityType === 'channel',
       })
     ) {
-      return cached;
+      return this.attachManagedEntityHeaderBotAssignments(cached);
     }
 
     const persistedChat = await this.prisma.chat.findUnique({
@@ -14676,16 +15171,17 @@ export class AdminService {
         });
       }
 
-      const header: ManagedEntityHeader = {
+      const header = this.createManagedEntityHeader({
         id: chatId,
         title,
         entityType,
         link: snapshot.link,
         participantsCount: snapshot.participantsCount,
         avatarUrl: snapshot.avatarUrl,
-      };
-      await this.chatContextCache.setManagedEntityHeader?.(header);
-      return header;
+      });
+      const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(header);
+      await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
+      return enrichedHeader;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -14698,19 +15194,20 @@ export class AdminService {
     }
 
     if (cached) {
-      return cached;
+      return this.attachManagedEntityHeaderBotAssignments(cached);
     }
 
-    const fallbackHeader: ManagedEntityHeader = {
+    const fallbackHeader = this.createManagedEntityHeader({
       id: chatId,
       title: persistedChat?.title?.trim() || chatId,
       entityType,
       link: null,
       participantsCount: null,
       avatarUrl: null,
-    };
-    await this.chatContextCache.setManagedEntityHeader?.(fallbackHeader);
-    return fallbackHeader;
+    });
+    const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(fallbackHeader);
+    await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
+    return enrichedHeader;
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

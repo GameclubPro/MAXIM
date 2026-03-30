@@ -1,14 +1,20 @@
 import { z } from 'zod';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 
+export const maxBotLifecycleStateSchema = z.enum(['active', 'dormant', 'draining', 'disabled']);
+export type MaxBotLifecycleState = z.infer<typeof maxBotLifecycleStateSchema>;
+
 const maxAdditionalBotSchema = z.object({
   id: z.string().trim().min(3),
+  label: z.string().trim().min(1).max(64).optional(),
   token: z.string().trim().min(10),
   tokenPrevious: z.string().trim().min(10).optional(),
   webhookSecretPath: z.string().trim().min(8),
   webhookHeaderSecret: z.string().trim().min(8),
   webhookHeaderSecretPrevious: z.string().trim().min(8).optional(),
   contactId: z.string().trim().regex(/^\d+$/u).optional(),
+  state: maxBotLifecycleStateSchema.default('active'),
+  visibleInAdmin: z.boolean().optional(),
 });
 
 const maxAdditionalBotsSchema = z.array(maxAdditionalBotSchema);
@@ -17,12 +23,15 @@ export type AdditionalMaxBotConfig = z.infer<typeof maxAdditionalBotSchema>;
 
 export type ResolvedMaxBotConfig = {
   id: string;
+  label: string;
   token: string;
   tokenValidationSecrets: readonly string[];
   webhookSecretPath: string;
   webhookHeaderSecret: string;
   webhookHeaderSecrets: readonly string[];
   contactId: string | null;
+  state: MaxBotLifecycleState;
+  visibleInAdmin: boolean;
   isDefault: boolean;
 };
 
@@ -72,6 +81,9 @@ export function parseAdditionalMaxBotsJson(
     webhookHeaderSecret: bot.webhookHeaderSecret.trim(),
     webhookHeaderSecretPrevious: bot.webhookHeaderSecretPrevious?.trim(),
     contactId: bot.contactId?.trim(),
+    label: bot.label?.trim(),
+    state: bot.state,
+    visibleInAdmin: bot.visibleInAdmin,
   }));
 }
 
@@ -84,6 +96,7 @@ export function buildResolvedMaxBotConfigs(input: {
     webhookHeaderSecret: string;
     webhookHeaderSecretPrevious?: string | null;
     contactId?: string | null;
+    label?: string | null;
   };
   additionalBotsJson?: string | null;
 }): ResolvedMaxBotConfig[] {
@@ -91,6 +104,7 @@ export function buildResolvedMaxBotConfigs(input: {
   const bots: ResolvedMaxBotConfig[] = [
     {
       id: defaultBotId,
+      label: normalizeBotLabel(input.defaultBot.label) ?? defaultBotId,
       token: input.defaultBot.token.trim(),
       tokenValidationSecrets: collectBotTokenSecrets(
         input.defaultBot.token,
@@ -103,6 +117,8 @@ export function buildResolvedMaxBotConfigs(input: {
         input.defaultBot.webhookHeaderSecretPrevious,
       ),
       contactId: normalizeContactId(input.defaultBot.contactId) ?? inferContactIdFromBotId(defaultBotId),
+      state: 'active',
+      visibleInAdmin: true,
       isDefault: true,
     },
   ];
@@ -114,6 +130,7 @@ export function buildResolvedMaxBotConfigs(input: {
 
     bots.push({
       id: bot.id,
+      label: normalizeBotLabel(bot.label) ?? bot.id,
       token: bot.token,
       tokenValidationSecrets: collectBotTokenSecrets(bot.token, bot.tokenPrevious),
       webhookSecretPath: bot.webhookSecretPath,
@@ -123,6 +140,8 @@ export function buildResolvedMaxBotConfigs(input: {
         bot.webhookHeaderSecretPrevious,
       ),
       contactId: normalizeContactId(bot.contactId) ?? inferContactIdFromBotId(bot.id),
+      state: bot.state,
+      visibleInAdmin: bot.visibleInAdmin ?? bot.state !== 'disabled',
       isDefault: false,
     });
   }
@@ -133,6 +152,11 @@ export function buildResolvedMaxBotConfigs(input: {
 export function normalizeContactId(value: string | null | undefined): string | null {
   const normalized = typeof value === 'string' ? value.trim() : '';
   return normalized && /^\d+$/u.test(normalized) ? normalized : null;
+}
+
+function normalizeBotLabel(value: string | null | undefined): string | null {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized.length > 0 ? normalized : null;
 }
 
 export function inferContactIdFromBotId(botId: string): string | null {

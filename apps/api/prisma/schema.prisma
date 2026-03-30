@@ -64,6 +64,16 @@ enum ChatEntityType {
   CHANNEL
 }
 
+enum ChatBotMembershipRole {
+  PRIMARY
+  STANDBY
+}
+
+enum ChatBotMembershipStatus {
+  ACTIVE
+  REMOVED
+}
+
 enum ChannelAutoPostButtonsMode {
   OFF
   COMMENTS
@@ -119,6 +129,7 @@ enum ManagedBroadcastDeliveryStatus {
 model Chat {
   id         String         @id
   botId      String?        @map("bot_id")
+  primaryBotId String?      @map("primary_bot_id")
   title      String
   entityType ChatEntityType @default(CHAT) @map("entity_type")
   createdAt  DateTime       @default(now()) @map("created_at")
@@ -138,9 +149,32 @@ model Chat {
   channelStatsSyncState    ChannelStatsSyncState?
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
+  botMemberships           ChatBotMembership[]
 
   @@index([botId], map: "chats_bot_id_idx")
+  @@index([primaryBotId], map: "chats_primary_bot_id_idx")
   @@map("chats")
+}
+
+model ChatBotMembership {
+  id                  String                   @id @default(cuid())
+  chatId              String                   @map("chat_id")
+  botId               String                   @map("bot_id")
+  role                ChatBotMembershipRole   @default(STANDBY)
+  status              ChatBotMembershipStatus @default(ACTIVE)
+  capabilities        Json                     @default("[]")
+  permissionsSnapshot Json?                    @map("permissions_snapshot")
+  lastSeenAt          DateTime?                @map("last_seen_at")
+  lastWebhookAt       DateTime?                @map("last_webhook_at")
+  createdAt           DateTime                 @default(now()) @map("created_at")
+  updatedAt           DateTime                 @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, botId], map: "chat_bot_memberships_chat_id_bot_id_key")
+  @@index([botId, role, status], map: "chat_bot_memberships_bot_id_role_status_idx")
+  @@index([chatId, status], map: "chat_bot_memberships_chat_id_status_idx")
+  @@map("chat_bot_memberships")
 }
 
 model ChatSettings {

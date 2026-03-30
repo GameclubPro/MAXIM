@@ -269,6 +269,9 @@ describe('ChatContextCacheService', () => {
       entityType: 'chat' as const,
       link: 'https://max.ru/team',
       participantsCount: 42,
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned' as const,
     };
 
     await service.setManagedEntityHeader(header);

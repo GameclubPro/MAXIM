@@ -2,7 +2,9 @@ import {
   channelSettingsSchema,
   chatRulesSchema,
   chatSettingsSchema,
+  type ChatSummary,
   type ChannelDialogType,
+  type ManagedEntityHeader,
 } from '@maxim/contracts';
 import {
   BadRequestException,
@@ -32,6 +34,40 @@ type AdminServicePrivateAccess = {
     token: string | null | undefined,
   ) => string | null;
 };
+
+function createChatSummaryFixture(
+  overrides: Partial<ChatSummary> & Pick<ChatSummary, 'id' | 'title' | 'createdAt' | 'entityType'>,
+): ChatSummary {
+  return {
+    id: overrides.id,
+    title: overrides.title,
+    createdAt: overrides.createdAt,
+    entityType: overrides.entityType,
+    link: overrides.link ?? null,
+    ...(overrides.avatarUrl ? { avatarUrl: overrides.avatarUrl } : {}),
+    channelOverview: overrides.channelOverview ?? null,
+    primaryBotId: overrides.primaryBotId ?? null,
+    assignedBots: overrides.assignedBots ?? [],
+    sharedMode: overrides.sharedMode ?? 'owned',
+  };
+}
+
+function createManagedEntityHeaderFixture(
+  overrides: Partial<ManagedEntityHeader> &
+    Pick<ManagedEntityHeader, 'id' | 'title' | 'entityType'>,
+): ManagedEntityHeader {
+  return {
+    id: overrides.id,
+    title: overrides.title,
+    entityType: overrides.entityType,
+    link: overrides.link ?? null,
+    participantsCount: overrides.participantsCount ?? null,
+    ...(overrides.avatarUrl ? { avatarUrl: overrides.avatarUrl } : {}),
+    primaryBotId: overrides.primaryBotId ?? null,
+    assignedBots: overrides.assignedBots ?? [],
+    sharedMode: overrides.sharedMode ?? 'owned',
+  };
+}
 
 function createPrismaMock() {
   const defaultManagedPoll = {
@@ -87,6 +123,7 @@ function createPrismaMock() {
         createdAt: new Date('2026-03-01T00:00:00.000Z'),
       }),
       update: jest.fn().mockResolvedValue(undefined),
+      findMany: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue({
         id: 'chat-1',
         title: 'Команда MAX',
@@ -1874,14 +1911,12 @@ describe('AdminService required subscription settings', () => {
       )
       .mockResolvedValue(undefined);
     const massScanSpy = jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Регион 2',
         createdAt: '2026-03-02T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     const result = await service.applySettingsToAllChats('chat-1', actor, settings);
@@ -5606,13 +5641,16 @@ describe('AdminService settings screen endpoints', () => {
 
     jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
     jest.spyOn(service, 'getRules').mockResolvedValue(rules);
-    jest.spyOn(service, 'getChatHeader').mockResolvedValue({
-      id: 'chat-1',
-      title: 'Команда MAX',
-      entityType: 'chat',
-      link: null,
-      participantsCount: 128,
-    });
+    jest
+      .spyOn(service, 'getChatHeader')
+      .mockResolvedValue(
+        createManagedEntityHeaderFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          entityType: 'chat',
+          participantsCount: 128,
+        }),
+      );
     jest.spyOn(service, 'getDomainAllowlistDetails').mockResolvedValue([
       {
         domain: 'https://example.com',
@@ -5728,14 +5766,12 @@ describe('AdminService settings screen endpoints', () => {
       }),
     );
     jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Регион 2',
         entityType: 'chat',
         createdAt: '2026-03-02T00:00:00.000Z',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     await service.applySettingsSectionToAllChats(
@@ -7322,22 +7358,18 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
     jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
-      {
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Чат 1',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Чат 2',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     const result = await service.sendBroadcast(
@@ -7403,14 +7435,12 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
     jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Чат 2',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     const sendPromise = service.sendBroadcast(
@@ -7476,22 +7506,18 @@ describe('AdminService.sendBroadcast', () => {
       createConfigMock() as never,
     );
     jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
-      {
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Чат 1',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Чат 2',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     await service.sendBroadcast(

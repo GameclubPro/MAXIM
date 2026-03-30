@@ -18,6 +18,7 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().url(),
 
   MAX_BOT_ID: z.string().min(3),
+  MAX_BOT_LABEL: z.string().min(1).max(64).optional(),
   MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
   MAX_BOT_TOKEN: z.string().min(10),
   MAX_BOT_TOKEN_PREVIOUS: z.string().min(10).optional(),
