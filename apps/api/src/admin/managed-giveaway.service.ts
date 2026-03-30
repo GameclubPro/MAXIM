@@ -327,7 +327,7 @@ export class ManagedGiveawayService {
     if (!giveaway.description.trim()) {
       throw new BadRequestException('Добавьте текст розыгрыша в чат-боте перед публикацией.');
     }
-    const publicationButton = this.buildGiveawayEntryButton(giveaway);
+    const publicationButton = await this.buildGiveawayEntryButton(giveaway);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
     const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
       this.buildGiveawayPublicationText(giveaway),
@@ -1328,27 +1328,47 @@ export class ManagedGiveawayService {
     }
   }
 
-  private buildGiveawayEntryButton(
-    giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'entries'>,
-  ): MaxMessageButton | null {
+  private async buildGiveawayEntryButton(
+    giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'sourceChatId' | 'entries'>,
+  ): Promise<MaxMessageButton | null> {
     return this.buildGiveawayMiniappButton(
+      giveaway.sourceChatId,
       giveaway.id,
-      `Участвовать · ${this.formatGiveawayEntriesCount(giveaway.entries.length)}`,
+      `Участвовать · ${this.formatGiveawayEntriesCount(
+        this.countPublicGiveawayEntries(giveaway.entries),
+      )}`,
     );
   }
 
-  private buildGiveawayOpenButton(giveawayId: string): MaxMessageButton | null {
-    return this.buildGiveawayMiniappButton(giveawayId, 'Открыть розыгрыш');
+  private async buildGiveawayOpenButton(
+    giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'sourceChatId'>,
+  ): Promise<MaxMessageButton | null> {
+    return this.buildGiveawayMiniappButton(
+      giveaway.sourceChatId,
+      giveaway.id,
+      'Открыть розыгрыш',
+    );
   }
 
-  private buildGiveawayResultsButton(giveawayId: string): MaxMessageButton | null {
-    return this.buildGiveawayMiniappButton(giveawayId, 'Проверить результаты');
+  private async buildGiveawayResultsButton(
+    giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'sourceChatId'>,
+  ): Promise<MaxMessageButton | null> {
+    return this.buildGiveawayMiniappButton(
+      giveaway.sourceChatId,
+      giveaway.id,
+      'Проверить результаты',
+    );
   }
 
-  private buildGiveawayMiniappButton(giveawayId: string, text: string): MaxMessageButton | null {
-    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
+  private async buildGiveawayMiniappButton(
+    sourceChatId: string,
+    giveawayId: string,
+    text: string,
+  ): Promise<MaxMessageButton | null> {
+    const botId = await this.resolveGiveawayButtonBotId(sourceChatId);
+    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId, botId);
     const webAppUrl = this.buildGiveawayDirectWebAppUrl(giveawayId);
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(botId);
 
     if (webAppUrl && botContactId) {
       return {
@@ -1391,6 +1411,14 @@ export class ManagedGiveawayService {
     }
 
     return String(Math.max(0, value));
+  }
+
+  private countPublicGiveawayEntries(
+    entries: ReadonlyArray<{ eligibilityState: GiveawayEligibilityState }>,
+  ): number {
+    return entries.filter(
+      (entry) => entry.eligibilityState !== GiveawayEligibilityState.REJECTED,
+    ).length;
   }
 
   private buildGiveawayPublicationText(
@@ -1474,10 +1502,10 @@ export class ManagedGiveawayService {
     return lines.join('\n');
   }
 
-  private buildGiveawayResultsMessageOptions(
+  private async buildGiveawayResultsMessageOptions(
     giveaway: PersistedGiveawayWithRelations,
-  ): MaxSendMessageOptions | undefined {
-    const button = this.buildGiveawayResultsButton(giveaway.id);
+  ): Promise<MaxSendMessageOptions | undefined> {
+    const button = await this.buildGiveawayResultsButton(giveaway);
     const publicationMessageId = giveaway.publicationMessageId?.trim() ?? '';
 
     if (!button && !publicationMessageId) {
@@ -1613,7 +1641,7 @@ export class ManagedGiveawayService {
         this.buildGiveawayPublicationText(giveaway),
       );
       if (status === ManagedGiveawayStatus.CANCELED) {
-        const button = this.buildGiveawayOpenButton(giveaway.id);
+        const button = await this.buildGiveawayOpenButton(giveaway);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
@@ -1627,7 +1655,7 @@ export class ManagedGiveawayService {
       }
 
       if (status === ManagedGiveawayStatus.ACTIVE) {
-        const button = this.buildGiveawayEntryButton(giveaway);
+        const button = await this.buildGiveawayEntryButton(giveaway);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
@@ -1640,7 +1668,7 @@ export class ManagedGiveawayService {
         return;
       }
 
-      const button = this.buildGiveawayOpenButton(giveaway.id);
+      const button = await this.buildGiveawayOpenButton(giveaway);
       await this.maxClient.editMessageInlineKeyboard(
         giveaway.sourceChatId,
         messageId,
@@ -1668,7 +1696,7 @@ export class ManagedGiveawayService {
       this.buildGiveawayResultsText(giveaway),
     );
     const resultOptions = this.mergeMessageOptionsWithTextFormat(
-      this.buildGiveawayResultsMessageOptions(giveaway),
+      await this.buildGiveawayResultsMessageOptions(giveaway),
       resultsTextPayload.textFormat,
     );
     if (!giveaway.resultsMessageId?.trim()) {
@@ -2467,7 +2495,7 @@ export class ManagedGiveawayService {
     return user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
   }
 
-  private buildGiveawayLaunchUrl(giveawayId: string): string | null {
+  private buildGiveawayLaunchUrl(giveawayId: string, botId?: string | null): string | null {
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -2482,10 +2510,13 @@ export class ManagedGiveawayService {
       return null;
     }
 
+    const resolvedBotId = typeof botId === 'string' && botId.trim() ? botId.trim() : null;
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
-      (this.ownBotUserId
-        ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
+      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam, resolvedBotId) ??
+      ((resolvedBotId ?? this.ownBotUserId)
+        ? `https://max.ru/${encodeURIComponent(
+            resolvedBotId ?? this.ownBotUserId ?? '',
+          )}?startapp=${encodeURIComponent(startParam)}`
         : null)
     );
   }
@@ -2600,21 +2631,43 @@ export class ManagedGiveawayService {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private resolveBotContactId(): string | null {
-    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+  private async resolveGiveawayButtonBotId(sourceChatId: string): Promise<string | null> {
+    const normalizedSourceChatId = sourceChatId.trim();
+    if (!normalizedSourceChatId || !this.maxBotLinkService) {
+      return null;
+    }
+
+    try {
+      return await this.maxBotLinkService.resolveBotId({ chatId: normalizedSourceChatId });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          sourceChatId: normalizedSourceChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve giveaway button bot id',
+      );
+      return null;
+    }
+  }
+
+  private resolveBotContactId(botId?: string | null): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync(botId);
     if (contextAwareContactId) {
       return contextAwareContactId;
     }
 
-    if (this.explicitBotContactId) {
+    if (!botId && this.explicitBotContactId) {
       return this.explicitBotContactId;
     }
 
-    if (!this.ownBotUserId) {
+    const fallbackBotUserId =
+      typeof botId === 'string' && botId.trim().length > 0 ? botId.trim() : this.ownBotUserId;
+    if (!fallbackBotUserId) {
       return null;
     }
 
-    const [candidate] = this.ownBotUserId.split('_');
+    const [candidate] = fallbackBotUserId.split('_');
     return /^\d+$/u.test(candidate) ? candidate : null;
   }
 
