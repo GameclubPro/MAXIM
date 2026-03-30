@@ -20,6 +20,7 @@ import {
   type MaxUpdate,
 } from '@maxim/contracts';
 import {
+  ChatBotMembershipStatus,
   ChatEntityType,
   EventType,
   ManagedPollStatus as PrismaManagedPollStatus,
@@ -89,6 +90,15 @@ type ChatAdminCheckResult = {
   isAdmin: boolean;
   source: ChatAdminCheckSource;
 };
+
+type SharedChatExecutionGuard =
+  | { mode: 'allow' }
+  | {
+      mode: 'skip' | 'blocked-join-check-only';
+      activeBotId: string | null;
+      primaryBotId: string | null;
+      reason: 'non-primary-bot' | 'removed-membership';
+    };
 
 type RemoteChatAdminAccessState = 'granted' | 'user_denied';
 
@@ -522,6 +532,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
+    const sharedChatExecutionGuard = await this.resolveSharedChatExecutionGuard(update, chatId);
+    if (sharedChatExecutionGuard.mode === 'blocked-join-check-only') {
+      if (await this.handleBlockedBotJoin(update, chatId)) {
+        return;
+      }
+
+      this.logSharedChatExecutionSkip(update, chatId, sharedChatExecutionGuard);
+      return;
+    }
+    if (sharedChatExecutionGuard.mode === 'skip') {
+      this.logSharedChatExecutionSkip(update, chatId, sharedChatExecutionGuard);
+      return;
+    }
+
     if (this.isBotStartedUpdate(update)) {
       await this.handleBotStartedInstruction(update, chatId);
       return;
@@ -6654,6 +6678,100 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private isPrivateDirectChat(chatId: string): boolean {
     const numericChatId = this.parseChatIdAsBigInt(chatId);
     return numericChatId !== null && numericChatId > 0n;
+  }
+
+  private async resolveSharedChatExecutionGuard(
+    update: MaxUpdate,
+    chatId: string,
+  ): Promise<SharedChatExecutionGuard> {
+    if (!chatId.trim() || this.isPrivateDirectChat(chatId)) {
+      return { mode: 'allow' };
+    }
+
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    if (!activeBotId || !this.maxBotLinkService) {
+      return { mode: 'allow' };
+    }
+
+    const executionOwnerBotId = this.readExecutionOwnerBotId(update);
+    if (executionOwnerBotId) {
+      if (executionOwnerBotId === activeBotId) {
+        return { mode: 'allow' };
+      }
+
+      const updateType = this.readLowerString(update.type);
+      if (updateType === 'bot_added' && this.blockedJoinChatIds.has(chatId)) {
+        return {
+          mode: 'blocked-join-check-only',
+          activeBotId,
+          primaryBotId: executionOwnerBotId,
+          reason: 'non-primary-bot',
+        };
+      }
+
+      return {
+        mode: 'skip',
+        activeBotId,
+        primaryBotId: executionOwnerBotId,
+        reason: 'non-primary-bot',
+      };
+    }
+
+    const executionBinding = await this.maxBotLinkService.getChatExecutionBinding({
+      chatId,
+      activeBotId,
+    });
+    if (executionBinding.shouldHandleGroupUpdate) {
+      return { mode: 'allow' };
+    }
+
+    const updateType = this.readLowerString(update.type);
+    const reason =
+      executionBinding.activeMembershipStatus === ChatBotMembershipStatus.REMOVED
+        ? 'removed-membership'
+        : 'non-primary-bot';
+    if (updateType === 'bot_added' && this.blockedJoinChatIds.has(chatId)) {
+      return {
+        mode: 'blocked-join-check-only',
+        activeBotId: executionBinding.activeBotId,
+        primaryBotId: executionBinding.primaryBotId,
+        reason,
+      };
+    }
+
+    return {
+      mode: 'skip',
+      activeBotId: executionBinding.activeBotId,
+      primaryBotId: executionBinding.primaryBotId,
+      reason,
+    };
+  }
+
+  private logSharedChatExecutionSkip(
+    update: MaxUpdate,
+    chatId: string,
+    guard: Extract<SharedChatExecutionGuard, { mode: 'skip' | 'blocked-join-check-only' }>,
+  ): void {
+    this.logger.debug(
+      {
+        chatId,
+        updateId: update.updateId,
+        updateType: this.readLowerString(update.type),
+        activeBotId: guard.activeBotId,
+        primaryBotId: guard.primaryBotId,
+        reason: guard.reason,
+      },
+      'Skipped shared chat update for non-primary bot runtime',
+    );
+  }
+
+  private readExecutionOwnerBotId(update: MaxUpdate): string | null {
+    const value = (
+      update as MaxUpdate & {
+        executionOwnerBotId?: unknown;
+      }
+    ).executionOwnerBotId;
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
 
   private async handlePrivateChatControl(update: MaxUpdate): Promise<void> {

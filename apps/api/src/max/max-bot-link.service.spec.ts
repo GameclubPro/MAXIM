@@ -1,0 +1,306 @@
+import {
+  ChatBotMembershipRole,
+  ChatBotMembershipStatus,
+  type ChatEntityType,
+} from '@prisma/client';
+import { MaxBotLinkService } from './max-bot-link.service';
+
+type MutableChat = {
+  id: string;
+  title: string;
+  botId: string | null;
+  primaryBotId: string | null;
+  entityType?: ChatEntityType;
+};
+
+type MutableMembership = {
+  chatId: string;
+  botId: string;
+  role: ChatBotMembershipRole;
+  status: ChatBotMembershipStatus;
+  createdAt: Date;
+  updatedAt: Date;
+  lastSeenAt: Date | null;
+  lastWebhookAt: Date | null;
+};
+
+function createServiceFixture() {
+  const chats = new Map<string, MutableChat>();
+  const memberships: MutableMembership[] = [];
+  const now = () => new Date();
+
+  const prisma = {
+    chat: {
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
+        const chat = chats.get(where.id) ?? null;
+        if (!chat) {
+          return null;
+        }
+        return {
+          primaryBotId: chat.primaryBotId,
+          botId: chat.botId,
+          botMemberships: memberships
+            .filter((membership) => membership.chatId === where.id)
+            .map((membership) => ({
+              botId: membership.botId,
+              status: membership.status,
+            })),
+        };
+      }),
+      create: jest.fn(async ({ data }: { data: MutableChat }) => {
+        if (chats.has(data.id)) {
+          const error = new Error('Unique constraint failed');
+          (error as Error & { code?: string }).code = 'P2002';
+          throw error;
+        }
+        chats.set(data.id, {
+          id: data.id,
+          title: data.title,
+          botId: data.botId ?? null,
+          primaryBotId: data.primaryBotId ?? null,
+          entityType: data.entityType,
+        });
+        return chats.get(data.id);
+      }),
+      update: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
+        const existing = chats.get(where.id);
+        if (!existing) {
+          throw new Error(`Chat ${where.id} not found`);
+        }
+        Object.assign(existing, data);
+        return existing;
+      }),
+      upsert: jest.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { id: string };
+          create: MutableChat;
+          update: Partial<MutableChat>;
+        }) => {
+          const existing = chats.get(where.id);
+          if (existing) {
+            Object.assign(existing, update);
+            return existing;
+          }
+          const created = {
+            id: create.id,
+            title: create.title,
+            botId: create.botId ?? null,
+            primaryBotId: create.primaryBotId ?? null,
+            entityType: create.entityType,
+          };
+          chats.set(create.id, created);
+          return created;
+        },
+      ),
+    },
+    chatBotMembership: {
+      upsert: jest.fn(
+        async ({
+          where,
+          create,
+          update,
+        }: {
+          where: { chatId_botId: { chatId: string; botId: string } };
+          create: Omit<MutableMembership, 'createdAt' | 'updatedAt'>;
+          update: Partial<MutableMembership>;
+        }) => {
+          const existing = memberships.find(
+            (membership) =>
+              membership.chatId === where.chatId_botId.chatId &&
+              membership.botId === where.chatId_botId.botId,
+          );
+          if (existing) {
+            Object.assign(existing, update, { updatedAt: now() });
+            return existing;
+          }
+          const created: MutableMembership = {
+            chatId: create.chatId,
+            botId: create.botId,
+            role: create.role,
+            status: create.status,
+            createdAt: now(),
+            updatedAt: now(),
+            lastSeenAt: create.lastSeenAt ?? null,
+            lastWebhookAt: create.lastWebhookAt ?? null,
+          };
+          memberships.push(created);
+          return created;
+        },
+      ),
+      findMany: jest.fn(async ({ where }: { where: { chatId: string } }) =>
+        memberships
+          .filter((membership) => membership.chatId === where.chatId)
+          .slice()
+          .sort((left, right) => {
+            const updatedDiff = right.updatedAt.getTime() - left.updatedAt.getTime();
+            if (updatedDiff !== 0) {
+              return updatedDiff;
+            }
+            return left.createdAt.getTime() - right.createdAt.getTime();
+          })
+          .map((membership) => ({
+            botId: membership.botId,
+            role: membership.role,
+            status: membership.status,
+          })),
+      ),
+      updateMany: jest.fn(
+        async ({
+          where,
+          data,
+        }: {
+          where: { chatId: string; status?: ChatBotMembershipStatus; botId?: string };
+          data: Partial<MutableMembership>;
+        }) => {
+          let count = 0;
+          for (const membership of memberships) {
+            if (membership.chatId !== where.chatId) {
+              continue;
+            }
+            if (where.status && membership.status !== where.status) {
+              continue;
+            }
+            if (where.botId && membership.botId !== where.botId) {
+              continue;
+            }
+            Object.assign(membership, data, { updatedAt: now() });
+            count += 1;
+          }
+          return { count };
+        },
+      ),
+    },
+  };
+
+  const bots = [
+    { id: 'id613002203036_bot', token: 'token-1' },
+    { id: 'id613002203036_4_bot', token: 'token-2' },
+  ];
+  const botRegistry = {
+    getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
+    getDefaultBot: jest.fn(() => bots[0]),
+  };
+  const botContext = {
+    getActiveBotId: jest.fn(() => null),
+  };
+
+  return {
+    service: new MaxBotLinkService(prisma as never, botRegistry as never, botContext as never),
+    prisma,
+    chats,
+    memberships,
+  };
+}
+
+describe('MaxBotLinkService', () => {
+  it('promotes an active standby bot to primary when the current primary bot is removed', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-1', {
+      id: 'chat-1',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    await fixture.service.markChatBotRemoved({
+      chatId: 'chat-1',
+      botId: 'id613002203036_bot',
+      title: 'Shared chat',
+    });
+
+    expect(fixture.chats.get('chat-1')).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_4_bot',
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.REMOVED,
+      }),
+    );
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+      }),
+    );
+  });
+
+  it('reports non-primary shared chat bindings as non-executable for group updates', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-1', {
+      id: 'chat-1',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    const binding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-1',
+      activeBotId: 'id613002203036_4_bot',
+    });
+
+    expect(binding).toEqual(
+      expect.objectContaining({
+        activeBotId: 'id613002203036_4_bot',
+        primaryBotId: 'id613002203036_bot',
+        activeMembershipStatus: ChatBotMembershipStatus.ACTIVE,
+        shouldHandleGroupUpdate: false,
+      }),
+    );
+  });
+});

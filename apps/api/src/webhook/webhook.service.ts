@@ -27,7 +27,8 @@ export class WebhookService {
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
     await this.invalidateMembershipCacheFromWebhook(update);
-    await this.bindChatToBot(update);
+    const executionOwnerBotId = await this.syncChatBotBindingFromWebhook(update);
+    this.attachExecutionOwnerBotId(update, executionOwnerBotId);
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
     const rawPayload = shouldKeepRawPayload ? (update.raw ?? {}) : {};
@@ -127,14 +128,22 @@ export class WebhookService {
     });
   }
 
-  private async bindChatToBot(update: MaxUpdate): Promise<void> {
+  private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<string | null> {
     const chatId = update.message?.chatId?.trim() ?? '';
     if (!chatId) {
-      return;
+      return null;
     }
 
     try {
-      await this.maxBotLinkService.bindChatToBot({
+      if (this.isBotRemovalUpdate(update)) {
+        return await this.maxBotLinkService.markChatBotRemoved({
+          chatId,
+          title: update.message?.chatTitle ?? null,
+          botId: update.botId,
+        });
+      }
+
+      return await this.maxBotLinkService.bindChatToBot({
         chatId,
         title: update.message?.chatTitle ?? null,
         botId: update.botId,
@@ -149,7 +158,24 @@ export class WebhookService {
         },
         'Failed to bind chat to bot during webhook ingest',
       );
+      return null;
     }
+  }
+
+  private isBotRemovalUpdate(update: MaxUpdate): boolean {
+    return update.type.trim().toLowerCase() === 'bot_removed';
+  }
+
+  private attachExecutionOwnerBotId(update: MaxUpdate, botId: string | null): void {
+    if (!botId) {
+      return;
+    }
+
+    (
+      update as MaxUpdate & {
+        executionOwnerBotId?: string;
+      }
+    ).executionOwnerBotId = botId;
   }
 
   private async handleDuplicateError(

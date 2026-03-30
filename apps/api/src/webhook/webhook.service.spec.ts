@@ -3,7 +3,12 @@ import { WebhookService } from './webhook.service';
 describe('WebhookService', () => {
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
+    markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
   };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
 
   it('stores new webhook event in RECEIVED state', async () => {
     const prisma = {
@@ -195,5 +200,53 @@ describe('WebhookService', () => {
       'user-10',
     ]);
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('marks bot membership removed instead of rebinding it on bot_removed updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-4' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-removed-1',
+          type: 'bot_removed',
+          botId: 'id613002203036_4_bot',
+          message: {
+            messageId: 'bot_removed:u-bot-removed-1',
+            chatId: '-100123',
+            chatTitle: 'Shared chat',
+            senderId: 'id613002203036_4_bot',
+            text: '',
+            createdAt: new Date('2026-03-30T12:00:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith({
+      chatId: '-100123',
+      title: 'Shared chat',
+      botId: 'id613002203036_4_bot',
+    });
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100123',
+        botId: 'id613002203036_4_bot',
+      }),
+    );
   });
 });
