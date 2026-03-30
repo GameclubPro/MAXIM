@@ -2900,10 +2900,6 @@ describe('ModerationService', () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
-      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
-        messageId: 'msg-greeting-autodelete-1',
-        url: null,
-      }),
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
@@ -2918,16 +2914,24 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createServiceUserJoinedUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-greeting-autodelete-1', {
-      delayMs: 30_000,
-    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining(userMention('Новый участник', 'user-black-2')),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      {
+        autoDeleteDelayMs: 30_000,
+      },
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
         userId: 'user-black-2',
         ruleCode: 'GREETING_MESSAGE',
         metadata: expect.objectContaining({
-          sentMessageId: 'msg-greeting-autodelete-1',
+          reason: 'Greeting message sent for joined member',
         }),
       }),
     });
@@ -2971,10 +2975,6 @@ describe('ModerationService', () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
-      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
-        messageId: 'msg-greeting-sent-1',
-        url: null,
-      }),
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
@@ -2989,27 +2989,19 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createServiceUserJoinedUpdate());
 
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       `Добро пожаловать, ${userMention('Новый участник', 'user-black-2')}! добро пожаловать в чат.`,
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      {
+        autoDeleteDelayMs: 120_000,
+      },
     );
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-greeting-sent-1', {
-      delayMs: 120_000,
-    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
-      data: expect.objectContaining({
-        chatId: 'chat-1',
-        userId: 'user-black-2',
-        messageId: 'msg-greeting-sent-1',
-        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
-      }),
-    });
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         chatId: 'chat-1',
         userId: 'user-black-2',
@@ -3018,7 +3010,6 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
         metadata: expect.objectContaining({
           reason: 'Greeting message sent for joined member',
-          sentMessageId: 'msg-greeting-sent-1',
         }),
       }),
     });
@@ -11227,6 +11218,68 @@ describe('ModerationService', () => {
         '1',
         15 * 60,
       );
+    });
+
+    it('skips remote channel metadata lookups for required subscription notices while degraded', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const systemModeService = {
+        getSnapshot: jest.fn().mockReturnValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'queue lag 42s',
+          updatedAt: '2026-03-30T14:55:00.000Z',
+          manualMode: null,
+          queueLagSec: 42,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          degraded: true,
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Канал channel-1');
+      expect(noticeOptions).toEqual({
+        textFormat: 'markdown',
+      });
     });
 
     it('retries sending the explanation on the next message when the first send fails', async () => {

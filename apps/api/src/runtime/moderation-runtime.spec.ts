@@ -4,10 +4,10 @@ import {
   moderationProcessorQueueEnabled,
 } from './moderation-runtime';
 import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
 } from '../webhook/webhook-queues';
 
 describe('moderation-runtime', () => {
@@ -16,7 +16,7 @@ describe('moderation-runtime', () => {
       new Set([
         LEGACY_WEBHOOK_QUEUE,
         WEBHOOK_QUEUE_CRITICAL,
-        WEBHOOK_QUEUE_DEFAULT,
+        ...DEFAULT_WEBHOOK_QUEUE_NAMES,
         WEBHOOK_QUEUE_BACKGROUND,
       ]),
     );
@@ -29,8 +29,14 @@ describe('moderation-runtime', () => {
     expect(moderationProcessorQueueEnabled(WEBHOOK_QUEUE_CRITICAL, 'critical,background')).toBe(
       true,
     );
-    expect(moderationProcessorQueueEnabled(WEBHOOK_QUEUE_DEFAULT, 'critical,background')).toBe(
-      false,
+    for (const queueName of DEFAULT_WEBHOOK_QUEUE_NAMES) {
+      expect(moderationProcessorQueueEnabled(queueName, 'critical,background')).toBe(false);
+    }
+  });
+
+  it('expands default alias into every message shard queue', () => {
+    expect(getEnabledModerationProcessorQueues('default')).toEqual(
+      new Set(DEFAULT_WEBHOOK_QUEUE_NAMES),
     );
   });
 
@@ -39,7 +45,7 @@ describe('moderation-runtime', () => {
       new Set([
         LEGACY_WEBHOOK_QUEUE,
         WEBHOOK_QUEUE_CRITICAL,
-        WEBHOOK_QUEUE_DEFAULT,
+        ...DEFAULT_WEBHOOK_QUEUE_NAMES,
         WEBHOOK_QUEUE_BACKGROUND,
       ]),
     );

@@ -14,7 +14,10 @@ import {
   resolveWebhookQueueName,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
 } from './webhook-queues';
 
 type WebhookEnqueueCandidate = {
@@ -46,8 +49,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     @InjectQueue(WEBHOOK_QUEUE_CRITICAL)
     private readonly criticalQueue: Queue<ProcessWebhookJob>,
-    @InjectQueue(WEBHOOK_QUEUE_DEFAULT)
-    private readonly defaultQueue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_0)
+    private readonly defaultShard0Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_1)
+    private readonly defaultShard1Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_2)
+    private readonly defaultShard2Queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
+    private readonly defaultShard3Queue: Queue<ProcessWebhookJob>,
     @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
     private readonly backgroundQueue: Queue<ProcessWebhookJob>,
     @InjectQueue(LEGACY_WEBHOOK_QUEUE)
@@ -62,7 +71,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
     this.queuesByName = {
       [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
-      [WEBHOOK_QUEUE_DEFAULT]: this.defaultQueue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_0]: this.defaultShard0Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_1]: this.defaultShard1Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_2]: this.defaultShard2Queue,
+      [WEBHOOK_QUEUE_DEFAULT_SHARD_3]: this.defaultShard3Queue,
       [WEBHOOK_QUEUE_BACKGROUND]: this.backgroundQueue,
       [LEGACY_WEBHOOK_QUEUE]: this.legacyQueue,
     };

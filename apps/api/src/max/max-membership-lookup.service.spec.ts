@@ -316,6 +316,60 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('extends chat backoff after consecutive transient failures on the same moderation channel', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:00.000Z'));
+
+    const throttleError = Object.assign(new Error('MAX API rate limit exceeded'), {
+      response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValueOnce(throttleError)
+        .mockRejectedValueOnce(throttleError)
+        .mockResolvedValueOnce(new Map([['user-4', { userId: 'user-4', isAdmin: false }]])),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership('channel-hot', 'user-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBeNull();
+
+    jest.advanceTimersByTime(15_001);
+
+    await expect(
+      service.getMembership('channel-hot', 'user-2', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.getMembership('channel-hot', 'user-3', 'moderation_required_subscription'),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+
+    jest.advanceTimersByTime(29_999);
+
+    await expect(
+      service.getMembership('channel-hot', 'user-4', 'moderation_required_subscription'),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+
+    jest.advanceTimersByTime(2);
+
+    await expect(
+      service.getMembership('channel-hot', 'user-4', 'moderation_required_subscription'),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(3);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('returns stale membership on transient errors only when the policy allows it', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
 

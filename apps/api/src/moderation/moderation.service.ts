@@ -64,11 +64,15 @@ import {
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   type ProcessWebhookJob,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
 } from '../webhook/webhook-queues';
 
 type ActiveMute = {
@@ -172,6 +176,26 @@ const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
 const DEFAULT_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_DEFAULT,
   MODERATION_CONCURRENCY_SPLIT.default,
+);
+const DEFAULT_MODERATION_SHARD_CONCURRENCIES = resolveShardConcurrencyDistribution(
+  DEFAULT_MODERATION_CONCURRENCY,
+  DEFAULT_WEBHOOK_QUEUE_NAMES.length,
+);
+const DEFAULT_MODERATION_SHARD_0_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_0,
+  DEFAULT_MODERATION_SHARD_CONCURRENCIES[0] ?? 1,
+);
+const DEFAULT_MODERATION_SHARD_1_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_1,
+  DEFAULT_MODERATION_SHARD_CONCURRENCIES[1] ?? 1,
+);
+const DEFAULT_MODERATION_SHARD_2_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_2,
+  DEFAULT_MODERATION_SHARD_CONCURRENCIES[2] ?? 1,
+);
+const DEFAULT_MODERATION_SHARD_3_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_DEFAULT_SHARD_3,
+  DEFAULT_MODERATION_SHARD_CONCURRENCIES[3] ?? 1,
 );
 const BACKGROUND_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_BACKGROUND,
@@ -789,6 +813,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       createdAt,
+      degradeMode,
       settings,
       rulesPublishedUrl,
       rulesPublishedMessageId,
@@ -4639,35 +4664,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const greetingDeleteDelayMinutes = greetingDeleteBotMessageEnabled
         ? greetingDeleteBotMessageDelayMinutes
         : deleteBotMessagesDelayMinutes;
-      const shouldSendPersistentGreetingMessage = shouldDeleteGreetingMessage;
       try {
-        const sentMessageId = shouldSendPersistentGreetingMessage
-          ? await this.sendPersistentBotMessage({
-              chatId,
-              text: greetingMessage,
-              messageOptions: greetingMessageOptions ?? undefined,
-            })
-          : null;
-
-        if (shouldDeleteGreetingMessage && sentMessageId) {
-          await this.handleBotMessageAutoDelete({
-            chatId,
-            userId: member.userId,
-            messageId: sentMessageId,
-            text: greetingMessage,
-            delayMinutes: greetingDeleteDelayMinutes,
-          });
-        }
-
-        if (!shouldSendPersistentGreetingMessage) {
-          await this.sendBotMessageWithOptionalAutoDelete({
-            chatId,
-            text: greetingMessage,
-            messageOptions: greetingMessageOptions ?? undefined,
-            deleteBotMessagesEnabled,
-            deleteBotMessagesDelayMinutes,
-          });
-        }
+        await this.sendBotMessageWithOptionalAutoDelete({
+          chatId,
+          text: greetingMessage,
+          messageOptions: greetingMessageOptions ?? undefined,
+          deleteBotMessagesEnabled: shouldDeleteGreetingMessage,
+          deleteBotMessagesDelayMinutes: greetingDeleteDelayMinutes,
+        });
 
         await this.prisma.moderationEvent.create({
           data: {
@@ -4682,7 +4686,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             operator: Operator.BOT,
             metadata: {
               reason: 'Greeting message sent for joined member',
-              ...(sentMessageId ? { sentMessageId } : {}),
             },
           },
         });
@@ -5890,6 +5893,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     createdAt: string;
+    degradeMode: boolean;
     settings: Pick<
       ChatSettings,
       | 'requiredSubscriptionEnabled'
@@ -5948,6 +5952,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const missingChannels = await this.resolveRequiredSubscriptionChannels(
       membership.missingChannelIds,
+      { allowRemoteFetch: !params.degradeMode },
     );
     const missingChannelTitles = missingChannels.map((channel) => channel.title);
 
@@ -6282,12 +6287,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async resolveRequiredSubscriptionChannels(
     channelIds: readonly string[],
+    options: {
+      allowRemoteFetch?: boolean;
+    } = {},
   ): Promise<Array<{ id: string; title: string; link: string | null }>> {
+    const allowRemoteFetch = options.allowRemoteFetch === true;
     return this.mapWithConcurrency(channelIds, 2, async (channelId) => {
       const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
       const cachedLink = cached?.link?.trim() || null;
       const cachedTitle = cached?.title?.trim() || '';
       if (cached && cachedLink) {
+        return {
+          id: channelId,
+          title: cachedTitle || `Канал ${channelId}`,
+          link: cachedLink,
+        };
+      }
+
+      if (!allowRemoteFetch) {
         return {
           id: channelId,
           title: cachedTitle || `Канал ${channelId}`,
@@ -10323,32 +10340,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private async sendPersistentBotMessage(params: {
-    chatId: string;
-    text: string;
-    messageOptions?: MaxSendMessageOptions;
-  }): Promise<string | null> {
-    const options = {
-      ...(params.messageOptions ?? {}),
-      textFormat: 'markdown' as const,
-    };
-
-    if (typeof this.maxClient.sendMessageImmediateWithId === 'function') {
-      const sent = await this.maxClient.sendMessageImmediateWithId(
-        params.chatId,
-        params.text,
-        options,
-      );
-
-      return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
-        ? sent.messageId.trim()
-        : null;
-    }
-
-    await this.maxClient.sendMessage(params.chatId, params.text, options, { immediate: true });
-    return null;
-  }
-
   private async sendScheduledBotMessage(params: {
     chatId: string;
     text: string;
@@ -10710,10 +10701,58 @@ export class CriticalWebhookProcessor extends WorkerHost {
   }
 }
 
-@Processor(WEBHOOK_QUEUE_DEFAULT, {
-  concurrency: DEFAULT_MODERATION_CONCURRENCY,
+@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_0, {
+  concurrency: DEFAULT_MODERATION_SHARD_0_CONCURRENCY,
 })
-export class DefaultWebhookProcessor extends WorkerHost {
+export class DefaultWebhookShard0Processor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_1, {
+  concurrency: DEFAULT_MODERATION_SHARD_1_CONCURRENCY,
+})
+export class DefaultWebhookShard1Processor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_2, {
+  concurrency: DEFAULT_MODERATION_SHARD_2_CONCURRENCY,
+})
+export class DefaultWebhookShard2Processor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+@Processor(WEBHOOK_QUEUE_DEFAULT_SHARD_3, {
+  concurrency: DEFAULT_MODERATION_SHARD_3_CONCURRENCY,
+})
+export class DefaultWebhookShard3Processor extends WorkerHost {
   constructor(private readonly moderationService: ModerationService) {
     super();
   }
@@ -10780,4 +10819,22 @@ function resolveModerationConcurrencySplit(total: number): {
     default: defaultQueue,
     background,
   };
+}
+
+function resolveShardConcurrencyDistribution(total: number, shardCount: number): number[] {
+  if (shardCount <= 1) {
+    return [Math.max(1, total)];
+  }
+
+  const normalizedTotal = Math.max(1, total);
+  const base = Math.floor(normalizedTotal / shardCount);
+  let remainder = normalizedTotal % shardCount;
+
+  return Array.from({ length: shardCount }, () => {
+    const next = base + (remainder > 0 ? 1 : 0);
+    if (remainder > 0) {
+      remainder -= 1;
+    }
+    return Math.max(1, next);
+  });
 }

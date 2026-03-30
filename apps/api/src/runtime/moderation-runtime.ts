@@ -1,8 +1,8 @@
 import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
   type AnyWebhookQueueName,
 } from '../webhook/webhook-queues';
 
@@ -11,15 +11,15 @@ export type ModerationQueueAlias = 'legacy' | 'critical' | 'default' | 'backgrou
 const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
+  ...DEFAULT_WEBHOOK_QUEUE_NAMES,
   WEBHOOK_QUEUE_BACKGROUND,
 ];
 
-const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, AnyWebhookQueueName> = {
-  legacy: LEGACY_WEBHOOK_QUEUE,
-  critical: WEBHOOK_QUEUE_CRITICAL,
-  default: WEBHOOK_QUEUE_DEFAULT,
-  background: WEBHOOK_QUEUE_BACKGROUND,
+const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyWebhookQueueName[]> = {
+  legacy: [LEGACY_WEBHOOK_QUEUE],
+  critical: [WEBHOOK_QUEUE_CRITICAL],
+  default: DEFAULT_WEBHOOK_QUEUE_NAMES,
+  background: [WEBHOOK_QUEUE_BACKGROUND],
 };
 
 const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
@@ -48,21 +48,21 @@ function normalizeBooleanEnv(rawValue: unknown, fallback: boolean): boolean {
   return fallback;
 }
 
-function normalizeQueueToken(rawToken: string): AnyWebhookQueueName | null {
+function normalizeQueueToken(rawToken: string): AnyWebhookQueueName[] {
   const normalized = rawToken.trim().toLowerCase();
   if (!normalized) {
-    return null;
+    return [];
   }
 
   if ((ALL_MODERATION_QUEUE_NAMES as readonly string[]).includes(normalized)) {
-    return normalized as AnyWebhookQueueName;
+    return [normalized as AnyWebhookQueueName];
   }
 
   if (normalized in MODERATION_QUEUE_NAME_BY_ALIAS) {
-    return MODERATION_QUEUE_NAME_BY_ALIAS[normalized as ModerationQueueAlias];
+    return [...MODERATION_QUEUE_NAME_BY_ALIAS[normalized as ModerationQueueAlias]];
   }
 
-  return null;
+  return [];
 }
 
 export function getEnabledModerationProcessorQueues(
@@ -75,8 +75,7 @@ export function getEnabledModerationProcessorQueues(
   const enabledQueues = new Set(
     rawValue
       .split(',')
-      .map((token) => normalizeQueueToken(token))
-      .filter((queueName): queueName is AnyWebhookQueueName => queueName !== null),
+      .flatMap((token) => normalizeQueueToken(token)),
   );
 
   return enabledQueues.size > 0 ? enabledQueues : new Set(ALL_MODERATION_QUEUE_NAMES);

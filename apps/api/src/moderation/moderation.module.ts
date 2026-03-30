@@ -9,7 +9,10 @@ import { SystemModule } from '../system/system.module';
 import {
   BackgroundWebhookProcessor,
   CriticalWebhookProcessor,
-  DefaultWebhookProcessor,
+  DefaultWebhookShard0Processor,
+  DefaultWebhookShard1Processor,
+  DefaultWebhookShard2Processor,
+  DefaultWebhookShard3Processor,
   LegacyModerationProcessor,
   ModerationService,
 } from './moderation.service';
@@ -18,7 +21,10 @@ import {
   LEGACY_WEBHOOK_QUEUE,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
-  WEBHOOK_QUEUE_DEFAULT,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_0,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_1,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_2,
+  WEBHOOK_QUEUE_DEFAULT_SHARD_3,
 } from '../webhook/webhook-queues';
 import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
@@ -37,7 +43,18 @@ const moderationProviders = [
     ? [
         ...(enabledModerationQueues.has(LEGACY_WEBHOOK_QUEUE) ? [LegacyModerationProcessor] : []),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_CRITICAL) ? [CriticalWebhookProcessor] : []),
-        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT) ? [DefaultWebhookProcessor] : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT_SHARD_0)
+          ? [DefaultWebhookShard0Processor]
+          : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT_SHARD_1)
+          ? [DefaultWebhookShard1Processor]
+          : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT_SHARD_2)
+          ? [DefaultWebhookShard2Processor]
+          : []),
+        ...(enabledModerationQueues.has(WEBHOOK_QUEUE_DEFAULT_SHARD_3)
+          ? [DefaultWebhookShard3Processor]
+          : []),
         ...(enabledModerationQueues.has(WEBHOOK_QUEUE_BACKGROUND)
           ? [BackgroundWebhookProcessor]
           : []),

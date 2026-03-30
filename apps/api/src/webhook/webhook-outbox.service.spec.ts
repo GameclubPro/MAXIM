@@ -55,7 +55,10 @@ function createService(params?: {
   });
 
   const criticalQueue = createQueue(params?.addError, params?.criticalJob);
-  const defaultQueue = createQueue(params?.addError, params?.defaultJob);
+  const defaultShard0Queue = createQueue(params?.addError, params?.defaultJob);
+  const defaultShard1Queue = createQueue(params?.addError, null);
+  const defaultShard2Queue = createQueue(params?.addError, null);
+  const defaultShard3Queue = createQueue(params?.addError, null);
   const backgroundQueue = createQueue(params?.addError, params?.backgroundJob);
   const legacyQueue = createQueue(params?.addError, params?.legacyJob);
 
@@ -77,7 +80,10 @@ function createService(params?: {
     prisma as never,
     config as never,
     criticalQueue as never,
-    defaultQueue as never,
+    defaultShard0Queue as never,
+    defaultShard1Queue as never,
+    defaultShard2Queue as never,
+    defaultShard3Queue as never,
     backgroundQueue as never,
     legacyQueue as never,
   );
@@ -86,7 +92,10 @@ function createService(params?: {
     prisma,
     queues: {
       criticalQueue,
-      defaultQueue,
+      defaultShard0Queue,
+      defaultShard1Queue,
+      defaultShard2Queue,
+      defaultShard3Queue,
       backgroundQueue,
       legacyQueue,
     },
@@ -164,8 +173,8 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues.defaultQueue.getJob).toHaveBeenCalledWith('evt-2b');
-    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
+    expect(queues.defaultShard0Queue.getJob).toHaveBeenCalledWith('evt-2b');
+    expect(queues.defaultShard0Queue.add).not.toHaveBeenCalled();
     expect(job.retry).toHaveBeenCalledTimes(1);
     const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
     expect(updateArg.data.status).toBe(WebhookStatus.QUEUED);
@@ -181,12 +190,12 @@ describe('WebhookOutboxService', () => {
           id: string,
           attempts: number,
           priority: number,
-          queueName: 'moderation-default',
+          queueName: 'moderation-default-0',
         ) => Promise<void>;
       }
-    ).enqueueOne('evt-3', 120, 6, 'moderation-default');
+    ).enqueueOne('evt-3', 120, 6, 'moderation-default-0');
 
-    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
+    expect(queues.defaultShard0Queue.add).not.toHaveBeenCalled();
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -244,7 +253,7 @@ describe('WebhookOutboxService', () => {
     expect(queues.criticalQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-user-added',
     ]);
-    expect(queues.defaultQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+    expect(queues.defaultShard0Queue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-message',
     ]);
   });
@@ -285,7 +294,7 @@ describe('WebhookOutboxService', () => {
 
     expect(queues.legacyQueue.getJob).toHaveBeenCalledWith('evt-legacy');
     expect(job.retry).toHaveBeenCalledTimes(1);
-    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
+    expect(queues.defaultShard0Queue.add).not.toHaveBeenCalled();
   });
 
   it('treats undefined BullMQ lookups as missing jobs and enqueues normally', async () => {
@@ -296,12 +305,48 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues.defaultQueue.add).toHaveBeenCalledWith(
+    expect(queues.defaultShard0Queue.add).toHaveBeenCalledWith(
       'process-webhook-event',
       { webhookEventId: 'evt-undefined' },
       expect.objectContaining({
         jobId: 'evt-undefined',
       }),
     );
+  });
+
+  it('shards message_created events by chatId across default queues', async () => {
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-chat-a',
+          enqueueAttempts: 0,
+          normalizedPayload: { type: 'message_created', message: { chatId: 'a' } },
+        },
+        {
+          id: 'evt-chat-b',
+          enqueueAttempts: 0,
+          normalizedPayload: { type: 'message_created', message: { chatId: 'b' } },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    const shardAdds = [
+      queues.defaultShard0Queue.add,
+      queues.defaultShard1Queue.add,
+      queues.defaultShard2Queue.add,
+      queues.defaultShard3Queue.add,
+    ].flatMap((add) => add.mock.calls.map((call) => call[1].webhookEventId));
+
+    expect(shardAdds.sort()).toEqual(['evt-chat-a', 'evt-chat-b']);
+    expect(
+      [
+        queues.defaultShard0Queue.add,
+        queues.defaultShard1Queue.add,
+        queues.defaultShard2Queue.add,
+        queues.defaultShard3Queue.add,
+      ].filter((add) => add.mock.calls.length > 0).length,
+    ).toBeGreaterThan(1);
   });
 });

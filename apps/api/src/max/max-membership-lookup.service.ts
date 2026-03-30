@@ -25,6 +25,11 @@ type CacheEpochState = {
   expiresAtMs: number;
 };
 
+type ChatBackoffState = {
+  failureCount: number;
+  lastFailureAtMs: number;
+};
+
 type MembershipLookupPolicyConfig = {
   positiveFreshTtlSec: number;
   negativeFreshTtlSec: number;
@@ -104,11 +109,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly redis: Redis;
   private readonly subscriber: Redis;
   private readonly membershipLookupBatchWindowMs: number;
+  private readonly maxChatBackoffMs: number;
+  private readonly chatBackoffResetMs: number;
   private readonly lookupTimeoutMsByTrafficClass: Record<MaxApiTrafficClass, number>;
   private readonly memoryCache = new Map<string, MembershipCacheSnapshot>();
   private readonly inFlight = new Map<string, Promise<boolean | null>>();
   private readonly backoffUntilMs = new Map<string, number>();
   private readonly chatBackoffUntilMs = new Map<string, number>();
+  private readonly chatBackoffState = new Map<string, ChatBackoffState>();
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
   private lastRedisWriteFailureLogAtMs = 0;
@@ -123,6 +131,16 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       configService.get('MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS'),
       12,
       0,
+    );
+    this.maxChatBackoffMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_MAX_MS'),
+      60_000,
+      1_000,
+    );
+    this.chatBackoffResetMs = this.readConfigInt(
+      configService.get('MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_RESET_MS'),
+      45_000,
+      1_000,
     );
     this.lookupTimeoutMsByTrafficClass = {
       critical: this.readConfigInt(
@@ -435,21 +453,22 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       }
     } catch (error: unknown) {
       const transient = this.isTransientLookupError(error);
+      let appliedBackoffMs = 0;
       if (transient) {
-        const backoffUntilMs = Date.now() + batch.policy.backoffMs;
-        this.chatBackoffUntilMs.set(batchKey, backoffUntilMs);
+        const appliedBackoff = this.applyChatBackoff(batch.chatId, batch.policyName, batch.policy);
+        appliedBackoffMs = appliedBackoff.backoffMs;
         for (const lookup of batch.lookups.values()) {
           if (this.hasSameCacheEpoch(lookup.cacheKey, lookup.cacheEpoch)) {
-            this.backoffUntilMs.set(lookup.cacheKey, backoffUntilMs);
+            this.backoffUntilMs.set(lookup.cacheKey, appliedBackoff.backoffUntilMs);
           }
         }
       }
 
-      this.logLookupError(batch.policy, error, {
+      this.logLookupError(error, {
         chatId: batch.chatId,
         userIds,
         policyName: batch.policyName,
-        transient,
+        backoffMs: appliedBackoffMs,
       });
 
       for (const lookup of batch.lookups.values()) {
@@ -503,20 +522,22 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         return results;
       } catch (error: unknown) {
         const transient = this.isTransientLookupError(error);
+        let appliedBackoffMs = 0;
         if (transient) {
-          this.applyChatBackoff(chatId, policyName, policy.backoffMs);
+          const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy);
+          appliedBackoffMs = appliedBackoff.backoffMs;
           for (const userId of normalizedUserIds) {
             const cacheKey = this.buildCacheKey(chatId, userId);
             if (this.hasSameCacheEpoch(cacheKey, cacheEpochByKey.get(cacheKey) ?? 0)) {
-              this.backoffUntilMs.set(cacheKey, Date.now() + policy.backoffMs);
+              this.backoffUntilMs.set(cacheKey, appliedBackoff.backoffUntilMs);
             }
           }
         }
-        this.logLookupError(policy, error, {
+        this.logLookupError(error, {
           chatId,
           userIds: normalizedUserIds,
           policyName,
-          transient,
+          backoffMs: appliedBackoffMs,
         });
 
         const results = new Map<string, boolean | null>();
@@ -549,13 +570,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   }
 
   private logLookupError(
-    policy: MembershipLookupPolicyConfig,
     error: unknown,
     context: {
       chatId: string;
       userIds: readonly string[];
       policyName: MaxMembershipLookupPolicy;
-      transient: boolean;
+      backoffMs: number;
     },
   ) {
     this.logger.warn(
@@ -563,7 +583,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         chatId: context.chatId,
         userIds: context.userIds,
         policyName: context.policyName,
-        backoffMs: context.transient ? policy.backoffMs : 0,
+        backoffMs: context.backoffMs,
         error: error instanceof Error ? error.message : 'Unknown error',
       },
       'Failed to resolve MAX membership',
@@ -796,16 +816,51 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private applyChatBackoff(
     chatId: string,
     policyName: MaxMembershipLookupPolicy,
-    backoffMs: number,
-  ) {
-    this.chatBackoffUntilMs.set(
-      this.buildChatPolicyKey(chatId, policyName),
-      Date.now() + backoffMs,
+    policy: MembershipLookupPolicyConfig,
+  ): {
+    backoffMs: number;
+    backoffUntilMs: number;
+  } {
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const now = Date.now();
+    const previousState = this.chatBackoffState.get(cacheKey);
+    const failureCount =
+      previousState && now - previousState.lastFailureAtMs <= this.chatBackoffResetMs
+        ? previousState.failureCount + 1
+        : 1;
+    const backoffMs = Math.min(
+      this.resolveMaxChatBackoffMs(policyName, policy),
+      policy.backoffMs * 2 ** Math.max(0, failureCount - 1),
     );
+    const backoffUntilMs = now + backoffMs;
+
+    this.chatBackoffState.set(cacheKey, {
+      failureCount,
+      lastFailureAtMs: now,
+    });
+    this.chatBackoffUntilMs.set(cacheKey, backoffUntilMs);
+
+    return {
+      backoffMs,
+      backoffUntilMs,
+    };
   }
 
   private clearChatBackoff(chatId: string, policyName: MaxMembershipLookupPolicy) {
-    this.chatBackoffUntilMs.delete(this.buildChatPolicyKey(chatId, policyName));
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    this.chatBackoffState.delete(cacheKey);
+    this.chatBackoffUntilMs.delete(cacheKey);
+  }
+
+  private resolveMaxChatBackoffMs(
+    policyName: MaxMembershipLookupPolicy,
+    policy: MembershipLookupPolicyConfig,
+  ): number {
+    if (policyName === 'moderation_required_subscription') {
+      return this.maxChatBackoffMs;
+    }
+
+    return Math.min(this.maxChatBackoffMs, Math.max(policy.backoffMs * 2, 15_000));
   }
 
   private logRedisWriteFailure(cacheKey: string, error: unknown) {
