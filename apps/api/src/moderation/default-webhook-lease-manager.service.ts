@@ -224,7 +224,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           continue;
         }
         const closeResult = await this.closeWorker(queueName);
-        if (closeResult === 'skipped') {
+        if (closeResult !== 'closed') {
           allowedWorkers.add(queueName);
           continue;
         }
@@ -692,9 +692,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           err: error instanceof Error ? error.message : String(error),
           retryAfterMs,
         },
-        'Default webhook BullMQ worker close timed out; detaching local reference and allowing handoff',
+        'Default webhook BullMQ worker close timed out; keeping local ownership pinned and retrying later',
       );
-      this.workers.delete(queueName);
       return 'timed_out';
     } finally {
       this.closingWorkers.delete(queueName);

@@ -1,3 +1,5 @@
+import * as leasePlanModule from '../runtime/default-webhook-lease-plan';
+import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { buildDefaultWebhookLeaseKey, buildDefaultWebhookWorkerHeartbeatKey } from '../runtime/default-webhook-dynamic-leases';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 
@@ -219,7 +221,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('detaches the local worker and applies cooldown when close hangs past the configured timeout', async () => {
+  it('keeps the local worker pinned and applies cooldown when close hangs past the configured timeout', async () => {
     jest.useFakeTimers();
     const service = new DefaultWebhookLeaseManagerService(
       createConfigMock({
@@ -245,7 +247,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await expect(closePromise).resolves.toBe('timed_out');
 
     expect(close).toHaveBeenCalledTimes(1);
-    expect((service as any).workers.has(queueName)).toBe(false);
+    expect((service as any).workers.has(queueName)).toBe(true);
     expect((service as any).closingWorkers.has(queueName)).toBe(false);
     expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(true);
 
@@ -253,6 +255,95 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await Promise.resolve();
     expect((service as any).workers.has(queueName)).toBe(false);
 
+    await service.onModuleDestroy();
+  });
+
+  it('does not hand off a shard when worker close times out', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    const claimKey = buildDefaultWebhookLeaseKey(queueName);
+    const redis = redisInstances[0]!;
+    redis.store.set(
+      claimKey,
+      JSON.stringify({
+        queueName,
+        ownerId: 'api-moderation',
+        fencingToken: 1,
+        claimedAtMs: Date.now() - 5_000,
+        updatedAtMs: Date.now() - 5_000,
+        leaseUntilMs: Date.now() + 60_000,
+      }),
+    );
+
+    const planQueues = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((name) => [
+        name,
+        {
+          queueName: name,
+          homeOwner: 'api-moderation',
+          currentOwner: 'api-moderation',
+          desiredOwner: 'api-moderation',
+          eligibleForDynamicLeases: true,
+          activeJobs: 0,
+          pressure: 0,
+          reason: 'keep-current-owner',
+          handoffPending: false,
+        },
+      ]),
+    ) as Record<string, Record<string, unknown>>;
+    planQueues[queueName] = {
+      queueName,
+      homeOwner: 'api-moderation',
+      currentOwner: 'api-moderation',
+      desiredOwner: 'api-moderation-realtime-b',
+      eligibleForDynamicLeases: true,
+      activeJobs: 0,
+      pressure: 10,
+      reason: 'rebalance-least-loaded',
+      handoffPending: false,
+    };
+
+    jest
+      .spyOn(leasePlanModule, 'buildDefaultWebhookLeasePlan')
+      .mockReturnValue({
+        workerLoads: {
+          'api-moderation': 10,
+          'api-moderation-realtime-b': 0,
+          'api-moderation-realtime-c': 0,
+          'api-moderation-realtime-d': 0,
+        },
+        queues: planQueues as ReturnType<typeof leasePlanModule.buildDefaultWebhookLeasePlan>['queues'],
+      });
+
+    (service as any).loadClaims = jest.fn().mockResolvedValue({
+      [queueName]: JSON.parse(redis.store.get(claimKey) ?? '{}'),
+    });
+    (service as any).loadHandoffs = jest.fn().mockResolvedValue({});
+    (service as any).loadAliveWorkerGroups = jest.fn().mockResolvedValue(
+      new Set(['api-moderation', 'api-moderation-realtime-b', 'api-moderation-realtime-c', 'api-moderation-realtime-d']),
+    );
+    (service as any).closeWorker = jest.fn().mockResolvedValue('timed_out');
+    (service as any).closeWorkersExcept = jest.fn().mockResolvedValue(undefined);
+    (service as any).ensureWorkerRunning = jest.fn().mockResolvedValue(undefined);
+    (service as any).issueHandoff = jest.fn().mockResolvedValue(undefined);
+    (service as any).releaseClaim = jest.fn().mockResolvedValue(undefined);
+
+    await (service as any).applyDynamicPlan();
+
+    expect((service as any).closeWorker).toHaveBeenCalledWith(queueName);
+    expect((service as any).issueHandoff).not.toHaveBeenCalled();
+    expect((service as any).releaseClaim).not.toHaveBeenCalled();
+    expect((service as any).closeWorkersExcept).toHaveBeenCalledTimes(1);
+    const allowedWorkers = ((service as any).closeWorkersExcept as jest.Mock).mock.calls[0]?.[0];
+    expect(allowedWorkers).toBeInstanceOf(Set);
+    expect(allowedWorkers.has(queueName)).toBe(true);
+
+    jest.restoreAllMocks();
     await service.onModuleDestroy();
   });
 });
