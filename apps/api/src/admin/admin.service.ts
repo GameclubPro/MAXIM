@@ -200,6 +200,10 @@ type ManagedEntitiesListOptions = {
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 
+type AssertChatAdminOptions = {
+  syncPersistedAccess?: boolean;
+};
+
 type ManagedEntityBotAssignmentsRow = {
   id: string;
   botId: string | null;
@@ -624,6 +628,7 @@ export class AdminService {
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1004,53 +1009,131 @@ export class AdminService {
       };
     }
 
-    const discovered = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
-      respectCooldown: false,
-      fullScan: true,
-      includeRefreshState: true,
+    const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
+      bypassRemoteCache: options.bypassRemoteCache === true,
+      resetRefreshCursor: options.resetRefreshCursor === true,
     });
-    if (discovered.items.length > 0 || discovered.refresh?.complete === true) {
-      return {
-        items: await this.attachManagedEntityBotAssignments(discovered.items),
-        refresh: discovered.refresh,
-      };
-    }
-
-    const cached = await this.revalidateCachedManagedEntities(
-      user,
-      await this.listChatsFromAllowlist(user.userId, entityType),
-    );
-    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
-    const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-    const fallback = this.mergeManagedEntityGroups(
-      bootstrapped ? [bootstrapped] : [],
-      recentBotAdded,
-      cached,
-    );
-    const skipAvatarHydration =
-      discovered.refresh?.backoffActive ??
-      (options.refresh === true
-        ? await this.isManagedEntitiesRefreshBackoffActive(
-            user.userId,
-            entityType,
-            this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType),
-          )
-        : false);
+    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
     const items =
-      fallback.length > 0
-        ? skipAvatarHydration
-          ? await this.attachManagedEntityBotAssignments(
-              await this.attachChannelOverview(await this.attachManagedEntityAvatars(fallback)),
-            )
-          : await this.attachManagedEntityBotAssignments(
-              await this.hydrateManagedEntities(fallback),
-            )
+      cached.length > 0
+        ? await this.attachManagedEntityBotAssignments(await this.hydrateManagedEntities(cached))
         : [];
     this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
     return {
       items,
-      refresh: discovered.refresh,
+      refresh,
     };
+  }
+
+  private async scheduleManagedEntitiesRemoteFullRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshState> {
+    const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
+    const existing = this.managedEntitiesBackgroundRefreshRuns.get(refreshKey);
+    const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
+      user.userId,
+      entityType,
+      options,
+    );
+
+    if (!existing) {
+      const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
+        .catch((error: unknown) => {
+          this.logger.warn(
+            {
+              entityType,
+              userId: user.userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Managed entities background refresh failed',
+          );
+        })
+        .finally(() => {
+          if (this.managedEntitiesBackgroundRefreshRuns.get(refreshKey) === pending) {
+            this.managedEntitiesBackgroundRefreshRuns.delete(refreshKey);
+          }
+        });
+      this.managedEntitiesBackgroundRefreshRuns.set(refreshKey, pending);
+    }
+
+    return refreshState;
+  }
+
+  private async prepareManagedEntitiesRemoteFullRefreshState(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesRefreshState> {
+    const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
+    const backoffActive = await this.isManagedEntitiesRefreshBackoffActive(
+      userId,
+      entityType,
+      refreshCooldownKey,
+    );
+    if (backoffActive) {
+      return this.readManagedEntitiesRefreshState(userId, entityType, {
+        backoffActiveOverride: true,
+      });
+    }
+
+    let cursor =
+      (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(userId, entityType)) ?? null;
+    if (options.resetRefreshCursor === true || cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE) {
+      cursor = 0;
+      await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
+        userId,
+        entityType,
+        cursor,
+        MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC,
+      );
+    }
+
+    return this.createManagedEntitiesRefreshState(cursor, false);
+  }
+
+  private async runManagedEntitiesRemoteFullRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<void> {
+    let previousCursor: number | null | undefined = undefined;
+
+    for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
+      const result = await this.discoverManagedEntities(user, entityType, {
+        respectCooldown: false,
+        fullScan: true,
+        includeRefreshState: true,
+        bypassRemoteCache: options.bypassRemoteCache === true,
+        resetRefreshCursor: pass === 0 && options.resetRefreshCursor === true,
+      });
+      const refresh = result.refresh;
+      if (!refresh || refresh.complete || refresh.backoffActive) {
+        return;
+      }
+      if (refresh.cursor === null || refresh.cursor === previousCursor) {
+        return;
+      }
+
+      previousCursor = refresh.cursor;
+    }
+
+    this.logger.warn(
+      {
+        entityType,
+        userId: user.userId,
+      },
+      'Managed entities background refresh stopped before completion',
+    );
   }
 
   private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
@@ -10465,7 +10548,11 @@ export class AdminService {
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
-    await this.assertChatAdmin(chatId, user.userId);
+    const startedAtMs = Date.now();
+    await this.assertChatAdmin(chatId, user.userId, null, {
+      syncPersistedAccess: false,
+    });
+    const adminCheckedAtMs = Date.now();
     const parsed = dateRangeQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -10490,6 +10577,22 @@ export class AdminService {
       skip: (parsed.data.page - 1) * parsed.data.limit,
       take: parsed.data.limit,
     });
+    const finishedAtMs = Date.now();
+    const totalMs = finishedAtMs - startedAtMs;
+    if (totalMs >= 1_500) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: user.userId,
+          totalMs,
+          adminCheckMs: adminCheckedAtMs - startedAtMs,
+          queryMs: finishedAtMs - adminCheckedAtMs,
+          page: parsed.data.page,
+          limit: parsed.data.limit,
+        },
+        'Slow moderation events query completed',
+      );
+    }
 
     return rows.map((row) => ({
       id: row.id,
@@ -10780,6 +10883,7 @@ export class AdminService {
     chatId: string,
     userId: string,
     entityType: ManagedEntityType | null = null,
+    options: AssertChatAdminOptions = {},
   ) {
     const access = await this.resolveUserAndBotAdminAccess(chatId, userId, {
       bypassNegativeCache: true,
@@ -10806,7 +10910,9 @@ export class AdminService {
       );
     }
 
-    await this.upsertUserChatAccess(chatId, userId, null, entityType);
+    if (options.syncPersistedAccess !== false) {
+      await this.upsertUserChatAccess(chatId, userId, null, entityType);
+    }
   }
 
   private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
