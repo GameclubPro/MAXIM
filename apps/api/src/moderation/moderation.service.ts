@@ -98,11 +98,18 @@ type ChatAdminCheckResult = {
 };
 
 type SharedChatExecutionGuard =
-  | { mode: 'allow' }
+  | {
+      mode: 'allow';
+      activeBotId: string | null;
+      primaryBotId: string | null;
+      assignedBotIds: string[];
+      requiresExecutionLock: boolean;
+    }
   | {
       mode: 'skip' | 'blocked-join-check-only';
       activeBotId: string | null;
       primaryBotId: string | null;
+      assignedBotIds: string[];
       reason: 'non-primary-bot' | 'removed-membership';
     };
 
@@ -248,6 +255,7 @@ const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE = 0.75;
 const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE = 4;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+const SHARED_CHAT_EXECUTION_LOCK_TTL_MS = 45_000;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
@@ -377,6 +385,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
   private readonly backgroundWorkSoftPauseWorkerPressure: number;
+  private readonly sharedChatExecutionMemoryLocks = new Map<string, string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -585,66 +594,86 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.isBotStartedUpdate(update)) {
-      await this.handleBotStartedInstruction(update, chatId);
-      return;
-    }
-
-    if (await this.handleBlockedBotJoin(update, chatId)) {
-      return;
-    }
-
-    if (this.isMembershipLeaveUpdate(update)) {
-      return;
-    }
-
-    if (this.isPrivateDirectChat(chatId)) {
-      if (this.privateControlService) {
-        await this.privateControlService.handleUpdate(update);
-        return;
-      }
-      await this.handlePrivateChatControl(update);
-      return;
-    }
-
-    const callbackId = this.extractCallbackId(update);
-    const callbackPayload = this.extractCallbackPayload(update);
-    const suggestionPayload =
-      callbackPayload && this.adminService
-        ? this.adminService.parseChannelSuggestionStartPayload(callbackPayload)
-        : null;
-    if (callbackId && suggestionPayload && this.privateControlService) {
-      const callbackUserId = this.extractCallbackUserId(update) ?? senderId;
-      const delivered = await this.privateControlService.openChannelSuggestionFromCallback({
-        userId: callbackUserId,
-        chatId: suggestionPayload.chatId,
-        token: suggestionPayload.token,
-      });
-      await this.answerCallbackSafe(
-        callbackId,
-        delivered ? 'Бот написал в личку' : 'Не удалось открыть личку бота',
+    const sharedChatExecutionAllowGuard =
+      sharedChatExecutionGuard.mode === 'allow' ? sharedChatExecutionGuard : null;
+    const sharedChatExecutionLock = sharedChatExecutionAllowGuard?.requiresExecutionLock
+      ? await this.acquireSharedChatExecutionLock(update, chatId, sharedChatExecutionAllowGuard)
+      : null;
+    if (sharedChatExecutionAllowGuard?.requiresExecutionLock && !sharedChatExecutionLock) {
+      this.logger.debug(
+        {
+          chatId,
+          updateId: update.updateId,
+          updateType: this.readLowerString(update.type),
+          activeBotId: sharedChatExecutionAllowGuard.activeBotId,
+          primaryBotId: sharedChatExecutionAllowGuard.primaryBotId,
+        },
+        'Skipped duplicate shared chat execution because another bot runtime already owns the update',
       );
       return;
     }
-    const pollCallback = parseManagedPollCallbackPayload(callbackPayload);
-    if (pollCallback) {
-      await this.handleManagedPollCallback(update, pollCallback, callbackId);
-      return;
-    }
 
-    const channelMessage = this.isChannelMessage(update);
-    const managedChannel = channelMessage
-      ? await this.loadManagedChannelContext(chatId, chatTitle)
-      : null;
-    if (channelMessage || managedChannel) {
-      await this.handleChannelUpdate(update, managedChannel);
+    try {
+      if (this.isBotStartedUpdate(update)) {
+      await this.handleBotStartedInstruction(update, chatId);
       return;
-    }
+      }
 
-    if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
-      await this.handleRulesCallback(chatId, callbackId, update.message?.messageId ?? null);
-      return;
-    }
+      if (await this.handleBlockedBotJoin(update, chatId)) {
+        return;
+      }
+
+      if (this.isMembershipLeaveUpdate(update)) {
+        return;
+      }
+
+      if (this.isPrivateDirectChat(chatId)) {
+        if (this.privateControlService) {
+          await this.privateControlService.handleUpdate(update);
+          return;
+        }
+        await this.handlePrivateChatControl(update);
+        return;
+      }
+
+      const callbackId = this.extractCallbackId(update);
+      const callbackPayload = this.extractCallbackPayload(update);
+      const suggestionPayload =
+        callbackPayload && this.adminService
+          ? this.adminService.parseChannelSuggestionStartPayload(callbackPayload)
+          : null;
+      if (callbackId && suggestionPayload && this.privateControlService) {
+        const callbackUserId = this.extractCallbackUserId(update) ?? senderId;
+        const delivered = await this.privateControlService.openChannelSuggestionFromCallback({
+          userId: callbackUserId,
+          chatId: suggestionPayload.chatId,
+          token: suggestionPayload.token,
+        });
+        await this.answerCallbackSafe(
+          callbackId,
+          delivered ? 'Бот написал в личку' : 'Не удалось открыть личку бота',
+        );
+        return;
+      }
+      const pollCallback = parseManagedPollCallbackPayload(callbackPayload);
+      if (pollCallback) {
+        await this.handleManagedPollCallback(update, pollCallback, callbackId);
+        return;
+      }
+
+      const channelMessage = this.isChannelMessage(update);
+      const managedChannel = channelMessage
+        ? await this.loadManagedChannelContext(chatId, chatTitle)
+        : null;
+      if (channelMessage || managedChannel) {
+        await this.handleChannelUpdate(update, managedChannel);
+        return;
+      }
+
+      if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
+        await this.handleRulesCallback(chatId, callbackId, update.message?.messageId ?? null);
+        return;
+      }
 
     const userLabel = this.formatUserLabel(senderName, senderId);
     const mode = await this.resolveSystemModeSnapshot();
@@ -1558,6 +1587,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       },
     });
+    } finally {
+      if (sharedChatExecutionLock) {
+        await this.releaseSharedChatExecutionLock(sharedChatExecutionLock);
+      }
+    }
   }
 
   private async handleDuplicateDecision(params: {
@@ -6724,18 +6758,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
   ): Promise<SharedChatExecutionGuard> {
     if (!chatId.trim() || this.isPrivateDirectChat(chatId)) {
-      return { mode: 'allow' };
+      return {
+        mode: 'allow',
+        activeBotId: this.maxBotContextService?.getActiveBotId() ?? null,
+        primaryBotId: null,
+        assignedBotIds: [],
+        requiresExecutionLock: false,
+      };
     }
 
     const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
     if (!activeBotId || !this.maxBotLinkService) {
-      return { mode: 'allow' };
+      return {
+        mode: 'allow',
+        activeBotId,
+        primaryBotId: null,
+        assignedBotIds: [],
+        requiresExecutionLock: false,
+      };
     }
 
     const executionOwnerBotId = this.readExecutionOwnerBotId(update);
     if (executionOwnerBotId) {
       if (executionOwnerBotId === activeBotId) {
-        return { mode: 'allow' };
+        return {
+          mode: 'allow',
+          activeBotId,
+          primaryBotId: executionOwnerBotId,
+          assignedBotIds: [executionOwnerBotId],
+          requiresExecutionLock: true,
+        };
       }
 
       const updateType = this.readLowerString(update.type);
@@ -6744,6 +6796,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           mode: 'blocked-join-check-only',
           activeBotId,
           primaryBotId: executionOwnerBotId,
+          assignedBotIds: [executionOwnerBotId],
           reason: 'non-primary-bot',
         };
       }
@@ -6752,6 +6805,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         mode: 'skip',
         activeBotId,
         primaryBotId: executionOwnerBotId,
+        assignedBotIds: [executionOwnerBotId],
         reason: 'non-primary-bot',
       };
     }
@@ -6761,7 +6815,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       activeBotId,
     });
     if (executionBinding.shouldHandleGroupUpdate) {
-      return { mode: 'allow' };
+      return {
+        mode: 'allow',
+        activeBotId: executionBinding.activeBotId,
+        primaryBotId: executionBinding.primaryBotId,
+        assignedBotIds: executionBinding.assignedBotIds,
+        requiresExecutionLock: executionBinding.assignedBotIds.length > 1,
+      };
     }
 
     const updateType = this.readLowerString(update.type);
@@ -6774,6 +6834,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         mode: 'blocked-join-check-only',
         activeBotId: executionBinding.activeBotId,
         primaryBotId: executionBinding.primaryBotId,
+        assignedBotIds: executionBinding.assignedBotIds,
         reason,
       };
     }
@@ -6782,6 +6843,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       mode: 'skip',
       activeBotId: executionBinding.activeBotId,
       primaryBotId: executionBinding.primaryBotId,
+      assignedBotIds: executionBinding.assignedBotIds,
       reason,
     };
   }
@@ -6798,10 +6860,110 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         updateType: this.readLowerString(update.type),
         activeBotId: guard.activeBotId,
         primaryBotId: guard.primaryBotId,
+        assignedBotIds: guard.assignedBotIds,
         reason: guard.reason,
       },
       'Skipped shared chat update for non-primary bot runtime',
     );
+  }
+
+  private buildSharedChatExecutionLockKey(
+    update: MaxUpdate,
+    chatId: string,
+    guard: Extract<SharedChatExecutionGuard, { mode: 'allow' }>,
+  ): string {
+    const updateId =
+      typeof update.updateId === 'string' && update.updateId.trim().length > 0
+        ? update.updateId.trim()
+        : String(update.updateId ?? '').trim();
+    const messageId = update.message?.messageId?.trim() ?? '';
+    const callbackId = this.extractCallbackId(update)?.trim() ?? '';
+    const updateType = this.readLowerString(update.type);
+    const ownerBotId = guard.primaryBotId ?? guard.activeBotId ?? 'unknown';
+    const discriminator = updateId || callbackId || messageId || `${updateType}:${chatId}`;
+    return `shared-chat-execution:v1:${ownerBotId}:${chatId}:${discriminator}`;
+  }
+
+  private async acquireSharedChatExecutionLock(
+    update: MaxUpdate,
+    chatId: string,
+    guard: Extract<SharedChatExecutionGuard, { mode: 'allow' }>,
+  ): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
+    const key = this.buildSharedChatExecutionLockKey(update, chatId, guard);
+    const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.acquireLock;
+
+    if (acquireLock && this.redisCounter) {
+      try {
+        const token = await acquireLock.call(
+          this.redisCounter,
+          key,
+          SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+        );
+        if (!token) {
+          return null;
+        }
+
+        return {
+          key,
+          token,
+          mode: 'redis',
+        };
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            key,
+            chatId,
+            updateId: update.updateId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to acquire redis shared chat execution lock; falling back to memory lock',
+        );
+      }
+    }
+
+    if (this.sharedChatExecutionMemoryLocks.has(key)) {
+      return null;
+    }
+
+    const token = randomUUID();
+    this.sharedChatExecutionMemoryLocks.set(key, token);
+    return {
+      key,
+      token,
+      mode: 'memory',
+    };
+  }
+
+  private async releaseSharedChatExecutionLock(lock: {
+    key: string;
+    token: string;
+    mode: 'redis' | 'memory';
+  }): Promise<void> {
+    if (lock.mode === 'memory') {
+      if (this.sharedChatExecutionMemoryLocks.get(lock.key) === lock.token) {
+        this.sharedChatExecutionMemoryLocks.delete(lock.key);
+      }
+      return;
+    }
+
+    const releaseLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.releaseLock;
+    if (!releaseLock || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await releaseLock.call(this.redisCounter, lock.key, lock.token);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key: lock.key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to release redis shared chat execution lock',
+      );
+    }
   }
 
   private readExecutionOwnerBotId(update: MaxUpdate): string | null {
@@ -9084,9 +9246,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const scanBotId =
+      (await this.maxBotLinkService?.resolveBotIdForCapability({
+        chatId,
+        capability: 'background_scans',
+      })) ?? undefined;
     const messages = await this.maxClient.listMessages(chatId, {
       count: 10,
       trafficClass: 'background',
+      ...(scanBotId ? { botId: scanBotId } : {}),
     });
     const normalizedMessages = messages
       .map((message) => this.parseChannelListedMessage(message))

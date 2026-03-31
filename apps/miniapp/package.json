@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build && node scripts/check-budgets.mjs",
+    "build": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit && vite build && node scripts/check-budgets.mjs",
     "budget": "node scripts/check-budgets.mjs",
     "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "npm run build --workspace @maxim/contracts && tsc -p tsconfig.json --noEmit",
     "test": "tsx --test ./test/*.test.ts"
   },
   "dependencies": {

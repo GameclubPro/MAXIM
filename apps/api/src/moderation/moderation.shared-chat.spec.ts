@@ -18,6 +18,14 @@ function createGroupMessageUpdate(type = 'message_created'): MaxUpdate {
   };
 }
 
+type SharedChatLockGuard = {
+  mode: 'allow';
+  activeBotId: string;
+  primaryBotId: string;
+  assignedBotIds: string[];
+  requiresExecutionLock: true;
+};
+
 describe('ModerationService shared chat ownership', () => {
   it('skips non-primary group updates before moderation work starts', async () => {
     const prisma = {};
@@ -124,5 +132,75 @@ describe('ModerationService shared chat ownership', () => {
       where: { chatId: '-100123' },
     });
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('-100123');
+  });
+
+  it('acquires only one shared execution lock for the same update across runtimes', async () => {
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        getActiveBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+      } as never,
+    );
+
+    const update = createGroupMessageUpdate();
+    const guard: SharedChatLockGuard = {
+      mode: 'allow' as const,
+      activeBotId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+      assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+      requiresExecutionLock: true,
+    };
+
+    const first = await (service as unknown as {
+      acquireSharedChatExecutionLock: (
+        update: MaxUpdate,
+        chatId: string,
+        guard: SharedChatLockGuard,
+      ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+      releaseSharedChatExecutionLock: (lock: {
+        key: string;
+        token: string;
+        mode: 'redis' | 'memory';
+      }) => Promise<void>;
+    }).acquireSharedChatExecutionLock(update, '-100123', guard);
+    const second = await (service as unknown as {
+      acquireSharedChatExecutionLock: (
+        update: MaxUpdate,
+        chatId: string,
+        guard: SharedChatLockGuard,
+      ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+    }).acquireSharedChatExecutionLock(update, '-100123', guard);
+
+    expect(first).not.toBeNull();
+    expect(second).toBeNull();
+
+    await (service as unknown as {
+      releaseSharedChatExecutionLock: (lock: {
+        key: string;
+        token: string;
+        mode: 'redis' | 'memory';
+      }) => Promise<void>;
+    }).releaseSharedChatExecutionLock(first!);
+
+    const third = await (service as unknown as {
+      acquireSharedChatExecutionLock: (
+        update: MaxUpdate,
+        chatId: string,
+        guard: SharedChatLockGuard,
+      ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+    }).acquireSharedChatExecutionLock(update, '-100123', guard);
+
+    expect(third).not.toBeNull();
   });
 });

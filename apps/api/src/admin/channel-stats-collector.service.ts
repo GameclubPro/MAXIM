@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { MaxClientService, type MaxChannelMessageSnapshot } from '../max/max-client.service';
+import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
@@ -62,6 +63,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     private readonly maxClient: MaxClientService,
     configService: ConfigService,
     @Optional() private readonly systemModeService?: SystemModeService,
+    @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.startupSyncEnabled = configService.get<boolean>('CHANNEL_STATS_STARTUP_SYNC_ENABLED', false);
@@ -329,6 +331,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       async () => {
         const now = new Date();
         const lookbackFrom = new Date(now.getTime() - CHANNEL_STATS_LOOKBACK_MS);
+        const statsBotId =
+          (await this.maxBotLinkService?.resolveBotIdForCapability({
+            chatId,
+            capability: 'channel_stats',
+          })) ?? undefined;
         const state = await this.prisma.channelStatsSyncState.findUnique({
           where: { chatId },
         });
@@ -338,6 +345,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           const snapshot = await this.maxClient.getChatSnapshot(chatId, {
             trafficClass: 'background',
             ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+            ...(statsBotId ? { botId: statsBotId } : {}),
           });
           await this.prisma.$transaction([
             this.prisma.chat.update({
@@ -386,6 +394,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
               trafficClass: 'background',
               ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+              ...(statsBotId ? { botId: statsBotId } : {}),
             });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;

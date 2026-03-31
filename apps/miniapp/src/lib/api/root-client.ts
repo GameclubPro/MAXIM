@@ -73,6 +73,35 @@ function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
         typeof item.characterName === 'string' && item.characterName.trim().length > 0
           ? item.characterName.trim()
           : null,
+      capabilities: Array.isArray(item.capabilities)
+        ? Array.from(
+            new Set(
+              item.capabilities
+                .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                .filter((value): value is string => value.length > 0),
+            ),
+          ) as ChatSummary['assignedBots'][number]['capabilities']
+        : [],
+      permissionsSummary:
+        isRecord(item.permissionsSummary) &&
+        Array.isArray(item.permissionsSummary.permissions)
+          ? {
+              checkedAt:
+                typeof item.permissionsSummary.checkedAt === 'string' &&
+                item.permissionsSummary.checkedAt.trim().length > 0
+                  ? item.permissionsSummary.checkedAt.trim()
+                  : null,
+              isAdmin: item.permissionsSummary.isAdmin === true,
+              isOwner: item.permissionsSummary.isOwner === true,
+              permissions: Array.from(
+                new Set(
+                  item.permissionsSummary.permissions
+                    .map((value) => (typeof value === 'string' ? value.trim() : ''))
+                    .filter((value): value is string => value.length > 0),
+                ),
+              ),
+            }
+          : null,
     });
   }
 
@@ -90,7 +119,9 @@ function parseChatSummary(value: unknown): ChatSummary {
   const primaryBotId =
     typeof value.primaryBotId === 'string' ? value.primaryBotId.trim() || null : null;
   const sharedMode =
-    value.sharedMode === 'shared-standby' || value.sharedMode === 'shared-failover'
+    value.sharedMode === 'shared-standby' ||
+    value.sharedMode === 'shared-assist' ||
+    value.sharedMode === 'shared-failover'
       ? value.sharedMode
       : 'owned';
 

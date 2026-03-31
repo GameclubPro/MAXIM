@@ -4,12 +4,14 @@ import { Module } from '@nestjs/common';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { MaxActionProcessor } from './max-action.processor';
+import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
 import { MaxClientService } from './max-client.service';
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
 
 const maxProviders = [
   MaxClientService,
+  MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
   MaxWebhookSubscriptionReconcilerService,
   ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
@@ -25,6 +27,11 @@ const maxProviders = [
     BullModule.registerQueue({ name: 'moderation-actions' }),
   ],
   providers: maxProviders,
-  exports: [MaxClientService, MaxMembershipLookupService, MaxWebhookSubscriptionReconcilerService],
+  exports: [
+    MaxClientService,
+    MaxBotExecutionPlannerService,
+    MaxMembershipLookupService,
+    MaxWebhookSubscriptionReconcilerService,
+  ],
 })
 export class MaxModule {}

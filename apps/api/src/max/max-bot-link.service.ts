@@ -5,6 +5,7 @@ import {
   ChatEntityType,
   Prisma,
 } from '@prisma/client';
+import type { ManagedEntityBotCapability } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   isValidMaxBotStartPayload,
@@ -14,6 +15,7 @@ import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
+const ACTIONABLE_BOT_LIFECYCLE_STATES = new Set(['active', 'draining']);
 
 type ChatBotBindingCacheEntry = {
   botId: string;
@@ -345,6 +347,62 @@ export class MaxBotLinkService {
     };
   }
 
+  async resolveBotIdForCapability(params: {
+    chatId: string;
+    capability: ManagedEntityBotCapability;
+    fallbackToPrimary?: boolean;
+  }): Promise<string | null> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        primaryBotId: true,
+        botId: true,
+        botMemberships: {
+          select: {
+            botId: true,
+            role: true,
+            status: true,
+            capabilities: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    const primaryBotId =
+      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+    const partnerBotId =
+      (chat?.botMemberships ?? []).find((membership) => {
+        if (
+          membership.status !== ChatBotMembershipStatus.ACTIVE ||
+          membership.role === ChatBotMembershipRole.PRIMARY
+        ) {
+          return false;
+        }
+
+        const bot = this.botRegistry.getBotById(membership.botId);
+        if (!bot || !ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state)) {
+          return false;
+        }
+
+        return this.normalizeBotCapabilities(membership.capabilities).includes(params.capability);
+      })?.botId ?? null;
+
+    if (partnerBotId) {
+      return partnerBotId;
+    }
+
+    if (params.fallbackToPrimary === false) {
+      return null;
+    }
+
+    return primaryBotId;
+  }
+
   async markChatBotRemoved(params: {
     chatId: string;
     botId?: string | null;
@@ -498,6 +556,30 @@ export class MaxBotLinkService {
     }
 
     return cached.botId;
+  }
+
+  private normalizeBotCapabilities(value: unknown): ManagedEntityBotCapability[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const supported = new Set<ManagedEntityBotCapability>([
+      'background_scans',
+      'channel_stats',
+      'suggestion_delivery',
+      'membership_prewarm',
+      'access_prewarm',
+    ]);
+
+    return Array.from(
+      new Set(
+        value
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item): item is ManagedEntityBotCapability =>
+            supported.has(item as ManagedEntityBotCapability),
+          ),
+      ),
+    );
   }
 
   private async promoteActiveChatBotMembership(

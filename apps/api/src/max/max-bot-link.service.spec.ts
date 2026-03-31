@@ -18,6 +18,7 @@ type MutableMembership = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  capabilities?: unknown;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
@@ -43,7 +44,9 @@ function createServiceFixture() {
             .filter((membership) => membership.chatId === where.id)
             .map((membership) => ({
               botId: membership.botId,
+              role: membership.role,
               status: membership.status,
+              capabilities: membership.capabilities ?? [],
             })),
         };
       }),
@@ -122,6 +125,7 @@ function createServiceFixture() {
             botId: create.botId,
             role: create.role,
             status: create.status,
+            capabilities: (create as MutableMembership).capabilities ?? [],
             createdAt: now(),
             updatedAt: now(),
             lastSeenAt: create.lastSeenAt ?? null,
@@ -177,8 +181,8 @@ function createServiceFixture() {
   };
 
   const bots = [
-    { id: 'id613002203036_bot', token: 'token-1' },
-    { id: 'id613002203036_4_bot', token: 'token-2' },
+    { id: 'id613002203036_bot', token: 'token-1', state: 'active' },
+    { id: 'id613002203036_4_bot', token: 'token-2', state: 'active' },
   ];
   const botRegistry = {
     getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
@@ -256,6 +260,46 @@ describe('MaxBotLinkService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
       }),
     );
+  });
+
+  it('resolves an assist-capable standby bot for shared background lanes', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-2', {
+      id: 'chat-2',
+      title: 'Assist chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-2',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-31T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-31T00:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-31T00:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-31T00:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-2',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-31T00:00:01.000Z'),
+        updatedAt: new Date('2026-03-31T00:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-31T00:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-31T00:00:01.000Z'),
+        capabilities: ['suggestion_delivery', 'channel_stats'],
+      },
+    );
+
+    const resolved = await fixture.service.resolveBotIdForCapability({
+      chatId: 'chat-2',
+      capability: 'suggestion_delivery',
+    });
+
+    expect(resolved).toBe('id613002203036_4_bot');
   });
 
   it('reports non-primary shared chat bindings as non-executable for group updates', async () => {

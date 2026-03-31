@@ -61,6 +61,44 @@ export class AdminController {
     return this.adminService.getChatHeader(chatId, user);
   }
 
+  @Get('chats/:chatId/bots/plan')
+  getChatBotExecutionPlan(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('refresh') refresh: string | undefined,
+  ) {
+    return this.adminService.getChatBotExecutionPlan(chatId, user, {
+      refresh: refresh === '1',
+    });
+  }
+
+  @Post('chats/:chatId/bots/primary')
+  updateChatPrimaryBot(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChatPrimaryBot(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/bots/partner-assist')
+  updateChatPartnerAssist(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChatPartnerAssist(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/bots/promote-standby')
+  promoteChatStandbyBot(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.promoteChatStandbyBot(chatId, user, body);
+  }
+
   @Get('channels')
   getChannels(
     @CurrentUser() user: AuthUser,
@@ -84,6 +122,44 @@ export class AdminController {
   @Get('channels/:chatId/header')
   getChannelHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelHeader(chatId, user);
+  }
+
+  @Get('channels/:chatId/bots/plan')
+  getChannelBotExecutionPlan(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('refresh') refresh: string | undefined,
+  ) {
+    return this.adminService.getChannelBotExecutionPlan(chatId, user, {
+      refresh: refresh === '1',
+    });
+  }
+
+  @Post('channels/:chatId/bots/primary')
+  updateChannelPrimaryBot(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelPrimaryBot(chatId, user, body);
+  }
+
+  @Post('channels/:chatId/bots/partner-assist')
+  updateChannelPartnerAssist(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelPartnerAssist(chatId, user, body);
+  }
+
+  @Post('channels/:chatId/bots/promote-standby')
+  promoteChannelStandbyBot(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.promoteChannelStandbyBot(chatId, user, body);
   }
 
   @Get('channels/:chatId/stats')

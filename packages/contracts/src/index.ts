@@ -44,9 +44,17 @@ export const managedEntityBotLifecycleStateSchema = z.enum([
   'draining',
   'disabled',
 ]);
+export const managedEntityBotCapabilitySchema = z.enum([
+  'background_scans',
+  'channel_stats',
+  'suggestion_delivery',
+  'membership_prewarm',
+  'access_prewarm',
+]);
 export const managedEntitySharedModeSchema = z.enum([
   'owned',
   'shared-standby',
+  'shared-assist',
   'shared-failover',
 ]);
 export const applySettingsSectionSchema = z.enum([
@@ -88,6 +96,7 @@ export type ManagedEntityBotMembershipStatus = z.infer<
 export type ManagedEntityBotLifecycleState = z.infer<
   typeof managedEntityBotLifecycleStateSchema
 >;
+export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabilitySchema>;
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
@@ -1392,8 +1401,57 @@ export const managedEntityAssignedBotSchema = z.object({
   lifecycleState: managedEntityBotLifecycleStateSchema,
   speechPersona: botSpeechPersonaSchema.default('male'),
   characterName: z.string().nullable().optional().default(null),
+  capabilities: z.array(managedEntityBotCapabilitySchema).optional().default([]),
+  permissionsSummary: z
+    .object({
+      checkedAt: z.string().datetime().nullable().default(null),
+      isAdmin: z.boolean().default(false),
+      isOwner: z.boolean().default(false),
+      permissions: z.array(z.string()).default([]),
+    })
+    .nullable()
+    .optional()
+    .default(null),
 });
 export type ManagedEntityAssignedBot = z.infer<typeof managedEntityAssignedBotSchema>;
+
+export const managedEntityBotExecutionPlanSchema = z.object({
+  chatId: z.string(),
+  entityType: managedEntityTypeSchema,
+  primaryBotId: z.string().nullable(),
+  speakerBotId: z.string().nullable(),
+  workerBotId: z.string().nullable(),
+  linkBotId: z.string().nullable(),
+  partnerBotId: z.string().nullable(),
+  sharedMode: managedEntitySharedModeSchema,
+  userFacingPolicy: z.literal('owner-only'),
+  reasons: z.array(z.string()),
+  warnings: z.array(z.string()),
+  assignedBots: z.array(managedEntityAssignedBotSchema),
+});
+export type ManagedEntityBotExecutionPlan = z.infer<typeof managedEntityBotExecutionPlanSchema>;
+
+export const updateManagedEntityPrimaryBotRequestSchema = z.object({
+  botId: z.string().trim().min(1),
+});
+export type UpdateManagedEntityPrimaryBotRequest = z.infer<
+  typeof updateManagedEntityPrimaryBotRequestSchema
+>;
+
+export const updateManagedEntityPartnerAssistRequestSchema = z.object({
+  botId: z.string().trim().min(1),
+  enabled: z.boolean(),
+});
+export type UpdateManagedEntityPartnerAssistRequest = z.infer<
+  typeof updateManagedEntityPartnerAssistRequestSchema
+>;
+
+export const promoteManagedEntityStandbyRequestSchema = z.object({
+  botId: z.string().trim().min(1).optional(),
+});
+export type PromoteManagedEntityStandbyRequest = z.infer<
+  typeof promoteManagedEntityStandbyRequestSchema
+>;
 
 export const chatSummarySchema = z.object({
   id: z.string(),

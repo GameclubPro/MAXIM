@@ -6,17 +6,21 @@ import {
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
+  managedEntityBotExecutionPlanSchema,
   domainAllowlistEntrySchema,
   managedBroadcastDetailsSchema,
   managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
   managedPollSchema,
   publishChatRulesResultSchema,
+  promoteManagedEntityStandbyRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
+  updateManagedEntityPartnerAssistRequestSchema,
+  updateManagedEntityPrimaryBotRequestSchema,
   updateChatRulesRequestSchema,
   updateManagedPollRequestSchema,
   type ApplySectionToAllResponse,
@@ -28,6 +32,7 @@ import {
   type BroadcastHandoffState,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
+  type ManagedEntityBotExecutionPlan,
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChatRulesResult,
@@ -47,6 +52,59 @@ export async function getChatHeader(
 ): Promise<ManagedEntityHeader> {
   const response = await api.request(`/chats/${chatId}/header`);
   return managedEntityHeaderSchema.parse(response);
+}
+
+export async function getChatBotExecutionPlan(
+  api: ApiTransport,
+  chatId: string,
+  options: { refresh?: boolean; signal?: AbortSignal } = {},
+): Promise<ManagedEntityBotExecutionPlan> {
+  const query = options.refresh ? '?refresh=1' : '';
+  const response = await api.request(`/chats/${chatId}/bots/plan${query}`, {
+    signal: options.signal,
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function updateChatPrimaryBot(
+  api: ApiTransport,
+  chatId: string,
+  botId: string,
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = updateManagedEntityPrimaryBotRequestSchema.parse({ botId });
+  const response = await api.request(`/chats/${chatId}/bots/primary`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function updateChatPartnerAssist(
+  api: ApiTransport,
+  chatId: string,
+  payload: { botId: string; enabled: boolean },
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = updateManagedEntityPartnerAssistRequestSchema.parse(payload);
+  const response = await api.request(`/chats/${chatId}/bots/partner-assist`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function promoteChatStandbyBot(
+  api: ApiTransport,
+  chatId: string,
+  botId?: string,
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = promoteManagedEntityStandbyRequestSchema.parse(
+    botId ? { botId } : {},
+  );
+  const response = await api.request(`/chats/${chatId}/bots/promote-standby`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
 }
 
 export async function getSettings(api: ApiTransport, chatId: string): Promise<ChatSettings> {

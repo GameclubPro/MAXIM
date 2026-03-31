@@ -26,6 +26,7 @@ import {
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
   type ManagedBroadcastDetails,
+  type ManagedEntityBotExecutionPlan,
   type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -37,6 +38,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ComponentProps,
   type MouseEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -65,6 +67,7 @@ import {
   addDomain,
   applySettingsSectionToAll,
   cancelManagedBroadcast,
+  getChatBotExecutionPlan,
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
@@ -76,6 +79,8 @@ import {
   resetPublishedRules,
   retryManagedBroadcast,
   scheduleDomainRemoval,
+  updateChatPartnerAssist,
+  updateChatPrimaryBot,
   updateManagedBroadcast,
   updateRules,
   updateSettings,
@@ -99,6 +104,7 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
+import { describeApiError } from '../lib/api-error';
 import {
   NIGHT_SECTION_SETTING_KEYS,
   applyNightModeBotMessageEnabledChange,
@@ -128,6 +134,11 @@ type DeleteDelayStepperProps = {
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 const LazyMessageLimitsBlockedWordPresets = lazy(
   () => import('../components/message-limits-blocked-word-presets'),
+);
+const LazyBotExecutionPanel = lazy(() =>
+  import('../components/bot-execution-panel').then((module) => ({
+    default: module.BotExecutionPanel,
+  })),
 );
 const LazyPublishedRulesButtonToggle = lazy(
   () => import('../components/published-rules-button-toggle'),
@@ -335,6 +346,14 @@ function PublishedRulesButtonToggleSlot(props: PublishedRulesButtonToggleProps) 
   return (
     <Suspense fallback={null}>
       <LazyPublishedRulesButtonToggle {...props} />
+    </Suspense>
+  );
+}
+
+function BotExecutionPanelSlot(props: ComponentProps<typeof LazyBotExecutionPanel>) {
+  return (
+    <Suspense fallback={null}>
+      <LazyBotExecutionPanel {...props} />
     </Suspense>
   );
 }
@@ -2101,10 +2120,83 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatHeaderQuery = {
     data: settingsScreenQuery.data?.header,
   };
+  const botExecutionPlanQuery = useQuery({
+    queryKey: ['chat-bot-execution-plan', chatId],
+    queryFn: ({ signal }) =>
+      getChatBotExecutionPlan(api, chatId ?? '', {
+        signal,
+      }),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+  const refreshBotExecutionPlanMutation = useMutation({
+    mutationFn: () =>
+      getChatBotExecutionPlan(api, chatId ?? '', {
+        refresh: true,
+      }),
+    onSuccess: async (data: ManagedEntityBotExecutionPlan) => {
+      queryClient.setQueryData(['chat-bot-execution-plan', chatId], data);
+      await queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+    },
+  });
+  const updatePrimaryBotMutation = useMutation({
+    mutationFn: (botId: string) => updateChatPrimaryBot(api, chatId ?? '', botId),
+    onSuccess: async (data: ManagedEntityBotExecutionPlan) => {
+      queryClient.setQueryData(['chat-bot-execution-plan', chatId], data);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] }),
+        queryClient.invalidateQueries({ queryKey: ['chats-sync', 'chat'] }),
+      ]);
+      pushToast({
+        tone: 'success',
+        title: 'Owner переключён',
+        description: 'User-facing path и deep links теперь закреплены за новым owner-ботом.',
+      });
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось переключить owner',
+        description: describeApiError(error, 'Проверьте состояние ботов и повторите попытку.'),
+      });
+    },
+  });
+  const updatePartnerAssistMutation = useMutation({
+    mutationFn: (params: { botId: string; enabled: boolean }) =>
+      updateChatPartnerAssist(api, chatId ?? '', params),
+    onSuccess: async (data: ManagedEntityBotExecutionPlan, variables) => {
+      queryClient.setQueryData(['chat-bot-execution-plan', chatId], data);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] }),
+        queryClient.invalidateQueries({ queryKey: ['chats-sync', 'chat'] }),
+      ]);
+      pushToast({
+        tone: 'success',
+        title: variables.enabled ? 'Assist включён' : 'Assist выключен',
+        description: variables.enabled
+          ? 'Partner-бот переведён в безопасные assist-lane’ы.'
+          : 'Partner-бот снова остался только в standby-режиме.',
+      });
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить assist-режим',
+        description: describeApiError(error, 'Проверьте права бота в этом чате и повторите попытку.'),
+      });
+    },
+  });
   const botSpeechPreviewContext = useMemo(
     () => resolveBotSpeechPreviewContext(chatHeaderQuery.data ?? null),
     [chatHeaderQuery.data],
   );
+  const currentBotExecutionPlan = botExecutionPlanQuery.data ?? null;
+  const pendingPrimaryBotId = updatePrimaryBotMutation.isPending
+    ? (updatePrimaryBotMutation.variables ?? null)
+    : null;
+  const pendingAssistBotId = updatePartnerAssistMutation.isPending
+    ? (updatePartnerAssistMutation.variables?.botId ?? null)
+    : null;
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
     isLoading: settingsScreenQuery.isLoading,
@@ -4783,6 +4875,42 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ) : null
             }
           />
+
+          <GlassCard className="settings-section">
+            {botExecutionPlanQuery.isLoading && !currentBotExecutionPlan ? (
+              <SkeletonCard lines={4} />
+            ) : botExecutionPlanQuery.error ? (
+              <StatusState
+                tone="warning"
+                title="Execution planner недоступен"
+                description={describeApiError(
+                  botExecutionPlanQuery.error,
+                  'Не удалось получить план работы ботов для этого чата.',
+                )}
+                action={
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => void botExecutionPlanQuery.refetch()}
+                  >
+                    Повторить
+                  </button>
+                }
+              />
+            ) : currentBotExecutionPlan ? (
+              <BotExecutionPanelSlot
+                plan={currentBotExecutionPlan}
+                isRefreshing={refreshBotExecutionPlanMutation.isPending}
+                pendingPrimaryBotId={pendingPrimaryBotId}
+                pendingAssistBotId={pendingAssistBotId}
+                onRefresh={() => void refreshBotExecutionPlanMutation.mutateAsync()}
+                onMakePrimary={(botId) => void updatePrimaryBotMutation.mutateAsync(botId)}
+                onToggleAssist={(botId, enabled) =>
+                  void updatePartnerAssistMutation.mutateAsync({ botId, enabled })
+                }
+              />
+            ) : null}
+          </GlassCard>
 
           <SettingsDrilldownPanel
             id="settings-bot-speech-style"

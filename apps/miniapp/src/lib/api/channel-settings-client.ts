@@ -4,12 +4,16 @@ import {
   broadcastHandoffStateSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
+  managedEntityBotExecutionPlanSchema,
   managedBroadcastDetailsSchema,
   managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
   managedPollSchema,
+  promoteManagedEntityStandbyRequestSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
+  updateManagedEntityPartnerAssistRequestSchema,
+  updateManagedEntityPrimaryBotRequestSchema,
   updateManagedPollRequestSchema,
   sendBroadcastRequestSchema,
   type BroadcastHandoffState,
@@ -17,6 +21,7 @@ import {
   type ChannelSettingsScreenResponse,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
+  type ManagedEntityBotExecutionPlan,
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChannelEngagementRequest,
@@ -31,6 +36,59 @@ export async function getChannelHeader(
 ): Promise<ManagedEntityHeader> {
   const response = await api.request(`/channels/${chatId}/header`);
   return managedEntityHeaderSchema.parse(response);
+}
+
+export async function getChannelBotExecutionPlan(
+  api: ApiTransport,
+  chatId: string,
+  options: { refresh?: boolean; signal?: AbortSignal } = {},
+): Promise<ManagedEntityBotExecutionPlan> {
+  const query = options.refresh ? '?refresh=1' : '';
+  const response = await api.request(`/channels/${chatId}/bots/plan${query}`, {
+    signal: options.signal,
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function updateChannelPrimaryBot(
+  api: ApiTransport,
+  chatId: string,
+  botId: string,
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = updateManagedEntityPrimaryBotRequestSchema.parse({ botId });
+  const response = await api.request(`/channels/${chatId}/bots/primary`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function updateChannelPartnerAssist(
+  api: ApiTransport,
+  chatId: string,
+  payload: { botId: string; enabled: boolean },
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = updateManagedEntityPartnerAssistRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/bots/partner-assist`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
+}
+
+export async function promoteChannelStandbyBot(
+  api: ApiTransport,
+  chatId: string,
+  botId?: string,
+): Promise<ManagedEntityBotExecutionPlan> {
+  const requestBody = promoteManagedEntityStandbyRequestSchema.parse(
+    botId ? { botId } : {},
+  );
+  const response = await api.request(`/channels/${chatId}/bots/promote-standby`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedEntityBotExecutionPlanSchema.parse(response);
 }
 
 export async function getChannelSettings(

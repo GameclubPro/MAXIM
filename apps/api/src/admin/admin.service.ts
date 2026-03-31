@@ -24,7 +24,10 @@ import {
   moderationFeedQuerySchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
+  managedEntityBotCapabilitySchema,
+  managedEntityBotExecutionPlanSchema,
   publishChatRulesResultSchema,
+  promoteManagedEntityStandbyRequestSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
@@ -42,6 +45,8 @@ import {
   type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
+  type ManagedEntityBotCapability,
+  type ManagedEntityBotExecutionPlan,
   managedBroadcastSummarySchema,
   type ChannelSettings,
   type ChatSettingsScreenResponse,
@@ -73,6 +78,8 @@ import {
   type SendBroadcastResult,
   type ChatSummary,
   type ManagedEntityHeader,
+  type UpdateManagedEntityPartnerAssistRequest,
+  type UpdateManagedEntityPrimaryBotRequest,
   type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
   inferAllowlistMatchType,
@@ -85,6 +92,8 @@ import {
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  updateManagedEntityPartnerAssistRequestSchema,
+  updateManagedEntityPrimaryBotRequestSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
@@ -139,6 +148,7 @@ import {
 } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import {
   buildManagedPollButtons,
   buildManagedPollMessageText,
@@ -192,6 +202,8 @@ type ManagedEntityBotAssignmentsRow = {
     botId: string;
     role: 'PRIMARY' | 'STANDBY';
     status: 'ACTIVE' | 'REMOVED';
+    capabilities: unknown;
+    permissionsSnapshot: unknown;
   }>;
 };
 
@@ -617,6 +629,7 @@ export class AdminService {
     private readonly adminSuggestionDeliveryQueue?: Queue<AdminSuggestionDeliveryJob>,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     private readonly maxBotRegistry?: MaxBotRegistryService,
+    @Optional() private readonly maxBotExecutionPlanner?: MaxBotExecutionPlannerService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -773,6 +786,164 @@ export class AdminService {
 
   async getChannelHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
     return this.getManagedEntityHeader(chatId, user, 'channel');
+  }
+
+  async getChatBotExecutionPlan(
+    chatId: string,
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.getManagedEntityBotExecutionPlan(chatId, user, 'chat', options);
+  }
+
+  async getChannelBotExecutionPlan(
+    chatId: string,
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.getManagedEntityBotExecutionPlan(chatId, user, 'channel', options);
+  }
+
+  async updateChatPrimaryBot(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.updateManagedEntityPrimaryBot(chatId, user, 'chat', body);
+  }
+
+  async updateChannelPrimaryBot(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.updateManagedEntityPrimaryBot(chatId, user, 'channel', body);
+  }
+
+  async updateChatPartnerAssist(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.updateManagedEntityPartnerAssist(chatId, user, 'chat', body);
+  }
+
+  async updateChannelPartnerAssist(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.updateManagedEntityPartnerAssist(chatId, user, 'channel', body);
+  }
+
+  async promoteChatStandbyBot(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.promoteManagedEntityStandbyBot(chatId, user, 'chat', body);
+  }
+
+  async promoteChannelStandbyBot(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    return this.promoteManagedEntityStandbyBot(chatId, user, 'channel', body);
+  }
+
+  private async getManagedEntityBotExecutionPlan(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    options: { refresh?: boolean } = {},
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    if (!this.maxBotExecutionPlanner) {
+      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+    }
+
+    return managedEntityBotExecutionPlanSchema.parse(
+      await this.maxBotExecutionPlanner.getManagedEntityExecutionPlan({
+        chatId,
+        entityType,
+        refreshCapabilities: options.refresh === true,
+      }),
+    );
+  }
+
+  private async updateManagedEntityPrimaryBot(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    if (!this.maxBotExecutionPlanner) {
+      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+    }
+
+    const request = updateManagedEntityPrimaryBotRequestSchema.parse(body) as UpdateManagedEntityPrimaryBotRequest;
+    const plan = await this.maxBotExecutionPlanner.setPrimaryBot({
+      chatId,
+      entityType,
+      botId: request.botId,
+    });
+    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
+    return managedEntityBotExecutionPlanSchema.parse(plan);
+  }
+
+  private async updateManagedEntityPartnerAssist(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    if (!this.maxBotExecutionPlanner) {
+      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+    }
+
+    const request = updateManagedEntityPartnerAssistRequestSchema.parse(
+      body,
+    ) as UpdateManagedEntityPartnerAssistRequest;
+    const plan = await this.maxBotExecutionPlanner.setPartnerAssist({
+      chatId,
+      entityType,
+      botId: request.botId,
+      enabled: request.enabled,
+    });
+    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
+    return managedEntityBotExecutionPlanSchema.parse(plan);
+  }
+
+  private async promoteManagedEntityStandbyBot(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    body: unknown,
+  ): Promise<ManagedEntityBotExecutionPlan> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    if (!this.maxBotExecutionPlanner) {
+      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+    }
+
+    const request = promoteManagedEntityStandbyRequestSchema.parse(body);
+    const plan = await this.maxBotExecutionPlanner.promoteStandby({
+      chatId,
+      entityType,
+      botId: request.botId ?? null,
+    });
+    await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
+    return managedEntityBotExecutionPlanSchema.parse(plan);
   }
 
   private async listManagedEntitiesDetailed(
@@ -993,6 +1164,8 @@ export class AdminService {
             botId: true,
             role: true,
             status: true,
+            capabilities: true,
+            permissionsSnapshot: true,
           },
         },
       },
@@ -1009,6 +1182,8 @@ export class AdminService {
             botId: membership.botId,
             role: membership.role,
             status: membership.status,
+            capabilities: membership.capabilities,
+            permissionsSnapshot: membership.permissionsSnapshot,
           })),
         } satisfies ManagedEntityBotAssignmentsRow,
       ]),
@@ -1046,6 +1221,10 @@ export class AdminService {
         lifecycleState: botMeta?.state ?? 'disabled',
         speechPersona: botMeta?.speechPersona ?? 'male',
         characterName: botMeta?.characterName ?? null,
+        capabilities: this.normalizeManagedEntityBotCapabilities(membership.capabilities),
+        permissionsSummary: this.readManagedEntityPermissionsSummary(
+          membership.permissionsSnapshot,
+        ),
       });
     }
 
@@ -1059,6 +1238,8 @@ export class AdminService {
         lifecycleState: botMeta?.state ?? 'disabled',
         speechPersona: botMeta?.speechPersona ?? 'male',
         characterName: botMeta?.characterName ?? null,
+        capabilities: [],
+        permissionsSummary: null,
       });
     }
 
@@ -1069,7 +1250,7 @@ export class AdminService {
       return left.label.localeCompare(right.label, 'ru');
     });
 
-    const sharedMode = assignedBots.length > 1 ? 'shared-standby' : 'owned';
+    const sharedMode = this.resolveManagedEntitySharedMode(assignedBots);
 
     return {
       ...entity,
@@ -1077,6 +1258,73 @@ export class AdminService {
       assignedBots,
       sharedMode,
     };
+  }
+
+  private normalizeManagedEntityBotCapabilities(
+    value: unknown,
+  ): ManagedEntityBotCapability[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .flatMap((item) => {
+            const parsed = managedEntityBotCapabilitySchema.safeParse(item);
+            return parsed.success ? [parsed.data] : [];
+          }),
+      ),
+    );
+  }
+
+  private readManagedEntityPermissionsSummary(
+    value: unknown,
+  ): ManagedEntityAssignedBot['permissionsSummary'] {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const checkedAt =
+      typeof row.checkedAt === 'string' && row.checkedAt.trim().length > 0 ? row.checkedAt : null;
+    const permissions = Array.isArray(row.permissions)
+      ? Array.from(
+          new Set(
+            row.permissions
+              .map((item) => (typeof item === 'string' ? item.trim() : ''))
+              .filter((item): item is string => item.length > 0),
+          ),
+        )
+      : [];
+
+    return {
+      checkedAt,
+      isAdmin: row.isAdmin === true,
+      isOwner: row.isOwner === true,
+      permissions,
+    };
+  }
+
+  private resolveManagedEntitySharedMode(
+    assignedBots: readonly ManagedEntityAssignedBot[],
+  ): ChatSummary['sharedMode'] {
+    const activeBots = assignedBots.filter((bot) => bot.membershipStatus === 'active');
+    if (activeBots.length <= 1) {
+      return 'owned';
+    }
+
+    const primaryBot = activeBots.find((bot) => bot.role === 'primary') ?? activeBots[0];
+    if (activeBots.some((bot) => bot.role === 'standby' && bot.capabilities.length > 0)) {
+      return 'shared-assist';
+    }
+
+    if (primaryBot?.lifecycleState === 'draining') {
+      return 'shared-failover';
+    }
+
+    return 'shared-standby';
   }
 
   private mergeManagedEntitiesDiscoverySnapshots(
@@ -12662,14 +12910,20 @@ export class AdminService {
     suggestion: ChannelSuggestionDeliveryInput,
   ): Promise<{
     delivered: boolean;
-    deliveredToUserId: string | null;
-    deliveredToUserIds: string[];
-    deliveries: ChannelSuggestionAdminDelivery[];
+      deliveredToUserId: string | null;
+      deliveredToUserIds: string[];
+      deliveries: ChannelSuggestionAdminDelivery[];
   }> {
-    const currentBotUserId = await this.resolveCurrentBotUserId(chatId);
+    const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
+    const currentBotUserId = await this.resolveCurrentBotUserId(chatId, deliveryBotId);
     const adminIds = Array.from(
       new Set(
-        (await this.maxClient.getChatAdminIds(chatId)).filter(
+        (
+          await this.maxClient.getChatAdminIds(chatId, {
+            trafficClass: 'background',
+            ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+          })
+        ).filter(
           (id) =>
             id.trim().length > 0 &&
             !this.isOwnBotUserId(id) &&
@@ -12712,6 +12966,7 @@ export class AdminService {
           privateChatId,
           message,
           options: messageOptions,
+          ...(deliveryBotId ? { botId: deliveryBotId } : {}),
         });
 
         deliveredAdminUserIds.push(adminUserId);
@@ -13216,6 +13471,7 @@ export class AdminService {
     privateChatId: string | null;
     message: string;
     options: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>;
+    botId?: string;
   }) {
     let lastError: unknown = null;
     let privateChatId = params.privateChatId;
@@ -13234,11 +13490,19 @@ export class AdminService {
               privateChatId,
               params.message,
               params.options,
+              {
+                trafficClass: 'background',
+                ...(params.botId ? { botId: params.botId } : {}),
+              },
             )
           : await this.maxClient.sendMessageImmediateToUser(
               params.adminUserId,
               params.message,
               params.options,
+              {
+                trafficClass: 'background',
+                ...(params.botId ? { botId: params.botId } : {}),
+              },
             );
       } catch (error: unknown) {
         lastError = error;
@@ -13858,10 +14122,26 @@ export class AdminService {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
   }
 
-  private async resolveCurrentBotUserId(chatId: string): Promise<string | null> {
+  private async resolveAssistBotAssignment(
+    chatId: string,
+    capability: ManagedEntityBotCapability,
+  ): Promise<string | undefined> {
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForCapability({
+        chatId,
+        capability,
+      })) ?? undefined
+    );
+  }
+
+  private async resolveCurrentBotUserId(
+    chatId: string,
+    botId?: string | null,
+  ): Promise<string | null> {
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         trafficClass: 'interactive',
+        ...(botId ? { botId } : {}),
       });
       return this.readTrimmedString(access.userId);
     } catch (error: unknown) {

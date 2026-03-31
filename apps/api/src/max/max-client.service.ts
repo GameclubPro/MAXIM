@@ -469,22 +469,27 @@ export class MaxClientService implements OnModuleDestroy {
     userId: string,
     text: string,
     options?: MaxSendMessageOptions,
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData(options?.messageLink);
-    const sendResponse = await this.executeMutation(`user:${userId}`, async () => {
-      return this.request<Record<string, unknown>>('post', '/messages', {
-        params: {
-          user_id: userId,
-        },
-        data: {
-          text,
-          ...(options?.textFormat ? { format: options.textFormat } : {}),
-          ...(messageLink ? { link: messageLink } : {}),
-          ...(attachments.length > 0 ? { attachments } : {}),
-        },
-      });
-    });
+    const sendResponse = await this.executeMutation(
+      `user:${userId}`,
+      async () => {
+        return this.request<Record<string, unknown>>('post', '/messages', {
+          params: {
+            user_id: userId,
+          },
+          data: {
+            text,
+            ...(options?.textFormat ? { format: options.textFormat } : {}),
+            ...(messageLink ? { link: messageLink } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+          },
+        });
+      },
+      requestOptions,
+    );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
