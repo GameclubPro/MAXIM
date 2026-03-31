@@ -387,6 +387,8 @@ const MIXED_CHAR_MAP: Record<string, string> = {
 @Injectable()
 export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
+  private readonly blockedWordListCache = new WeakMap<readonly string[], readonly string[]>();
+  private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
   constructor(private readonly redisCounter: RedisCounterService) {}
 
@@ -1615,13 +1617,7 @@ export class RuleEngineService {
       return null;
     }
 
-    const blockedWordList = [
-      ...new Set(
-        blockedWords
-          .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
-          .filter((item): item is string => Boolean(item)),
-      ),
-    ];
+    const blockedWordList = this.resolveMessageLimitsBlockedWordList(blockedWords);
     if (blockedWordList.length === 0) {
       return null;
     }
@@ -1632,7 +1628,7 @@ export class RuleEngineService {
     }
 
     for (const blockedWord of blockedWordList) {
-      if (this.buildMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
+      if (this.getMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
         return {
           blockedWord,
         };
@@ -1650,6 +1646,34 @@ export class RuleEngineService {
     let normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
     normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
     return normalized;
+  }
+
+  private resolveMessageLimitsBlockedWordList(blockedWords: readonly string[]): readonly string[] {
+    const cached = this.blockedWordListCache.get(blockedWords);
+    if (cached) {
+      return cached;
+    }
+
+    const resolved = [
+      ...new Set(
+        blockedWords
+          .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
+          .filter((item): item is string => Boolean(item)),
+      ),
+    ];
+    this.blockedWordListCache.set(blockedWords, resolved);
+    return resolved;
+  }
+
+  private getMessageLimitsBlockedWordPattern(value: string): RegExp {
+    const cached = this.blockedWordPatternCache.get(value);
+    if (cached) {
+      return cached;
+    }
+
+    const pattern = this.buildMessageLimitsBlockedWordPattern(value);
+    this.blockedWordPatternCache.set(value, pattern);
+    return pattern;
   }
 
   private buildMessageLimitsBlockedWordPattern(value: string): RegExp {

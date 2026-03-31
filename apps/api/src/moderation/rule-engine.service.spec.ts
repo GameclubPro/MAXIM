@@ -1127,6 +1127,31 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
+  it('reuses cached blocked-word patterns across repeated detects for the same settings list', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const buildPatternSpy = jest.spyOn(service as any, 'buildMessageLimitsBlockedWordPattern');
+    const settings = buildSettings({
+      messageLimitsBlockedWords: ['крипта', 'казино', 'ставки'],
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'обычное сообщение без совпадений',
+      settings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ещё одно обычное сообщение',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(buildPatternSpy).toHaveBeenCalledTimes(3);
+  });
+
   it('does not normalize malformed configured blocked words into a different token', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
