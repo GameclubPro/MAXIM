@@ -1340,6 +1340,9 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         text: expect.any(String),
       }),
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
     );
   });
 
@@ -1392,6 +1395,9 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeOpenRules + 1);
     expect(maxClient.answerCallback).toHaveBeenCalledTimes(callbackAnswersBeforeOpenRules + 1);
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]).toBeUndefined();
+    expect(maxClient.answerCallback.mock.calls.at(-1)?.[3]).toEqual({
+      ignoreFailureMetricStatuses: [400, 404],
+    });
 
     expect(getLastUiText(maxClient)).toContain('Правила');
     expect(getLastUiText(maxClient)).toContain('Соблюдайте **правила** чата.');

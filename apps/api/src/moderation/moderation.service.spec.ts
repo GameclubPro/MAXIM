@@ -3853,7 +3853,14 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
 
-    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-1', 'Собираю список чатов');
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Собираю список чатов',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
+    );
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
@@ -9499,6 +9506,10 @@ describe('ModerationService', () => {
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-rules-1',
       'Кнопка обновлена. Нажмите ещё раз',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
     );
   });
 
@@ -9558,6 +9569,10 @@ describe('ModerationService', () => {
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-suggest-1',
       'Бот написал в личку',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
     );
   });
 
@@ -11854,6 +11869,91 @@ describe('ModerationService', () => {
           ],
         }),
       }),
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
+    );
+  });
+
+  it('falls back to direct poll message edit when callback answer is already expired', async () => {
+    const prisma = {
+      managedPoll: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'poll-1',
+          chatId: 'channel-1',
+          question: 'Какой режим выбираем?',
+          options: ['Соло', 'Сквад'],
+          status: 'ACTIVE',
+          activeVersion: 1,
+          publishedMessageId: 'mid-poll-1',
+        }),
+      },
+      managedPollVote: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue(undefined),
+        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+      },
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const maxClient = {
+      answerCallback: jest
+        .fn()
+        .mockRejectedValue(
+          createMaxApiError(404, 'Request failed with status code 404', 'callback.not.found'),
+        ),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-poll-1',
+      'Голос учтён',
+      expect.objectContaining({
+        text: expect.stringContaining('Соло - 1 (100%)'),
+      }),
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-poll-1',
+      expect.stringContaining('Соло - 1 (100%)'),
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: 'Соло (1)' })],
+          [expect.objectContaining({ text: 'Сквад (0)' })],
+        ],
+      }),
     );
   });
 
@@ -11918,6 +12018,10 @@ describe('ModerationService', () => {
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-poll-1',
       'Вы уже выбрали этот вариант',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
     );
   });
 
@@ -11978,6 +12082,13 @@ describe('ModerationService', () => {
 
     expect(prisma.managedPollVote.upsert).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-poll-1', 'Опрос закрыт');
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-poll-1',
+      'Опрос закрыт',
+      undefined,
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
+    );
   });
 });

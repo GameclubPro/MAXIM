@@ -2283,6 +2283,7 @@ export class MaxClientService implements OnModuleDestroy {
     callbackId: string,
     notification?: string,
     messageEdit?: MaxCallbackMessageEdit,
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<void> {
     const normalizedCallbackId = callbackId.trim();
     if (!normalizedCallbackId) {
@@ -2316,7 +2317,12 @@ export class MaxClientService implements OnModuleDestroy {
           },
           data: callbackData,
         }),
-      'critical',
+      {
+        trafficClass: 'critical',
+        ignoreFailureMetricStatuses: requestOptions.ignoreFailureMetricStatuses,
+        timeoutMs: requestOptions.timeoutMs,
+        botId: requestOptions.botId,
+      },
     );
   }
 

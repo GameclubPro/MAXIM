@@ -49,6 +49,8 @@ import {
 } from '../max/max-client.service';
 import { RedisCounterService } from './redis-counter.service';
 
+const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
+
 type PrivateSectionKey =
   | 'links'
   | 'greeting'
@@ -9794,10 +9796,17 @@ export class PrivateControlService {
     options?: MaxSendMessageOptions,
   ): Promise<boolean> {
     try {
-      await this.maxClient.answerCallback(callbackId, notification, {
-        text,
-        options,
-      });
+      await this.maxClient.answerCallback(
+        callbackId,
+        notification,
+        {
+          text,
+          options,
+        },
+        {
+          ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+        },
+      );
       return true;
     } catch (error: unknown) {
       this.logger.debug(
@@ -9813,7 +9822,9 @@ export class PrivateControlService {
 
   private async answerCallbackQuiet(callbackId: string, notification: string): Promise<void> {
     try {
-      await this.maxClient.answerCallback(callbackId, notification);
+      await this.maxClient.answerCallback(callbackId, notification, undefined, {
+        ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {

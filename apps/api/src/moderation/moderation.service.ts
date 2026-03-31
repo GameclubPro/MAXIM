@@ -83,6 +83,8 @@ import {
   WEBHOOK_QUEUE_CRITICAL,
 } from '../webhook/webhook-queues';
 
+const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
+
 type ActiveMute = {
   eventId: string;
   issuedAt: Date;
@@ -7031,7 +7033,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async answerCallbackSafe(callbackId: string, notification: string): Promise<void> {
     try {
-      await this.maxClient.answerCallback(callbackId, notification);
+      await this.maxClient.answerCallback(callbackId, notification, undefined, {
+        ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -7234,11 +7238,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
 
     if (callbackId) {
-      await this.maxClient.answerCallback(callbackId, notification, {
-        text,
-        options: editOptions,
-      });
-      return;
+      try {
+        await this.maxClient.answerCallback(
+          callbackId,
+          notification,
+          {
+            text,
+            options: editOptions,
+          },
+          {
+            ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+          },
+        );
+        return;
+      } catch (error: unknown) {
+        if (!this.isTerminalCallbackError(error)) {
+          throw error;
+        }
+
+        this.logger.debug(
+          {
+            callbackId,
+            chatId,
+            sourceMessageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Managed poll callback answer expired; falling back to direct message edit',
+        );
+      }
     }
 
     await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, editOptions);
@@ -10493,6 +10520,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isNightModeTerminalDeliveryError(error: unknown): boolean {
     return this.isTerminalWebhookProcessingError(error);
+  }
+
+  private isTerminalCallbackError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 400 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'callback.not.found' || code === 'message_callback.not_found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('callback') &&
+      (message.includes('expired') || message.includes('not found') || message.includes('invalid'))
+    );
   }
 
   private isTerminalWebhookProcessingError(error: unknown): boolean {
