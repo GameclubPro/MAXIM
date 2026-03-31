@@ -7231,6 +7231,93 @@ describe('ModerationService', () => {
     );
   });
 
+  it('does not require a shared execution lock for owner-stamped shared chat updates', async () => {
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn(),
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-1'),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+
+    const update = {
+      ...createUpdate(),
+      executionOwnerBotId: 'bot-1',
+    } as MaxUpdate & { executionOwnerBotId: string };
+
+    await expect(
+      (service as any).resolveSharedChatExecutionGuard(update, '-68829672464520'),
+    ).resolves.toEqual({
+      mode: 'allow',
+      activeBotId: 'bot-1',
+      primaryBotId: 'bot-1',
+      assignedBotIds: ['bot-1'],
+      requiresExecutionLock: false,
+    });
+
+    expect(maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
+  });
+
+  it('keeps the shared execution lock for binding-lookup shared chat updates', async () => {
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn().mockResolvedValue({
+        chatId: '-68829672464520',
+        activeBotId: 'bot-1',
+        primaryBotId: 'bot-1',
+        activeMembershipStatus: 'ACTIVE',
+        assignedBotIds: ['bot-1', 'bot-2'],
+        shouldHandleGroupUpdate: true,
+      }),
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-1'),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+
+    await expect(
+      (service as any).resolveSharedChatExecutionGuard(createUpdate(), '-68829672464520'),
+    ).resolves.toEqual({
+      mode: 'allow',
+      activeBotId: 'bot-1',
+      primaryBotId: 'bot-1',
+      assignedBotIds: ['bot-1', 'bot-2'],
+      requiresExecutionLock: true,
+    });
+
+    expect(maxBotLinkService.getChatExecutionBinding).toHaveBeenCalledWith({
+      chatId: '-68829672464520',
+      activeBotId: 'bot-1',
+    });
+  });
+
   it('uses shared cache for remote chat admins to avoid MAX API call', async () => {
     const prisma = {
       chat: {

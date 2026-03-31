@@ -7041,7 +7041,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           activeBotId,
           primaryBotId: executionOwnerBotId,
           assignedBotIds: [executionOwnerBotId],
-          requiresExecutionLock: true,
+          requiresExecutionLock: false,
         };
       }
 
