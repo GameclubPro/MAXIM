@@ -904,7 +904,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 openSupportBot();
               }}
             >
-              Конкурсный бот Майор Максимов
+              Чат поддержки
             </a>
           </p>
         </section>

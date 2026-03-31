@@ -1,5 +1,4 @@
 import { useQueryClient } from '@tanstack/react-query';
-import type { ChatSummary } from '@maxim/contracts';
 import {
   Suspense,
   lazy,
@@ -50,39 +49,6 @@ const LazySystemEntryCard = lazy(async () => {
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
-}
-
-function buildEntityBotChips(entity: ChatSummary): Array<{
-  key: string;
-  label: string;
-  className: string;
-}> {
-  const chips = entity.assignedBots.slice(0, 3).map((bot) => {
-    const stateTone =
-      bot.membershipStatus === 'removed'
-        ? 'chip--danger'
-        : bot.role === 'primary'
-          ? 'chip--success'
-          : bot.lifecycleState === 'dormant' || bot.lifecycleState === 'draining'
-            ? 'chip--warning'
-            : '';
-
-    return {
-      key: bot.botId,
-      label: bot.role === 'primary' ? `${bot.label} · осн.` : bot.label,
-      className: ['chip', stateTone, 'chat-card__bot-chip'].filter(Boolean).join(' '),
-    };
-  });
-
-  if (entity.assignedBots.length > chips.length) {
-    chips.push({
-      key: 'more',
-      label: `+${entity.assignedBots.length - chips.length}`,
-      className: 'chip chat-card__bot-chip',
-    });
-  }
-
-  return chips;
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
@@ -432,9 +398,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             <div className="chats-onboarding__hero-text">
               <h1>Нет доступных чатов</h1>
               <p>
-                Чтобы увидеть чат в «Майор Максимов», добавьте бота в чат и выдайте ему права
-                администратора. После этого быстрее всего открыть приложение прямо из нужного
-                чата.
+                Чтобы увидеть чат в приложении, добавьте чат-бота в чат и выдайте ему права
+                администратора. После этого быстрее всего открыть приложение прямо из нужного чата.
               </p>
             </div>
           </GlassCard>
@@ -559,15 +524,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     />
                     <div className="chat-card__title-wrap">
                       <h3>{entity.title}</h3>
-                      {entity.assignedBots.length > 0 ? (
-                        <div className="chat-card__bot-chips" aria-label="Назначенные боты">
-                          {buildEntityBotChips(entity).map((chip) => (
-                            <span key={chip.key} className={chip.className}>
-                              {chip.label}
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
                     </div>
                   </div>
                 </div>

@@ -190,7 +190,7 @@ export function App() {
     return (
       <div className="app-shell app-shell--centered">
         <GlassCard className="init-missing-card" elevated>
-          <h1>Майор Максимов</h1>
+          <h1>MAXIM</h1>
           <StatusState
             tone="warning"
             title="Init Data не найден"
