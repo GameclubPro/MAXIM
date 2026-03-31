@@ -534,6 +534,7 @@ function createHarness(
     adminService?: Record<string, unknown>;
     managedGiveaway?: ManagedGiveawayDetails | null;
     rules?: ChatRules;
+    maxBotLinkService?: Record<string, unknown>;
   } = {},
 ) {
   const chats = [
@@ -950,6 +951,7 @@ function createHarness(
         return undefined;
       }),
     } as never,
+    overrides.maxBotLinkService as never,
   );
 
   return { service, maxClient, adminService, managedGiveawayService, chats, channels };
@@ -1071,6 +1073,40 @@ describe('PrivateControlService', () => {
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
     ).toEqual(['📱 Приложение', '🆘 Поддержка']);
+    expect(adminService.listManagedEntities).not.toHaveBeenCalled();
+  });
+
+  it('redirects private dialog traffic on a non-entry bot to the canonical entry bot', async () => {
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-token']),
+      getEntryBotId: jest.fn().mockReturnValue('777000_bot'),
+      getContextOrDefaultBotId: jest.fn().mockReturnValue('888000_bot'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) =>
+            `https://max.ru/777000_bot?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      isKnownBotUserId: jest.fn().mockReturnValue(false),
+      resolveContactIdSync: jest.fn().mockReturnValue(null),
+    };
+    const { service, maxClient, adminService } = createHarness({
+      maxBotLinkService,
+    });
+
+    await service.handleUpdate(createPrivateTextUpdate('привет'));
+
+    expect(getLastUiText(maxClient)).toContain('Личный кабинет и команды работают через основной бот.');
+    const buttons = getLastButtons(maxClient).flat();
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]).toEqual(
+      expect.objectContaining({
+        text: '📱 Открыть панель',
+        type: 'link',
+        url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+      }),
+    );
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 

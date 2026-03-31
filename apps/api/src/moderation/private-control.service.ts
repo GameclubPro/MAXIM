@@ -1152,6 +1152,10 @@ export class PrivateControlService {
       return;
     }
 
+    if (await this.redirectSecondaryPrivateDialogToEntryBot(context)) {
+      return;
+    }
+
     const callback = context.callbackPayload
       ? this.parseCallbackAction(context.callbackPayload)
       : null;
@@ -1202,6 +1206,10 @@ export class PrivateControlService {
   async handleBotStarted(update: MaxUpdate): Promise<void> {
     const context = this.resolveContext(update);
     if (!context) {
+      return;
+    }
+
+    if (await this.redirectSecondaryPrivateDialogToEntryBot(context)) {
       return;
     }
 
@@ -9175,6 +9183,37 @@ export class PrivateControlService {
     options?: MaxSendMessageOptions,
   ): Promise<void> {
     await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
+  }
+
+  private async redirectSecondaryPrivateDialogToEntryBot(
+    context: PrivateContext,
+  ): Promise<boolean> {
+    const entryBotId = this.maxBotLinkService?.getEntryBotId() ?? null;
+    const activeBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? this.ownBotUserId;
+    if (!entryBotId || !activeBotId || entryBotId === activeBotId) {
+      return false;
+    }
+
+    const session = await this.loadSession(context.actor.userId);
+    this.rememberPrivateChatId(session, context.chatId);
+
+    const redirectUrl = this.buildMiniappRouteLaunchUrl('/chats');
+    const buttons = redirectUrl
+      ? [[this.buildMiniappLaunchButton('📱 Открыть панель', '/chats', redirectUrl)]]
+      : [];
+    const view: PrivateView = {
+      text: [
+        'Личный кабинет и команды работают через основной бот.',
+        'Откройте панель по кнопке ниже.',
+      ].join('\n'),
+      ...(buttons.length > 0 ? { options: { buttons } } : {}),
+    };
+
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: context.callbackPayload ? 'Откройте основной бот' : null,
+    });
+    return true;
   }
 
   private rememberPrivateChatId(session: PrivateSession, chatId: string): void {
