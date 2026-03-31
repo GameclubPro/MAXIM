@@ -177,6 +177,43 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('fails open when duplicate-state lookup stalls', async () => {
+    jest.useFakeTimers();
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const redisCounter = {
+        incrementWithTtl: jest.fn().mockImplementation(
+          () =>
+            new Promise<number>(() => {
+              // Intentionally never resolves.
+            }),
+        ),
+      };
+      const service = new RuleEngineService(redisCounter as never);
+      const resultPromise = service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: DUPLICATE_SPAM_TEXT,
+        settings: buildSettings({
+          antiDuplicateEnabled: true,
+          commercialAdsFilterEnabled: false,
+          duplicateBotMessageEnabled: false,
+        }),
+        domainAllowlist: [],
+      });
+
+      await jest.advanceTimersByTimeAsync(300);
+      const result = await resultPromise;
+
+      expect(result.duplicateDecision).toBeUndefined();
+      expect(result.duplicateHit).toBeUndefined();
+      expect(redisCounter.incrementWithTtl).toHaveBeenCalledTimes(1);
+    } finally {
+      consoleWarnSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('allows only exact allowlisted links in ALLOWLIST_ONLY mode', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const allowed = await service.detect({

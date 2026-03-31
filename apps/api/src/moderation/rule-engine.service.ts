@@ -335,6 +335,7 @@ const THEMATIC_CODEWORD_MIN_LENGTH = 90;
 const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
 const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
+const DUPLICATE_STATE_LOOKUP_TIMEOUT_MS = 250;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -376,6 +377,8 @@ const MIXED_CHAR_MAP: Record<string, string> = {
 
 @Injectable()
 export class RuleEngineService {
+  private duplicateTimeoutWarnAtMs = 0;
+
   constructor(private readonly redisCounter: RedisCounterService) {}
 
   async detect(params: {
@@ -555,7 +558,7 @@ export class RuleEngineService {
       violations.length === 0 && !linkViolation && this.shouldTrackDuplicate(text, compactText);
     const duplicateState =
       settings.antiDuplicateEnabled && duplicateCandidate
-        ? await this.detectDuplicateState({
+        ? await this.detectDuplicateStateWithin({
             chatId,
             userId,
             compactText,
@@ -568,6 +571,40 @@ export class RuleEngineService {
       ...(duplicateState?.hit ? { duplicateHit: duplicateState.hit } : {}),
       ...(duplicateState?.decision ? { duplicateDecision: duplicateState.decision } : {}),
     };
+  }
+
+  private async detectDuplicateStateWithin(params: {
+    chatId: string;
+    userId: string;
+    compactText: string;
+    settings: ChatSettings;
+  }): Promise<
+    | {
+        hit?: DuplicateHit;
+        decision?: DuplicateDecision;
+      }
+    | undefined
+  > {
+    const operationPromise = this.detectDuplicateState(params);
+    operationPromise.catch(() => undefined);
+
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<undefined>((resolve) => {
+      timeout = setTimeout(() => resolve(undefined), DUPLICATE_STATE_LOOKUP_TIMEOUT_MS);
+      timeout.unref?.();
+    });
+
+    try {
+      const result = await Promise.race([operationPromise, timeoutPromise]);
+      if (typeof result === 'undefined') {
+        this.logDuplicateStateTimeout(params.chatId, params.userId);
+      }
+      return result;
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   hasCommercialSpamMarkers(text: string): boolean {
@@ -1435,6 +1472,25 @@ export class RuleEngineService {
       result += MIXED_CHAR_MAP[char] ?? char;
     }
     return result;
+  }
+
+  private logDuplicateStateTimeout(chatId: string, userId: string): void {
+    const now = Date.now();
+    if (now - this.duplicateTimeoutWarnAtMs < 30_000) {
+      return;
+    }
+
+    this.duplicateTimeoutWarnAtMs = now;
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        context: 'RuleEngineService',
+        chatId,
+        userId,
+        timeoutMs: DUPLICATE_STATE_LOOKUP_TIMEOUT_MS,
+        msg: 'Duplicate state lookup timed out; skipping duplicate enforcement in hot path',
+      }),
+    );
   }
 
   private extractTokens(value: string): string[] {
