@@ -100,12 +100,17 @@
 - The mini app shows only the intersection where the user is admin and the bot also has admin access to the same chat/channel.
 - Counts for `Чаты` and `Каналы` can differ because the UI uses `chat_admin_allowlist` plus progressive refresh, not an instant full MAX snapshot.
 - Diagnose `CHAT` and `CHANNEL` separately.
+- Explicit `refresh=1` on managed chats/channels is now an async refresh trigger, not a synchronous full MAX scan. The API should return cached allowlist data immediately and continue remote full refresh in background.
+- For `refresh=1`, trust `refresh.cursor`, `refresh.complete`, `refresh.backoffActive`, and `refresh.nextPollAfterMs`; do not treat the first response as proof that discovery is finished.
+- An empty or partial `refresh=1` response can be expected while the background scan is still progressing. Confirm completion only after the cursor reaches `-1`.
 - Full refresh is complete only when the Redis cursor becomes `-1`.
 - In multi-bot mode, visibility should still be reasoned about per unique chat/channel, not per bot. Use `assignedBots` and `primaryBotId` to understand presence/ownership before assuming the entity is missing.
 - For visibility problems, check:
   - `chat_admin_allowlist` rows for the `user_id`,
   - Redis keys `chat:managed-refresh-cursor:v1:<entityType>:<userId>` and `chat:managed-refresh-backoff:v1:<entityType>:<userId>`,
   - refreshed `AdminService.listChats(..., { refresh: true })` or `AdminService.listChannels(..., { refresh: true })`.
+- For slow event-history screens, check admin logs for `Slow moderation events query completed` and separate `adminCheckMs` from `queryMs` before assuming the database is the bottleneck.
+- Read-only admin endpoints such as chat events now skip persisted allowlist writes when admin access is already cached as granted. If latency regresses there, suspect MAX admin-access cache misses first, not `chat_admin_allowlist` upserts.
 
 ## Mini app UI work
 - For material UI changes, verify the result in preview or screenshots instead of judging only by code.
