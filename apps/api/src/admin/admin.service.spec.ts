@@ -4775,17 +4775,17 @@ describe('AdminService.listChannels', () => {
       { refresh: true },
     );
 
-    expect(result.items).toHaveLength(40);
+    expect(result.items).toHaveLength(8);
     expect(result.refresh).toEqual({
       complete: false,
-      cursor: 40,
+      cursor: 8,
       backoffActive: false,
       nextPollAfterMs: 250,
     });
     expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
       'admin-1',
       'channel',
-      40,
+      8,
       60 * 60,
     );
   });

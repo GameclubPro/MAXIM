@@ -12372,7 +12372,59 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('skips ordinary message moderation for a hot chat even before global pressure', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {

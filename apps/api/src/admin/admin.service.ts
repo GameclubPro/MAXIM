@@ -339,6 +339,7 @@ const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === '
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 40;
+const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
@@ -1904,7 +1905,7 @@ export class AdminService {
       options.fullScan === true
         ? Math.min(
             candidateChats.length,
-            fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
+            fullScanStartIndex + MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE,
           )
         : 0;
     const candidateSlice = options.fullScan

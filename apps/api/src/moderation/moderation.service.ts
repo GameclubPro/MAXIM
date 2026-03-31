@@ -992,11 +992,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.shouldSkipHotChatModeration(mode, hotChatBackoffActive)) {
-      this.logHotChatModerationSkip(chatId, senderId, mode);
-      return;
-    }
-
     const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
       chatId,
       userId: senderId,
@@ -1012,6 +1007,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId,
     });
     if (requiredSubscriptionHandled) {
+      return;
+    }
+
+    if (this.shouldSkipHotChatModeration(mode, hotChatBackoffActive)) {
+      this.logHotChatModerationSkip(chatId, senderId, mode);
       return;
     }
 
@@ -11177,11 +11177,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     mode: SystemModeSnapshot,
     hotChatBackoffActive: boolean,
   ): boolean {
-    if (!hotChatBackoffActive) {
-      return false;
-    }
-
-    return mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC || mode.mode === 'degrade';
+    void mode;
+    return hotChatBackoffActive;
   }
 
   private logHotChatModerationSkip(
