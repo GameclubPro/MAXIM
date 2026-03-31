@@ -184,4 +184,37 @@ describe('DefaultWebhookLeaseManagerService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('does not renew claims for workers that are already closing', async () => {
+    const queueMetricsService = createQueueMetricsMock();
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      queueMetricsService as never,
+    );
+
+    const redis = redisInstances[0]!;
+    const queueName = 'moderation-default-0';
+    const originalClaim = {
+      queueName,
+      ownerId: 'api-moderation',
+      fencingToken: 7,
+      claimedAtMs: Date.now() - 10_000,
+      updatedAtMs: Date.now() - 10_000,
+      leaseUntilMs: Date.now() + 500,
+    };
+    redis.store.set(buildDefaultWebhookLeaseKey(queueName), JSON.stringify(originalClaim));
+
+    (service as any).workers.set(queueName, {
+      close: jest.fn().mockResolvedValue(undefined),
+    });
+    (service as any).closingWorkers.add(queueName);
+
+    await (service as any).publishKeepalive();
+
+    const renewedClaim = JSON.parse(redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}');
+    expect(renewedClaim).toEqual(originalClaim);
+
+    await service.onModuleDestroy();
+  });
 });

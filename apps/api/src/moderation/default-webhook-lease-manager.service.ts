@@ -327,7 +327,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       return;
     }
 
-    const queueNames = [...this.workers.keys()].filter((queueName) => this.isDynamicQueue(queueName));
+    const queueNames = [...this.workers.keys()].filter(
+      (queueName) => this.isDynamicQueue(queueName) && !this.closingWorkers.has(queueName),
+    );
     if (queueNames.length === 0) {
       return;
     }
