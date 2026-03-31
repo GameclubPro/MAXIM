@@ -189,6 +189,51 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('repairs stale queued user-facing rows after the fast repair window', async () => {
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-fast-default',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-default-0',
+          queuedAt: new Date(Date.now() - 30_000),
+          createdAt: new Date(Date.now() - 30_000),
+          enqueueAttempts: 1,
+          normalizedPayload: { type: 'message_created', message: { chatId: 'chat-1' } },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-fast-default' },
+      expect.objectContaining({ jobId: 'evt-fast-default' }),
+    );
+  });
+
+  it('does not repair queued background rows before the slower background repair window', async () => {
+    const { service, queues, prisma } = createService({
+      findManyResult: [
+        {
+          id: 'evt-background-too-fresh',
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-background',
+          queuedAt: new Date(Date.now() - 30_000),
+          createdAt: new Date(Date.now() - 30_000),
+          enqueueAttempts: 1,
+          normalizedPayload: { type: 'user_removed', chatId: 'chat-1' },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.backgroundQueue.add).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).not.toHaveBeenCalled();
+  });
+
   it('does not increment attempts when existing job is already waiting', async () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('waiting'),

@@ -22,6 +22,8 @@ import {
 import { WebhookRoutingService } from './webhook-routing.service';
 
 const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
+const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
+const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
 
 type WebhookEnqueueCandidate = {
   id: string;
@@ -154,7 +156,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private async enqueueBatch() {
     const now = new Date();
-    const staleQueuedBefore = new Date(now.getTime() - 120_000);
+    const staleQueuedBefore = new Date(now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS);
     const candidates: WebhookEnqueueCandidate[] = await this.prisma.webhookEvent.findMany({
       where: {
         OR: [
@@ -187,7 +189,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const prioritizedCandidates = [...candidates].sort((left, right) => {
+    const prioritizedCandidates = candidates
+      .filter((candidate) => this.shouldEnqueueCandidate(candidate, now))
+      .sort((left, right) => {
       const priorityDiff =
         resolveWebhookJobPriority(left.normalizedPayload) -
         resolveWebhookJobPriority(right.normalizedPayload);
@@ -196,9 +200,30 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       }
 
       return left.createdAt.getTime() - right.createdAt.getTime();
-    });
+      });
 
     await this.enqueueCandidates(prioritizedCandidates);
+  }
+
+  private shouldEnqueueCandidate(candidate: WebhookEnqueueCandidate, now: Date): boolean {
+    if (candidate.status !== WebhookStatus.QUEUED) {
+      return true;
+    }
+
+    const thresholdMs = this.resolveStaleQueuedRepairThresholdMs(candidate.queueName);
+    const referenceMs = Math.min(
+      candidate.createdAt.getTime(),
+      candidate.queuedAt?.getTime() ?? Number.POSITIVE_INFINITY,
+    );
+    return now.getTime() - referenceMs >= thresholdMs;
+  }
+
+  private resolveStaleQueuedRepairThresholdMs(queueName: string | null): number {
+    if (queueName === WEBHOOK_QUEUE_BACKGROUND) {
+      return BACKGROUND_STALE_QUEUED_REPAIR_MS;
+    }
+
+    return USER_FACING_STALE_QUEUED_REPAIR_MS;
   }
 
   private async enqueueCandidates(candidates: WebhookEnqueueCandidate[]) {
