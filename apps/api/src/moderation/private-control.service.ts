@@ -1,6 +1,7 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  type BotSpeechPersona,
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
@@ -175,6 +176,11 @@ type PrivateSuggestionDraft = {
   imageFileName: string;
   sourceMessageId: string | null;
   previewMessageId: string | null;
+};
+
+type ActiveBotSpeechProfile = {
+  persona: BotSpeechPersona;
+  characterName: string;
 };
 
 type PrivateScreen =
@@ -2650,10 +2656,19 @@ export class PrivateControlService {
       }
 
       case 'help': {
-        const view = this.renderHelpView();
+        session.uiMode = 'modern';
+        session.pendingInput = null;
+        session.pendingMassAction = null;
+        session.managedGiveawayId = null;
+        session.section = null;
+        session.channelSection = null;
+        session.searchQuery = null;
+        session.lastScreenStack = [];
+        session.screen = this.resolvePrimaryScreen(session);
+        const view = await this.renderPrimaryScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Открываю помощь',
+          notification: 'Главный экран',
         });
         return;
       }
@@ -2661,10 +2676,10 @@ export class PrivateControlService {
       case 'chat_page': {
         session.chatPage = this.toPositiveInt(callback.args[0], 1);
         session.screen = 'home';
-        const view = this.renderLauncherHomeView('Выбор чатов и каналов перенесён в mini app.');
+        const view = this.renderLauncherHomeView('Выбирайте чат и канал в приложении.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Выбор доступен в mini app',
+          notification: 'Выбор доступен в приложении',
         });
         return;
       }
@@ -2674,7 +2689,7 @@ export class PrivateControlService {
         session.chatPage = 1;
         session.screen = 'home';
         const view = this.renderLauncherHomeView(
-          'Переключение между чатами и каналами теперь доступно в приложении.',
+          'Переключение между чатами и каналами доступно в приложении.',
         );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -2686,12 +2701,10 @@ export class PrivateControlService {
       case 'chat_refresh': {
         session.chatPage = 1;
         session.screen = 'home';
-        const view = this.renderLauncherHomeView(
-          'Список управляемых сущностей обновляется в mini app.',
-        );
+        const view = this.renderLauncherHomeView('Список чатов и каналов обновляется в приложении.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Обновляйте список в mini app',
+          notification: 'Обновляйте список в приложении',
         });
         return;
       }
@@ -2751,7 +2764,7 @@ export class PrivateControlService {
           ...DEFAULT_POLL_DRAFT,
           options: [...DEFAULT_POLL_DRAFT.options],
         };
-        const view = this.renderLauncherHomeView('Выбор чата и канала перенесён в mini app.');
+        const view = this.renderLauncherHomeView('Выбирайте чат и канал в приложении.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Откройте приложение',
@@ -6002,7 +6015,7 @@ export class PrivateControlService {
     _session: PrivateSession,
     _options: { refresh?: boolean } = {},
   ): Promise<PrivateView> {
-    return this.renderLauncherHomeView('Выбор чата и канала перенесён в mini app.');
+    return this.renderLauncherHomeView('Выбирайте чат и канал в приложении.');
   }
 
   private async renderPrimaryScreen(
@@ -8276,26 +8289,6 @@ export class PrivateControlService {
     }
   }
 
-  private renderHelpView(prefix: string | null = null): PrivateView {
-    const lines = [
-      ...(prefix ? [this.escapeMarkdown(prefix), ''] : []),
-      this.markdownTitle('Быстрый старт'),
-      '',
-      '📱 Все настройки, розыгрыши, опросы и аналитика открываются в mini app.',
-      'В боте остались только быстрые сценарии: прислать контент, проверить превью и подтвердить публикацию.',
-    ];
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: [
-          [this.callbackButton('↩️ Главный экран', this.cb('home'))],
-          ...this.buildFooterButtons(),
-        ],
-      },
-    };
-  }
-
   private renderInputPrompt(input: PendingInput): PrivateView {
     const prompt = this.describeInputPrompt(input);
 
@@ -10317,11 +10310,12 @@ export class PrivateControlService {
   }
 
   private renderLauncherHomeView(notice: string | null = null): PrivateView {
+    const profile = this.resolveActiveBotSpeechProfile();
     const lines = [
-      this.markdownTitle('MAXIM'),
+      this.markdownTitle(profile.characterName),
       '',
-      '📱 Открывайте приложение для настроек, розыгрышей, опросов, модерации и аналитики.',
-      'В боте остались только быстрые сценарии: прислать текст, фото или видео и подтвердить публикацию.',
+      '📱 Все настройки, розыгрыши и модерация открываются в приложении.',
+      this.buildLauncherQuickActionText(profile.persona),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
 
@@ -10332,6 +10326,29 @@ export class PrivateControlService {
         textFormat: 'markdown',
       },
     };
+  }
+
+  private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
+    const activeBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? null;
+    const bot = this.maxBotLinkService?.getResolvedBotSync(activeBotId);
+    const characterName = bot?.characterName?.trim() || bot?.label?.trim() || 'Майор Максимов';
+
+    return {
+      persona: bot?.speechPersona ?? 'male',
+      characterName,
+    };
+  }
+
+  private buildLauncherQuickActionText(persona: BotSpeechPersona): string {
+    if (persona === 'female') {
+      return 'Я готова быстро принять текст, фото или видео для публикации.';
+    }
+
+    if (persona === 'neutral') {
+      return 'Быстро приму текст, фото или видео для публикации.';
+    }
+
+    return 'Я готов быстро принять текст, фото или видео для публикации.';
   }
 
   private async renderEntityBroadcastMovedToMiniappScreen(

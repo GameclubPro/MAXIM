@@ -258,19 +258,6 @@ const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
 const PRIVATE_MENU_CALLBACK_CHANNELS = 'private_menu:channels';
 const PRIVATE_MENU_CALLBACK_HELP = 'private_menu:help';
 const PRIVATE_BOT_CHATS_PREVIEW_LIMIT = 12;
-const PRIVATE_MENU_PROMPT_TEXT = [
-  'Центр управления MAX:',
-  '- «Чаты» — выбрать групповой чат для контента и публикации.',
-  '- «Каналы» — выбрать канал для контента и публикации.',
-  '- «Помощь» — короткий гайд по запуску и правам.',
-  '- «Открыть приложение» — все основные настройки и rich-сценарии.',
-].join('\n');
-const PRIVATE_HELP_TEXT = [
-  'Настройки и управление разделами перенесены в mini app.',
-  'Бот используйте для текста, фото и подтверждения публикации.',
-  'Добавьте бота в чат/канал и выдайте права администратора.',
-  'Для точной настройки используйте приложение.',
-].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const DEFAULT_CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 30_000;
 const DEFAULT_CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS = 8;
@@ -2759,6 +2746,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       persona: bot?.speechPersona ?? 'male',
       characterName,
     };
+  }
+
+  private buildPrivateMenuPromptText(): string {
+    const profile = this.resolveActiveBotSpeechProfile();
+
+    return [
+      profile.characterName,
+      'Открывайте приложение для настроек, розыгрышей и модерации.',
+      this.buildPrivateMenuQuickActionText(profile.persona),
+    ].join('\n');
+  }
+
+  private buildPrivateMenuQuickActionText(persona: BotSpeechPersona): string {
+    if (persona === 'female') {
+      return 'Я готова быстро принять текст, фото или видео для публикации.';
+    }
+
+    if (persona === 'neutral') {
+      return 'Быстро приму текст, фото или видео для публикации.';
+    }
+
+    return 'Я готов быстро принять текст, фото или видео для публикации.';
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
@@ -6901,7 +6910,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (this.privateControlService) {
         await this.privateControlService.handleBotStarted(update);
       } else {
-        await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+        await this.sendPrivateMenu(chatId, this.buildPrivateMenuPromptText());
       }
     } catch (error: unknown) {
       const payload = {
@@ -7404,7 +7413,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+    await this.sendPrivateMenu(chatId, this.buildPrivateMenuPromptText());
   }
 
   private buildPrivateCallbackNotification(command: PrivateControlCommand | null): string {
@@ -7415,7 +7424,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 'Собираю список каналов';
     }
     if (command === 'help') {
-      return 'Открываю подсказки';
+      return 'Открываю меню';
     }
     return 'Открываю меню';
   }
@@ -7854,7 +7863,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     command: PrivateControlCommand,
   ): Promise<void> {
     if (command === 'help') {
-      await this.sendPrivateMenu(chatId, PRIVATE_HELP_TEXT);
+      await this.sendPrivateMenu(chatId, this.buildPrivateMenuPromptText());
       return;
     }
 
@@ -7868,7 +7877,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+    await this.sendPrivateMenu(chatId, this.buildPrivateMenuPromptText());
   }
 
   private async sendPrivateEntityList(
@@ -7970,13 +7979,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           type: 'callback',
           text: 'Каналы',
           payload: PRIVATE_MENU_CALLBACK_CHANNELS,
-        },
-      ],
-      [
-        {
-          type: 'callback',
-          text: 'Помощь',
-          payload: PRIVATE_MENU_CALLBACK_HELP,
         },
       ],
       [

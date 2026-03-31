@@ -1083,14 +1083,51 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastUiText(maxClient)).toContain('**MAXIM**');
-    expect(getLastUiText(maxClient)).toContain('Открывайте приложение');
+    expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
+    expect(getLastUiText(maxClient)).toContain(
+      'Все настройки, розыгрыши и модерация открываются в приложении.',
+    );
+    expect(getLastUiText(maxClient)).toContain(
+      'Я готов быстро принять текст, фото или видео для публикации.',
+    );
     expect(
       getLastButtons(maxClient)
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
     ).toEqual(['📱 Приложение', '🆘 Поддержка']);
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
+  });
+
+  it('renders the launcher home with female persona copy for the active bot', async () => {
+    const { service, maxClient } = createHarness({
+      maxBotLinkService: {
+        getBotTokenSync: jest.fn().mockReturnValue('test-token'),
+        getValidationTokens: jest.fn().mockReturnValue(['test-token']),
+        getEntryBotId: jest.fn().mockReturnValue('888000_bot'),
+        getContextOrDefaultBotId: jest.fn().mockReturnValue('888000_bot'),
+        getResolvedBotSync: jest.fn().mockReturnValue({
+          id: '888000_bot',
+          characterName: 'Майор Максимова',
+          label: 'Майор Максимова',
+          speechPersona: 'female',
+        }),
+        buildEntryMiniappStartUrlSync: jest
+          .fn()
+          .mockImplementation(
+            (startParam: string) =>
+              `https://max.ru/888000_bot?startapp=${encodeURIComponent(startParam)}`,
+          ),
+        isKnownBotUserId: jest.fn().mockReturnValue(false),
+        resolveContactIdSync: jest.fn().mockReturnValue(null),
+      },
+    });
+
+    await service.handleUpdate(createPrivateTextUpdate('привет'));
+
+    expect(getLastUiText(maxClient)).toContain('**Майор Максимова**');
+    expect(getLastUiText(maxClient)).toContain(
+      'Я готова быстро принять текст, фото или видео для публикации.',
+    );
   });
 
   it('fails open when private dialog delivery hits a terminal MAX error', async () => {
@@ -1185,14 +1222,14 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('меню'));
 
-    expect(getLastUiText(maxClient)).toContain('Открывайте приложение');
+    expect(getLastUiText(maxClient)).toContain(
+      'Все настройки, розыгрыши и модерация открываются в приложении.',
+    );
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
 
     expect(listManagedEntities).not.toHaveBeenCalled();
-    expect(getLastEditedText(maxClient)).toContain(
-      'Список управляемых сущностей обновляется в mini app.',
-    );
+    expect(getLastEditedText(maxClient)).toContain('Список чатов и каналов обновляется в приложении.');
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
@@ -1225,7 +1262,7 @@ describe('PrivateControlService', () => {
 
     expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
-    expect(getLastUiText(maxClient)).toContain('**MAXIM**');
+    expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
   });
 
   it('redirects settings callbacks to mini app instead of editing inline', async () => {
@@ -1258,7 +1295,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('/modern'));
 
     const sentMessages = maxClient.sendMessage.mock.calls.map((call) => String(call[1]));
-    expect(sentMessages.some((text) => text.includes('**MAXIM**'))).toBe(true);
+    expect(sentMessages.some((text) => text.includes('**Майор Максимов**'))).toBe(true);
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
   });
 

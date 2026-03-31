@@ -3587,7 +3587,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Центр управления MAX'),
+      expect.stringContaining('Майор Максимов'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -3823,7 +3823,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
-      expect.stringContaining('Центр управления MAX'),
+      expect.stringContaining('Майор Максимов'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -3897,7 +3897,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
-      expect.stringContaining('Центр управления MAX'),
+      expect.stringContaining('Майор Максимов'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -3956,7 +3956,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Центр управления MAX'),
+      expect.stringContaining('Майор Максимов'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -4014,7 +4014,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
-      expect.stringContaining('Центр управления MAX'),
+      expect.stringContaining('Майор Максимов'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
