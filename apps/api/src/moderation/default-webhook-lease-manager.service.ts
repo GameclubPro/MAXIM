@@ -32,6 +32,7 @@ import {
   type ProcessWebhookJob,
 } from '../webhook/webhook-queues';
 import { ModerationService } from './moderation.service';
+import type { QueueCounters } from '../system/queue-metrics.service';
 
 type WorkerHeartbeat = {
   workerGroupName: DefaultWebhookWorkerGroupName;
@@ -210,7 +211,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       const entry = plan.queues[queueName];
       if (!entry.eligibleForDynamicLeases) {
         if (entry.homeOwner === this.workerGroupName) {
-          await this.ensureWorkerRunning(queueName);
+          await this.ensureWorkerRunning(queueName, snapshot.webhookDefaultShards[queueName]);
           allowedWorkers.add(queueName);
         }
         continue;
@@ -258,7 +259,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       if (!claimed) {
         continue;
       }
-      await this.ensureWorkerRunning(queueName);
+      await this.ensureWorkerRunning(queueName, snapshot.webhookDefaultShards[queueName]);
       allowedWorkers.add(queueName);
     }
 
@@ -628,9 +629,29 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     }
   }
 
-  private async ensureWorkerRunning(queueName: DefaultWebhookQueueName): Promise<void> {
-    if (this.workers.has(queueName)) {
-      return;
+  private async ensureWorkerRunning(
+    queueName: DefaultWebhookQueueName,
+    counters?: QueueCounters,
+  ): Promise<void> {
+    const existingWorker = this.workers.get(queueName);
+    if (existingWorker) {
+      if (!this.shouldRecycleStaleWorker(queueName, existingWorker, counters)) {
+        return;
+      }
+
+      this.logger.warn(
+        {
+          queueName,
+          waiting: counters?.waiting ?? 0,
+          prioritized: counters?.prioritized ?? 0,
+          delayed: counters?.delayed ?? 0,
+          active: counters?.active ?? 0,
+        },
+        'Recycling stale default webhook worker that stopped running while backlog remained',
+      );
+      this.workers.delete(queueName);
+      this.closeRetryNotBeforeMs.delete(queueName);
+      void existingWorker.close(true).catch(() => undefined);
     }
 
     const worker = new BullWorker<ProcessWebhookJob>(
@@ -652,6 +673,28 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       );
     });
     this.workers.set(queueName, worker);
+  }
+
+  private shouldRecycleStaleWorker(
+    queueName: DefaultWebhookQueueName,
+    worker: Worker<ProcessWebhookJob>,
+    counters?: QueueCounters,
+  ): boolean {
+    if (this.closingWorkers.has(queueName) || this.isCloseRetryCoolingDown(queueName)) {
+      return false;
+    }
+
+    const hasBacklog =
+      (counters?.waiting ?? 0) + (counters?.prioritized ?? 0) + (counters?.delayed ?? 0) > 0;
+    if (!hasBacklog || (counters?.active ?? 0) > 0) {
+      return false;
+    }
+
+    const running =
+      typeof (worker as { isRunning?: () => boolean }).isRunning === 'function'
+        ? (worker as { isRunning: () => boolean }).isRunning()
+        : true;
+    return !running;
   }
 
   private async closeWorker(queueName: DefaultWebhookQueueName): Promise<CloseWorkerResult> {

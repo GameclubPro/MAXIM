@@ -26,6 +26,7 @@ import {
 
 export type QueueCounters = {
   waiting: number;
+  prioritized: number;
   active: number;
   delayed: number;
   failed: number;
@@ -144,6 +145,7 @@ type QueueMetricsSnapshotOptions = {
 
 const EMPTY_COUNTERS: QueueCounters = {
   waiting: 0,
+  prioritized: 0,
   active: 0,
   delayed: 0,
   failed: 0,
@@ -373,21 +375,23 @@ export class QueueMetricsService {
       return EMPTY_COUNTERS;
     }
 
-    const [waiting, active, delayed, failed, completed] = await Promise.all([
+    const [waiting, prioritized, active, delayed, failed, completed] = await Promise.all([
       queue.getWaitingCount(),
+      queue.getPrioritizedCount(),
       queue.getActiveCount(),
       queue.getDelayedCount(),
       queue.getFailedCount(),
       queue.getCompletedCount(),
     ]);
 
-    return { waiting, active, delayed, failed, completed };
+    return { waiting, prioritized, active, delayed, failed, completed };
   }
 
   private sumQueueCounters(...counters: QueueCounters[]): QueueCounters {
     return counters.reduce<QueueCounters>(
       (total, current) => ({
         waiting: total.waiting + current.waiting,
+        prioritized: total.prioritized + current.prioritized,
         active: total.active + current.active,
         delayed: total.delayed + current.delayed,
         failed: total.failed + current.failed,

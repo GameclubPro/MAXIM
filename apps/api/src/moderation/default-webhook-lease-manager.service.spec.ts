@@ -88,6 +88,7 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
 function createQueueMetricsMock() {
   const emptyCounters = {
     waiting: 0,
+    prioritized: 0,
     active: 0,
     delayed: 0,
     failed: 0,
@@ -152,6 +153,35 @@ describe('DefaultWebhookLeaseManagerService', () => {
     expect(renewedClaim.ownerId).toBe('api-moderation');
     expect(renewedClaim.fencingToken).toBe(4);
     expect(renewedClaim.leaseUntilMs).toBeGreaterThan(previousLeaseUntilMs);
+
+    await service.onModuleDestroy();
+  });
+
+  it('recycles a stale non-running worker when prioritized backlog remains on an allowed shard', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    const staleWorker = {
+      close: jest.fn().mockResolvedValue(undefined),
+      isRunning: jest.fn().mockReturnValue(false),
+    };
+    (service as any).workers.set(queueName, staleWorker);
+
+    await (service as any).ensureWorkerRunning(queueName, {
+      waiting: 0,
+      prioritized: 5,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    });
+
+    expect(staleWorker.close).toHaveBeenCalledWith(true);
+    expect((service as any).workers.get(queueName)).not.toBe(staleWorker);
 
     await service.onModuleDestroy();
   });

@@ -12,6 +12,7 @@ import {
 
 export type DefaultWebhookLeaseCounters = {
   waiting: number;
+  prioritized: number;
   active: number;
   delayed: number;
   failed?: number;
@@ -84,7 +85,7 @@ function resolveDynamicEligibility(
 }
 
 function measurePressure(counters: DefaultWebhookLeaseCounters): number {
-  return counters.waiting + counters.active * ACTIVE_WEIGHT + counters.delayed;
+  return counters.waiting + counters.prioritized + counters.active * ACTIVE_WEIGHT + counters.delayed;
 }
 
 export function buildDefaultWebhookLeasePlan(

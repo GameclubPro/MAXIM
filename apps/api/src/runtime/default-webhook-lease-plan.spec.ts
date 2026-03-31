@@ -5,15 +5,18 @@ function buildCounters() {
   return Object.fromEntries(
     DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
       queueName,
-      { waiting: 0, active: 0, delayed: 0 },
+      { waiting: 0, prioritized: 0, active: 0, delayed: 0 },
     ]),
-  ) as Record<(typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number], { waiting: number; active: number; delayed: number }>;
+  ) as Record<
+    (typeof DEFAULT_WEBHOOK_QUEUE_NAMES)[number],
+    { waiting: number; prioritized: number; active: number; delayed: number }
+  >;
 }
 
 describe('buildDefaultWebhookLeasePlan', () => {
   it('keeps static home owners when dynamic mode is off', () => {
     const counters = buildCounters();
-    counters['moderation-default-0'] = { waiting: 2, active: 0, delayed: 0 };
+    counters['moderation-default-0'] = { waiting: 2, prioritized: 0, active: 0, delayed: 0 };
 
     const plan = buildDefaultWebhookLeasePlan({
       mode: 'off',
@@ -31,11 +34,11 @@ describe('buildDefaultWebhookLeasePlan', () => {
 
   it('recommends rebalancing a canary queue toward a colder worker group', () => {
     const counters = buildCounters();
-    counters['moderation-default-0'] = { waiting: 10, active: 0, delayed: 0 };
-    counters['moderation-default-4'] = { waiting: 6, active: 1, delayed: 0 };
-    counters['moderation-default-8'] = { waiting: 4, active: 0, delayed: 0 };
-    counters['moderation-default-12'] = { waiting: 3, active: 0, delayed: 0 };
-    counters['moderation-default-2'] = { waiting: 1, active: 0, delayed: 0 };
+    counters['moderation-default-0'] = { waiting: 10, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-4'] = { waiting: 6, prioritized: 0, active: 1, delayed: 0 };
+    counters['moderation-default-8'] = { waiting: 4, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-12'] = { waiting: 3, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-2'] = { waiting: 1, prioritized: 0, active: 0, delayed: 0 };
 
     const plan = buildDefaultWebhookLeasePlan({
       mode: 'canary',
@@ -55,7 +58,7 @@ describe('buildDefaultWebhookLeasePlan', () => {
 
   it('keeps the current owner while a queue is still active', () => {
     const counters = buildCounters();
-    counters['moderation-default-0'] = { waiting: 0, active: 1, delayed: 0 };
+    counters['moderation-default-0'] = { waiting: 0, prioritized: 0, active: 1, delayed: 0 };
 
     const plan = buildDefaultWebhookLeasePlan({
       mode: 'on',
@@ -73,7 +76,7 @@ describe('buildDefaultWebhookLeasePlan', () => {
 
   it('redistributes a queue when the current owner heartbeat disappears', () => {
     const counters = buildCounters();
-    counters['moderation-default-0'] = { waiting: 4, active: 0, delayed: 0 };
+    counters['moderation-default-0'] = { waiting: 4, prioritized: 0, active: 0, delayed: 0 };
 
     const plan = buildDefaultWebhookLeasePlan({
       mode: 'on',
@@ -99,11 +102,11 @@ describe('buildDefaultWebhookLeasePlan', () => {
 
   it('suppresses non-essential rebalancing while user-facing lag is elevated', () => {
     const counters = buildCounters();
-    counters['moderation-default-0'] = { waiting: 10, active: 0, delayed: 0 };
-    counters['moderation-default-4'] = { waiting: 6, active: 1, delayed: 0 };
-    counters['moderation-default-8'] = { waiting: 4, active: 0, delayed: 0 };
-    counters['moderation-default-12'] = { waiting: 3, active: 0, delayed: 0 };
-    counters['moderation-default-2'] = { waiting: 1, active: 0, delayed: 0 };
+    counters['moderation-default-0'] = { waiting: 10, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-4'] = { waiting: 6, prioritized: 0, active: 1, delayed: 0 };
+    counters['moderation-default-8'] = { waiting: 4, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-12'] = { waiting: 3, prioritized: 0, active: 0, delayed: 0 };
+    counters['moderation-default-2'] = { waiting: 1, prioritized: 0, active: 0, delayed: 0 };
 
     const plan = buildDefaultWebhookLeasePlan({
       mode: 'on',
@@ -117,6 +120,25 @@ describe('buildDefaultWebhookLeasePlan', () => {
       desiredOwner: 'api-moderation',
       handoffPending: false,
       reason: 'keep-pressure-owner',
+    });
+  });
+
+  it('treats prioritized backlog as pressure during rebalancing decisions', () => {
+    const counters = buildCounters();
+    counters['moderation-default-0'] = { waiting: 0, prioritized: 20, active: 0, delayed: 0 };
+    counters['moderation-default-4'] = { waiting: 0, prioritized: 1, active: 0, delayed: 0 };
+
+    const plan = buildDefaultWebhookLeasePlan({
+      mode: 'canary',
+      canaryQueues: new Set(['moderation-default-0']),
+      queueCounters: counters,
+      rebalanceCooldownMs: 30_000,
+    });
+
+    expect(plan.queues['moderation-default-0']).toMatchObject({
+      eligibleForDynamicLeases: true,
+      pressure: 20,
+      handoffPending: true,
     });
   });
 });

@@ -5,6 +5,7 @@ import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 
 function createQueueMock(counts: {
   waiting: number;
+  prioritized: number;
   active: number;
   delayed: number;
   failed: number;
@@ -12,6 +13,7 @@ function createQueueMock(counts: {
 }) {
   return {
     getWaitingCount: jest.fn().mockResolvedValue(counts.waiting),
+    getPrioritizedCount: jest.fn().mockResolvedValue(counts.prioritized),
     getActiveCount: jest.fn().mockResolvedValue(counts.active),
     getDelayedCount: jest.fn().mockResolvedValue(counts.delayed),
     getFailedCount: jest.fn().mockResolvedValue(counts.failed),
@@ -94,10 +96,10 @@ describe('QueueMetricsService', () => {
         queueName,
         createQueueMock(
           index === 0
-            ? { waiting: 1, active: 1, delayed: 0, failed: 0, completed: 4 }
+            ? { waiting: 1, prioritized: 0, active: 1, delayed: 0, failed: 0, completed: 4 }
             : index === 1
-              ? { waiting: 1, active: 0, delayed: 0, failed: 0, completed: 5 }
-              : { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+              ? { waiting: 1, prioritized: 2, active: 0, delayed: 0, failed: 0, completed: 5 }
+              : { waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         ),
       ]),
     );
@@ -119,16 +121,17 @@ describe('QueueMetricsService', () => {
       moduleRef as never,
       botRegistry as never,
       undefined,
-      createQueueMock({ waiting: 1, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
-      createQueueMock({ waiting: 3, active: 1, delayed: 0, failed: 0, completed: 11 }) as never,
+      createQueueMock({ waiting: 1, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
+      createQueueMock({ waiting: 3, prioritized: 0, active: 1, delayed: 0, failed: 0, completed: 11 }) as never,
     );
 
     const snapshot = await service.getSnapshot();
 
     expect(snapshot.moderation).toEqual({
       waiting: 3,
+      prioritized: 2,
       active: 1,
       delayed: 1,
       failed: 1,
@@ -136,6 +139,7 @@ describe('QueueMetricsService', () => {
     });
     expect(snapshot.actions).toEqual({
       waiting: 3,
+      prioritized: 0,
       active: 1,
       delayed: 0,
       failed: 0,
@@ -143,6 +147,7 @@ describe('QueueMetricsService', () => {
     });
     expect(snapshot.webhookDefaultShards['moderation-default-0']).toEqual({
       waiting: 1,
+      prioritized: 0,
       active: 1,
       delayed: 0,
       failed: 0,
@@ -150,6 +155,7 @@ describe('QueueMetricsService', () => {
     });
     expect(snapshot.webhookDefaultShards['moderation-default-7']).toEqual({
       waiting: 0,
+      prioritized: 0,
       active: 0,
       delayed: 0,
       failed: 0,
@@ -164,6 +170,7 @@ describe('QueueMetricsService', () => {
       ],
       counters: {
         waiting: 1,
+        prioritized: 0,
         active: 1,
         delayed: 0,
         failed: 0,
@@ -179,6 +186,7 @@ describe('QueueMetricsService', () => {
       ],
       counters: {
         waiting: 1,
+        prioritized: 2,
         active: 0,
         delayed: 0,
         failed: 0,
@@ -194,6 +202,7 @@ describe('QueueMetricsService', () => {
       ],
       counters: {
         waiting: 0,
+        prioritized: 0,
         active: 0,
         delayed: 0,
         failed: 0,
@@ -209,6 +218,7 @@ describe('QueueMetricsService', () => {
       ],
       counters: {
         waiting: 0,
+        prioritized: 0,
         active: 0,
         delayed: 0,
         failed: 0,
@@ -294,10 +304,10 @@ describe('QueueMetricsService', () => {
         queueName,
         createQueueMock(
           queueName === 'moderation-default-0'
-            ? { waiting: 2, active: 1, delayed: 0, failed: 0, completed: 0 }
+            ? { waiting: 2, prioritized: 3, active: 1, delayed: 0, failed: 0, completed: 0 }
             : index === 1
-              ? { waiting: 1, active: 0, delayed: 0, failed: 0, completed: 0 }
-              : { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+              ? { waiting: 1, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }
+              : { waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
         ),
       ]),
     );
@@ -367,10 +377,10 @@ describe('QueueMetricsService', () => {
       moduleRef as never,
       botRegistry as never,
       webhookDynamicLeaseStatusService as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
     );
 
     const snapshot = await service.getSnapshot();
@@ -380,6 +390,7 @@ describe('QueueMetricsService', () => {
       queues: ['moderation-default-0', 'moderation-default-1'],
       counters: {
         waiting: 3,
+        prioritized: 3,
         active: 1,
         delayed: 0,
         failed: 0,
