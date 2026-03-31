@@ -986,6 +986,11 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
   return (callbackButtons ?? []) as Array<Array<unknown>>;
 }
 
+async function flushBackgroundBroadcast(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
 function getLastCustomMessagePayload(maxClient: {
   sendCustomMessageImmediateWithResolvedLink: jest.Mock;
 }) {
@@ -2263,6 +2268,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
+    await flushBackgroundBroadcast();
 
     expect(adminService.sendBroadcast).toHaveBeenCalledWith(
       chats[0].id,
@@ -2279,9 +2285,37 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
+    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
+  });
+
+  it('acknowledges mass confirm immediately and ignores stale duplicate confirmations', async () => {
+    const sendBroadcast = jest
+      .fn()
+      .mockResolvedValue({ targetChats: 2, sentChats: 2, failedChats: 0 });
+    const { service, adminService, maxClient, chats } = createHarness({
+      adminService: {
+        sendBroadcast,
+      },
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateTextUpdate('Массовая рассылка'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_toggle|apply_to_all'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
+    await flushBackgroundBroadcast();
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
+    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
+    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
   });
 
   it('builds a composed preview with edit, send and return buttons for channel suggestions', async () => {

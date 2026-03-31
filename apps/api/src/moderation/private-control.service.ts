@@ -3234,9 +3234,41 @@ export class PrivateControlService {
         }
 
         if (session.pendingMassAction.kind === 'broadcast') {
-          const sendResult = await this.sendBroadcastFromSession(context, session);
+          const publishClaim = this.claimBroadcastPublish(session);
+          if (publishClaim === 'active' || publishClaim === 'recent') {
+            const notice =
+              publishClaim === 'active'
+                ? 'Эта рассылка уже отправляется.'
+                : 'Эта рассылка уже была запущена.';
+            session.pendingMassAction = null;
+            const view = await this.renderBroadcastScreen(context, session, notice);
+            await this.respond(context, session, view, {
+              callbackId: context.callbackId,
+              notification:
+                publishClaim === 'active'
+                  ? 'Рассылка уже отправляется'
+                  : 'Повторная отправка пропущена',
+            });
+            return;
+          }
+
+          const selectedChatId = session.selectedChatId!;
+          const selectedEntityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
+          const broadcastDraft = this.cloneBroadcastDraft(session.broadcastDraft);
           session.pendingMassAction = null;
-          await this.respondToSuccessfulBroadcast(context, session, sendResult);
+          const view = await this.renderBroadcastScreen(context, session, 'Рассылка запускается.');
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Запускаю рассылку',
+          });
+          void this.finishConfirmedBroadcastPublish({
+            privateChatId: context.chatId,
+            actor: context.actor,
+            selectedChatId,
+            selectedEntityType,
+            broadcastDraft,
+            publishClaim,
+          });
           return;
         }
 
@@ -5602,28 +5634,107 @@ export class PrivateControlService {
   }
 
   private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
+    return this.sendBroadcastDraft({
+      selectedChatId: session.selectedChatId!,
+      selectedEntityType: session.selectedEntityType === 'channel' ? 'channel' : 'chat',
+      actor: context.actor,
+      draft: session.broadcastDraft,
+    });
+  }
+
+  private cloneBroadcastDraft(draft: PrivateBroadcastDraft): PrivateBroadcastDraft {
+    return {
+      ...draft,
+      scheduledSlots: [...draft.scheduledSlots],
+    };
+  }
+
+  private async sendBroadcastDraft(params: {
+    selectedChatId: string;
+    selectedEntityType: ManagedEntityType;
+    actor: AuthUser;
+    draft: PrivateBroadcastDraft;
+  }): Promise<SendBroadcastResult> {
     const payload: PrivateBroadcastDraft = {
-      ...session.broadcastDraft,
+      ...params.draft,
       applyToAllChats:
-        session.selectedEntityType === 'channel' ? false : session.broadcastDraft.applyToAllChats,
+        params.selectedEntityType === 'channel' ? false : params.draft.applyToAllChats,
     };
 
-    const result =
-      session.selectedEntityType === 'channel'
-        ? await this.adminService.sendChannelBroadcast(
-            session.selectedChatId!,
-            context.actor,
-            payload,
-            'private_bot',
-          )
-        : await this.adminService.sendBroadcast(
-            session.selectedChatId!,
-            context.actor,
-            payload,
-            'private_bot',
-          );
+    return params.selectedEntityType === 'channel'
+      ? this.adminService.sendChannelBroadcast(
+          params.selectedChatId,
+          params.actor,
+          payload,
+          'private_bot',
+        )
+      : this.adminService.sendBroadcast(params.selectedChatId, params.actor, payload, 'private_bot');
+  }
 
-    return result;
+  private async finishConfirmedBroadcastPublish(params: {
+    privateChatId: string;
+    actor: AuthUser;
+    selectedChatId: string;
+    selectedEntityType: ManagedEntityType;
+    broadcastDraft: PrivateBroadcastDraft;
+    publishClaim: {
+      key: string;
+      fingerprint: string;
+    };
+  }): Promise<void> {
+    let rememberPublish = false;
+
+    try {
+      const result = await this.sendBroadcastDraft({
+        selectedChatId: params.selectedChatId,
+        selectedEntityType: params.selectedEntityType,
+        actor: params.actor,
+        draft: params.broadcastDraft,
+      });
+      rememberPublish = true;
+      await this.sendImmediate(params.privateChatId, this.buildBroadcastFollowUpMessage(result));
+    } catch (error: unknown) {
+      const userMessage =
+        this.extractBadRequestDetails(error) ??
+        'Рассылка недоступна. Попробуйте ещё раз через несколько секунд.';
+      this.logger.warn(
+        {
+          chatId: params.privateChatId,
+          targetChatId: params.selectedChatId,
+          entityType: params.selectedEntityType,
+          userId: params.actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Async private broadcast publish failed after confirmation',
+      );
+
+      try {
+        await this.sendImmediate(params.privateChatId, userMessage);
+      } catch (sendError: unknown) {
+        this.logger.warn(
+          {
+            chatId: params.privateChatId,
+            userId: params.actor.userId,
+            err: sendError instanceof Error ? sendError.message : String(sendError),
+          },
+          'Failed to deliver async private broadcast error notice',
+        );
+      }
+    } finally {
+      this.releaseBroadcastPublish(
+        params.publishClaim.key,
+        params.publishClaim.fingerprint,
+        rememberPublish,
+      );
+    }
+  }
+
+  private buildBroadcastFollowUpMessage(result: SendBroadcastResult): string {
+    if (result.failedChats > 0) {
+      return `⚠️ ${this.buildBroadcastCompletionNotice(result)}`;
+    }
+
+    return this.buildBroadcastSuccessMessage(result);
   }
 
   private claimBroadcastPublish(
