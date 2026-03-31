@@ -214,6 +214,43 @@ describe('RuleEngineService', () => {
     }
   });
 
+  it('logs inner slow-stage breakdown with delta timings', async () => {
+    const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const dateNowSpy = jest.spyOn(Date, 'now');
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    let now = 10_000;
+    dateNowSpy.mockImplementation(() => now);
+    jest.spyOn(service as any, 'hasProfanity').mockImplementation(() => {
+      now += 3_400;
+      return false;
+    });
+
+    try {
+      await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'обычное длинное сообщение без ссылок и без нарушений',
+        settings: buildSettings({
+          antiDuplicateEnabled: true,
+          commercialAdsFilterEnabled: false,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(consoleWarnSpy).toHaveBeenCalledTimes(1);
+      const payload = JSON.parse(String(consoleWarnSpy.mock.calls[0]?.[0] ?? '{}'));
+      expect(payload.msg).toBe('Slow rule-engine detect completed close to the hot-path deadline');
+      expect(payload.chatId).toBe('chat-1');
+      expect(payload.latestStage).toBe('duplicate-state');
+      expect(payload.stageDurations.profanity).toBe(3400);
+      expect(payload.stageTimelineMs.profanity).toBeGreaterThanOrEqual(3400);
+      expect(payload.stageDurations['duplicate-state']).toBe(0);
+    } finally {
+      consoleWarnSpy.mockRestore();
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it('allows only exact allowlisted links in ALLOWLIST_ONLY mode', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const allowed = await service.detect({

@@ -44,6 +44,14 @@ export type DetectionResult = {
   duplicateDecision?: DuplicateDecision;
 };
 
+type RuleEngineDetectProfile = {
+  startedAtMs: number;
+  lastMarkedAtMs: number;
+  latestStage: string;
+  stages: Map<string, number>;
+  stageTimelineMs: Map<string, number>;
+};
+
 type DuplicateReactionStage = {
   action: DuplicateAction | null;
 };
@@ -336,6 +344,7 @@ const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
 const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
 const DUPLICATE_STATE_LOOKUP_TIMEOUT_MS = 250;
+const RULE_ENGINE_SLOW_LOG_THRESHOLD_MS = 3_000;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -407,9 +416,15 @@ export class RuleEngineService {
       hasFileAttachment,
       hasVoiceAttachment,
     } = params;
+    const profile = this.createDetectProfile();
     const violations: RuleViolation[] = [];
-    const normalized = this.normalizeForDetection(text);
-    const lowered = text.toLowerCase();
+    const needsNormalized =
+      settings.commercialAdsFilterEnabled ||
+      settings.thematicCodewordEnabled ||
+      settings.antiDuplicateEnabled;
+    const normalized = needsNormalized ? this.normalizeForDetection(text) : '';
+    this.markDetectStage(profile, 'normalize');
+    const lowered = settings.commercialAdsFilterEnabled ? text.toLowerCase() : '';
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
     if (settings.russianProfanityFilterEnabled && this.hasProfanity(text)) {
@@ -419,6 +434,7 @@ export class RuleEngineService {
         reason: 'Detected profanity or abusive language pattern',
       });
     }
+    this.markDetectStage(profile, 'profanity');
 
     if (settings.commercialAdsFilterEnabled) {
       const commercial = this.detectCommercialAd({
@@ -441,6 +457,7 @@ export class RuleEngineService {
         });
       }
     }
+    this.markDetectStage(profile, 'commercial-ad');
 
     const topicMismatch = this.detectTopicFilterMismatch({
       rawText: text,
@@ -460,11 +477,13 @@ export class RuleEngineService {
         },
       });
     }
+    this.markDetectStage(profile, 'topic-filter');
 
     const linkViolation = this.hasBlockedLink(text, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
+    this.markDetectStage(profile, 'links');
 
     if (settings.maxMessageLengthEnabled && measuredLength > settings.maxMessageLength) {
       violations.push({
@@ -473,6 +492,7 @@ export class RuleEngineService {
         reason: `Message length ${measuredLength} exceeds limit ${settings.maxMessageLength}`,
       });
     }
+    this.markDetectStage(profile, 'message-length');
 
     if (settings.messageCountLimitEnabled) {
       const windowHours = Math.min(24, Math.max(1, settings.messageCountLimitWindowHours));
@@ -487,6 +507,7 @@ export class RuleEngineService {
         });
       }
     }
+    this.markDetectStage(profile, 'message-count-limit');
 
     const blockedWord = this.detectMessageLimitsBlockedWord(
       text,
@@ -502,6 +523,7 @@ export class RuleEngineService {
         },
       });
     }
+    this.markDetectStage(profile, 'blocked-words');
 
     if (hasVideoAttachment && !settings.videoMessagesEnabled) {
       violations.push({
@@ -552,12 +574,17 @@ export class RuleEngineService {
         });
       }
     }
+    this.markDetectStage(profile, 'attachments');
 
-    const compactText = normalized.replace(/\s+/g, ' ').trim();
+    const compactText = settings.antiDuplicateEnabled ? normalized.replace(/\s+/g, ' ').trim() : '';
     const duplicateCandidate =
-      violations.length === 0 && !linkViolation && this.shouldTrackDuplicate(text, compactText);
+      settings.antiDuplicateEnabled &&
+      violations.length === 0 &&
+      !linkViolation &&
+      this.shouldTrackDuplicate(text, compactText);
+    this.markDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
-      settings.antiDuplicateEnabled && duplicateCandidate
+      duplicateCandidate
         ? await this.detectDuplicateStateWithin({
             chatId,
             userId,
@@ -565,12 +592,94 @@ export class RuleEngineService {
             settings,
           })
         : undefined;
+    this.markDetectStage(profile, 'duplicate-state');
+
+    this.logSlowDetectIfNeeded({
+      chatId,
+      userId,
+      measuredLength,
+      settings,
+      violationsCount: violations.length,
+      duplicateCandidate,
+      profile,
+    });
 
     return {
       violations,
       ...(duplicateState?.hit ? { duplicateHit: duplicateState.hit } : {}),
       ...(duplicateState?.decision ? { duplicateDecision: duplicateState.decision } : {}),
     };
+  }
+
+  private createDetectProfile(): RuleEngineDetectProfile {
+    const now = Date.now();
+    return {
+      startedAtMs: now,
+      lastMarkedAtMs: now,
+      latestStage: 'start',
+      stages: new Map(),
+      stageTimelineMs: new Map(),
+    };
+  }
+
+  private markDetectStage(profile: RuleEngineDetectProfile, stage: string): void {
+    const now = Date.now();
+    profile.latestStage = stage;
+    profile.stages.set(stage, Math.max(0, now - profile.lastMarkedAtMs));
+    profile.stageTimelineMs.set(stage, Math.max(0, now - profile.startedAtMs));
+    profile.lastMarkedAtMs = now;
+  }
+
+  private readDetectProfileSnapshot(profile: RuleEngineDetectProfile): {
+    latestStage: string;
+    elapsedMs: number;
+    stageDurations: Record<string, number>;
+    stageTimelineMs: Record<string, number>;
+  } {
+    return {
+      latestStage: profile.latestStage,
+      elapsedMs: Math.max(0, Date.now() - profile.startedAtMs),
+      stageDurations: Object.fromEntries(profile.stages.entries()),
+      stageTimelineMs: Object.fromEntries(profile.stageTimelineMs.entries()),
+    };
+  }
+
+  private logSlowDetectIfNeeded(params: {
+    chatId: string;
+    userId: string;
+    measuredLength: number;
+    settings: ChatSettings;
+    violationsCount: number;
+    duplicateCandidate: boolean;
+    profile: RuleEngineDetectProfile;
+  }): void {
+    const snapshot = this.readDetectProfileSnapshot(params.profile);
+    if (snapshot.elapsedMs < RULE_ENGINE_SLOW_LOG_THRESHOLD_MS) {
+      return;
+    }
+
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        context: 'RuleEngineService',
+        chatId: params.chatId,
+        userId: params.userId,
+        elapsedMs: snapshot.elapsedMs,
+        latestStage: snapshot.latestStage,
+        textLength: params.measuredLength,
+        linkPolicy: params.settings.linkPolicy,
+        antiDuplicateEnabled: params.settings.antiDuplicateEnabled,
+        commercialAdsFilterEnabled: params.settings.commercialAdsFilterEnabled,
+        thematicCodewordEnabled: params.settings.thematicCodewordEnabled,
+        messageCountLimitEnabled: params.settings.messageCountLimitEnabled,
+        russianProfanityFilterEnabled: params.settings.russianProfanityFilterEnabled,
+        violationsCount: params.violationsCount,
+        duplicateCandidate: params.duplicateCandidate,
+        stageDurations: snapshot.stageDurations,
+        stageTimelineMs: snapshot.stageTimelineMs,
+        msg: 'Slow rule-engine detect completed close to the hot-path deadline',
+      }),
+    );
   }
 
   private async detectDuplicateStateWithin(params: {
@@ -796,10 +905,10 @@ export class RuleEngineService {
   }
 
   private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
-    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
     if (DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
       return false;
     }
+    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
 
     const candidateText = hasUrl
       ? this.normalizeForDetection(stripUrlsFromText(rawText))

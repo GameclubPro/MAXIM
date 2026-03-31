@@ -156,8 +156,10 @@ type PendingChatAdminLookupBatch = {
 
 type WebhookHotPathProfile = {
   startedAtMs: number;
+  lastMarkedAtMs: number;
   latestStage: string;
   stages: Map<string, number>;
+  stageTimelineMs: Map<string, number>;
 };
 
 type RulesButtonReference = {
@@ -985,6 +987,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
         ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds)
         : new Set<string>();
+      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
       const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
       const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
         chatId,
@@ -995,7 +998,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteSpammersEnabled: settings.deleteSpammersEnabled,
         exemptFromEnforcement: isGlobalSpammerExempt,
       });
-      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer');
+      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
       if (globalSpammerTracking.handled) {
         return;
       }
@@ -1011,6 +1014,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text,
         });
+        this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
         if (handled) {
           return;
         }
@@ -11292,10 +11296,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private createWebhookHotPathProfile(): WebhookHotPathProfile {
+    const now = Date.now();
     return {
-      startedAtMs: Date.now(),
+      startedAtMs: now,
+      lastMarkedAtMs: now,
       latestStage: 'start',
       stages: new Map(),
+      stageTimelineMs: new Map(),
     };
   }
 
@@ -11304,8 +11311,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const now = Date.now();
     profile.latestStage = stage;
-    profile.stages.set(stage, Date.now() - profile.startedAtMs);
+    profile.stages.set(stage, Math.max(0, now - profile.lastMarkedAtMs));
+    profile.stageTimelineMs.set(stage, Math.max(0, now - profile.startedAtMs));
+    profile.lastMarkedAtMs = now;
   }
 
   private readWebhookHotPathProfileSnapshot(
@@ -11316,10 +11326,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const stageDurations = Object.fromEntries(profile.stages.entries());
+    const stageTimelineMs = Object.fromEntries(profile.stageTimelineMs.entries());
     return {
       latestStage: profile.latestStage,
       elapsedMs: Date.now() - profile.startedAtMs,
       stageDurations,
+      stageTimelineMs,
     };
   }
 

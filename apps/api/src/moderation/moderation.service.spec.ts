@@ -1352,6 +1352,53 @@ describe('ModerationService', () => {
     }
   });
 
+  it('reports hot-path stage durations as deltas and keeps a cumulative timeline', () => {
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn(),
+      } as never,
+    );
+
+    const dateNowSpy = jest.spyOn(Date, 'now');
+    let now = 1_000;
+    dateNowSpy.mockImplementation(() => now);
+
+    try {
+      const profile = (service as any).createWebhookHotPathProfile();
+      now = 1_015;
+      (service as any).markWebhookHotPathStage(profile, 'global-spammer-exempt');
+      now = 1_055;
+      (service as any).markWebhookHotPathStage(profile, 'global-spammer-track');
+      now = 1_080;
+      (service as any).markWebhookHotPathStage(profile, 'rule-engine');
+
+      const snapshot = (service as any).readWebhookHotPathProfileSnapshot(profile);
+
+      expect(snapshot).toMatchObject({
+        latestStage: 'rule-engine',
+        elapsedMs: 80,
+        stageDurations: {
+          'global-spammer-exempt': 15,
+          'global-spammer-track': 40,
+          'rule-engine': 25,
+        },
+        stageTimelineMs: {
+          'global-spammer-exempt': 15,
+          'global-spammer-track': 55,
+          'rule-engine': 80,
+        },
+      });
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {
