@@ -309,7 +309,7 @@ export class MaxBotLinkService {
         lastSeenAt: now,
       });
 
-      this.logger.warn(
+      this.logger.debug(
         {
           chatId,
           existingBotId: nextPrimaryBotId,

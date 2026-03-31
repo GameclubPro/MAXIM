@@ -3908,6 +3908,68 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
+  it('fails open when fallback private menu delivery hits a terminal MAX error', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest
+        .fn()
+        .mockRejectedValue(
+          createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
+        ),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      answerCallback: jest.fn(),
+      listBotChats: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await expect(service.handleUpdate(createPrivateCommandUpdate('привет'))).resolves.toBeUndefined();
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Центр управления MAX'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      {
+        ignoreFailureMetricStatuses: [403, 404],
+      },
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('handles attachment-only message in private chat and returns menu', async () => {
     const prisma = {
       chat: {
@@ -7239,6 +7301,72 @@ describe('ModerationService', () => {
           ignoreFailureMetricStatuses: [403, 404],
         }),
       );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('adds provisional chat backoff after a soft-timed remote admin lookup', async () => {
+    jest.useFakeTimers();
+    try {
+      const maxClient = {
+        getChatMembersAccess: jest.fn().mockImplementation(
+          () =>
+            new Promise<Map<string, unknown>>(() => {
+              // Intentionally never resolves within the soft timeout window.
+            }),
+        ),
+        getCurrentChatMemberAccess: jest.fn(),
+      };
+      const service = new ModerationService(
+        {} as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        {
+          getAdminAccess: jest.fn().mockResolvedValue(null),
+        } as never,
+        undefined,
+        {
+          get: jest.fn((key: string) => {
+            if (key === 'CHAT_ADMIN_LOOKUP_TIMEOUT_MS') {
+              return 10_000;
+            }
+            return undefined;
+          }),
+        } as never,
+      );
+      const options = {
+        allowRemoteLookup: true,
+        skipRemoteLookupWhenLocalAdminsKnown: true,
+        remoteLookupSoftTimeoutMs: 500,
+      };
+
+      const first = (service as any).resolveSenderChatAdminCheck('chat-1', [], 'user-1', options);
+      await jest.advanceTimersByTimeAsync(500);
+      await expect(first).resolves.toEqual({
+        isAdmin: false,
+        source: 'local_fallback',
+      });
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+      await expect(
+        (service as any).resolveSenderChatAdminCheck('chat-1', [], 'user-2', options),
+      ).resolves.toEqual({
+        isAdmin: false,
+        source: 'local_fallback',
+      });
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+      await jest.advanceTimersByTimeAsync(5_000);
+
+      const third = (service as any).resolveSenderChatAdminCheck('chat-1', [], 'user-3', options);
+      await jest.advanceTimersByTimeAsync(500);
+      await expect(third).resolves.toEqual({
+        isAdmin: false,
+        source: 'local_fallback',
+      });
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
     }

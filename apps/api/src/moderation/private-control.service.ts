@@ -9296,10 +9296,25 @@ export class PrivateControlService {
     text: string,
     options?: MaxSendMessageOptions,
   ): Promise<void> {
-    await this.maxClient.sendMessage(chatId, text, options, {
-      immediate: true,
-      ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
-    });
+    try {
+      await this.maxClient.sendMessage(chatId, text, options, {
+        immediate: true,
+        ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+      });
+    } catch (error: unknown) {
+      if (this.isTerminalPrivateDialogDeliveryError(error)) {
+        this.logger.debug(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Skipped private dialog delivery after terminal MAX API error',
+        );
+        return;
+      }
+
+      throw error;
+    }
   }
 
   private async redirectSecondaryPrivateDialogToEntryBot(
@@ -9331,6 +9346,47 @@ export class PrivateControlService {
       notification: context.callbackPayload ? 'Откройте основной бот' : null,
     });
     return true;
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
+    return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private extractMaxErrorCode(error: unknown): string | null {
+    const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof maybeCode === 'string' && maybeCode.trim().length > 0
+      ? maybeCode.trim().toLowerCase()
+      : null;
+  }
+
+  private extractMaxErrorMessage(error: unknown): string {
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
+      ?.data?.message;
+    if (typeof responseMessage === 'string' && responseMessage.trim().length > 0) {
+      return responseMessage.trim().toLowerCase();
+    }
+
+    return error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  }
+
+  private isTerminalPrivateDialogDeliveryError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found')
+    );
   }
 
   private rememberPrivateChatId(session: PrivateSession, chatId: string): void {

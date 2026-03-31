@@ -10,6 +10,18 @@ import {
 } from '@maxim/contracts';
 import { PrivateControlService } from './private-control.service';
 
+function createMaxApiError(status: number, message: string, code?: string): Error {
+  return Object.assign(new Error(message), {
+    response: {
+      status,
+      data: {
+        ...(code ? { code } : {}),
+        message,
+      },
+    },
+  });
+}
+
 function decodeStartAppRoute(url: string): string | null {
   const startParam = new URL(url).searchParams.get('startapp');
   if (!startParam?.startsWith('mr-')) {
@@ -1078,6 +1090,26 @@ describe('PrivateControlService', () => {
         .flat()
         .map((button) => String((button as { text?: string }).text ?? '')),
     ).toEqual(['📱 Приложение', '🆘 Поддержка']);
+    expect(adminService.listManagedEntities).not.toHaveBeenCalled();
+  });
+
+  it('fails open when private dialog delivery hits a terminal MAX error', async () => {
+    const { service, maxClient, adminService } = createHarness();
+    maxClient.sendMessage.mockRejectedValueOnce(
+      createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
+    );
+
+    await expect(service.handleUpdate(createPrivateTextUpdate('привет'))).resolves.toBeUndefined();
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.any(Object),
+      {
+        immediate: true,
+        ignoreFailureMetricStatuses: [403, 404],
+      },
+    );
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 

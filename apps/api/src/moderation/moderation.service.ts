@@ -215,6 +215,7 @@ const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
+const CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS = 5_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
 const CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS = 750;
@@ -7934,9 +7935,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendPrivateMenu(chatId: string, text: string): Promise<void> {
-    await this.maxClient.sendMessage(chatId, text, this.buildPrivateMenuOptions(), {
-      ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
-    });
+    try {
+      await this.maxClient.sendMessage(chatId, text, this.buildPrivateMenuOptions(), {
+        ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+      });
+    } catch (error: unknown) {
+      if (this.isTerminalPrivateDialogDeliveryError(error)) {
+        this.logger.debug(
+          {
+            chatId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Skipped private menu delivery after terminal private dialog error',
+        );
+        return;
+      }
+
+      throw error;
+    }
   }
 
   private buildPrivateMenuOptions(): MaxSendMessageOptions {
@@ -8238,12 +8254,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       maxWaitMs: number;
     },
   ): Promise<RemoteChatAdminAccessState | null> {
+    const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
     const lookupPromise = this.getRemoteChatAdminAccess(chatId, userId);
     const maxWaitMs = Math.max(1, Math.ceil(options.maxWaitMs));
 
     let timeout: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<null>((resolve) => {
-      timeout = setTimeout(() => resolve(null), maxWaitMs);
+      timeout = setTimeout(() => {
+        const softBackoffUntilMs = Date.now() + CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS;
+        if ((this.chatAdminChatBackoffUntilMs.get(chatId) ?? 0) < softBackoffUntilMs) {
+          this.chatAdminChatBackoffUntilMs.set(chatId, softBackoffUntilMs);
+        }
+        if ((this.chatAdminLookupBackoffUntilMs.get(cacheKey) ?? 0) < softBackoffUntilMs) {
+          this.chatAdminLookupBackoffUntilMs.set(cacheKey, softBackoffUntilMs);
+        }
+        resolve(null);
+      }, maxWaitMs);
       timeout.unref();
     });
 
@@ -11096,6 +11122,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isNightModeTerminalDeliveryError(error: unknown): boolean {
     return this.isTerminalWebhookProcessingError(error);
+  }
+
+  private isTerminalPrivateDialogDeliveryError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found')
+    );
   }
 
   private isTerminalCallbackError(error: unknown): boolean {
