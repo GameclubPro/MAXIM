@@ -56,6 +56,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly leaseTtlMs: number;
   private readonly handoffTtlMs: number;
   private readonly rebalanceCooldownMs: number;
+  private readonly suppressRebalanceQueueLagSec: number;
   private readonly summaryTtlMs: number;
   private readonly closeTimeoutMs: number;
   private readonly workers = new Map<DefaultWebhookQueueName, Worker<ProcessWebhookJob>>();
@@ -92,6 +93,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     this.rebalanceCooldownMs = configService.get<number>(
       'WEBHOOK_DYNAMIC_LEASES_REBALANCE_COOLDOWN_MS',
       30_000,
+    );
+    this.suppressRebalanceQueueLagSec = configService.get<number>(
+      'WEBHOOK_DYNAMIC_LEASES_SUPPRESS_LAG_SEC',
+      10,
     );
     this.summaryTtlMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_SUMMARY_TTL_MS', 20_000);
     this.closeTimeoutMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS', 5_000);
@@ -184,6 +189,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     const handoffs = await this.loadHandoffs();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
     const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
+    const suppressRebalance =
+      (snapshot.userFacingEffectiveLagSec ?? snapshot.effectiveLagSec ?? 0) >=
+      this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,
@@ -194,6 +202,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       lastHandoffAtMs: Object.fromEntries(this.lastHandoffAtMs),
       queueCounters: snapshot.webhookDefaultShards,
       rebalanceCooldownMs: this.rebalanceCooldownMs,
+      suppressRebalance,
     });
 
     const allowedWorkers = new Set<DefaultWebhookQueueName>();
@@ -260,6 +269,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     const claims = await this.loadClaims();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
     const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
+    const suppressRebalance =
+      (snapshot.userFacingEffectiveLagSec ?? snapshot.effectiveLagSec ?? 0) >=
+      this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,
@@ -270,6 +282,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       lastHandoffAtMs: Object.fromEntries(this.lastHandoffAtMs),
       queueCounters: snapshot.webhookDefaultShards,
       rebalanceCooldownMs: this.rebalanceCooldownMs,
+      suppressRebalance,
     });
 
     return {

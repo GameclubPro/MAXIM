@@ -96,4 +96,27 @@ describe('buildDefaultWebhookLeasePlan', () => {
       reason: 'owner-unavailable',
     });
   });
+
+  it('suppresses non-essential rebalancing while user-facing lag is elevated', () => {
+    const counters = buildCounters();
+    counters['moderation-default-0'] = { waiting: 10, active: 0, delayed: 0 };
+    counters['moderation-default-4'] = { waiting: 6, active: 1, delayed: 0 };
+    counters['moderation-default-8'] = { waiting: 4, active: 0, delayed: 0 };
+    counters['moderation-default-12'] = { waiting: 3, active: 0, delayed: 0 };
+    counters['moderation-default-2'] = { waiting: 1, active: 0, delayed: 0 };
+
+    const plan = buildDefaultWebhookLeasePlan({
+      mode: 'on',
+      queueCounters: counters,
+      rebalanceCooldownMs: 30_000,
+      suppressRebalance: true,
+    });
+
+    expect(plan.queues['moderation-default-0']).toMatchObject({
+      currentOwner: 'api-moderation',
+      desiredOwner: 'api-moderation',
+      handoffPending: false,
+      reason: 'keep-pressure-owner',
+    });
+  });
 });

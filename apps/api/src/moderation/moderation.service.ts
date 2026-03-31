@@ -197,6 +197,8 @@ const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
+const CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS = 750;
+const CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
   readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
@@ -391,6 +393,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly chatAdminLookupTimeoutMs: number;
+  private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
   private readonly backgroundTasksEnabled: boolean;
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
@@ -470,6 +473,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       configService?.get<number>('CHAT_ADMIN_LOOKUP_TIMEOUT_MS'),
       DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
       250,
+    );
+    this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown = this.readBooleanConfig(
+      configService?.get<boolean | string>('CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN'),
+      false,
     );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
@@ -800,7 +807,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       {
         allowRemoteLookup: !degradeMode,
         skipRemoteLookupWhenLocalAdminsKnown:
-          degradeMode || manualGroupCloseActiveNow || nightModeActiveNow,
+          degradeMode ||
+          manualGroupCloseActiveNow ||
+          nightModeActiveNow ||
+          !this.shouldForceSynchronousRemoteAdminLookup(update),
+        prefetchRemoteLookupWhenLocalAdminsKnown:
+          !degradeMode &&
+          !manualGroupCloseActiveNow &&
+          !nightModeActiveNow &&
+          !this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown,
       },
     );
     if (senderChatAdminCheck.isAdmin) {
@@ -7729,6 +7744,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options?: {
       allowRemoteLookup?: boolean;
       skipRemoteLookupWhenLocalAdminsKnown?: boolean;
+      prefetchRemoteLookupWhenLocalAdminsKnown?: boolean;
     },
   ): Promise<ChatAdminCheckResult> {
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
@@ -7741,6 +7757,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return { isAdmin: false, source: 'local_fallback' };
     }
     if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown) {
+      if (options.prefetchRemoteLookupWhenLocalAdminsKnown) {
+        void this.prefetchRemoteChatAdminAccess(chatId, userId);
+      }
       return { isAdmin: false, source: 'local_fallback' };
     }
 
@@ -7974,19 +7993,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botContactId && !normalizedUserIds.includes(botContactId)
           ? [...normalizedUserIds, botContactId]
           : normalizedUserIds;
-      const accessByUserId = await maxClientWithAccess.getChatMembersAccess.call(
-        this.maxClient,
-        chatId,
-        lookupIds,
-        requestOptions,
+      const accessByUserId = await this.executeRemoteChatAdminLookupWithGuard(
+        () =>
+          maxClientWithAccess.getChatMembersAccess!.call(
+            this.maxClient,
+            chatId,
+            lookupIds,
+            requestOptions,
+          ),
+        {
+          chatId,
+          userIds: lookupIds,
+          botId: resolvedBotId,
+        },
       );
       const botAccess =
         (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
         (typeof maxClientWithAccess.getCurrentChatMemberAccess === 'function'
-          ? await maxClientWithAccess.getCurrentChatMemberAccess.call(
-              this.maxClient,
-              chatId,
-              requestOptions,
+          ? await this.executeRemoteChatAdminLookupWithGuard(
+              () =>
+                maxClientWithAccess.getCurrentChatMemberAccess!.call(
+                  this.maxClient,
+                  chatId,
+                  requestOptions,
+                ),
+              {
+                chatId,
+                userIds: botContactId ? [botContactId] : [],
+                botId: resolvedBotId,
+              },
             )
           : null);
       for (const normalizedUserId of normalizedUserIds) {
@@ -8025,6 +8060,98 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return results;
+  }
+
+  private shouldForceSynchronousRemoteAdminLookup(update: MaxUpdate): boolean {
+    if (this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown) {
+      return true;
+    }
+
+    const directText = this.extractDirectIncomingMessageText(update);
+    if (!directText.trim()) {
+      return false;
+    }
+
+    try {
+      return this.parseAdminForwardedModerationCommand(directText) !== null;
+    } catch {
+      return true;
+    }
+  }
+
+  private prefetchRemoteChatAdminAccess(chatId: string, userId: string): void {
+    void this.getRemoteChatAdminAccess(chatId, userId).catch((error: unknown) => {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Background remote chat admin access prefetch failed',
+      );
+    });
+  }
+
+  private resolveChatAdminLookupGuardTimeoutMs(): number {
+    return this.chatAdminLookupTimeoutMs + CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS;
+  }
+
+  private async executeRemoteChatAdminLookupWithGuard<T>(
+    operation: () => Promise<T>,
+    context: {
+      chatId: string;
+      userIds: readonly string[];
+      botId?: string | null;
+    },
+  ): Promise<T> {
+    const startedAtMs = Date.now();
+    const timeoutMs = this.resolveChatAdminLookupGuardTimeoutMs();
+    const operationPromise = operation();
+    operationPromise.catch(() => undefined);
+
+    let timeout: NodeJS.Timeout | null = null;
+    const guardPromise = new Promise<T>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(this.createChatAdminLookupTimeoutError(context, timeoutMs));
+      }, timeoutMs);
+      timeout.unref();
+    });
+
+    try {
+      const result = await Promise.race([operationPromise, guardPromise]);
+      const durationMs = Date.now() - startedAtMs;
+      if (durationMs >= CHAT_ADMIN_LOOKUP_SLOW_LOG_THRESHOLD_MS) {
+        this.logger.warn(
+          {
+            chatId: context.chatId,
+            userIds: context.userIds,
+            botId: context.botId ?? null,
+            durationMs,
+          },
+          'Slow remote chat admin lookup completed close to the hot-path deadline',
+        );
+      }
+      return result;
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private createChatAdminLookupTimeoutError(
+    context: {
+      chatId: string;
+      userIds: readonly string[];
+      botId?: string | null;
+    },
+    timeoutMs: number,
+  ): Error {
+    const error = new Error(
+      `Remote chat admin lookup for ${context.chatId} timed out after ${timeoutMs}ms`,
+    ) as Error & { code?: string };
+    error.code = 'ECONNABORTED';
+    return error;
   }
 
   private async readChatAdminAccessFromSharedCache(
@@ -11071,6 +11198,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           : Number.NaN;
     if (Number.isFinite(numericValue) && numericValue > 0 && numericValue <= 1) {
       return numericValue;
+    }
+
+    return fallback;
+  }
+
+  private readBooleanConfig(value: unknown, fallback: boolean): boolean {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+    if (typeof value === 'number') {
+      return value !== 0;
+    }
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+        return true;
+      }
+      if (
+        normalized === 'false' ||
+        normalized === '0' ||
+        normalized === 'no' ||
+        normalized === 'off'
+      ) {
+        return false;
+      }
     }
 
     return fallback;

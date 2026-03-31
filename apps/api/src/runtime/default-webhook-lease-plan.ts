@@ -26,6 +26,7 @@ export type DefaultWebhookLeasePlanInput = {
   lastHandoffAtMs?: Partial<Record<DefaultWebhookQueueName, number | null>>;
   queueCounters: Record<DefaultWebhookQueueName, DefaultWebhookLeaseCounters>;
   rebalanceCooldownMs: number;
+  suppressRebalance?: boolean;
 };
 
 export type DefaultWebhookLeasePlanEntry = {
@@ -41,6 +42,7 @@ export type DefaultWebhookLeasePlanEntry = {
     | 'static-home'
     | 'bootstrap-home'
     | 'keep-active-owner'
+    | 'keep-pressure-owner'
     | 'keep-cooldown-owner'
     | 'keep-current-owner'
     | 'rebalance-least-loaded'
@@ -177,6 +179,12 @@ export function buildDefaultWebhookLeasePlan(
     if (cooldownActive) {
       queue.desiredOwner = currentOwner;
       queue.reason = 'keep-cooldown-owner';
+      continue;
+    }
+
+    if (input.suppressRebalance) {
+      queue.desiredOwner = currentOwner;
+      queue.reason = 'keep-pressure-owner';
       continue;
     }
 
