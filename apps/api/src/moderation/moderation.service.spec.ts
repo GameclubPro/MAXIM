@@ -1169,6 +1169,76 @@ function createImageFileAttachmentUpdate(): MaxUpdate {
 }
 
 describe('ModerationService', () => {
+  it('does not schedule re-enqueue for terminal MAX processing errors', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-1',
+          botId: null,
+          normalizedPayload: createUpdate(),
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    jest
+      .spyOn(service, 'handleUpdate')
+      .mockRejectedValue(createMaxApiError(404, 'Request failed with status code 404', 'message.not.found'));
+
+    await expect(service.processWebhookEvent('event-1')).rejects.toThrow(
+      'Request failed with status code 404',
+    );
+
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 'event-1' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorMessage: 'Request failed with status code 404',
+        nextEnqueueAt: null,
+      }),
+    });
+  });
+
+  it('keeps retry backoff for transient webhook processing errors', async () => {
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-2',
+          botId: null,
+          normalizedPayload: createUpdate(),
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    jest
+      .spyOn(service, 'handleUpdate')
+      .mockRejectedValue(new Error('MAX API interactive rate limit exceeded'));
+
+    await expect(service.processWebhookEvent('event-2')).rejects.toThrow(
+      'MAX API interactive rate limit exceeded',
+    );
+
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 'event-2' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorMessage: 'MAX API interactive rate limit exceeded',
+        nextEnqueueAt: expect.any(Date),
+      }),
+    });
+  });
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {

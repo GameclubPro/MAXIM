@@ -552,13 +552,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         update.raw && typeof update.raw === 'object' && !Array.isArray(update.raw)
           ? (update.raw as Record<string, unknown>)
           : null;
+      const terminalProcessingError = this.isTerminalWebhookProcessingError(error);
 
       await this.prisma.webhookEvent.update({
         where: { id: webhookEvent.id },
         data: {
           status: WebhookStatus.FAILED,
           errorMessage: error instanceof Error ? error.message : 'Unknown error',
-          nextEnqueueAt: new Date(Date.now() + 15_000),
+          nextEnqueueAt: terminalProcessingError ? null : new Date(Date.now() + 15_000),
           ...(recoveredRawPayload
             ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
             : {}),
@@ -10485,6 +10486,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isNightModeTerminalDeliveryError(error: unknown): boolean {
+    return this.isTerminalWebhookProcessingError(error);
+  }
+
+  private isTerminalWebhookProcessingError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 403 || status === 404) {
       return true;
