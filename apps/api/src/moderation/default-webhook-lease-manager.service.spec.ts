@@ -186,6 +186,36 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await service.onModuleDestroy();
   });
 
+  it('force-recycles a worker after a timed-out close cooldown expires if backlog is still pinned', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock() as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+    );
+
+    const queueName = 'moderation-default-12';
+    const stuckWorker = {
+      close: jest.fn().mockResolvedValue(undefined),
+      isRunning: jest.fn().mockReturnValue(true),
+    };
+    (service as any).workers.set(queueName, stuckWorker);
+    (service as any).closeRetryNotBeforeMs.set(queueName, Date.now() - 1);
+
+    await (service as any).ensureWorkerRunning(queueName, {
+      waiting: 0,
+      prioritized: 6,
+      active: 0,
+      delayed: 0,
+      failed: 0,
+      completed: 0,
+    });
+
+    expect(stuckWorker.close).toHaveBeenCalledWith(true);
+    expect((service as any).workers.get(queueName)).not.toBe(stuckWorker);
+
+    await service.onModuleDestroy();
+  });
+
   it('keeps the worker mapped until close resolves so keepalive can continue renewing its claim', async () => {
     const service = new DefaultWebhookLeaseManagerService(
       createConfigMock() as never,

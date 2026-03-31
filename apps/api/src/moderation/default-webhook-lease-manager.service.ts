@@ -680,7 +680,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     worker: Worker<ProcessWebhookJob>,
     counters?: QueueCounters,
   ): boolean {
-    if (this.closingWorkers.has(queueName) || this.isCloseRetryCoolingDown(queueName)) {
+    if (this.closingWorkers.has(queueName)) {
       return false;
     }
 
@@ -694,7 +694,20 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       typeof (worker as { isRunning?: () => boolean }).isRunning === 'function'
         ? (worker as { isRunning: () => boolean }).isRunning()
         : true;
-    return !running;
+    if (!running) {
+      return true;
+    }
+
+    return this.hasTimedOutCloseReadyForRecycle(queueName);
+  }
+
+  private hasTimedOutCloseReadyForRecycle(queueName: DefaultWebhookQueueName): boolean {
+    const retryNotBeforeMs = this.closeRetryNotBeforeMs.get(queueName);
+    if (typeof retryNotBeforeMs !== 'number') {
+      return false;
+    }
+
+    return retryNotBeforeMs <= Date.now();
   }
 
   private async closeWorker(queueName: DefaultWebhookQueueName): Promise<CloseWorkerResult> {
