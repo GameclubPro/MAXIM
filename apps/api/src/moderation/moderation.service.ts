@@ -7631,8 +7631,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${MINIAPP_ROUTE_START_PARAM_PREFIX}${encoded}`;
   }
 
-  private resolveBotContactId(): string | null {
-    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync();
+  private async resolveChatReadBotId(chatId: string): Promise<string | null> {
+    return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? null;
+  }
+
+  private resolveBotContactId(botId?: string | null): string | null {
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync(botId);
     if (contextAwareContactId) {
       return contextAwareContactId;
     }
@@ -7897,13 +7901,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return results;
     }
 
+    const resolvedBotId = await this.resolveChatReadBotId(chatId);
     const requestOptions = {
       trafficClass: 'interactive' as const,
       actionHealthLane: 'background' as const,
       ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
+      ...(resolvedBotId ? { botId: resolvedBotId } : {}),
     };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(resolvedBotId);
 
     if (typeof maxClientWithAccess.getChatMembersAccess === 'function') {
       const lookupIds =

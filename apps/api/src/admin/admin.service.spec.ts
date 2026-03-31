@@ -1103,6 +1103,49 @@ describe('AdminService dialog admin fallback reads', () => {
       ignoreFailureMetricStatuses: [403, 404],
     });
   });
+
+  it('uses the chat-bound bot for dialog admin fallback reads when one is assigned', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
+      getBotTokenSync: jest.fn().mockReturnValue(null),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+      buildEntryBotStartUrlSync: jest.fn().mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect((service as any).readDialogAdminUserIds('chat-1')).resolves.toEqual(new Set());
+
+    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      capability: 'access_prewarm',
+    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
+      botId: 'id613002203036_4_bot',
+    });
+  });
 });
 
 describe('AdminService night mode settings normalization', () => {
@@ -5799,6 +5842,45 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       ignoreFailureMetricStatuses: [403, 404],
+    });
+  });
+
+  it('prefers the access assist bot for background profile hydration', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
+      getBotTokenSync: jest.fn().mockReturnValue(null),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+      buildEntryBotStartUrlSync: jest.fn().mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    (service as any).resolveUserDisplayNames = jest.fn().mockResolvedValue(new Map());
+
+    await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1']);
+
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-1'], {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
+      botId: 'id613002203036_4_bot',
     });
   });
 

@@ -11430,10 +11430,12 @@ export class AdminService {
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
     if (loadProfiles) {
       try {
+        const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
         chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds, {
           trafficClass: 'interactive',
           actionHealthLane: 'background',
           ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
         });
       } catch (error) {
         this.logger.warn(
@@ -12394,12 +12396,14 @@ export class AdminService {
 
   private async readDialogAdminUserIds(chatId: string): Promise<Set<string>> {
     try {
+      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
       return new Set(
         (
           await this.maxClient.getChatAdminIds(chatId, {
             trafficClass: 'interactive',
             actionHealthLane: 'background',
             ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
           })
         )
           .map((userId) => userId.trim())
@@ -12454,10 +12458,12 @@ export class AdminService {
     }
 
     try {
+      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
       const profiles = await this.maxClient.getChatMemberProfiles(chatId, missingUserIds, {
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
       if (profiles.size === 0) {
         return messages;
@@ -14388,6 +14394,13 @@ export class AdminService {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
   }
 
+  private async resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
+    return (
+      (await this.resolveAssistBotAssignment(chatId, 'access_prewarm')) ??
+      (await this.resolveBotAssignment(chatId))
+    );
+  }
+
   private async resolveAssistBotAssignment(
     chatId: string,
     capability: ManagedEntityBotCapability,
@@ -15706,10 +15719,12 @@ export class AdminService {
     });
 
     try {
+      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
       const snapshot = await this.maxClient.getChatSnapshot(chatId, {
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
       const title = snapshot.title?.trim() || persistedChat?.title?.trim() || chatId;
 

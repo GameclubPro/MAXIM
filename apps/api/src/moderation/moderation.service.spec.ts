@@ -7138,6 +7138,74 @@ describe('ModerationService', () => {
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
   });
 
+  it('routes remote chat admin lookups through the chat-bound bot when one is assigned', async () => {
+    const prisma = {};
+    const maxClient = {
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+          [
+            '214634783',
+            {
+              userId: '214634783',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveContactIdSync: jest.fn().mockReturnValue('214634783'),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      chatContextCache as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect((service as any).getRemoteChatAdminAccess('chat-1', 'user-1')).resolves.toBe(
+      'granted',
+    );
+
+    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'chat-1' });
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['user-1', '214634783'],
+      {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: [403, 404],
+        botId: 'id613002203036_4_bot',
+      },
+    );
+  });
+
   it('applies chat-level backoff after a throttled remote chat admin batch lookup', async () => {
     const prisma = {};
     const maxClient = {

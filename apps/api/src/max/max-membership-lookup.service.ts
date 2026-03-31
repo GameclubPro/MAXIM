@@ -1,7 +1,8 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { MaxClientService, type MaxApiTrafficClass } from './max-client.service';
+import { MaxBotLinkService } from './max-bot-link.service';
 
 export type MaxMembershipLookupPolicy =
   | 'moderation_required_subscription'
@@ -13,6 +14,7 @@ export type MaxMembershipLookupPolicy =
 type MaxMembershipLookupOptions = {
   forceRefresh?: boolean;
   allowStaleOnError?: boolean;
+  botId?: string | null;
 };
 
 type MembershipCacheSnapshot = {
@@ -55,6 +57,7 @@ type PendingSingleLookupBatch = {
   chatId: string;
   policy: MembershipLookupPolicyConfig;
   policyName: MaxMembershipLookupPolicy;
+  botId: string | null;
   lookups: Map<string, PendingSingleLookup>;
   scheduled: boolean;
   timeout: NodeJS.Timeout | null;
@@ -138,6 +141,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   constructor(
     private readonly maxClient: MaxClientService,
     configService: ConfigService,
+    @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.subscriber = this.redis.duplicate();
@@ -386,11 +390,28 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       usersToLookup.push(userId);
     }
 
+    let lookupBotId: string | null = null;
+    if (usersToLookup.length > 0) {
+      const requestedBotId =
+        typeof options.botId === 'string' ? options.botId.trim() : '';
+      if (requestedBotId) {
+        lookupBotId = requestedBotId;
+      } else if (this.maxBotLinkService) {
+        lookupBotId = await this.resolveLookupBotId(normalizedChatId);
+      }
+    }
+
     if (usersToLookup.length === 1) {
       const [userId] = usersToLookup;
       pendingPromises.set(
         userId,
-        this.enqueueSingleLookupBatch(normalizedChatId, userId, policyName, allowStaleOnError),
+        this.enqueueSingleLookupBatch(
+          normalizedChatId,
+          userId,
+          policyName,
+          allowStaleOnError,
+          lookupBotId,
+        ),
       );
     } else if (usersToLookup.length > 1) {
       const batchPromises = this.createBatchLookupPromises(
@@ -398,6 +419,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         usersToLookup,
         policyName,
         allowStaleOnError,
+        lookupBotId,
       );
       for (const [userId, promise] of batchPromises) {
         pendingPromises.set(userId, promise);
@@ -421,6 +443,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     userId: string,
     policyName: MaxMembershipLookupPolicy,
     allowStaleOnError: boolean,
+    botId: string | null,
   ): Promise<boolean | null> {
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
     const batchKey = this.buildChatPolicyKey(chatId, policyName);
@@ -430,11 +453,14 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         chatId,
         policy,
         policyName,
+        botId,
         lookups: new Map(),
         scheduled: false,
         timeout: null,
       };
       this.pendingSingleLookupBatches.set(batchKey, batch);
+    } else if (!batch.botId && botId) {
+      batch.botId = botId;
     }
 
     const cacheKey = this.buildCacheKey(chatId, userId);
@@ -494,6 +520,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const accessByUserId = await this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
         trafficClass: batch.policy.trafficClass,
         timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
+        ...(batch.botId ? { botId: batch.botId } : {}),
       });
       const checkedAtMs = Date.now();
       this.clearChatBackoff(batch.chatId, batch.policyName);
@@ -550,6 +577,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     userIds: readonly string[],
     policyName: MaxMembershipLookupPolicy,
     allowStaleOnError: boolean,
+    botId: string | null,
   ): Map<string, Promise<boolean | null>> {
     const normalizedUserIds = Array.from(new Set(userIds));
     const policy = MEMBERSHIP_LOOKUP_POLICIES[policyName];
@@ -567,6 +595,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           {
             trafficClass: policy.trafficClass,
             timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+            ...(botId ? { botId } : {}),
           },
         );
         const checkedAtMs = Date.now();
@@ -663,6 +692,20 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       },
       'Failed to resolve MAX membership',
     );
+  }
+
+  private async resolveLookupBotId(
+    chatId: string,
+  ): Promise<string | null> {
+    if (!this.maxBotLinkService) {
+      return null;
+    }
+
+    return (
+      await this.maxBotLinkService.resolveBotId({
+        chatId,
+      })
+    ) ?? null;
   }
 
   private parseInvalidationMessage(payload: string): {

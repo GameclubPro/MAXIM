@@ -225,6 +225,38 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('routes membership lookups through the chat-bound bot when one is assigned', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:12:30.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['user-1', { userId: 'user-1', isAdmin: false }]])),
+    };
+    const maxBotLinkService = {
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.getMembership('channel-1', 'user-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'channel-1' });
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-1', ['user-1'], {
+      trafficClass: 'critical',
+      timeoutMs: 2_000,
+      botId: 'id613002203036_4_bot',
+    });
+  });
+
   it('debounces hot single-user moderation lookups long enough to batch near-simultaneous updates', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:13:00.000Z'));
 
