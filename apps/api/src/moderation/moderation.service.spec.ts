@@ -11450,7 +11450,7 @@ describe('ModerationService', () => {
       );
     });
 
-    it('skips remote channel metadata lookups for required subscription notices while degraded', async () => {
+    it('skips required subscription enforcement entirely while degraded under pressure', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -11504,12 +11504,12 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('Канал channel-1');
-      expect(noticeOptions).toEqual({
-        textFormat: 'markdown',
-      });
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('retries sending the explanation on the next message when the first send fails', async () => {
@@ -11806,6 +11806,63 @@ describe('ModerationService', () => {
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('skips required subscription enforcement entirely when the system is under pressure', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 42.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 42,
+          action: {
+            windowSec: 60,
+            total: 50,
+            success: 45,
+            failure: 5,
+            critical: 0,
+            errorRate: 0.1,
+            criticalRate: 0,
+          },
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('keeps admin bypass ahead of required subscription checks', async () => {

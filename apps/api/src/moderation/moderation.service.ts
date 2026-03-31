@@ -191,6 +191,8 @@ const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
+const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
+const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS = 30_000;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
@@ -370,6 +372,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<boolean | null>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
+  private requiredSubscriptionPressureSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
@@ -974,6 +977,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       createdAt,
       degradeMode,
+      systemMode: mode,
       settings,
       rulesPublishedUrl,
       rulesPublishedMessageId,
@@ -6105,6 +6109,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     degradeMode: boolean;
+    systemMode: SystemModeSnapshot;
     settings: Pick<
       ChatSettings,
       | 'requiredSubscriptionEnabled'
@@ -6126,6 +6131,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedMessageId: string | null;
   }): Promise<boolean> {
     if (!params.settings.requiredSubscriptionEnabled) {
+      return false;
+    }
+
+    const pressureSkipReason = this.resolveRequiredSubscriptionPressureSkipReason(
+      params.systemMode,
+    );
+    if (pressureSkipReason) {
+      this.logRequiredSubscriptionPressureSkip({
+        chatId: params.chatId,
+        userId: params.userId,
+        reason: pressureSkipReason,
+      });
       return false;
     }
 
@@ -6402,6 +6419,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       .map((item) => item.channelId);
 
     return { missingChannelIds };
+  }
+
+  private resolveRequiredSubscriptionPressureSkipReason(
+    mode: SystemModeSnapshot,
+  ): string | null {
+    if (mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC) {
+      return `queue lag ${mode.queueLagSec.toFixed(1)}s`;
+    }
+
+    if (mode.mode === 'degrade' && !isSystemModeRecoveryWindow(mode)) {
+      return mode.reason || 'system degrade';
+    }
+
+    return null;
+  }
+
+  private logRequiredSubscriptionPressureSkip(params: {
+    chatId: string;
+    userId: string;
+    reason: string;
+  }) {
+    const now = Date.now();
+    if (
+      now - this.requiredSubscriptionPressureSkipLogAtMs <
+      REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS
+    ) {
+      return;
+    }
+
+    this.requiredSubscriptionPressureSkipLogAtMs = now;
+    this.logger.warn(
+      {
+        chatId: params.chatId,
+        userId: params.userId,
+        reason: params.reason,
+      },
+      'Skipped required subscription enforcement because the system is under pressure',
+    );
   }
 
   private async getRequiredSubscriptionMembership(
