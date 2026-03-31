@@ -46,13 +46,17 @@
 - Deploy scripts `infra/scripts/vps-pull-build-up.sh` and `infra/scripts/vps-pull-build-up-scale.sh` now auto-include `miniapp-static` if it is unexpectedly down during an API deploy, but manual `/app/` verification is still required after incidents.
 - Public `GET /api/v1/system/metrics/queues` is admin-auth protected; anonymous `401` there is expected. For unauthenticated checks use `/api/health/live` and `/api/health/ready`.
 - When backlog diagnosis is unclear, compare both DB and Bull state: `webhook_events.status = 'QUEUED'` can coexist with Redis `bull:<queue>:prioritized` / `active` jobs, so `bull:<queue>:wait == 0` alone does not mean the drain is finished.
+- For orphaned user-facing webhook rows, the repair window is intentionally much shorter than background: user-facing `QUEUED` rows are re-enqueued after about `20s`, while background lanes still wait much longer. If a queue lag incident grows for minutes with `repairs=0`, the problem is probably real hot-path pressure, not stale rows.
 
 ## Runtime architecture
 - Realtime moderation is no longer a single-process/default-queue design. `message_created` traffic is sharded across multiple default queues and multiple realtime workers; critical/legacy work and background tasks are split into separate roles.
 - Preserve per-chat ordering when changing webhook routing or moderation queue ownership. Do not collapse `message_created` back into one shared default queue or raise concurrency inside one shard as a first-line fix.
 - In dynamic default-shard leases, a timed-out `worker.close()` is not a safe handoff signal. Keep ownership pinned to the current worker group until close actually resolves; do not release claims or reassign the shard on timeout alone.
+- If a timed-out default-shard worker keeps backlog pinned after its retry cooldown, force-recycle that worker locally before assuming routing is wrong. A `prioritized` backlog with `active=0` on one shard is now a strong signal for a stale local worker, not just load skew.
 - Required-subscription membership checks now use targeted MAX access checks with batching, short deadlines, per-chat backoff, and hot-channel degradation. Do not reintroduce one-request-per-user synchronous lookup loops in the hot path.
+- Required-subscription enforcement now fails open not only on lookup errors, but also under runtime pressure and chat-level hot-timeout backoff. If tests cover required-subscription moderation, expect healthy-path enforcement and pressured-path skip behavior to coexist.
 - Admin bypass and other moderation-side MAX lookups were moved away from the old expensive patterns. Before changing moderation logic, check whether a lookup is already cached, batched, or delegated to background.
+- Ordinary `message_created` moderation now has a short chat-level circuit breaker: if one chat repeatedly trips the webhook watchdog and the system is already under pressure, the bot temporarily skips ordinary moderation for that chat instead of letting one hotspot degrade the whole cluster.
 - `ready` now uses queue-lag hysteresis. For diagnostics, inspect both the top-level `ok` and `checks.queueLag.rawOk` / `softWarning`; short burst recovery can keep public readiness green while still surfacing early operator signals.
 - Health and queue diagnostics are per-bot aware. In multi-bot work, inspect `ready.bots.{botId}` before assuming a global outage.
 
