@@ -1196,7 +1196,9 @@ describe('ModerationService', () => {
     );
     jest
       .spyOn(service, 'handleUpdate')
-      .mockRejectedValue(createMaxApiError(404, 'Request failed with status code 404', 'message.not.found'));
+      .mockRejectedValue(
+        createMaxApiError(404, 'Request failed with status code 404', 'message.not.found'),
+      );
 
     await expect(service.processWebhookEvent('event-1')).rejects.toThrow(
       'Request failed with status code 404',
@@ -1263,24 +1265,22 @@ describe('ModerationService', () => {
       undefined,
       undefined,
       {
-        get: jest.fn((key: string) =>
-          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined,
-        ),
+        get: jest.fn((key: string) => (key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined)),
       } as never,
     );
     (service as any).webhookUserFacingTimeoutMs = 10;
-    const setTimeoutSpy = jest
-      .spyOn(global, 'setTimeout')
-      .mockImplementation((((callback: TimerHandler) => {
-        if (typeof callback === 'function') {
-          callback();
-        }
-        return {
-          unref() {
-            return this;
-          },
-        } as unknown as NodeJS.Timeout;
-      }) as unknown) as typeof setTimeout);
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
 
     await expect(
       (service as any).executeWebhookUpdateWithGuard(
@@ -1292,17 +1292,17 @@ describe('ModerationService', () => {
             // Intentionally never resolves.
           }),
       ),
-    ).rejects.toThrow(
-      'Webhook user-facing hot path timed out after 10ms for message_created',
-    );
-    expect((service as any).isTerminalWebhookProcessingError(
-      (service as any).createWebhookHotPathTimeoutError({
-        webhookEventId: 'event-3',
-        update,
-        activeBotId: null,
-        timeoutMs: 10,
-      }),
-    )).toBe(true);
+    ).rejects.toThrow('Webhook user-facing hot path timed out after 10ms for message_created');
+    expect(
+      (service as any).isTerminalWebhookProcessingError(
+        (service as any).createWebhookHotPathTimeoutError({
+          webhookEventId: 'event-3',
+          update,
+          activeBotId: null,
+          timeoutMs: 10,
+        }),
+      ),
+    ).toBe(true);
 
     setTimeoutSpy.mockRestore();
   });
@@ -12282,7 +12282,7 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
-  it('skips required subscription enforcement entirely when the system is under pressure', async () => {
+    it('skips required subscription enforcement entirely when the system is under pressure', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -12335,173 +12335,236 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
-  });
-
-  it('skips required subscription enforcement while the chat is in webhook hot-timeout backoff', async () => {
-    const prisma = createPrismaForRequiredSubscription({
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1'],
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({ violations: [] }),
-    };
-    const maxClient = {
-      hasChatMember: jest.fn(),
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-      resolveMessageLink: jest.fn().mockResolvedValue(null),
-    };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-    );
-    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+    it('skips required subscription enforcement while the chat is in webhook hot-timeout backoff', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
 
-    await service.handleUpdate(createUpdate());
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
 
-    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(ruleEngine.detect).not.toHaveBeenCalled();
-  });
+      await service.handleUpdate(createUpdate());
 
-  it('skips ordinary message moderation for a hot chat even before global pressure', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings(),
-          domains: [],
-          admins: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({ violations: [] }),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-      resolveMessageLink: jest.fn().mockResolvedValue(null),
-    };
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-    );
-    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
-
-    await service.handleUpdate(createUpdate());
-
-    expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-  });
-
-  it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings(),
-          domains: [],
-          admins: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({ violations: [] }),
-    };
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-      resolveMessageLink: jest.fn().mockResolvedValue(null),
-    };
-    const systemModeService = {
-      getEffectiveSnapshot: jest.fn().mockResolvedValue({
-        mode: 'degrade',
-        source: 'auto',
-        reason: 'user-facing queue lag 18.0s',
-        updatedAt: new Date().toISOString(),
-        manualMode: null,
-        queueLagSec: 18,
-        action: {
-          windowSec: 60,
-          total: 20,
-          success: 16,
-          failure: 4,
-          critical: 0,
-          errorRate: 0.2,
-          criticalRate: 0,
+    it('skips ordinary message moderation for a hot chat even before global pressure', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings(),
+            domains: [],
+            admins: [],
+          }),
         },
-      }),
-    };
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
 
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-      undefined,
-      systemModeService as never,
-    );
-    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
 
-    await service.handleUpdate(createUpdate());
+      await service.handleUpdate(createUpdate());
 
-    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
-    expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-  });
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
 
-  it('keeps admin bypass ahead of required subscription checks', async () => {
+    it('skips known-spammer fanout checks for a hot chat before rule evaluation', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({ deleteSpammersEnabled: true }),
+            domains: [],
+            admins: [],
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+        globalSpammer: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const redisCounter = {
+        addToSetWithTtl: jest.fn(),
+        incrementWithTtl: jest.fn(),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+      await service.handleUpdate(createUpdate());
+
+      expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
+      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.findFirst).toHaveBeenCalledTimes(1);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    });
+
+    it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings(),
+            domains: [],
+            admins: [],
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 18.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 18,
+          action: {
+            windowSec: 60,
+            total: 20,
+            success: 16,
+            failure: 4,
+            critical: 0,
+            errorRate: 0.2,
+            criticalRate: 0,
+          },
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+      );
+      (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+      await service.handleUpdate(createUpdate());
+
+      expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    });
+
+    it('keeps admin bypass ahead of required subscription checks', async () => {
       const prisma = createPrismaForRequiredSubscription(
         {
           requiredSubscriptionEnabled: true,
