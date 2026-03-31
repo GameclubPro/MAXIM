@@ -4702,6 +4702,9 @@ describe('AdminService.listChannels', () => {
           createdAt: '2026-03-03T10:00:00.000Z',
           entityType: 'channel',
           link: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
           channelOverview: {
             enabledScenariosCount: 1,
             commentsEnabled: true,
@@ -4719,6 +4722,72 @@ describe('AdminService.listChannels', () => {
     });
 
     expect(chatContextCache.setManagedEntitiesRefreshCursor).not.toHaveBeenCalled();
+  });
+
+  it('splits local managed channels refresh into bounded cursor windows', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue(
+      Array.from({ length: 41 }, (_, index) =>
+        createLocalManagedEntityRow({
+          chatId: `channel-${index + 1}`,
+          title: `Канал ${index + 1}`,
+          entityType: 'channel',
+          createdAt: `2026-03-${String((index % 28) + 1).padStart(2, '0')}T10:00:00.000Z`,
+        }),
+      ),
+    );
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+      }: {
+        where: { id: string };
+        create: { title: string };
+      }) => ({
+        id: where.id,
+        title: create.title,
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+        entityType: 'CHANNEL',
+      }),
+    );
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.listChannelsWithRefreshState(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { refresh: true },
+    );
+
+    expect(result.items).toHaveLength(40);
+    expect(result.refresh).toEqual({
+      complete: false,
+      cursor: 40,
+      backoffActive: false,
+      nextPollAfterMs: 250,
+    });
+    expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      40,
+      60 * 60,
+    );
   });
 
   it('returns refresh backoff metadata when managed channels sync is throttled', async () => {

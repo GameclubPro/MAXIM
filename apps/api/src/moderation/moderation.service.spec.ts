@@ -7103,6 +7103,134 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
+  it('caps ordinary remote admin lookup wait time when local admins are unknown', async () => {
+    jest.useFakeTimers();
+    try {
+      const maxClient = {
+        getChatMembersAccess: jest.fn().mockImplementation(
+          () =>
+            new Promise<Map<string, unknown>>(() => {
+              // Intentionally never resolves within the soft timeout window.
+            }),
+        ),
+        getCurrentChatMemberAccess: jest.fn(),
+      };
+      const service = new ModerationService(
+        {} as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        {
+          getAdminAccess: jest.fn().mockResolvedValue(null),
+        } as never,
+      );
+
+      const pendingCheck = (service as any).resolveSenderChatAdminCheck('chat-1', [], 'user-1', {
+        allowRemoteLookup: true,
+        skipRemoteLookupWhenLocalAdminsKnown: true,
+        remoteLookupSoftTimeoutMs: 500,
+      });
+
+      await jest.advanceTimersByTimeAsync(500);
+
+      await expect(pendingCheck).resolves.toEqual({
+        isAdmin: false,
+        source: 'local_fallback',
+      });
+      expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+        'chat-1',
+        ['user-1'],
+        expect.objectContaining({
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          timeoutMs: 2000,
+          ignoreFailureMetricStatuses: [403, 404],
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps synchronous remote admin lookup for forwarded moderation commands when local admins are unknown', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            muteDurationHours: 12,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      applyManualSystemBan: jest.fn().mockResolvedValue({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-2',
+        muteDurationHours: null,
+        unbanScheduledAt: null,
+        message: 'Пользователь забанен.',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedBanUpdate());
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+      }),
+      'group_command',
+    );
+  });
+
   it('uses shared cache for remote chat admins to avoid MAX API call', async () => {
     const prisma = {
       chat: {

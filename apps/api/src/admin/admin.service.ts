@@ -1860,6 +1860,17 @@ export class AdminService {
   ): Promise<ManagedEntitiesListResult> {
     const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
     const cachedIds = new Set(cachedChats.map((chat) => chat.id));
+    let storedCursor =
+      options.fullScan === true
+        ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(
+            user.userId,
+            entityType,
+          )) ?? 0)
+        : null;
+    if (options.fullScan === true && storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE) {
+      storedCursor = 0;
+      await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+    }
     const cachedAccessStates = await Promise.all(
       cachedChats.map(async (chat) => ({
         chat,
@@ -1885,8 +1896,19 @@ export class AdminService {
       }),
     );
 
+    const fullScanStartIndex =
+      options.fullScan === true
+        ? Math.max(0, Math.min(storedCursor ?? 0, candidateChats.length))
+        : 0;
+    const fullScanEndIndex =
+      options.fullScan === true
+        ? Math.min(
+            candidateChats.length,
+            fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
+          )
+        : 0;
     const candidateSlice = options.fullScan
-      ? candidateChats
+      ? candidateChats.slice(fullScanStartIndex, fullScanEndIndex)
       : candidateChats.filter(
           (chat) => !cachedIds.has(chat.chatId) || prioritizedCandidateIds.has(chat.chatId),
         );
@@ -1994,11 +2016,33 @@ export class AdminService {
       );
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, hydratedItems);
 
+      let nextCursor: number | null = null;
+      if (options.fullScan === true) {
+        if (fullScanEndIndex >= candidateChats.length) {
+          nextCursor = MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
+          await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+        } else {
+          nextCursor = fullScanEndIndex;
+          await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
+            user.userId,
+            entityType,
+            fullScanEndIndex,
+            MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC,
+          );
+        }
+      }
+
       return {
         items: hydratedItems,
         refresh:
           options.includeRefreshState === true
-            ? this.createManagedEntitiesRefreshState(MANAGED_ENTITIES_REFRESH_CURSOR_DONE, false, 0)
+            ? options.fullScan === true
+              ? this.createManagedEntitiesRefreshState(nextCursor, false)
+              : this.createManagedEntitiesRefreshState(
+                  MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+                  false,
+                  0,
+                )
             : null,
       };
     } catch (error: unknown) {

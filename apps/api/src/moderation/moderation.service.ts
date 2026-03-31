@@ -209,6 +209,7 @@ const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
 const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
+const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
 const CHAT_ADMIN_LOOKUP_GUARD_SLACK_MS = 750;
@@ -854,6 +855,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           manualGroupCloseActiveNow ||
           nightModeActiveNow ||
           !this.shouldForceSynchronousRemoteAdminLookup(update),
+        remoteLookupSoftTimeoutMs:
+          !hotChatBackoffActive &&
+          !degradeMode &&
+          !manualGroupCloseActiveNow &&
+          !nightModeActiveNow &&
+          !this.shouldForceSynchronousRemoteAdminLookup(update)
+            ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
+            : undefined,
         prefetchRemoteLookupWhenLocalAdminsKnown:
           !hotChatBackoffActive &&
           !degradeMode &&
@@ -8038,12 +8047,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options?: {
       allowRemoteLookup?: boolean;
       skipRemoteLookupWhenLocalAdminsKnown?: boolean;
+      remoteLookupSoftTimeoutMs?: number;
       prefetchRemoteLookupWhenLocalAdminsKnown?: boolean;
     },
   ): Promise<ChatAdminCheckResult> {
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
     if (localIsAdmin) {
       return { isAdmin: true, source: 'local' };
+    }
+
+    const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
+      allowLookup: false,
+    });
+    if (cachedRemoteAdminAccess === 'granted') {
+      return { isAdmin: true, source: 'remote' };
+    }
+    if (cachedRemoteAdminAccess === 'user_denied') {
+      return { isAdmin: false, source: 'remote' };
     }
 
     const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
@@ -8054,6 +8074,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (options.prefetchRemoteLookupWhenLocalAdminsKnown) {
         void this.prefetchRemoteChatAdminAccess(chatId, userId);
       }
+      return { isAdmin: false, source: 'local_fallback' };
+    }
+
+    if (
+      typeof options?.remoteLookupSoftTimeoutMs === 'number' &&
+      options.remoteLookupSoftTimeoutMs > 0
+    ) {
+      const remoteAdminAccess = await this.getRemoteChatAdminAccessWithin(chatId, userId, {
+        maxWaitMs: options.remoteLookupSoftTimeoutMs,
+      });
+      if (remoteAdminAccess) {
+        if (remoteAdminAccess === 'granted') {
+          return { isAdmin: true, source: 'remote' };
+        }
+        return { isAdmin: false, source: 'remote' };
+      }
+
       return { isAdmin: false, source: 'local_fallback' };
     }
 
@@ -8108,6 +8145,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async getRemoteChatAdminAccess(
     chatId: string,
     userId: string,
+    options: {
+      allowLookup?: boolean;
+    } = {},
   ): Promise<RemoteChatAdminAccessState | null> {
     const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
     const now = Date.now();
@@ -8137,12 +8177,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return staleCached;
     }
 
+    if (options.allowLookup === false) {
+      return staleCached;
+    }
+
     const inFlight = this.chatAdminLookupInFlight.get(cacheKey);
     if (inFlight) {
       return inFlight;
     }
 
     return this.enqueueChatAdminLookupBatch(chatId, userId, cacheKey, staleCached);
+  }
+
+  private async getRemoteChatAdminAccessWithin(
+    chatId: string,
+    userId: string,
+    options: {
+      maxWaitMs: number;
+    },
+  ): Promise<RemoteChatAdminAccessState | null> {
+    const lookupPromise = this.getRemoteChatAdminAccess(chatId, userId);
+    const maxWaitMs = Math.max(1, Math.ceil(options.maxWaitMs));
+
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), maxWaitMs);
+      timeout.unref();
+    });
+
+    try {
+      return await Promise.race([lookupPromise, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   private enqueueChatAdminLookupBatch(
@@ -9618,6 +9687,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         {
           allowRemoteLookup: mode.mode !== 'degrade',
           skipRemoteLookupWhenLocalAdminsKnown: true,
+          remoteLookupSoftTimeoutMs: CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
         },
       );
       if (!senderAdminCheck.isAdmin) {
