@@ -2,6 +2,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookStatus, type Prisma } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
+import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -11,16 +12,30 @@ type WebhookIngestResult = {
   duplicate: boolean;
 };
 
+type BotSelfAccessCacheEntry = {
+  canModerate: boolean;
+  expiresAtMs: number;
+};
+
+const BOT_SELF_ACCESS_CACHE_TTL_MS = 5 * 60 * 1_000;
+const BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS = 60 * 1_000;
+const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
+const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
+const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
+
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
   private readonly rawPayloadSampleRate: number;
+  private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
+  private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
     private readonly maxBotLinkService: MaxBotLinkService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
+    @Optional() private readonly maxClient?: MaxClientService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
   }
@@ -143,10 +158,16 @@ export class WebhookService {
         });
       }
 
-      return await this.maxBotLinkService.bindChatToBot({
+      const boundBotId = await this.maxBotLinkService.bindChatToBot({
         chatId,
         title: update.message?.chatTitle ?? null,
         botId: update.botId,
+      });
+      return await this.maybeFailOverExecutionOwner({
+        update,
+        chatId,
+        incomingBotId: update.botId ?? null,
+        currentOwnerBotId: boundBotId,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -160,6 +181,181 @@ export class WebhookService {
       );
       return null;
     }
+  }
+
+  private async maybeFailOverExecutionOwner(params: {
+    update: MaxUpdate;
+    chatId: string;
+    incomingBotId: string | null;
+    currentOwnerBotId: string | null;
+  }): Promise<string | null> {
+    const incomingBotId = params.incomingBotId?.trim() ?? '';
+    const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
+    if (
+      !this.maxClient ||
+      !params.chatId.startsWith('-') ||
+      !incomingBotId ||
+      !currentOwnerBotId ||
+      incomingBotId === currentOwnerBotId
+    ) {
+      return params.currentOwnerBotId;
+    }
+
+    const currentOwnerCanModerate = await this.getBotSelfModerationAccessState(
+      params.chatId,
+      currentOwnerBotId,
+    );
+    if (currentOwnerCanModerate !== false) {
+      return params.currentOwnerBotId;
+    }
+
+    const incomingBotCanModerate = await this.getBotSelfModerationAccessState(
+      params.chatId,
+      incomingBotId,
+    );
+    if (incomingBotCanModerate !== true) {
+      return params.currentOwnerBotId;
+    }
+
+    const reassignedBotId = await this.maxBotLinkService.bindChatToBot({
+      chatId: params.chatId,
+      title: params.update.message?.chatTitle ?? null,
+      botId: incomingBotId,
+      allowReassign: true,
+    });
+
+    if (reassignedBotId === incomingBotId) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          updateId: params.update.updateId,
+          previousPrimaryBotId: currentOwnerBotId,
+          nextPrimaryBotId: incomingBotId,
+        },
+        'Promoted the incoming bot to primary after detecting stale owner permissions',
+      );
+    }
+
+    return reassignedBotId ?? params.currentOwnerBotId;
+  }
+
+  private async getBotSelfModerationAccessState(
+    chatId: string,
+    botId: string,
+  ): Promise<boolean | null> {
+    const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
+    const cached = this.readCachedBotSelfAccess(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+
+    const backoffUntilMs = this.botSelfAccessBackoffUntilMs.get(cacheKey) ?? 0;
+    if (backoffUntilMs > Date.now()) {
+      return null;
+    }
+
+    if (!this.maxClient) {
+      return null;
+    }
+
+    try {
+      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+        botId,
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: BOT_SELF_ACCESS_TIMEOUT_MS,
+        ignoreFailureMetricStatuses: BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES,
+      });
+      return await this.cacheBotSelfAccess(chatId, botId, access);
+    } catch (error: unknown) {
+      if (this.isTerminalBotSelfAccessError(error)) {
+        await this.cacheBotSelfAccess(chatId, botId, null);
+        return false;
+      }
+
+      this.botSelfAccessBackoffUntilMs.set(cacheKey, Date.now() + BOT_SELF_ACCESS_BACKOFF_MS);
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh bot self access snapshot during webhook owner failover check',
+      );
+      return null;
+    }
+  }
+
+  private async cacheBotSelfAccess(
+    chatId: string,
+    botId: string,
+    access: MaxChatMemberAccess | null,
+  ): Promise<boolean> {
+    const canModerate = access?.isAdmin === true || access?.isOwner === true;
+    const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
+    this.botSelfAccessCache.set(cacheKey, {
+      canModerate,
+      expiresAtMs:
+        Date.now() +
+        (canModerate ? BOT_SELF_ACCESS_CACHE_TTL_MS : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
+    });
+    this.botSelfAccessBackoffUntilMs.delete(cacheKey);
+    await this.persistBotSelfAccessSnapshot(chatId, botId, access);
+    return canModerate;
+  }
+
+  private async persistBotSelfAccessSnapshot(
+    chatId: string,
+    botId: string,
+    access: MaxChatMemberAccess | null,
+  ): Promise<void> {
+    try {
+      await this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+        },
+        data: {
+          permissionsSnapshot: {
+            checkedAt: new Date().toISOString(),
+            isAdmin: access?.isAdmin === true,
+            isOwner: access?.isOwner === true,
+            permissions: Array.from(
+              new Set(
+                (access?.permissions ?? [])
+                  .map((permission) => permission.trim())
+                  .filter((permission) => permission.length > 0),
+              ),
+            ),
+          } satisfies Prisma.InputJsonValue,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist bot self access snapshot during webhook owner failover check',
+      );
+    }
+  }
+
+  private buildBotSelfAccessCacheKey(chatId: string, botId: string): string {
+    return `${chatId}:${botId}`;
+  }
+
+  private readCachedBotSelfAccess(cacheKey: string): boolean | null {
+    const cached = this.botSelfAccessCache.get(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    if (cached.expiresAtMs <= Date.now()) {
+      this.botSelfAccessCache.delete(cacheKey);
+      return null;
+    }
+    return cached.canModerate;
   }
 
   private isBotRemovalUpdate(update: MaxUpdate): boolean {
@@ -218,6 +414,33 @@ export class WebhookService {
     }
 
     return String(error).trim().toLowerCase();
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
+    return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private extractMaxErrorCode(error: unknown): string | null {
+    const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof maybeCode === 'string' && maybeCode.trim().length > 0
+      ? maybeCode.trim().toLowerCase()
+      : null;
+  }
+
+  private isTerminalBotSelfAccessError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    const message = this.extractErrorMessage(error);
+    return message.includes('bot is not a chat member') || message.includes('not accessible');
   }
 
   private sanitizeForJsonStorage(
