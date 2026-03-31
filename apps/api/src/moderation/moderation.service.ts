@@ -10167,7 +10167,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
@@ -10180,7 +10180,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync(startPayload) ??
+      this.maxBotLinkService?.buildEntryBotStartUrlSync(startPayload) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)

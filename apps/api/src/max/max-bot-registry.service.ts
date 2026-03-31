@@ -23,6 +23,7 @@ export class MaxBotRegistryService {
   private readonly botsById: ReadonlyMap<string, MaxBotDefinition>;
   private readonly appBaseUrl: string | null;
   private readonly defaultBot: MaxBotDefinition;
+  private readonly entryBot: MaxBotDefinition;
   private readonly knownBotUserIdVariants: ReadonlySet<string>;
 
   constructor(configService: ConfigService) {
@@ -50,6 +51,7 @@ export class MaxBotRegistryService {
     }));
     this.botsById = new Map(this.bots.map((bot) => [bot.id, bot]));
     this.defaultBot = this.bots[0]!;
+    this.entryBot = this.resolveEntryBot(configService.get<string>('MAX_ENTRY_BOT_ID'));
     this.knownBotUserIdVariants = new Set(
       this.bots.flatMap((bot) => [...buildBotIdVariants(bot.id)]),
     );
@@ -57,6 +59,10 @@ export class MaxBotRegistryService {
 
   getDefaultBot(): MaxBotDefinition {
     return this.defaultBot;
+  }
+
+  getEntryBot(): MaxBotDefinition {
+    return this.entryBot;
   }
 
   getAllBots(): readonly MaxBotDefinition[] {
@@ -163,6 +169,16 @@ export class MaxBotRegistryService {
   private normalizeAppBaseUrl(value: string | undefined): string | null {
     const normalized = typeof value === 'string' ? value.trim() : '';
     return normalized ? normalized.replace(/\/+$/u, '') : null;
+  }
+
+  private resolveEntryBot(configuredBotId: string | undefined): MaxBotDefinition {
+    const normalized = typeof configuredBotId === 'string' ? configuredBotId.trim() : '';
+    const configuredBot = normalized ? this.botsById.get(normalized) ?? null : null;
+    if (configuredBot && canExecuteActionsForBotState(configuredBot.state)) {
+      return configuredBot;
+    }
+
+    return this.defaultBot;
   }
 
   private buildWebhookUrl(botId: string, secretPath: string): string | null {

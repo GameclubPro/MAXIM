@@ -187,6 +187,7 @@ function createServiceFixture() {
   const botRegistry = {
     getBotById: jest.fn((botId?: string | null) => bots.find((bot) => bot.id === botId) ?? null),
     getDefaultBot: jest.fn(() => bots[0]),
+    getEntryBot: jest.fn(() => bots[0]),
   };
   const botContext = {
     getActiveBotId: jest.fn(() => null),
@@ -346,5 +347,13 @@ describe('MaxBotLinkService', () => {
         shouldHandleGroupUpdate: false,
       }),
     );
+  });
+
+  it('builds entry mini app links through the canonical entry bot', () => {
+    const fixture = createServiceFixture();
+
+    const url = fixture.service.buildEntryMiniappStartUrlSync('route_abc');
+
+    expect(url).toBe('https://max.ru/id613002203036_bot?startapp=route_abc');
   });
 });

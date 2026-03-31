@@ -13964,7 +13964,7 @@ export class AdminService {
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
@@ -13977,7 +13977,7 @@ export class AdminService {
     }
 
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync(startPayload) ??
+      this.maxBotLinkService?.buildEntryBotStartUrlSync(startPayload) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)

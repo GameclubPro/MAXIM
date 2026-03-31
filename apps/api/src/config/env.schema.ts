@@ -23,6 +23,7 @@ const envSchema = z.object({
   MAX_BOT_CHARACTER_NAME: z.string().min(1).max(128).optional(),
   MAX_BOT_SPEECH_PERSONA: botSpeechPersonaSchema.optional(),
   MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
+  MAX_ENTRY_BOT_ID: z.string().min(3).optional(),
   MAX_BOT_TOKEN: z.string().min(10),
   MAX_BOT_TOKEN_PREVIOUS: z.string().min(10).optional(),
   MAX_WEBHOOK_SECRET_PATH: z.string().min(8),
@@ -189,6 +190,30 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
 
   try {
     const additionalBots = parseAdditionalMaxBotsJson(parsed.data.MAX_BOTS_JSON);
+    const configuredBotIds = new Set<string>([
+      parsed.data.MAX_BOT_ID.trim(),
+      ...additionalBots.map((bot) => bot.id),
+    ]);
+    const normalizedEntryBotId =
+      typeof parsed.data.MAX_ENTRY_BOT_ID === 'string'
+        ? parsed.data.MAX_ENTRY_BOT_ID.trim()
+        : '';
+
+    if (normalizedEntryBotId) {
+      if (!configuredBotIds.has(normalizedEntryBotId)) {
+        throw new Error(
+          `MAX_ENTRY_BOT_ID must match MAX_BOT_ID or one of MAX_BOTS_JSON ids (got "${normalizedEntryBotId}")`,
+        );
+      }
+
+      const additionalEntryBot = additionalBots.find((bot) => bot.id === normalizedEntryBotId) ?? null;
+      if (additionalEntryBot && additionalEntryBot.state !== 'active') {
+        throw new Error(
+          `MAX_ENTRY_BOT_ID must reference an active bot; got "${normalizedEntryBotId}" with state "${additionalEntryBot.state}"`,
+        );
+      }
+    }
+
     if (parsed.data.NODE_ENV === 'production') {
       for (const bot of additionalBots) {
         for (const [key, value] of [

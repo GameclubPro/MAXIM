@@ -46,6 +46,10 @@ export class MaxBotLinkService {
     return this.botRegistry.getDefaultBot().id;
   }
 
+  getEntryBotId(): string {
+    return this.botRegistry.getEntryBot().id;
+  }
+
   getContextOrDefaultBotId(): string {
     return this.botContext.getActiveBotId() ?? this.getDefaultBotId();
   }
@@ -128,6 +132,22 @@ export class MaxBotLinkService {
     return bot.contactId;
   }
 
+  buildEntryMiniappStartUrlSync(startParam: string): string | null {
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.getEntryBotId())}?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  buildEntryBotStartUrlSync(startPayload: string): string | null {
+    if (!isValidMaxBotStartPayload(startPayload)) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.getEntryBotId())}?start=${encodeURIComponent(startPayload)}`;
+  }
+
   buildMiniappStartUrlSync(startParam: string, botId?: string | null): string | null {
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
@@ -169,6 +189,22 @@ export class MaxBotLinkService {
 
   async resolveContactId(options: { chatId?: string | null; botId?: string | null } = {}): Promise<string | null> {
     return this.resolveContactIdSync(await this.resolveBotId(options));
+  }
+
+  async buildEntryMiniappStartUrl(startParam: string): Promise<string | null> {
+    if (!isValidMaxMiniappStartPayload(startParam)) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.getEntryBotId())}?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  async buildEntryBotStartUrl(startPayload: string): Promise<string | null> {
+    if (!isValidMaxBotStartPayload(startPayload)) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.getEntryBotId())}?start=${encodeURIComponent(startPayload)}`;
   }
 
   async buildMiniappStartUrl(

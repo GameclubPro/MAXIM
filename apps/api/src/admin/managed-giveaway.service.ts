@@ -1366,7 +1366,7 @@ export class ManagedGiveawayService {
     text: string,
   ): Promise<MaxMessageButton | null> {
     const botId = await this.resolveGiveawayButtonBotId(sourceChatId);
-    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId, botId);
+    const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
     const webAppUrl = this.buildGiveawayDirectWebAppUrl(giveawayId);
     const botContactId = this.resolveBotContactId(botId);
 
@@ -2495,7 +2495,7 @@ export class ManagedGiveawayService {
     return user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
   }
 
-  private buildGiveawayLaunchUrl(giveawayId: string, botId?: string | null): string | null {
+  private buildGiveawayLaunchUrl(giveawayId: string): string | null {
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
@@ -2510,12 +2510,11 @@ export class ManagedGiveawayService {
       return null;
     }
 
-    const resolvedBotId = typeof botId === 'string' && botId.trim() ? botId.trim() : null;
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync(startParam, resolvedBotId) ??
-      ((resolvedBotId ?? this.ownBotUserId)
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
+      (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(
-            resolvedBotId ?? this.ownBotUserId ?? '',
+            this.ownBotUserId ?? '',
           )}?startapp=${encodeURIComponent(startParam)}`
         : null)
     );
