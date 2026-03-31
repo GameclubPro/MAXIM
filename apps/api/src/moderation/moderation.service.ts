@@ -107,6 +107,13 @@ type ChatAdminCheckResult = {
   source: ChatAdminCheckSource;
 };
 
+type RequiredSubscriptionChannelMetadata = {
+  id: string;
+  title: string;
+  link: string | null;
+  usable: boolean;
+};
+
 type SharedChatExecutionGuard =
   | {
       mode: 'allow';
@@ -6174,10 +6181,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const resolvedRequiredChannels = await this.resolveRequiredSubscriptionChannels(
+      requiredChannelIds,
+      { allowRemoteFetch: true },
+    );
+    const usableRequiredChannels = resolvedRequiredChannels.filter((channel) => channel.usable);
+    if (usableRequiredChannels.length === 0) {
+      return false;
+    }
+
+    const usableRequiredChannelsById = new Map(
+      usableRequiredChannels.map((channel) => [channel.id, channel] as const),
+    );
+
     const membership = await this.resolveRequiredSubscriptionMembership(
       params.chatId,
       params.userId,
-      requiredChannelIds,
+      usableRequiredChannels.map((channel) => channel.id),
     );
     if (!membership || membership.missingChannelIds.length === 0) {
       return false;
@@ -6199,10 +6219,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     await this.maxClient.deleteMessage(params.chatId, params.messageId);
 
-    const missingChannels = await this.resolveRequiredSubscriptionChannels(
-      membership.missingChannelIds,
-      { allowRemoteFetch: !params.degradeMode },
-    );
+    const missingChannels = membership.missingChannelIds
+      .map((channelId) => usableRequiredChannelsById.get(channelId) ?? null)
+      .filter(
+        (
+          channel,
+        ): channel is RequiredSubscriptionChannelMetadata => channel !== null,
+      );
     const missingChannelTitles = missingChannels.map((channel) => channel.title);
 
     await this.prisma.violation.create({
@@ -6582,25 +6605,56 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     options: {
       allowRemoteFetch?: boolean;
     } = {},
-  ): Promise<Array<{ id: string; title: string; link: string | null }>> {
+  ): Promise<RequiredSubscriptionChannelMetadata[]> {
     const allowRemoteFetch = options.allowRemoteFetch === true;
+    const persistedChats =
+      typeof this.prisma.chat.findMany === 'function'
+        ? await this.prisma.chat.findMany({
+            where: {
+              id: {
+                in: [...channelIds],
+              },
+            },
+            select: {
+              id: true,
+              title: true,
+              entityType: true,
+            },
+          })
+        : [];
+    const persistedChatsById = new Map(persistedChats.map((chat) => [chat.id, chat] as const));
+
     return this.mapWithConcurrency(channelIds, 2, async (channelId) => {
-      const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
-      const cachedLink = cached?.link?.trim() || null;
-      const cachedTitle = cached?.title?.trim() || '';
-      if (cached && cachedLink) {
+      const persistedChat = persistedChatsById.get(channelId) ?? null;
+      if (persistedChat?.entityType === ChatEntityType.CHAT) {
+        await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
         return {
           id: channelId,
-          title: cachedTitle || `Канал ${channelId}`,
+          title: persistedChat.title?.trim() || `Чат ${channelId}`,
+          link: null,
+          usable: false,
+        };
+      }
+
+      const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
+      const cachedTitle = this.readRequiredSubscriptionChannelTitle(channelId, cached?.title ?? '');
+      const cachedLink = this.normalizeBotButtonUrl(cached?.link ?? '');
+      const fallbackTitle = cachedTitle || persistedChat?.title?.trim() || `Канал ${channelId}`;
+      if (this.isUsableRequiredSubscriptionChannelMetadata(channelId, cachedTitle, cachedLink)) {
+        return {
+          id: channelId,
+          title: cachedTitle,
           link: cachedLink,
+          usable: true,
         };
       }
 
       if (!allowRemoteFetch) {
         return {
           id: channelId,
-          title: cachedTitle || `Канал ${channelId}`,
+          title: fallbackTitle,
           link: cachedLink,
+          usable: false,
         };
       }
 
@@ -6609,8 +6663,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           trafficClass: 'interactive',
           timeoutMs: 2_500,
         });
-        const title = snapshot.title?.trim() || `Канал ${channelId}`;
-        const link = snapshot.link?.trim() || null;
+        const title =
+          this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') || fallbackTitle;
+        const link = this.normalizeBotButtonUrl(snapshot.link ?? '');
+        if (snapshot.entityType !== 'channel') {
+          await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
+          return {
+            id: channelId,
+            title,
+            link: null,
+            usable: false,
+          };
+        }
         await this.chatContextCache?.setManagedEntityHeader({
           id: channelId,
           title,
@@ -6625,6 +6689,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           id: channelId,
           title,
           link,
+          usable: this.isUsableRequiredSubscriptionChannelMetadata(channelId, title, link),
         };
       } catch (error: unknown) {
         this.logger.warn(
@@ -6636,11 +6701,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
         return {
           id: channelId,
-          title: cachedTitle || `Канал ${channelId}`,
-          link: null,
+          title: fallbackTitle,
+          link: cachedLink,
+          usable: false,
         };
       }
     });
+  }
+
+  private readRequiredSubscriptionChannelTitle(channelId: string, value: string): string {
+    const normalized = value.trim();
+    if (!normalized || this.isRequiredSubscriptionFallbackTitle(channelId, normalized)) {
+      return '';
+    }
+
+    return normalized;
+  }
+
+  private isRequiredSubscriptionFallbackTitle(channelId: string, title: string): boolean {
+    return (
+      title === channelId ||
+      title === `Канал ${channelId}` ||
+      title === `Чат ${channelId}`
+    );
+  }
+
+  private isUsableRequiredSubscriptionChannelMetadata(
+    channelId: string,
+    title: string,
+    link: string | null,
+  ): boolean {
+    return (
+      title.trim().length > 0 &&
+      !this.isRequiredSubscriptionFallbackTitle(channelId, title.trim()) &&
+      typeof link === 'string' &&
+      link.trim().length > 0
+    );
   }
 
   private async hasRequiredSubscriptionNoticeCooldown(

@@ -1,6 +1,14 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { SanctionAction } from '@prisma/client';
+import { ChatEntityType, SanctionAction } from '@prisma/client';
 import { ModerationService } from './moderation.service';
+
+declare global {
+  namespace jest {
+    interface Matchers<R> {
+      toHaveBeenCalledWithPrefix(...expected: unknown[]): R;
+    }
+  }
+}
 
 expect.extend({
   toHaveBeenCalledWithPrefix(this: jest.MatcherContext, received: unknown, ...expected: unknown[]) {
@@ -3721,14 +3729,14 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createPrivateCommandUpdate('/menu'));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
       expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
     );
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
       expect.any(String),
       expect.objectContaining({
@@ -3795,7 +3803,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createPrivateCommandUpdate('привет'));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
       expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
@@ -3850,7 +3858,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createPrivateCommandUpdate(''));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       '152517912',
       expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
@@ -4819,15 +4827,15 @@ describe('ModerationService', () => {
       maxClient.deleteMessage.mock.invocationCallOrder[0],
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       'chat-1',
       expect.stringContaining('Ночной режим, граждане'),
       expect.objectContaining({
         textFormat: 'markdown',
       }),
-      {
+      expect.objectContaining({
         ignoreFailureMetricStatuses: [403, 404],
-      },
+      }),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -4919,7 +4927,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       'chat-1',
       expect.stringContaining('Ночной режим, граждане'),
       expect.objectContaining({
@@ -7210,11 +7218,15 @@ describe('ModerationService', () => {
     expect(first).toBe('granted');
     expect(second).toBe('user_denied');
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1', 'user-2'], {
-      trafficClass: 'interactive',
-      actionHealthLane: 'background',
-      ignoreFailureMetricStatuses: [403, 404],
-    });
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['user-1', 'user-2'],
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: [403, 404],
+      }),
+    );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
   });
 
@@ -7277,12 +7289,12 @@ describe('ModerationService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'chat-1',
       ['user-1', '214634783'],
-      {
+      expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'background',
         ignoreFailureMetricStatuses: [403, 404],
         botId: 'id613002203036_4_bot',
-      },
+      }),
     );
   });
 
@@ -11207,6 +11219,7 @@ describe('ModerationService', () => {
               publishedMessageId: 'mid-rules-1',
             },
           }),
+          findMany: jest.fn().mockResolvedValue([]),
         },
         violation: {
           create: jest.fn(),
@@ -11239,6 +11252,12 @@ describe('ModerationService', () => {
       };
       const maxClient = {
         hasChatMember: jest.fn().mockResolvedValue(true),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
         kickMember: jest.fn(),
@@ -11445,6 +11464,192 @@ describe('ModerationService', () => {
           },
         }),
       );
+    });
+
+    it('refreshes fallback required subscription metadata before naming channels in the bot notice', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const chatContextCache = {
+        getManagedEntityHeader: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Канал channel-1',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        }),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+      );
+
+      const channels = await (
+        service as unknown as {
+          resolveRequiredSubscriptionChannels: (
+            channelIds: string[],
+            options: { allowRemoteFetch: boolean },
+          ) => Promise<Array<{ id: string; title: string; link: string | null; usable: boolean }>>;
+        }
+      ).resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: true,
+      });
+
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+      });
+      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
+        id: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/news-max',
+        participantsCount: 100,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      });
+      expect(channels).toEqual([
+        {
+          id: 'channel-1',
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          usable: true,
+        },
+      ]);
+    });
+
+    it('ignores chats in required subscription config and only checks real channels', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['chat-2', 'channel-1'],
+      });
+      prisma.chat.findMany.mockResolvedValue([
+        {
+          id: 'chat-2',
+          title: 'Общий чат',
+          entityType: ChatEntityType.CHAT,
+        },
+      ]);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+      });
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+      });
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Новости MAX');
+      expect(noticeText).not.toContain('chat-2');
+      expect(noticeText).not.toContain('Общий чат');
+      expect(noticeOptions).toEqual(
+        expect.objectContaining({
+          buttons: [
+            [
+              {
+                text: 'Новости MAX',
+                url: 'https://max.ru/channels/news-max',
+              },
+            ],
+          ],
+        }),
+      );
+    });
+
+    it('fails open when required subscription metadata cannot produce a channel button and title', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn(),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: '',
+          link: null,
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+      });
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('suppresses repeated notice during cooldown and reuses membership cache', async () => {
