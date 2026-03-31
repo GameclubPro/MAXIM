@@ -7318,6 +7318,57 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not wait indefinitely for redis shared execution lock release', async () => {
+    jest.useFakeTimers();
+    const redisCounter = {
+      releaseLock: jest.fn().mockImplementation(
+        () =>
+          new Promise<void>(() => {
+            // Intentionally never resolves within the release guard window.
+          }),
+      ),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+    const loggerWarnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+    (service as any).sharedChatExecutionLockTimeoutMs = 25;
+
+    try {
+      const releasePromise = (service as any).releaseSharedChatExecutionLock({
+        key: 'shared-chat-execution:v1:bot-1:chat-1:update-1',
+        token: 'token-1',
+        mode: 'redis',
+      });
+
+      await jest.advanceTimersByTimeAsync(25);
+      await expect(releasePromise).resolves.toBeUndefined();
+      expect(redisCounter.releaseLock).toHaveBeenCalledWith(
+        'shared-chat-execution:v1:bot-1:chat-1:update-1',
+        'token-1',
+      );
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          key: 'shared-chat-execution:v1:bot-1:chat-1:update-1',
+          timeoutMs: 25,
+        }),
+        'Failed to release redis shared chat execution lock',
+      );
+    } finally {
+      loggerWarnSpy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('uses shared cache for remote chat admins to avoid MAX API call', async () => {
     const prisma = {
       chat: {

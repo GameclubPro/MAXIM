@@ -7312,11 +7312,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await releaseLock.call(this.redisCounter, lock.key, lock.token);
+      const releasePromise = Promise.resolve(
+        releaseLock.call(this.redisCounter, lock.key, lock.token),
+      );
+      releasePromise.catch(() => undefined);
+
+      let timeout: NodeJS.Timeout | null = null;
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => {
+          reject(
+            new Error(
+              `Shared chat execution release ${lock.key} timed out after ${this.sharedChatExecutionLockTimeoutMs}ms`,
+            ),
+          );
+        }, this.sharedChatExecutionLockTimeoutMs);
+        timeout.unref?.();
+      });
+
+      try {
+        await Promise.race([releasePromise, timeoutPromise]);
+      } finally {
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
           key: lock.key,
+          timeoutMs: this.sharedChatExecutionLockTimeoutMs,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to release redis shared chat execution lock',
