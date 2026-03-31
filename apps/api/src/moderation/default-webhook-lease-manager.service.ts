@@ -58,6 +58,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly closeTimeoutMs: number;
   private readonly workers = new Map<DefaultWebhookQueueName, Worker<ProcessWebhookJob>>();
   private readonly closingWorkers = new Set<DefaultWebhookQueueName>();
+  private readonly closeRetryNotBeforeMs = new Map<DefaultWebhookQueueName, number>();
   private readonly lastHandoffAtMs = new Map<DefaultWebhookQueueName, number>();
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
@@ -207,12 +208,16 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       const currentClaim = claims[queueName] ?? null;
       const currentOwner = currentClaim?.ownerId ?? entry.homeOwner;
       if (currentOwner === this.workerGroupName && entry.desiredOwner !== this.workerGroupName) {
-        if (entry.activeJobs > 0) {
+        if (entry.activeJobs > 0 || this.isCloseRetryCoolingDown(queueName)) {
+          allowedWorkers.add(queueName);
+          continue;
+        }
+        const closed = await this.closeWorker(queueName);
+        if (!closed) {
           allowedWorkers.add(queueName);
           continue;
         }
         await this.issueHandoff(queueName, this.workerGroupName, entry.desiredOwner);
-        await this.closeWorker(queueName);
         if (currentClaim?.ownerId === this.workerGroupName) {
           await this.releaseClaim(queueName);
         }
@@ -634,16 +639,17 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     this.workers.set(queueName, worker);
   }
 
-  private async closeWorker(queueName: DefaultWebhookQueueName): Promise<void> {
+  private async closeWorker(queueName: DefaultWebhookQueueName): Promise<boolean> {
     const worker = this.workers.get(queueName);
     if (!worker || this.closingWorkers.has(queueName)) {
-      return;
+      return false;
     }
 
     this.closingWorkers.add(queueName);
+    const closePromise = worker.close();
     try {
       await Promise.race([
-        worker.close(),
+        closePromise,
         new Promise<never>((_, reject) => {
           const timeout = setTimeout(() => {
             reject(new Error(`Timed out after ${this.closeTimeoutMs}ms`));
@@ -651,26 +657,55 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           timeout.unref();
         }),
       ]);
+      this.closeRetryNotBeforeMs.delete(queueName);
+      this.workers.delete(queueName);
+      return true;
     } catch (error: unknown) {
+      const retryAfterMs = this.rebalanceCooldownMs;
+      this.closeRetryNotBeforeMs.set(queueName, Date.now() + retryAfterMs);
+      void closePromise
+        .then(() => {
+          if (this.workers.get(queueName) === worker) {
+            this.workers.delete(queueName);
+          }
+          this.closeRetryNotBeforeMs.delete(queueName);
+        })
+        .catch(() => undefined);
       this.logger.warn(
         {
           queueName,
           err: error instanceof Error ? error.message : String(error),
+          retryAfterMs,
         },
-        'Default webhook BullMQ worker close timed out; detaching local reference',
+        'Default webhook BullMQ worker close timed out; keeping local ownership until retry',
       );
+      return false;
     } finally {
       this.closingWorkers.delete(queueName);
-      this.workers.delete(queueName);
     }
   }
 
   private async closeWorkersExcept(allowedQueues: ReadonlySet<DefaultWebhookQueueName>): Promise<void> {
     for (const queueName of [...this.workers.keys()]) {
       if (!allowedQueues.has(queueName)) {
+        if (this.isCloseRetryCoolingDown(queueName)) {
+          continue;
+        }
         await this.closeWorker(queueName);
       }
     }
+  }
+
+  private isCloseRetryCoolingDown(queueName: DefaultWebhookQueueName, nowMs = Date.now()): boolean {
+    const retryNotBeforeMs = this.closeRetryNotBeforeMs.get(queueName);
+    if (typeof retryNotBeforeMs !== 'number') {
+      return false;
+    }
+    if (retryNotBeforeMs <= nowMs) {
+      this.closeRetryNotBeforeMs.delete(queueName);
+      return false;
+    }
+    return true;
   }
 
   private isDynamicQueue(queueName: DefaultWebhookQueueName): boolean {

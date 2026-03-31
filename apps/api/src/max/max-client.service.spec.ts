@@ -196,6 +196,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const actionHealthService = {
       recordSuccess: jest.fn(),
       recordFailure: jest.fn(),
+      recordSuccessForLane: jest.fn(),
+      recordFailureForLane: jest.fn(),
       getSnapshot: jest.fn(),
     };
     const botRegistry = {
@@ -2015,6 +2017,50 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'MAX API background rate limit exceeded',
     );
     expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('can record admin MAX reads in a background action health lane while keeping interactive traffic class', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            title: 'Chat 1',
+            participants_count: 10,
+            status: 'active',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordSuccessForLane: jest.Mock;
+          recordFailureForLane: jest.Mock;
+        };
+      }
+    ).actionHealthService;
+
+    await expect(
+      service.getChatSnapshot('chat-1', {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+      } as never),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        title: 'Chat 1',
+      }),
+    );
+
+    expect(actionHealthService.recordSuccessForLane).toHaveBeenCalledWith(
+      'background',
+      '777000_bot',
+    );
+    expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
   });

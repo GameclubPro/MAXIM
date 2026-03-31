@@ -5728,10 +5728,40 @@ describe('AdminService.listChats', () => {
         displayName: null,
         chatTitle: null,
       }),
-    ).resolves.toEqual(cachedHeader);
+    ).resolves.toEqual({
+      ...cachedHeader,
+      primaryBotId: null,
+      assignedBots: [],
+      sharedMode: 'owned',
+    });
 
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
+    });
+  });
+
+  it('routes admin profile hydration through background action health lane', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    (service as any).resolveUserDisplayNames = jest.fn().mockResolvedValue(new Map());
+
+    await (service as any).resolveUserProfiles('chat-1', 'chat', ['user-1']);
+
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-1'], {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
     });
   });
 

@@ -350,6 +350,7 @@ const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 1_500;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 25;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 2;
+const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -11429,7 +11430,11 @@ export class AdminService {
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
     if (loadProfiles) {
       try {
-        chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds);
+        chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds, {
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+        });
       } catch (error) {
         this.logger.warn(
           {
@@ -12443,7 +12448,11 @@ export class AdminService {
     }
 
     try {
-      const profiles = await this.maxClient.getChatMemberProfiles(chatId, missingUserIds);
+      const profiles = await this.maxClient.getChatMemberProfiles(chatId, missingUserIds, {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+      });
       if (profiles.size === 0) {
         return messages;
       }
@@ -15644,6 +15653,8 @@ export class AdminService {
       const resolvedBotId = await this.resolveBotAssignment(chatId);
       const snapshot = await this.maxClient.getChatSnapshot(chatId, {
         trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
       if (snapshot.entityType !== expectedEntityType) {
@@ -15691,6 +15702,8 @@ export class AdminService {
     try {
       const snapshot = await this.maxClient.getChatSnapshot(chatId, {
         trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
       });
       const title = snapshot.title?.trim() || persistedChat?.title?.trim() || chatId;
 

@@ -219,22 +219,39 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('detaches a worker when close hangs past the configured timeout', async () => {
+  it('keeps local ownership and retries later when close hangs past the configured timeout', async () => {
+    jest.useFakeTimers();
     const service = new DefaultWebhookLeaseManagerService(
-      createConfigMock({ WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS: 10 }) as never,
+      createConfigMock({
+        WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS: 10,
+        WEBHOOK_DYNAMIC_LEASES_REBALANCE_COOLDOWN_MS: 50,
+      }) as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
     );
 
     const queueName = 'moderation-default-0';
-    const close = jest.fn(() => new Promise<void>(() => undefined));
+    let resolveClose!: () => void;
+    const close = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClose = resolve;
+        }),
+    );
     (service as any).workers.set(queueName, { close });
 
-    await (service as any).closeWorker(queueName);
+    const closePromise = (service as any).closeWorker(queueName);
+    await jest.advanceTimersByTimeAsync(11);
+    await expect(closePromise).resolves.toBe(false);
 
     expect(close).toHaveBeenCalledTimes(1);
-    expect((service as any).workers.has(queueName)).toBe(false);
+    expect((service as any).workers.has(queueName)).toBe(true);
     expect((service as any).closingWorkers.has(queueName)).toBe(false);
+    expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(true);
+
+    resolveClose();
+    await Promise.resolve();
+    expect((service as any).workers.has(queueName)).toBe(false);
 
     await service.onModuleDestroy();
   });

@@ -7,7 +7,7 @@ import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
-import { ActionHealthService } from '../system/action-health.service';
+import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
@@ -232,6 +232,7 @@ export type MaxActionDispatchOptions = {
 
 type MaxApiRequestOptions = {
   trafficClass?: MaxApiTrafficClass;
+  actionHealthLane?: ActionHealthLane;
   bypassCache?: boolean;
   ignoreFailureMetricStatuses?: readonly number[];
   timeoutMs?: number;
@@ -3048,6 +3049,7 @@ export class MaxClientService implements OnModuleDestroy {
     options: {
       chatId?: string | null;
       trafficClass?: MaxApiTrafficClass;
+      actionHealthLane?: ActionHealthLane;
       ignoreFailureMetricStatuses?: readonly number[];
       timeoutMs?: number;
       botId?: string;
@@ -3055,12 +3057,13 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<T> {
     const bot = this.resolveBot(options.botId);
     const trafficClass = options.trafficClass ?? 'interactive';
+    const actionHealthLane = options.actionHealthLane ?? trafficClass;
     await this.ensureCircuitClosed(bot.id);
     await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, trafficClass);
 
     try {
       const result = await this.botContext.runWithBot(bot.id, () => operation());
-      this.actionHealthService.recordSuccessForLane(trafficClass, bot.id);
+      this.actionHealthService.recordSuccessForLane(actionHealthLane, bot.id);
       return result;
     } catch (error: unknown) {
       if (this.shouldIgnoreActionHealthFailure(error, options)) {
@@ -3075,7 +3078,7 @@ export class MaxClientService implements OnModuleDestroy {
         throw error;
       }
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
-      this.actionHealthService.recordFailureForLane(trafficClass, isCritical, bot.id);
+      this.actionHealthService.recordFailureForLane(actionHealthLane, isCritical, bot.id);
       if (isCritical) {
         this.registerCriticalFailure(bot.id);
       }
@@ -3117,6 +3120,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
     trafficClass?: MaxApiTrafficClass;
+    actionHealthLane?: ActionHealthLane;
     ignoreFailureMetricStatuses?: readonly number[];
     timeoutMs?: number;
     botId?: string;
@@ -3127,6 +3131,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       trafficClass: options.trafficClass,
+      actionHealthLane: options.actionHealthLane,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         options.ignoreFailureMetricStatuses,
       ),
@@ -3142,6 +3147,7 @@ export class MaxClientService implements OnModuleDestroy {
     error: unknown,
     options: {
       trafficClass?: MaxApiTrafficClass;
+      actionHealthLane?: ActionHealthLane;
       ignoreFailureMetricStatuses?: readonly number[];
     },
   ): boolean {
