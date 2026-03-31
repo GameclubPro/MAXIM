@@ -8,7 +8,11 @@ import { MaxClientService, type MaxChannelMessageSnapshot } from '../max/max-cli
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
-import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
+import {
+  SystemModeService,
+  isSystemModeRecoveryWindow,
+  type SystemModeSnapshot,
+} from '../system/system-mode.service';
 
 const CHANNEL_STATS_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const CHANNEL_STATS_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
@@ -602,7 +606,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
   private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {
     const snapshot = await this.resolveSystemModeSnapshot();
-    if (snapshot.mode !== 'degrade') {
+    if (snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
       return false;
     }
 

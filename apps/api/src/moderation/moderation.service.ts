@@ -56,7 +56,11 @@ import {
   moderationBackgroundTasksEnabled,
 } from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
-import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
+import {
+  SystemModeService,
+  isSystemModeRecoveryWindow,
+  type SystemModeSnapshot,
+} from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
@@ -11182,7 +11186,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const mode = await this.resolveSystemModeSnapshot();
     let pauseReason: string | null = null;
-    if (mode.mode !== 'degrade') {
+    if (mode.mode !== 'degrade' || isSystemModeRecoveryWindow(mode)) {
       pauseReason = await this.resolveBackgroundPressurePauseReason();
       if (!pauseReason) {
         return false;

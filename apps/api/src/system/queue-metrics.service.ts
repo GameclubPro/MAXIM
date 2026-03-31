@@ -550,6 +550,10 @@ export class QueueMetricsService {
         const oldestReceivedLagSec = received.oldestLagSec;
         const userFacingOldestQueuedLagSec = userFacingQueued.oldestLagSec;
         const userFacingOldestReceivedLagSec = userFacingReceived.oldestLagSec;
+        const actionHealth =
+          typeof this.actionHealthService.getCombinedSnapshot === 'function'
+            ? this.actionHealthService.getCombinedSnapshot(60, ['critical', 'interactive'], botId)
+            : this.actionHealthService.getSnapshot(60, botId);
 
         return [
           botId,
@@ -565,7 +569,7 @@ export class QueueMetricsService {
               failed: userFacingFailed,
             },
             queuedByQueue,
-            actionHealth: this.actionHealthService.getSnapshot(60, botId),
+            actionHealth,
             oldestQueuedEventId: queued.oldestEventId,
             oldestQueuedCreatedAt: queued.oldestCreatedAt,
             oldestQueuedLagSec,

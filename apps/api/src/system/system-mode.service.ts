@@ -23,6 +23,13 @@ const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
+export const SYSTEM_MODE_RECOVERY_WINDOW_REASON = RECOVERY_WINDOW_REASON;
+
+export function isSystemModeRecoveryWindow(
+  snapshot: Pick<SystemModeSnapshot, 'mode' | 'reason'>,
+): boolean {
+  return snapshot.mode === 'degrade' && snapshot.reason === RECOVERY_WINDOW_REASON;
+}
 
 @Injectable()
 export class SystemModeService implements OnModuleInit, OnModuleDestroy {

@@ -351,6 +351,7 @@ const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 25;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 2;
 const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
+const ADMIN_ACTION_HEALTH_LANE = 'background' as const;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -701,6 +702,7 @@ export class AdminService {
     try {
       const profiles = await loadProfiles(contextChatId, [user.userId], {
         trafficClass: 'interactive',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
       });
       const profile = profiles.get(user.userId);
       const username = this.readTrimmedString(profile?.username) ?? fallback.username;
@@ -2439,6 +2441,7 @@ export class AdminService {
     if (discoveryBots.length === 0) {
       const legacyChats = await this.maxClient.listBotChats({
         trafficClass: options.trafficClass,
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         ...(options.bypassCache === true ? { bypassCache: true } : {}),
       });
       const candidateChats =
@@ -2455,6 +2458,7 @@ export class AdminService {
       discoveryBots.map(async (bot) => {
         const chats = await this.maxClient.listBotChats({
           trafficClass: options.trafficClass,
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           ...(options.bypassCache === true ? { bypassCache: true } : {}),
           botId: bot.id,
         });
@@ -2658,7 +2662,9 @@ export class AdminService {
       title = chat?.title?.trim() || localTitle;
     } else {
       try {
-        const snapshot = await this.maxClient.getChatSnapshot(chatId);
+        const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        });
         title = snapshot.title?.trim() || localTitle;
         participantsCount = snapshot.participantsCount;
         status = snapshot.status;
@@ -3685,7 +3691,9 @@ export class AdminService {
     });
 
     try {
-      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      });
       return {
         title: snapshot.title?.trim() || persistedChat?.title?.trim() || chatId,
         link: this.readTrimmedString(snapshot.link),
@@ -4733,8 +4741,11 @@ export class AdminService {
       snapshot = resolvedBotId
         ? await this.maxClient.getChatSnapshot(normalizedChatId, {
             botId: resolvedBotId,
+            actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           })
-        : await this.maxClient.getChatSnapshot(normalizedChatId);
+        : await this.maxClient.getChatSnapshot(normalizedChatId, {
+            actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -4837,6 +4848,7 @@ export class AdminService {
       try {
         const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
           trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId,
         });
         if (access.isAdmin || access.isOwner) {
@@ -4854,6 +4866,7 @@ export class AdminService {
       try {
         const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
           trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         });
         if (access.isAdmin || access.isOwner) {
           return;
@@ -10064,7 +10077,9 @@ export class AdminService {
 
     let botAccess: MaxChatMemberAccess;
     try {
-      botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId);
+      botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId, {
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      } as never);
     } catch (error: unknown) {
       if (this.isBotAdminLookupDeniedError(error)) {
         throw new ForbiddenException(
@@ -10110,7 +10125,13 @@ export class AdminService {
       return;
     }
 
-    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
+      chatId,
+      targetUserId,
+      {
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      } as never,
+    );
     if (!targetAccess) {
       throw new BadRequestException('Пользователь уже не состоит в этом чате.');
     }
@@ -10135,7 +10156,9 @@ export class AdminService {
     }
 
     try {
-      const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId);
+      const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId, {
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      } as never);
       if (snapshot.isPublic === false && !snapshot.link) {
         return 'MAX_REMOVE_ONLY';
       }
@@ -10167,6 +10190,9 @@ export class AdminService {
       const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
         chatId,
         targetUserId,
+        {
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        } as never,
       );
       return targetAccess ? 'ALREADY_PRESENT' : 'MAX_UNBLOCK';
     } catch (error: unknown) {
@@ -14420,6 +14446,7 @@ export class AdminService {
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         trafficClass: 'interactive',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         ...(botId ? { botId } : {}),
       });
       return this.readTrimmedString(access.userId);
@@ -14517,10 +14544,19 @@ export class AdminService {
     try {
       const requestOptions =
         options.trafficClass === undefined
-          ? (botId ? ({ botId } as const) : ({} as const))
+          ? (botId ? ({ botId, actionHealthLane: ADMIN_ACTION_HEALTH_LANE } as const) : ({
+              actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+            } as const))
           : (botId
-              ? ({ trafficClass: options.trafficClass, botId } as const)
-              : ({ trafficClass: options.trafficClass } as const));
+              ? ({
+                  trafficClass: options.trafficClass,
+                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                  botId,
+                } as const)
+              : ({
+                  trafficClass: options.trafficClass,
+                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                } as const));
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
       const botContactId = this.resolveBotContactId(botId);

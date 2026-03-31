@@ -79,6 +79,15 @@ describe('QueueMetricsService', () => {
         errorRate: 0.04,
         criticalRate: 0.02,
       }),
+      getCombinedSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 20,
+        success: 19,
+        failure: 1,
+        critical: 0,
+        errorRate: 0.05,
+        criticalRate: 0,
+      }),
     };
     const defaultQueues = Object.fromEntries(
       DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
@@ -240,12 +249,12 @@ describe('QueueMetricsService', () => {
         },
         actionHealth: {
           windowSec: 60,
-          total: 50,
-          success: 48,
-          failure: 2,
-          critical: 1,
-          errorRate: 0.04,
-          criticalRate: 0.02,
+          total: 20,
+          success: 19,
+          failure: 1,
+          critical: 0,
+          errorRate: 0.05,
+          criticalRate: 0,
         },
       }),
     );
@@ -262,6 +271,15 @@ describe('QueueMetricsService', () => {
     const actionHealthService = {
       refreshSnapshots: jest.fn().mockResolvedValue(undefined),
       getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+      getCombinedSnapshot: jest.fn().mockReturnValue({
         windowSec: 60,
         total: 0,
         success: 0,
