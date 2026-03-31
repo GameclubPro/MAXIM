@@ -56,7 +56,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly rebalanceCooldownMs: number;
   private readonly summaryTtlMs: number;
   private readonly workers = new Map<DefaultWebhookQueueName, Worker<ProcessWebhookJob>>();
+  private readonly closingWorkers = new Set<DefaultWebhookQueueName>();
   private readonly lastHandoffAtMs = new Map<DefaultWebhookQueueName, number>();
+  private heartbeatTimer: NodeJS.Timeout | null = null;
   private syncTimer: NodeJS.Timeout | null = null;
   private syncing = false;
 
@@ -95,14 +97,23 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       return;
     }
 
+    this.heartbeatTimer = setInterval(() => {
+      void this.publishKeepalive();
+    }, this.heartbeatMs);
+    this.heartbeatTimer.unref();
     this.syncTimer = setInterval(() => {
       void this.sync();
     }, this.heartbeatMs);
     this.syncTimer.unref();
+    void this.publishKeepalive();
     void this.sync();
   }
 
   async onModuleDestroy() {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
     if (this.syncTimer) {
       clearInterval(this.syncTimer);
       this.syncTimer = null;
@@ -120,8 +131,6 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
 
     this.syncing = true;
     try {
-      await this.writeHeartbeat();
-
       if (this.mode === 'off' || this.mode === 'shadow') {
         await this.releaseLocalDynamicClaims();
         await this.ensureStaticHomeWorkers();
@@ -140,6 +149,24 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       );
     } finally {
       this.syncing = false;
+    }
+  }
+
+  private async publishKeepalive(): Promise<void> {
+    if (!this.workerGroupName) {
+      return;
+    }
+
+    try {
+      await this.writeHeartbeat();
+      if (this.mode === 'on' || this.mode === 'canary') {
+        await this.renewLocalClaims();
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to publish default webhook lease keepalive',
+      );
     }
   }
 
@@ -293,6 +320,49 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
         }
       }),
     );
+  }
+
+  private async renewLocalClaims(): Promise<void> {
+    if (!this.workerGroupName) {
+      return;
+    }
+
+    const queueNames = [...this.workers.keys()].filter((queueName) => this.isDynamicQueue(queueName));
+    if (queueNames.length === 0) {
+      return;
+    }
+
+    const pipeline = this.redis.pipeline();
+    for (const queueName of queueNames) {
+      pipeline.get(buildDefaultWebhookLeaseKey(queueName));
+    }
+    const results = await pipeline.exec();
+    if (!results) {
+      return;
+    }
+
+    const nowMs = Date.now();
+    const renewPipeline = this.redis.pipeline();
+    queueNames.forEach((queueName, index) => {
+      const parsed = this.parseClaim(results[index]?.[1], queueName);
+      if (!parsed || parsed.ownerId !== this.workerGroupName) {
+        return;
+      }
+
+      const renewedClaim: DefaultWebhookShardClaim = {
+        ...parsed,
+        updatedAtMs: nowMs,
+        leaseUntilMs: nowMs + this.leaseTtlMs,
+      };
+      renewPipeline.set(
+        buildDefaultWebhookLeaseKey(queueName),
+        JSON.stringify(renewedClaim),
+        'PX',
+        this.leaseTtlMs,
+      );
+    });
+
+    await renewPipeline.exec();
   }
 
   private async bootstrapHomeClaims(): Promise<void> {
@@ -562,12 +632,17 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
 
   private async closeWorker(queueName: DefaultWebhookQueueName): Promise<void> {
     const worker = this.workers.get(queueName);
-    if (!worker) {
+    if (!worker || this.closingWorkers.has(queueName)) {
       return;
     }
 
-    this.workers.delete(queueName);
-    await worker.close();
+    this.closingWorkers.add(queueName);
+    try {
+      await worker.close();
+    } finally {
+      this.closingWorkers.delete(queueName);
+      this.workers.delete(queueName);
+    }
   }
 
   private async closeWorkersExcept(allowedQueues: ReadonlySet<DefaultWebhookQueueName>): Promise<void> {
