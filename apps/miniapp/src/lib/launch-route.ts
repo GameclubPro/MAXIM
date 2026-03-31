@@ -188,6 +188,22 @@ function normalizeRouteLaunchPath(value: string): string | null {
       return `${pathname}${parsed.search}`;
     }
 
+    if (pathname === '/chats' && !parsed.search) {
+      return '/';
+    }
+
+    if (pathname === '/system' && !parsed.search) {
+      return pathname;
+    }
+
+    if (/^\/chat\/[^/?#]+\/events$/u.test(pathname) && !parsed.search) {
+      return pathname;
+    }
+
+    if (/^\/channel\/[^/?#]+\/stats$/u.test(pathname) && !parsed.search) {
+      return pathname;
+    }
+
     if (/^\/chat\/[^/?#]+\/settings$/u.test(pathname)) {
       if (!hasAllowedSearchParams(parsed, CHAT_SETTINGS_FOCUS)) {
         return null;

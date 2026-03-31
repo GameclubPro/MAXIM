@@ -3279,6 +3279,14 @@ export class PrivateControlService {
           const selectedChatId = session.selectedChatId!;
           const selectedEntityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
           const broadcastDraft = this.cloneBroadcastDraft(session.broadcastDraft);
+          const diagnostics = {
+            callbackAction: 'mass_confirm',
+            callbackArgs: [] as string[],
+            callbackPayload: 'pc2|mass_confirm',
+            screen: session.screen ?? null,
+            pendingInput: session.pendingInput?.kind ?? null,
+            pendingMassAction: session.pendingMassAction?.kind ?? null,
+          };
           session.pendingMassAction = null;
           const view = await this.renderBroadcastScreen(context, session, 'Рассылка запускается.');
           await this.respond(context, session, view, {
@@ -3292,6 +3300,7 @@ export class PrivateControlService {
             selectedEntityType,
             broadcastDraft,
             publishClaim,
+            diagnostics,
           });
           return;
         }
@@ -4038,14 +4047,31 @@ export class PrivateControlService {
           return;
         }
 
-        let rememberPublish = false;
-        try {
-          const result = await this.sendBroadcastFromSession(context, session);
-          rememberPublish = true;
-          await this.respondToSuccessfulBroadcast(context, session, result);
-        } finally {
-          this.releaseBroadcastPublish(publishClaim.key, publishClaim.fingerprint, rememberPublish);
-        }
+        const selectedChatId = session.selectedChatId!;
+        const selectedEntityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
+        const broadcastDraft = this.cloneBroadcastDraft(session.broadcastDraft);
+        const diagnostics = {
+          callbackAction: 'broadcast_send',
+          callbackArgs: [] as string[],
+          callbackPayload: 'pc2|broadcast_send',
+          screen: session.screen ?? null,
+          pendingInput: session.pendingInput?.kind ?? null,
+          pendingMassAction: session.pendingMassAction?.kind ?? null,
+        };
+        const view = await this.renderBroadcastScreen(context, session, 'Рассылка запускается.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Запускаю рассылку',
+        });
+        void this.finishConfirmedBroadcastPublish({
+          privateChatId: context.chatId,
+          actor: context.actor,
+          selectedChatId,
+          selectedEntityType,
+          broadcastDraft,
+          publishClaim,
+          diagnostics,
+        });
         return;
       }
 
@@ -5705,6 +5731,14 @@ export class PrivateControlService {
       key: string;
       fingerprint: string;
     };
+    diagnostics?: {
+      callbackAction?: string | null;
+      callbackArgs?: string[];
+      callbackPayload?: string | null;
+      screen?: string | null;
+      pendingInput?: string | null;
+      pendingMassAction?: string | null;
+    };
   }): Promise<void> {
     let rememberPublish = false;
 
@@ -5721,6 +5755,8 @@ export class PrivateControlService {
       const userMessage =
         this.extractBadRequestDetails(error) ??
         'Рассылка недоступна. Попробуйте ещё раз через несколько секунд.';
+      const badRequestDetails = this.extractBadRequestDetails(error);
+      const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       this.logger.warn(
         {
           chatId: params.privateChatId,
@@ -5728,6 +5764,16 @@ export class PrivateControlService {
           entityType: params.selectedEntityType,
           userId: params.actor.userId,
           err: error instanceof Error ? error.message : String(error),
+          badRequestDetails,
+          ...(badRequestResponse ? { badRequestResponse } : {}),
+          callbackAction: params.diagnostics?.callbackAction ?? null,
+          callbackArgs: params.diagnostics?.callbackArgs ?? [],
+          callbackPayload: params.diagnostics?.callbackPayload ?? null,
+          selectedChatId: params.selectedChatId,
+          selectedEntityType: params.selectedEntityType,
+          screen: params.diagnostics?.screen ?? null,
+          pendingInput: params.diagnostics?.pendingInput ?? null,
+          pendingMassAction: params.diagnostics?.pendingMassAction ?? null,
         },
         'Async private broadcast publish failed after confirmation',
       );

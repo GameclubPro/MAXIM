@@ -2069,6 +2069,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Новый пост для канала'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
 
     expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
       channels[0].id,
@@ -2079,7 +2080,7 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
+    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
@@ -2105,8 +2106,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Пост по расписанию'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
 
-    expect(getLastEditedText(maxClient)).toContain('Будет опубликовано: 24.03.2026, 17:00.');
+    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
     expect(getLastSentText(maxClient)).toContain(
       '✅ Всё успешно. Рассылка запланирована на 24.03.2026, 17:00.',
     );
@@ -2320,6 +2322,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('Старый callback'));
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
     expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
@@ -2958,6 +2961,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Новый пост для канала'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
 
     expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
@@ -2976,7 +2980,7 @@ describe('PrivateControlService', () => {
         pendingInput: null,
         pendingMassAction: null,
       }),
-      'Private control flow failed',
+      'Async private broadcast publish failed after confirmation',
     );
     expect(getLastSentText(maxClient)).toContain('Рассылка недоступна');
   });
@@ -3001,6 +3005,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Слишком длинная рассылка'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await flushBackgroundBroadcast();
 
     expect(sendBroadcast).toHaveBeenCalledTimes(1);
     expect(getLastSentText(maxClient)).toContain(
