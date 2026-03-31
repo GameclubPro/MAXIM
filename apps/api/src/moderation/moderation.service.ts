@@ -84,6 +84,7 @@ import {
 } from '../webhook/webhook-queues';
 
 const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
+const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 
 type ActiveMute = {
   eventId: string;
@@ -6639,11 +6640,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
       }
     } catch (error: unknown) {
+      const payload = {
+        chatId,
+        updateId: update.updateId,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+      if (this.isTerminalWebhookProcessingError(error)) {
+        this.logger.debug(
+          payload,
+          'Skipped bot_started instruction after terminal private dialog error',
+        );
+        return;
+      }
+
       this.logger.warn(
         {
-          chatId,
-          updateId: update.updateId,
-          error: error instanceof Error ? error.message : 'Unknown error',
+          ...payload,
         },
         'Failed to send bot_started instruction',
       );
@@ -7546,7 +7558,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async sendPrivateMenu(chatId: string, text: string): Promise<void> {
-    await this.maxClient.sendMessage(chatId, text, this.buildPrivateMenuOptions());
+    await this.maxClient.sendMessage(
+      chatId,
+      text,
+      this.buildPrivateMenuOptions(),
+      {
+        ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+      },
+    );
   }
 
   private buildPrivateMenuOptions(): MaxSendMessageOptions {

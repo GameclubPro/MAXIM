@@ -3431,6 +3431,9 @@ describe('ModerationService', () => {
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
+      {
+        ignoreFailureMetricStatuses: [403, 404],
+      },
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
@@ -3868,6 +3871,9 @@ describe('ModerationService', () => {
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
+      {
+        ignoreFailureMetricStatuses: [403, 404],
+      },
     );
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();

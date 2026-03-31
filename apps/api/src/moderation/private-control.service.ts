@@ -50,6 +50,7 @@ import {
 import { RedisCounterService } from './redis-counter.service';
 
 const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
+const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 
 type PrivateSectionKey =
   | 'links'
@@ -9184,7 +9185,10 @@ export class PrivateControlService {
     text: string,
     options?: MaxSendMessageOptions,
   ): Promise<void> {
-    await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
+    await this.maxClient.sendMessage(chatId, text, options, {
+      immediate: true,
+      ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+    });
   }
 
   private async redirectSecondaryPrivateDialogToEntryBot(
