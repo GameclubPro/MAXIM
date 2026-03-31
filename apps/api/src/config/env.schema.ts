@@ -95,6 +95,7 @@ const envSchema = z.object({
   CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN: z.coerce.boolean().default(false),
   SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
   SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
+  WEBHOOK_USER_FACING_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(60_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_RESET_MS: z.coerce.number().int().positive().default(45_000),
   MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(2),

@@ -1239,6 +1239,66 @@ describe('ModerationService', () => {
     });
   });
 
+  it('fails open for stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-1',
+      },
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) =>
+          key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined,
+        ),
+      } as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    const setTimeoutSpy = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation((((callback: TimerHandler) => {
+        if (typeof callback === 'function') {
+          callback();
+        }
+        return {
+          unref() {
+            return this;
+          },
+        } as unknown as NodeJS.Timeout;
+      }) as unknown) as typeof setTimeout);
+
+    await expect(
+      (service as any).executeWebhookUpdateWithGuard(
+        'event-3',
+        update,
+        null,
+        () =>
+          new Promise<void>(() => {
+            // Intentionally never resolves.
+          }),
+      ),
+    ).rejects.toThrow(
+      'Webhook user-facing hot path timed out after 10ms for message_created',
+    );
+    expect((service as any).isTerminalWebhookProcessingError(
+      (service as any).createWebhookHotPathTimeoutError({
+        webhookEventId: 'event-3',
+        update,
+        activeBotId: null,
+        timeoutMs: 10,
+      }),
+    )).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+  });
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {

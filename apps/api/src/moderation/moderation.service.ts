@@ -272,6 +272,8 @@ const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const SHARED_CHAT_EXECUTION_LOCK_TTL_MS = 45_000;
 const DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS = 1_000;
 const DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS = 1_000;
+const DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS = 10_000;
+const WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS = 5_000;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
@@ -401,6 +403,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
   private readonly sharedChatExecutionLookupTimeoutMs: number;
   private readonly sharedChatExecutionLockTimeoutMs: number;
+  private readonly webhookUserFacingTimeoutMs: number;
   private readonly backgroundTasksEnabled: boolean;
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
@@ -495,6 +498,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS,
       100,
     );
+    this.webhookUserFacingTimeoutMs = this.readPositiveConfigInt(
+      configService?.get<number>('WEBHOOK_USER_FACING_TIMEOUT_MS'),
+      DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS,
+      1_000,
+    );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
     );
@@ -571,11 +579,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       null;
 
     try {
-      if (activeBotId && this.maxBotContextService) {
-        await this.maxBotContextService.runWithBot(activeBotId, () => this.handleUpdate(update));
-      } else {
-        await this.handleUpdate(update);
-      }
+      await this.executeWebhookUpdateWithGuard(webhookEvent.id, update, activeBotId, async () => {
+        if (activeBotId && this.maxBotContextService) {
+          await this.maxBotContextService.runWithBot(activeBotId, () => this.handleUpdate(update));
+        } else {
+          await this.handleUpdate(update);
+        }
+      });
       await this.prisma.webhookEvent.update({
         where: { id: webhookEvent.id },
         data: {
@@ -10816,6 +10826,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isTerminalWebhookProcessingError(error: unknown): boolean {
+    const timeoutMarker = (error as { webhookHotPathTimeout?: unknown })?.webhookHotPathTimeout;
+    if (timeoutMarker === true) {
+      return true;
+    }
+
     const status = this.extractStatusCode(error);
     if (status === 403 || status === 404) {
       return true;
@@ -10830,8 +10845,106 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return (
       message.includes('bot is not a chat member') ||
       message.includes('not accessible') ||
-      message.includes('chat not found')
+      message.includes('chat not found') ||
+      message.includes('webhook user-facing hot path timed out')
     );
+  }
+
+  private async executeWebhookUpdateWithGuard(
+    webhookEventId: string,
+    update: MaxUpdate,
+    activeBotId: string | null,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    const timeoutMs = this.resolveWebhookHotPathTimeoutMs(update);
+    if (timeoutMs === null) {
+      await task();
+      return;
+    }
+
+    const startedAtMs = Date.now();
+    await Promise.race([
+      task().then(() => {
+        const durationMs = Date.now() - startedAtMs;
+        if (durationMs >= WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS) {
+          this.logger.warn(
+            {
+              webhookEventId,
+              updateType: this.readLowerString(update.type),
+              chatId: this.extractWebhookHotPathChatId(update),
+              activeBotId,
+              durationMs,
+              timeoutMs,
+            },
+            'Slow webhook user-facing hot path completed close to the watchdog deadline',
+          );
+        }
+      }),
+      new Promise<never>((_, reject) => {
+        const timeout = setTimeout(() => {
+          reject(
+            this.createWebhookHotPathTimeoutError({
+              webhookEventId,
+              update,
+              activeBotId,
+              timeoutMs,
+            }),
+          );
+        }, timeoutMs);
+        timeout.unref?.();
+      }),
+    ]);
+  }
+
+  private resolveWebhookHotPathTimeoutMs(update: MaxUpdate): number | null {
+    const updateType = this.readLowerString(update.type);
+    const chatId = this.extractWebhookHotPathChatId(update);
+    if (updateType !== 'message_created' || !chatId || !chatId.startsWith('-')) {
+      return null;
+    }
+
+    return this.webhookUserFacingTimeoutMs;
+  }
+
+  private extractWebhookHotPathChatId(update: MaxUpdate): string | null {
+    return typeof update.message?.chatId === 'string' && update.message.chatId.trim().length > 0
+      ? update.message.chatId.trim()
+      : null;
+  }
+
+  private createWebhookHotPathTimeoutError(params: {
+    webhookEventId: string;
+    update: MaxUpdate;
+    activeBotId: string | null;
+    timeoutMs: number;
+  }): Error {
+    const error = new Error(
+      `Webhook user-facing hot path timed out after ${params.timeoutMs}ms for ${
+        this.readLowerString(params.update.type) ?? 'unknown'
+      }`,
+    ) as Error & {
+      code?: string;
+      webhookHotPathTimeout?: boolean;
+      webhookEventId?: string;
+      chatId?: string | null;
+      activeBotId?: string | null;
+    };
+    error.code = 'WEBHOOK_USER_FACING_TIMEOUT';
+    error.webhookHotPathTimeout = true;
+    error.webhookEventId = params.webhookEventId;
+    error.chatId = this.extractWebhookHotPathChatId(params.update);
+    error.activeBotId = params.activeBotId;
+    this.logger.warn(
+      {
+        webhookEventId: params.webhookEventId,
+        updateType: this.readLowerString(params.update.type),
+        chatId: error.chatId,
+        activeBotId: params.activeBotId,
+        timeoutMs: params.timeoutMs,
+      },
+      'Webhook user-facing hot path timed out; failing this event open to keep the shard responsive',
+    );
+    return error;
   }
 
   private isNightModeTerminalDeleteError(error: unknown): boolean {
