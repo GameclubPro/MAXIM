@@ -68,6 +68,7 @@ function createConfigMock(overrides: Record<string, unknown> = {}) {
     WEBHOOK_DYNAMIC_LEASES_HANDOFF_TTL_MS: 12_000,
     WEBHOOK_DYNAMIC_LEASES_REBALANCE_COOLDOWN_MS: 30_000,
     WEBHOOK_DYNAMIC_LEASES_SUMMARY_TTL_MS: 20_000,
+    WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS: 100,
     ...overrides,
   };
 
@@ -214,6 +215,26 @@ describe('DefaultWebhookLeaseManagerService', () => {
 
     const renewedClaim = JSON.parse(redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}');
     expect(renewedClaim).toEqual(originalClaim);
+
+    await service.onModuleDestroy();
+  });
+
+  it('detaches a worker when close hangs past the configured timeout', async () => {
+    const service = new DefaultWebhookLeaseManagerService(
+      createConfigMock({ WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS: 10 }) as never,
+      { processWebhookEvent: jest.fn() } as never,
+      createQueueMetricsMock() as never,
+    );
+
+    const queueName = 'moderation-default-0';
+    const close = jest.fn(() => new Promise<void>(() => undefined));
+    (service as any).workers.set(queueName, { close });
+
+    await (service as any).closeWorker(queueName);
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect((service as any).workers.has(queueName)).toBe(false);
+    expect((service as any).closingWorkers.has(queueName)).toBe(false);
 
     await service.onModuleDestroy();
   });

@@ -55,6 +55,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly handoffTtlMs: number;
   private readonly rebalanceCooldownMs: number;
   private readonly summaryTtlMs: number;
+  private readonly closeTimeoutMs: number;
   private readonly workers = new Map<DefaultWebhookQueueName, Worker<ProcessWebhookJob>>();
   private readonly closingWorkers = new Set<DefaultWebhookQueueName>();
   private readonly lastHandoffAtMs = new Map<DefaultWebhookQueueName, number>();
@@ -90,6 +91,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       30_000,
     );
     this.summaryTtlMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_SUMMARY_TTL_MS', 20_000);
+    this.closeTimeoutMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS', 5_000);
   }
 
   onModuleInit() {
@@ -640,7 +642,23 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
 
     this.closingWorkers.add(queueName);
     try {
-      await worker.close();
+      await Promise.race([
+        worker.close(),
+        new Promise<never>((_, reject) => {
+          const timeout = setTimeout(() => {
+            reject(new Error(`Timed out after ${this.closeTimeoutMs}ms`));
+          }, this.closeTimeoutMs);
+          timeout.unref();
+        }),
+      ]);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          queueName,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Default webhook BullMQ worker close timed out; detaching local reference',
+      );
     } finally {
       this.closingWorkers.delete(queueName);
       this.workers.delete(queueName);
