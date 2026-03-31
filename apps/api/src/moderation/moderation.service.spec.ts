@@ -6462,6 +6462,8 @@ describe('ModerationService', () => {
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
@@ -7060,6 +7062,8 @@ describe('ModerationService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1', 'user-2'], {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
     });
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
   });

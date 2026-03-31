@@ -186,6 +186,7 @@ const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
 const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const;
+const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
@@ -7895,7 +7896,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return results;
     }
 
-    const requestOptions = { trafficClass: 'interactive' as const };
+    const requestOptions = {
+      trafficClass: 'interactive' as const,
+      actionHealthLane: 'background' as const,
+      ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
+    };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
     const botContactId = this.resolveBotContactId();
 
