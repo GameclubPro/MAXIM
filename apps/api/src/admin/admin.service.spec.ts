@@ -1068,6 +1068,43 @@ describe('AdminService getMe', () => {
   });
 });
 
+describe('AdminService dialog admin fallback reads', () => {
+  it('routes dialog admin id lookups through background action health lane', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    const maxClient = {
+      getChatAdminIds: jest
+        .fn()
+        .mockRejectedValue(
+          Object.assign(new Error('Request failed with status code 403'), {
+            response: {
+              status: 403,
+              data: {
+                code: 'chat.denied',
+                message: 'Request failed with status code 403',
+              },
+            },
+          }),
+        ),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect((service as any).readDialogAdminUserIds('chat-1')).resolves.toEqual(new Set());
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
+    });
+  });
+});
+
 describe('AdminService night mode settings normalization', () => {
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();

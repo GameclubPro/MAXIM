@@ -12395,7 +12395,13 @@ export class AdminService {
   private async readDialogAdminUserIds(chatId: string): Promise<Set<string>> {
     try {
       return new Set(
-        (await this.maxClient.getChatAdminIds(chatId))
+        (
+          await this.maxClient.getChatAdminIds(chatId, {
+            trafficClass: 'interactive',
+            actionHealthLane: 'background',
+            ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          })
+        )
           .map((userId) => userId.trim())
           .filter((userId) => userId.length > 0),
       );
