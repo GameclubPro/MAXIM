@@ -52,6 +52,7 @@ import { RedisCounterService } from './redis-counter.service';
 
 const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
 const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
+const LAUNCHER_INTRO_MARKER_TTL_SEC = 365 * 24 * 60 * 60;
 
 type PrivateSectionKey =
   | 'links'
@@ -1124,6 +1125,7 @@ export class PrivateControlService {
     string,
     { expiresAt: number; session: PrivateSession }
   >();
+  private readonly launcherIntroSeenUsers = new Set<string>();
   private readonly activeBroadcastPublishes = new Set<string>();
   private readonly recentBroadcastPublishes = new Map<
     string,
@@ -1353,12 +1355,21 @@ export class PrivateControlService {
       return;
     }
 
-    const view = await this.renderByCurrentScreen(context, session);
+    const isPlainStart = typeof startPayload !== 'string' || startPayload.trim().length === 0;
+    const shouldShowLauncherIntro =
+      isPlainStart && !(await this.hasDeliveredLauncherIntro(context.actor.userId));
+    const view = shouldShowLauncherIntro
+      ? this.renderLauncherIntroView()
+      : await this.renderByCurrentScreen(context, session);
 
     await this.respond(context, session, view, {
       callbackId: null,
       notification: null,
     });
+
+    if (shouldShowLauncherIntro) {
+      await this.markLauncherIntroDelivered(context.actor.userId);
+    }
   }
 
   async handoffBroadcastFromMiniapp(
@@ -10016,6 +10027,7 @@ export class PrivateControlService {
   private buildFooterButtons(config?: {
     includeMiniapp?: boolean;
     includeSupport?: boolean;
+    supportText?: string;
     miniappText?: string;
     miniappRoute?: string | null;
     miniappUrl?: string | null;
@@ -10035,7 +10047,7 @@ export class PrivateControlService {
     if (includeSupport) {
       row.push({
         type: 'link',
-        text: '🆘 Поддержка',
+        text: config?.supportText?.trim() || '🆘 Поддержка',
         url: SUPPORT_CHAT_URL,
       });
     }
@@ -10328,6 +10340,27 @@ export class PrivateControlService {
     };
   }
 
+  private renderLauncherIntroView(): PrivateView {
+    const profile = this.resolveActiveBotSpeechProfile();
+    const lines = [
+      this.markdownTitle(`${profile.characterName} на связи`),
+      '',
+      'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
+      '',
+      'Если понадобится помощь, техподдержка ниже.',
+    ];
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: this.buildFooterButtons({
+          supportText: '🆘 Техпомощь',
+        }),
+        textFormat: 'markdown',
+      },
+    };
+  }
+
   private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
     const activeBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? null;
     const bot = this.maxBotLinkService?.getResolvedBotSync(activeBotId);
@@ -10349,6 +10382,65 @@ export class PrivateControlService {
     }
 
     return 'Я готов быстро принять текст, фото или видео для публикации.';
+  }
+
+  private launcherIntroMarkerKey(userId: string): string {
+    return `private-control:launcher-intro:v1:${userId}`;
+  }
+
+  private async hasDeliveredLauncherIntro(userId: string): Promise<boolean> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return true;
+    }
+
+    if (this.launcherIntroSeenUsers.has(normalizedUserId)) {
+      return true;
+    }
+
+    try {
+      const cached = await this.redisCounter?.getString(
+        this.launcherIntroMarkerKey(normalizedUserId),
+      );
+      if (cached === '1') {
+        this.launcherIntroSeenUsers.add(normalizedUserId);
+        return true;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId: normalizedUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read launcher intro marker',
+      );
+    }
+
+    return false;
+  }
+
+  private async markLauncherIntroDelivered(userId: string): Promise<void> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return;
+    }
+
+    this.launcherIntroSeenUsers.add(normalizedUserId);
+    try {
+      await this.redisCounter?.setStringWithTtl(
+        this.launcherIntroMarkerKey(normalizedUserId),
+        '1',
+        LAUNCHER_INTRO_MARKER_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          userId: normalizedUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist launcher intro marker',
+      );
+    }
   }
 
   private async renderEntityBroadcastMovedToMiniappScreen(

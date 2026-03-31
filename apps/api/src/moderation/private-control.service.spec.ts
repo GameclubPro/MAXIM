@@ -1130,6 +1130,31 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('shows the one-time launcher intro only on the first plain bot start', async () => {
+    const { service, maxClient } = createHarness();
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
+
+    expect(getLastSentText(maxClient)).toContain('**Майор Максимов на связи**');
+    expect(getLastSentText(maxClient)).toContain(
+      'Приложение - ваш штаб по чатам и каналам: там правила, публикации, предложка, обсуждения к постам и допуск по подписке на каналы.',
+    );
+    expect(getLastSentText(maxClient)).toContain('Если понадобится помощь, техподдержка ниже.');
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .map((button) => String((button as { text?: string }).text ?? '')),
+    ).toEqual(['📱 Приложение', '🆘 Техпомощь']);
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
+
+    expect(getLastSentText(maxClient)).toContain('**Майор Максимов**');
+    expect(getLastSentText(maxClient)).toContain(
+      'Все настройки, розыгрыши и модерация открываются в приложении.',
+    );
+    expect(getLastSentText(maxClient)).not.toContain('Техподдержка ниже.');
+  });
+
   it('fails open when private dialog delivery hits a terminal MAX error', async () => {
     const { service, maxClient, adminService } = createHarness();
     maxClient.sendMessage.mockRejectedValueOnce(
