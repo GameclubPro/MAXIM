@@ -50,6 +50,11 @@ export type ReadinessSnapshot = {
 
 const READINESS_CACHE_TTL_MS = 2_000;
 const DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 2_000;
+const DEFAULT_READINESS_BUILD_TIMEOUT_MS = 2_500;
+const DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS = 1_500;
+const DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS = 30_000;
+const STALE_READY_SOFT_WARNING_CODE = 'stale-ready-fallback';
+const READINESS_UNAVAILABLE_REASON = 'readiness snapshot unavailable';
 
 @Injectable()
 export class HealthService implements OnModuleDestroy {
@@ -58,6 +63,9 @@ export class HealthService implements OnModuleDestroy {
   private readonly queueLagSustainSec: number;
   private readonly queueLagSevereSec: number;
   private readonly queueSnapshotMaxAgeMs: number;
+  private readonly readinessBuildTimeoutMs: number;
+  private readonly readinessDependencyTimeoutMs: number;
+  private readonly readinessStaleFallbackMaxAgeMs: number;
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
@@ -83,6 +91,18 @@ export class HealthService implements OnModuleDestroy {
       'READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS',
       DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS,
     );
+    this.readinessBuildTimeoutMs = configService.get<number>(
+      'READINESS_BUILD_TIMEOUT_MS',
+      DEFAULT_READINESS_BUILD_TIMEOUT_MS,
+    );
+    this.readinessDependencyTimeoutMs = configService.get<number>(
+      'READINESS_DEPENDENCY_TIMEOUT_MS',
+      DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS,
+    );
+    this.readinessStaleFallbackMaxAgeMs = configService.get<number>(
+      'READINESS_STALE_FALLBACK_MAX_AGE_MS',
+      DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS,
+    );
   }
 
   async onModuleDestroy() {
@@ -102,19 +122,43 @@ export class HealthService implements OnModuleDestroy {
       return cachedSnapshot;
     }
 
-    if (this.readyPromise) {
-      return this.readyPromise;
+    let buildPromise = this.readyPromise;
+    if (!buildPromise) {
+      buildPromise = this.buildReadySnapshot();
+      this.readyPromise = buildPromise;
+      void buildPromise
+        .then((snapshot) => {
+          this.readyCache = snapshot;
+          this.readyCacheAtMs = Date.now();
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          if (this.readyPromise === buildPromise) {
+            this.readyPromise = null;
+          }
+        });
     }
 
-    this.readyPromise = this.buildReadySnapshot();
-
     try {
-      const snapshot = await this.readyPromise;
-      this.readyCache = snapshot;
-      this.readyCacheAtMs = Date.now();
-      return snapshot;
-    } finally {
-      this.readyPromise = null;
+      return await this.withTimeout(
+        buildPromise,
+        this.readinessBuildTimeoutMs,
+        'readiness build',
+      );
+    } catch (error: unknown) {
+      if (this.readyPromise === buildPromise) {
+        this.readyPromise = null;
+      }
+
+      const staleSnapshot = this.getStaleReadySnapshot();
+      if (staleSnapshot) {
+        return this.decorateStaleReadySnapshot(
+          staleSnapshot,
+          this.describeReadinessFallback(error),
+        );
+      }
+
+      return this.buildUnavailableReadySnapshot(this.describeReadinessFallback(error));
     }
   }
 
@@ -132,10 +176,18 @@ export class HealthService implements OnModuleDestroy {
 
   private async buildReadySnapshot(): Promise<ReadinessSnapshot> {
     const [database, redis, queueMetrics, systemMode] = await Promise.all([
-      this.checkDatabase(),
-      this.checkRedis(),
-      this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
-      this.systemModeService.getEffectiveSnapshot(),
+      this.withTimeout(this.checkDatabase(), this.readinessDependencyTimeoutMs, 'database check'),
+      this.withTimeout(this.checkRedis(), this.readinessDependencyTimeoutMs, 'redis check'),
+      this.withTimeout(
+        this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
+        this.readinessDependencyTimeoutMs,
+        'queue metrics snapshot',
+      ),
+      this.withTimeout(
+        this.systemModeService.getEffectiveSnapshot(),
+        this.readinessDependencyTimeoutMs,
+        'system mode snapshot',
+      ),
     ]);
 
     const effectiveLagSec = queueMetrics.userFacingEffectiveLagSec ?? queueMetrics.effectiveLagSec ?? 0;
@@ -253,5 +305,119 @@ export class HealthService implements OnModuleDestroy {
     } catch {
       return false;
     }
+  }
+
+  private getStaleReadySnapshot(): ReadinessSnapshot | null {
+    if (!this.readyCache) {
+      return null;
+    }
+
+    if (Date.now() - this.readyCacheAtMs > this.readinessStaleFallbackMaxAgeMs) {
+      return null;
+    }
+
+    return this.readyCache;
+  }
+
+  private decorateStaleReadySnapshot(
+    snapshot: ReadinessSnapshot,
+    fallbackDetail: string,
+  ): ReadinessSnapshot {
+    const existingDetail = snapshot.checks.queueLag.softWarningDetail;
+    return {
+      ...snapshot,
+      timestamp: new Date().toISOString(),
+      checks: {
+        ...snapshot.checks,
+        queueLag: {
+          ...snapshot.checks.queueLag,
+          softWarning: true,
+          softWarningCode: STALE_READY_SOFT_WARNING_CODE,
+          softWarningDetail: existingDetail
+            ? `${existingDetail} ${fallbackDetail}`
+            : fallbackDetail,
+        },
+      },
+    };
+  }
+
+  private buildUnavailableReadySnapshot(fallbackDetail: string): ReadinessSnapshot {
+    const timestamp = new Date().toISOString();
+    const systemMode = this.systemModeService.peekCachedSnapshot?.() ?? {
+      mode: 'degrade',
+      source: 'auto',
+      reason: READINESS_UNAVAILABLE_REASON,
+      updatedAt: timestamp,
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+
+    return {
+      ok: false,
+      timestamp,
+      bots: {},
+      systemMode: {
+        ...systemMode,
+        degraded: true,
+      },
+      checks: {
+        database: false,
+        redis: false,
+        queueLag: {
+          ok: false,
+          rawOk: false,
+          softWarning: true,
+          softWarningCode: STALE_READY_SOFT_WARNING_CODE,
+          softWarningDetail: fallbackDetail,
+          thresholdSec: this.queueLagThresholdSec,
+          sustainSec: this.queueLagSustainSec,
+          severeThresholdSec: this.queueLagSevereSec,
+          effectiveLagSec: 0,
+          sampleGeneratedAt: timestamp,
+          breachStartedAt: null,
+          breachDurationSec: 0,
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+        },
+      },
+    };
+  }
+
+  private describeReadinessFallback(error: unknown): string {
+    const detail = error instanceof Error ? error.message : String(error);
+    return `Serving stale readiness data because live readiness evaluation did not finish in ${this.readinessBuildTimeoutMs}ms: ${detail}`;
+  }
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timeoutId = setTimeout(() => {
+        reject(new Error(`${label} exceeded ${timeoutMs}ms`));
+      }, timeoutMs);
+      timeoutId.unref?.();
+
+      promise.then(
+        (value) => {
+          clearTimeout(timeoutId);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        },
+      );
+    });
   }
 }

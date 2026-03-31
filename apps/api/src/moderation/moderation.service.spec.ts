@@ -6612,6 +6612,7 @@ describe('ModerationService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      timeoutMs: 2000,
       ignoreFailureMetricStatuses: [403, 404],
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();

@@ -172,6 +172,21 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     return this.buildSnapshot(this.getUserFacingActionSnapshot());
   }
 
+  peekCachedSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): SystemModeSnapshot | null {
+    if (
+      this.sharedSnapshotCache &&
+      Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs
+    ) {
+      return this.sharedSnapshotCache;
+    }
+
+    if (this.enabled) {
+      return this.getSnapshot();
+    }
+
+    return null;
+  }
+
   async getEffectiveSnapshot(): Promise<SystemModeSnapshot> {
     if (this.enabled) {
       await this.actionHealthService.refreshSnapshots(60);
