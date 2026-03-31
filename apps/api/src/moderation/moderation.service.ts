@@ -6750,7 +6750,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isRequiredSubscriptionFallbackTitle(channelId: string, title: string): boolean {
-    return title === channelId || title === `Канал ${channelId}` || title === `Чат ${channelId}`;
+    return (
+      title === channelId ||
+      title === `Канал ${channelId}` ||
+      title === `Чат ${channelId}` ||
+      title === `Channel ${channelId}` ||
+      title === `Chat ${channelId}`
+    );
   }
 
   private isUsableRequiredSubscriptionChannelMetadata(

@@ -12010,6 +12010,59 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
+    it('fails open when required subscription metadata only resolves an english fallback title', async () => {
+      const channelId = '-71476678048456';
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: [channelId],
+      });
+      prisma.chat.findMany.mockResolvedValue([
+        {
+          id: channelId,
+          title: `Chat ${channelId}`,
+          entityType: ChatEntityType.CHANNEL,
+        },
+      ]);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: '',
+          link: 'https://max.ru/join/fcg899ueBbNlZawe6eDPbUQALPBuNU6A7OHommknuqI',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(channelId, {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+      });
+      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+      expect(maxClient.sendMessage).not.toHaveBeenCalled();
+      expect(prisma.violation.create).not.toHaveBeenCalled();
+      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    });
+
     it('suppresses repeated notice during cooldown and reuses membership cache', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
