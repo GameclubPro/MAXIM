@@ -111,6 +111,8 @@ const BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
 const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
 const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
+const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 750;
+const MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
 
 @Injectable()
 export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy {
@@ -517,11 +519,20 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     try {
-      const accessByUserId = await this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
-        trafficClass: batch.policy.trafficClass,
-        timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
-        ...(batch.botId ? { botId: batch.botId } : {}),
-      });
+      const accessByUserId = await this.executeLookupWithGuard(
+        async () =>
+          this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
+            trafficClass: batch.policy.trafficClass,
+            timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
+            ...(batch.botId ? { botId: batch.botId } : {}),
+          }),
+        {
+          chatId: batch.chatId,
+          userIds,
+          policyName: batch.policyName,
+          trafficClass: batch.policy.trafficClass,
+        },
+      );
       const checkedAtMs = Date.now();
       this.clearChatBackoff(batch.chatId, batch.policyName);
       this.clearHotChannelMode(batch.chatId, batch.policyName);
@@ -589,13 +600,22 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     );
     const batchLookupPromise = (async () => {
       try {
-        const accessByUserId = await this.maxClient.getChatMembersAccess(
-          chatId,
-          normalizedUserIds,
+        const accessByUserId = await this.executeLookupWithGuard(
+          async () =>
+            this.maxClient.getChatMembersAccess(
+              chatId,
+              normalizedUserIds,
+              {
+                trafficClass: policy.trafficClass,
+                timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+                ...(botId ? { botId } : {}),
+              },
+            ),
           {
+            chatId,
+            userIds: normalizedUserIds,
+            policyName,
             trafficClass: policy.trafficClass,
-            timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
-            ...(botId ? { botId } : {}),
           },
         );
         const checkedAtMs = Date.now();
@@ -1120,6 +1140,79 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private resolveLookupTimeoutMs(trafficClass: MaxApiTrafficClass): number {
     return this.lookupTimeoutMsByTrafficClass[trafficClass];
+  }
+
+  private resolveLookupGuardTimeoutMs(trafficClass: MaxApiTrafficClass): number {
+    return this.resolveLookupTimeoutMs(trafficClass) + MEMBERSHIP_LOOKUP_GUARD_SLACK_MS;
+  }
+
+  private async executeLookupWithGuard<T>(
+    operation: () => Promise<T>,
+    context: {
+      chatId: string;
+      userIds: readonly string[];
+      policyName: MaxMembershipLookupPolicy;
+      trafficClass: MaxApiTrafficClass;
+    },
+  ): Promise<T> {
+    const startedAtMs = Date.now();
+    const guardTimeoutMs = this.resolveLookupGuardTimeoutMs(context.trafficClass);
+    let timeoutHandle: NodeJS.Timeout | null = null;
+    let timedOut = false;
+
+    const operationPromise = operation().catch((error: unknown) => {
+      if (timedOut) {
+        return Promise.reject(error);
+      }
+      throw error;
+    });
+    operationPromise.catch(() => undefined);
+
+    const guardPromise = new Promise<T>((_, reject) => {
+      timeoutHandle = setTimeout(() => {
+        timedOut = true;
+        reject(this.createLookupTimeoutError(context, guardTimeoutMs));
+      }, guardTimeoutMs);
+      timeoutHandle.unref?.();
+    });
+
+    try {
+      const result = await Promise.race([operationPromise, guardPromise]);
+      const durationMs = Date.now() - startedAtMs;
+      if (durationMs >= MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS) {
+        this.logger.warn(
+          {
+            chatId: context.chatId,
+            userIds: context.userIds,
+            policyName: context.policyName,
+            trafficClass: context.trafficClass,
+            durationMs,
+          },
+          'Slow MAX membership lookup completed close to the hot-path deadline',
+        );
+      }
+      return result;
+    } finally {
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle);
+      }
+    }
+  }
+
+  private createLookupTimeoutError(
+    context: {
+      chatId: string;
+      userIds: readonly string[];
+      policyName: MaxMembershipLookupPolicy;
+      trafficClass: MaxApiTrafficClass;
+    },
+    timeoutMs: number,
+  ): Error & { code: string } {
+    const error = new Error(
+      `MAX membership lookup guard timed out after ${timeoutMs}ms for ${context.policyName}`,
+    ) as Error & { code: string };
+    error.code = 'ECONNABORTED';
+    return error;
   }
 
   private readConfigInt(value: unknown, fallback: number, min = 1): number {

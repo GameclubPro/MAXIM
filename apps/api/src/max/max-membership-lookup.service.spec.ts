@@ -348,6 +348,42 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('fails open instead of hanging the caller when a membership batch lookup never resolves', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:30.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest.fn().mockImplementation(
+        () =>
+          new Promise<Map<string, { userId: string; isAdmin: boolean }>>(() => {
+            // Intentionally never resolves to simulate a transport/runtime hang.
+          }),
+      ),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock({
+        MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL: 50,
+      }) as never,
+    );
+
+    const lookup = service.getMembership(
+      'channel-hang',
+      'user-hang',
+      'moderation_required_subscription',
+      {
+        forceRefresh: true,
+      },
+    );
+
+    await Promise.resolve();
+    await jest.advanceTimersByTimeAsync(801);
+
+    await expect(lookup).resolves.toBeNull();
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('extends chat backoff after consecutive transient failures on the same moderation channel', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:00.000Z'));
 
