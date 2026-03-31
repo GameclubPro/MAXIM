@@ -10809,7 +10809,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null;
     }
 
-    await this.maxClient.sendMessage(params.chatId, params.text, options);
+    await this.maxClient.sendMessage(params.chatId, params.text, options, {
+      ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+    });
     return null;
   }
 

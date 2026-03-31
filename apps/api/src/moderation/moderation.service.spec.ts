@@ -4746,9 +4746,15 @@ describe('ModerationService', () => {
       maxClient.deleteMessage.mock.invocationCallOrder[0],
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       expect.stringContaining('Ночной режим, граждане'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      {
+        ignoreFailureMetricStatuses: [403, 404],
+      },
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
