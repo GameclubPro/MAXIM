@@ -13,7 +13,7 @@ type WebhookIngestResult = {
 };
 
 type BotSelfAccessCacheEntry = {
-  canModerate: boolean;
+  canHandleUserFacing: boolean;
   expiresAtMs: number;
 };
 
@@ -201,19 +201,19 @@ export class WebhookService {
       return params.currentOwnerBotId;
     }
 
-    const currentOwnerCanModerate = await this.getBotSelfModerationAccessState(
+    const currentOwnerCanHandleUserFacing = await this.getBotSelfModerationAccessState(
       params.chatId,
       currentOwnerBotId,
     );
-    if (currentOwnerCanModerate !== false) {
+    if (currentOwnerCanHandleUserFacing !== false) {
       return params.currentOwnerBotId;
     }
 
-    const incomingBotCanModerate = await this.getBotSelfModerationAccessState(
+    const incomingBotCanHandleUserFacing = await this.getBotSelfModerationAccessState(
       params.chatId,
       incomingBotId,
     );
-    if (incomingBotCanModerate !== true) {
+    if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
     }
 
@@ -291,17 +291,17 @@ export class WebhookService {
     botId: string,
     access: MaxChatMemberAccess | null,
   ): Promise<boolean> {
-    const canModerate = access?.isAdmin === true || access?.isOwner === true;
+    const canHandleUserFacing = this.canBotHandleUserFacingUpdates(access);
     const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
     this.botSelfAccessCache.set(cacheKey, {
-      canModerate,
+      canHandleUserFacing,
       expiresAtMs:
         Date.now() +
-        (canModerate ? BOT_SELF_ACCESS_CACHE_TTL_MS : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
+        (canHandleUserFacing ? BOT_SELF_ACCESS_CACHE_TTL_MS : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
     });
     this.botSelfAccessBackoffUntilMs.delete(cacheKey);
     await this.persistBotSelfAccessSnapshot(chatId, botId, access);
-    return canModerate;
+    return canHandleUserFacing;
   }
 
   private async persistBotSelfAccessSnapshot(
@@ -355,7 +355,56 @@ export class WebhookService {
       this.botSelfAccessCache.delete(cacheKey);
       return null;
     }
-    return cached.canModerate;
+    return cached.canHandleUserFacing;
+  }
+
+  private canBotHandleUserFacingUpdates(access: MaxChatMemberAccess | null): boolean {
+    if (!access) {
+      return false;
+    }
+
+    if (access.isOwner) {
+      return true;
+    }
+
+    if (!access.isAdmin) {
+      return false;
+    }
+
+    const permissions = Array.from(
+      new Set(
+        (access.permissions ?? [])
+          .map((permission) => permission.trim().toLowerCase().replace(/[-\s]+/gu, '_'))
+          .filter((permission) => permission.length > 0),
+      ),
+    );
+    if (permissions.length === 0) {
+      // Older MAX payloads may not expose granular permissions for admins.
+      return true;
+    }
+
+    return permissions.some((permission) => this.isUserFacingModerationPermission(permission));
+  }
+
+  private isUserFacingModerationPermission(permission: string): boolean {
+    return (
+      permission === 'delete' ||
+      permission === 'delete_message' ||
+      permission === 'delete_messages' ||
+      permission === 'can_delete_message' ||
+      permission === 'can_delete_messages' ||
+      permission === 'post_edit_delete_message' ||
+      permission === 'post_edit_delete_messages' ||
+      permission === 'can_post_edit_delete_message' ||
+      permission === 'can_post_edit_delete_messages' ||
+      permission === 'add_remove_members' ||
+      permission === 'can_add_remove_members' ||
+      permission === 'write' ||
+      permission === 'send_messages' ||
+      permission === 'can_send_messages' ||
+      permission === 'read_all_messages' ||
+      permission === 'can_read_all_messages'
+    );
   }
 
   private isBotRemovalUpdate(update: MaxUpdate): boolean {

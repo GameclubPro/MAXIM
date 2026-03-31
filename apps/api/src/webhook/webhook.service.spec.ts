@@ -270,15 +270,15 @@ describe('WebhookService', () => {
         .fn()
         .mockResolvedValueOnce({
           userId: 'id613002203036_bot',
-          isAdmin: false,
+          isAdmin: true,
           isOwner: false,
-          permissions: [],
+          permissions: ['can_call'],
         })
         .mockResolvedValueOnce({
           userId: 'id613002203036_4_bot',
           isAdmin: true,
           isOwner: false,
-          permissions: ['messages.delete'],
+          permissions: ['write', 'read_all_messages'],
         }),
     };
     maxBotLinkService.bindChatToBot
@@ -368,7 +368,7 @@ describe('WebhookService', () => {
         userId: 'id613002203036_bot',
         isAdmin: true,
         isOwner: false,
-        permissions: ['messages.delete'],
+        permissions: ['delete_messages'],
       }),
     };
     maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_bot');
