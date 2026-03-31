@@ -219,7 +219,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('keeps local ownership and retries later when close hangs past the configured timeout', async () => {
+  it('detaches the local worker and applies cooldown when close hangs past the configured timeout', async () => {
     jest.useFakeTimers();
     const service = new DefaultWebhookLeaseManagerService(
       createConfigMock({
@@ -242,10 +242,10 @@ describe('DefaultWebhookLeaseManagerService', () => {
 
     const closePromise = (service as any).closeWorker(queueName);
     await jest.advanceTimersByTimeAsync(11);
-    await expect(closePromise).resolves.toBe(false);
+    await expect(closePromise).resolves.toBe('timed_out');
 
     expect(close).toHaveBeenCalledTimes(1);
-    expect((service as any).workers.has(queueName)).toBe(true);
+    expect((service as any).workers.has(queueName)).toBe(false);
     expect((service as any).closingWorkers.has(queueName)).toBe(false);
     expect((service as any).isCloseRetryCoolingDown(queueName)).toBe(true);
 

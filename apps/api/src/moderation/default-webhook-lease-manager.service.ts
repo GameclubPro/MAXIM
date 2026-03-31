@@ -39,6 +39,8 @@ type WorkerHeartbeat = {
   mode: WebhookDynamicLeasesMode;
 };
 
+type CloseWorkerResult = 'closed' | 'timed_out' | 'skipped';
+
 @Injectable()
 export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DefaultWebhookLeaseManagerService.name);
@@ -212,8 +214,8 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           allowedWorkers.add(queueName);
           continue;
         }
-        const closed = await this.closeWorker(queueName);
-        if (!closed) {
+        const closeResult = await this.closeWorker(queueName);
+        if (closeResult === 'skipped') {
           allowedWorkers.add(queueName);
           continue;
         }
@@ -639,10 +641,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     this.workers.set(queueName, worker);
   }
 
-  private async closeWorker(queueName: DefaultWebhookQueueName): Promise<boolean> {
+  private async closeWorker(queueName: DefaultWebhookQueueName): Promise<CloseWorkerResult> {
     const worker = this.workers.get(queueName);
     if (!worker || this.closingWorkers.has(queueName)) {
-      return false;
+      return 'skipped';
     }
 
     this.closingWorkers.add(queueName);
@@ -659,7 +661,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       ]);
       this.closeRetryNotBeforeMs.delete(queueName);
       this.workers.delete(queueName);
-      return true;
+      return 'closed';
     } catch (error: unknown) {
       const retryAfterMs = this.rebalanceCooldownMs;
       this.closeRetryNotBeforeMs.set(queueName, Date.now() + retryAfterMs);
@@ -677,9 +679,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
           err: error instanceof Error ? error.message : String(error),
           retryAfterMs,
         },
-        'Default webhook BullMQ worker close timed out; keeping local ownership until retry',
+        'Default webhook BullMQ worker close timed out; detaching local reference and allowing handoff',
       );
-      return false;
+      this.workers.delete(queueName);
+      return 'timed_out';
     } finally {
       this.closingWorkers.delete(queueName);
     }
