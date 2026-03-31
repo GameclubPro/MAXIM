@@ -252,6 +252,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (await this.trySkipStandbySharedChatMessage(event, queueName)) {
+      return;
+    }
+
     const existingJob = await this.findExistingJob(webhookEventId, queueName);
     if (existingJob) {
       await this.handleExistingJob(event, existingJob.job);
@@ -470,6 +474,94 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         errorMessage: null,
       },
     });
+  }
+
+  private async trySkipStandbySharedChatMessage(
+    event: WebhookEnqueueCandidate,
+    queueName: AnyWebhookQueueName,
+  ): Promise<boolean> {
+    if (!this.isStandbySharedChatMessage(event)) {
+      return false;
+    }
+
+    const existingJob = await this.findExistingJob(event.id, queueName);
+    if (existingJob) {
+      const state = await existingJob.job.getState();
+      if (state === 'active') {
+        return false;
+      }
+
+      try {
+        await existingJob.job.remove();
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            webhookEventId: event.id,
+            queueName: existingJob.queueName,
+            state,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to remove queued standby shared chat webhook job before skipping it',
+        );
+        return false;
+      }
+    }
+
+    await this.markSkippedSharedStandbyEvent(event.id);
+    return true;
+  }
+
+  private isStandbySharedChatMessage(event: WebhookEnqueueCandidate): boolean {
+    const payload =
+      event.normalizedPayload && typeof event.normalizedPayload === 'object'
+        ? (event.normalizedPayload as Record<string, unknown>)
+        : null;
+    if (!payload) {
+      return false;
+    }
+
+    const updateType = this.readLowerString(payload.type);
+    if (updateType !== 'message_created') {
+      return false;
+    }
+
+    const ownerBotId = this.readTrimmedString(payload.executionOwnerBotId);
+    const activeBotId =
+      this.readTrimmedString(event.botId) ?? this.readTrimmedString(payload.botId);
+    if (!ownerBotId || !activeBotId || ownerBotId === activeBotId) {
+      return false;
+    }
+
+    const message =
+      payload.message && typeof payload.message === 'object'
+        ? (payload.message as Record<string, unknown>)
+        : null;
+    const chatId = this.readTrimmedString(message?.chatId);
+    return Boolean(chatId && chatId.startsWith('-'));
+  }
+
+  private async markSkippedSharedStandbyEvent(webhookEventId: string) {
+    await this.prisma.webhookEvent.updateMany({
+      where: {
+        id: webhookEventId,
+        status: { in: [WebhookStatus.RECEIVED, WebhookStatus.FAILED, WebhookStatus.QUEUED] },
+      },
+      data: {
+        status: WebhookStatus.PROCESSED,
+        processedAt: new Date(),
+        queueName: null,
+        nextEnqueueAt: null,
+        errorMessage: null,
+      },
+    });
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+  }
+
+  private readLowerString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
   }
 
   private isAlreadyExistsError(message: string): boolean {

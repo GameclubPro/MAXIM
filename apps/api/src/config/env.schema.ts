@@ -90,6 +90,7 @@ const envSchema = z.object({
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL: z.coerce.number().int().positive().default(2_000),
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: z.coerce.number().int().positive().default(3_000),
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_BACKGROUND: z.coerce.number().int().positive().default(5_000),
+  CHAT_ADMIN_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(60_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_RESET_MS: z.coerce.number().int().positive().default(45_000),
   MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(2),

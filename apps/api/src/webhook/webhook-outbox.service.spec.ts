@@ -12,6 +12,7 @@ import {
 type JobMock = {
   getState: jest.Mock<Promise<string>, []>;
   retry: jest.Mock<Promise<void>, []>;
+  remove: jest.Mock<Promise<void>, []>;
 };
 
 type QueueMock = {
@@ -32,6 +33,7 @@ function createService(params?: {
   findManyResult?: Array<{
     id: string;
     status?: WebhookStatus;
+    botId?: string | null;
     queueName?: string | null;
     enqueueAttempts: number;
     createdAt?: Date;
@@ -51,6 +53,7 @@ function createService(params?: {
         (params?.findManyResult ?? []).map((item) => ({
           ...item,
           status: item.status ?? WebhookStatus.RECEIVED,
+          botId: item.botId ?? null,
           queueName: item.queueName ?? null,
           createdAt: item.createdAt ?? new Date('2026-03-24T00:00:00.000Z'),
           queuedAt: item.queuedAt ?? null,
@@ -190,6 +193,7 @@ describe('WebhookOutboxService', () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('waiting'),
       retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     const { service, prisma } = createService({
       findManyResult: [{ id: 'evt-1', enqueueAttempts: 5 }],
@@ -210,6 +214,7 @@ describe('WebhookOutboxService', () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('waiting'),
       retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     const { service, prisma } = createService({
       findManyResult: [
@@ -262,6 +267,7 @@ describe('WebhookOutboxService', () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('failed'),
       retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     const { service, prisma } = createService({
       findManyResult: [{ id: 'evt-2', enqueueAttempts: 5 }],
@@ -281,6 +287,7 @@ describe('WebhookOutboxService', () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('failed'),
       retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     const { service, prisma, queues } = createService({
       findManyResult: [{ id: 'evt-2b', enqueueAttempts: 5 }],
@@ -423,6 +430,7 @@ describe('WebhookOutboxService', () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('failed'),
       retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
     };
     const { service, queues } = createService({
       findManyResult: [{ id: 'evt-legacy', enqueueAttempts: 1 }],
@@ -489,5 +497,74 @@ describe('WebhookOutboxService', () => {
       expect.objectContaining({ jobId: 'evt-chat-b' }),
     );
     expect(new Set([queueForChatA, queueForChatB]).size).toBeGreaterThan(1);
+  });
+
+  it('skips standby shared-chat message_created events before they enter BullMQ', async () => {
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-standby-message',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId: '-100123' },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.PROCESSED,
+          queueName: null,
+        }),
+      }),
+    );
+  });
+
+  it('removes queued standby shared-chat jobs and marks them processed', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('prioritized'),
+      retry: jest.fn().mockResolvedValue(undefined),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-standby-queued',
+          enqueueAttempts: 2,
+          status: WebhookStatus.QUEUED,
+          queueName: 'moderation-default-0',
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            type: 'message_created',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            message: { chatId: '-100123' },
+          },
+        },
+      ],
+      defaultJob: job,
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].getJob).toHaveBeenCalledWith('evt-standby-queued');
+    expect(job.remove).toHaveBeenCalledTimes(1);
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.PROCESSED,
+        }),
+      }),
+    );
   });
 });

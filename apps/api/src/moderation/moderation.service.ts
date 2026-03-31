@@ -192,6 +192,7 @@ const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
+const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
   readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
@@ -385,6 +386,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
+  private readonly chatAdminLookupTimeoutMs: number;
   private readonly backgroundTasksEnabled: boolean;
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
@@ -459,6 +461,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.requiredSubscriptionLookupConcurrency = this.readPositiveConfigInt(
       configService?.get<number>('REQUIRED_SUBSCRIPTION_LOOKUP_CONCURRENCY'),
       2,
+    );
+    this.chatAdminLookupTimeoutMs = this.readPositiveConfigInt(
+      configService?.get<number>('CHAT_ADMIN_LOOKUP_TIMEOUT_MS'),
+      DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS,
+      250,
     );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
@@ -7952,6 +7959,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       trafficClass: 'interactive' as const,
       actionHealthLane: 'background' as const,
       ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
+      timeoutMs: this.chatAdminLookupTimeoutMs,
       ...(resolvedBotId ? { botId: resolvedBotId } : {}),
     };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
