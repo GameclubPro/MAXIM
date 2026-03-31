@@ -192,6 +192,7 @@ const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
+const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS = 30_000;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
@@ -374,6 +375,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
+  private webhookHotChatSkipLogAtMs = 0;
   private requiredSubscriptionPressureSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
@@ -971,6 +973,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedUrl,
         rulesPublishedMessageId,
       });
+      return;
+    }
+
+    if (this.shouldSkipHotChatModeration(mode, hotChatBackoffActive)) {
+      this.logHotChatModerationSkip(chatId, senderId, mode);
       return;
     }
 
@@ -10998,6 +11005,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.webhookHotTimeoutChatBackoffUntilMs.set(chatId, Date.now() + WEBHOOK_HOT_CHAT_BACKOFF_MS);
+  }
+
+  private shouldSkipHotChatModeration(
+    mode: SystemModeSnapshot,
+    hotChatBackoffActive: boolean,
+  ): boolean {
+    if (!hotChatBackoffActive) {
+      return false;
+    }
+
+    return mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC || mode.mode === 'degrade';
+  }
+
+  private logHotChatModerationSkip(
+    chatId: string,
+    userId: string,
+    mode: SystemModeSnapshot,
+  ): void {
+    const now = Date.now();
+    if (now - this.webhookHotChatSkipLogAtMs < WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.webhookHotChatSkipLogAtMs = now;
+    this.logger.warn(
+      {
+        chatId,
+        userId,
+        queueLagSec: mode.queueLagSec,
+        mode: mode.mode,
+        reason: mode.reason || 'system pressure',
+      },
+      'Skipped ordinary chat moderation because the chat is in hot-timeout backoff',
+    );
   }
 
   private extractWebhookHotPathChatId(update: MaxUpdate): string | null {

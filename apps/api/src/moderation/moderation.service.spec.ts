@@ -11955,6 +11955,80 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
   });
 
+  it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'user-facing queue lag 18.0s',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 18,
+        action: {
+          windowSec: 60,
+          total: 20,
+          success: 16,
+          failure: 4,
+          critical: 0,
+          errorRate: 0.2,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+    );
+    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+    await service.handleUpdate(createUpdate());
+
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('keeps admin bypass ahead of required subscription checks', async () => {
       const prisma = createPrismaForRequiredSubscription(
         {
