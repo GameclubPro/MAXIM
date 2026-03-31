@@ -45,7 +45,10 @@ import {
   isValidMaxBotStartPayload,
   isValidMaxMiniappStartPayload,
 } from '../max/max-deep-link.util';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type ChatBotExecutionBinding,
+} from '../max/max-bot-link.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -267,6 +270,8 @@ const DEFAULT_BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE = 4;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const SHARED_CHAT_EXECUTION_LOCK_TTL_MS = 45_000;
+const DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS = 1_000;
+const DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS = 1_000;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
@@ -394,6 +399,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly chatAdminLookupTimeoutMs: number;
   private readonly chatAdminSyncRemoteLookupWhenLocalAdminsKnown: boolean;
+  private readonly sharedChatExecutionLookupTimeoutMs: number;
+  private readonly sharedChatExecutionLockTimeoutMs: number;
   private readonly backgroundTasksEnabled: boolean;
   private readonly backgroundWorkSoftPauseQueueLagSec: number;
   private readonly backgroundWorkSoftPauseWorkerShare: number;
@@ -477,6 +484,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown = this.readBooleanConfig(
       configService?.get<boolean | string>('CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN'),
       false,
+    );
+    this.sharedChatExecutionLookupTimeoutMs = this.readPositiveConfigInt(
+      configService?.get<number>('SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS'),
+      DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS,
+      100,
+    );
+    this.sharedChatExecutionLockTimeoutMs = this.readPositiveConfigInt(
+      configService?.get<number>('SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS'),
+      DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS,
+      100,
     );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
       configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
@@ -6852,10 +6869,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       };
     }
 
-    const executionBinding = await this.maxBotLinkService.getChatExecutionBinding({
-      chatId,
-      activeBotId,
-    });
+    let executionBinding: ChatBotExecutionBinding;
+    try {
+      executionBinding = await this.executeSharedChatOperationWithGuard(
+        () =>
+          this.maxBotLinkService!.getChatExecutionBinding({
+            chatId,
+            activeBotId,
+          }),
+        this.sharedChatExecutionLookupTimeoutMs,
+        {
+          operation: 'binding',
+          chatId,
+          activeBotId,
+          updateId: update.updateId,
+        },
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          activeBotId,
+          updateId: update.updateId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Shared chat execution binding lookup stalled; allowing local execution without shared lock',
+      );
+      return {
+        mode: 'allow',
+        activeBotId,
+        primaryBotId: activeBotId,
+        assignedBotIds: activeBotId ? [activeBotId] : [],
+        requiresExecutionLock: false,
+      };
+    }
     if (executionBinding.shouldHandleGroupUpdate) {
       return {
         mode: 'allow',
@@ -6937,10 +6984,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (acquireLock && this.redisCounter) {
       try {
-        const token = await acquireLock.call(
-          this.redisCounter,
-          key,
-          SHARED_CHAT_EXECUTION_LOCK_TTL_MS,
+        const token = await this.executeSharedChatOperationWithGuard(
+          () =>
+            acquireLock.call(this.redisCounter, key, SHARED_CHAT_EXECUTION_LOCK_TTL_MS),
+          this.sharedChatExecutionLockTimeoutMs,
+          {
+            operation: 'lock',
+            chatId,
+            activeBotId: guard.activeBotId,
+            updateId: update.updateId,
+            lockKey: key,
+          },
         );
         if (!token) {
           return null;
@@ -6957,9 +7011,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             key,
             chatId,
             updateId: update.updateId,
+            activeBotId: guard.activeBotId,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to acquire redis shared chat execution lock; falling back to memory lock',
+          'Failed to acquire redis shared chat execution lock in time; falling back to memory lock',
         );
       }
     }
@@ -6975,6 +7030,58 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       token,
       mode: 'memory',
     };
+  }
+
+  private async executeSharedChatOperationWithGuard<T>(
+    operation: () => Promise<T>,
+    timeoutMs: number,
+    context: {
+      operation: 'binding' | 'lock';
+      chatId: string;
+      activeBotId?: string | null;
+      updateId?: string | null;
+      lockKey?: string;
+    },
+  ): Promise<T> {
+    const operationPromise = operation();
+    operationPromise.catch(() => undefined);
+
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<T>((_, reject) => {
+      timeout = setTimeout(() => {
+        reject(this.createSharedChatExecutionTimeoutError(context, timeoutMs));
+      }, timeoutMs);
+      timeout.unref?.();
+    });
+
+    try {
+      return await Promise.race([operationPromise, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private createSharedChatExecutionTimeoutError(
+    context: {
+      operation: 'binding' | 'lock';
+      chatId: string;
+      activeBotId?: string | null;
+      updateId?: string | null;
+      lockKey?: string;
+    },
+    timeoutMs: number,
+  ): Error {
+    const details =
+      context.operation === 'lock'
+        ? `lock ${context.lockKey ?? 'unknown'}`
+        : `binding ${context.chatId}`;
+    const error = new Error(
+      `Shared chat execution ${details} timed out after ${timeoutMs}ms`,
+    ) as Error & { code?: string };
+    error.code = 'ECONNABORTED';
+    return error;
   }
 
   private async releaseSharedChatExecutionLock(lock: {

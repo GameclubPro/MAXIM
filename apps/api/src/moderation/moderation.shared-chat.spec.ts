@@ -27,6 +27,10 @@ type SharedChatLockGuard = {
 };
 
 describe('ModerationService shared chat ownership', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
   it('skips non-primary group updates before moderation work starts', async () => {
     const prisma = {};
     const ruleEngine = {
@@ -202,5 +206,153 @@ describe('ModerationService shared chat ownership', () => {
     }).acquireSharedChatExecutionLock(update, '-100123', guard);
 
     expect(third).not.toBeNull();
+  });
+
+  it('falls back to local execution when shared chat binding lookup stalls', async () => {
+    const setTimeoutSpy = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation((((callback: TimerHandler) => {
+        const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+        queueMicrotask(() => {
+          if (typeof callback === 'function') {
+            callback();
+          }
+        });
+        return timer;
+      }) as unknown) as typeof setTimeout);
+    const clearTimeoutSpy = jest
+      .spyOn(global, 'clearTimeout')
+      .mockImplementation(((() => undefined) as unknown) as typeof clearTimeout);
+
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+    };
+    const configService = {
+      get: jest.fn((key: string) => {
+        if (key === 'SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS') {
+          return 50;
+        }
+        return undefined;
+      }),
+    };
+
+    try {
+      const service = new ModerationService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        undefined,
+        undefined,
+        configService as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+        maxBotContextService as never,
+      );
+
+      const guard = await (service as unknown as {
+        resolveSharedChatExecutionGuard: (
+          update: MaxUpdate,
+          chatId: string,
+        ) => Promise<{
+          mode: 'allow' | 'skip' | 'blocked-join-check-only';
+          activeBotId: string | null;
+          primaryBotId: string | null;
+          assignedBotIds: string[];
+          requiresExecutionLock?: boolean;
+        }>;
+      }).resolveSharedChatExecutionGuard(createGroupMessageUpdate(), '-100123');
+
+      expect(guard).toMatchObject({
+        mode: 'allow',
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot'],
+        requiresExecutionLock: false,
+      });
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+      expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
+  });
+
+  it('falls back to memory lock when redis shared execution lock acquisition stalls', async () => {
+    const setTimeoutSpy = jest
+      .spyOn(global, 'setTimeout')
+      .mockImplementation((((callback: TimerHandler) => {
+        const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+        queueMicrotask(() => {
+          if (typeof callback === 'function') {
+            callback();
+          }
+        });
+        return timer;
+      }) as unknown) as typeof setTimeout);
+    const clearTimeoutSpy = jest
+      .spyOn(global, 'clearTimeout')
+      .mockImplementation(((() => undefined) as unknown) as typeof clearTimeout);
+    const redisCounter = {
+      acquireLock: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+    };
+    const configService = {
+      get: jest.fn((key: string) => {
+        if (key === 'SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS') {
+          return 50;
+        }
+        return undefined;
+      }),
+    };
+
+    try {
+      const service = new ModerationService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        undefined,
+        undefined,
+        configService as never,
+        redisCounter as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          getActiveBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+        } as never,
+      );
+
+      const lock = await (service as unknown as {
+        acquireSharedChatExecutionLock: (
+          update: MaxUpdate,
+          chatId: string,
+          guard: SharedChatLockGuard,
+        ) => Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null>;
+      }).acquireSharedChatExecutionLock(createGroupMessageUpdate(), '-100123', {
+        mode: 'allow',
+        activeBotId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        requiresExecutionLock: true,
+      });
+
+      expect(lock).toMatchObject({
+        mode: 'memory',
+      });
+      expect(redisCounter.acquireLock).toHaveBeenCalledTimes(1);
+      expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
+      expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      setTimeoutSpy.mockRestore();
+      clearTimeoutSpy.mockRestore();
+    }
   });
 });
