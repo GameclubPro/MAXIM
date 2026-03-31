@@ -13127,6 +13127,7 @@ export class AdminService {
       deliveries: ChannelSuggestionAdminDelivery[];
   }> {
     const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
+    const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
     const currentBotUserId = await this.resolveCurrentBotUserId(chatId, deliveryBotId);
     const adminIds = Array.from(
       new Set(
@@ -13172,20 +13173,23 @@ export class AdminService {
     for (const adminUserId of adminIds) {
       let privateChatId: string | null = null;
       try {
-        privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
+        privateChatId = await this.findLatestPrivateChatIdForUser(
+          adminUserId,
+          privateDeliveryBotId,
+        );
         const published = await this.sendChannelSuggestionAdminMessageWithRetry({
           adminUserId,
           privateChatId,
           message,
           options: messageOptions,
-          ...(deliveryBotId ? { botId: deliveryBotId } : {}),
+          ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
         });
 
         deliveredAdminUserIds.push(adminUserId);
         privateChatId =
           this.readTrimmedString(published.chatId) ??
           privateChatId ??
-          (await this.findLatestPrivateChatIdForUser(adminUserId));
+          (await this.findLatestPrivateChatIdForUser(adminUserId, privateDeliveryBotId));
 
         if (!privateChatId) {
           this.logger.warn(
@@ -13751,21 +13755,30 @@ export class AdminService {
     return null;
   }
 
-  private async findLatestPrivateChatIdForUser(userId: string): Promise<string | null> {
+  private async findLatestPrivateChatIdForUser(
+    userId: string,
+    botId?: string | null,
+  ): Promise<string | null> {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
       return null;
     }
 
-    const rows = await this.prisma.$queryRaw<Array<{ recipient_chat_id: string | null }>>`
-      SELECT
-        COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') AS recipient_chat_id
-      FROM webhook_events
-      WHERE COALESCE(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id') = ${normalizedUserId}
-        AND COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') ~ '^[0-9]+$'
-      ORDER BY created_at DESC
-      LIMIT 1
-    `;
+    const resolvedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? botId?.trim() ?? null;
+    const botFilter = resolvedBotId ? Prisma.sql`AND bot_id = ${resolvedBotId}` : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<Array<{ recipient_chat_id: string | null }>>(
+      Prisma.sql`
+        SELECT
+          COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') AS recipient_chat_id
+        FROM webhook_events
+        WHERE COALESCE(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id') = ${normalizedUserId}
+          AND COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') ~ '^[0-9]+$'
+          ${botFilter}
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+    );
 
     if (!rows[0]?.recipient_chat_id) {
       return null;
@@ -13774,20 +13787,34 @@ export class AdminService {
     return rows[0].recipient_chat_id.trim();
   }
 
-  private async resolvePrivateDialogChatId(user: AuthUser): Promise<string | null> {
+  private async resolvePrivateDialogChatId(
+    user: AuthUser,
+    botId?: string | null,
+  ): Promise<string | null> {
+    const resolvedBotId =
+      this.resolvePrivateDeliveryBotId(botId) ??
+      this.maxBotRegistry?.getBotById(botId)?.id ??
+      botId?.trim() ??
+      null;
     const currentChatId = user.chatId?.trim() ?? '';
-    if (currentChatId && /^[0-9]+$/u.test(currentChatId)) {
+    const activeContextBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? null;
+    if (
+      currentChatId &&
+      /^[0-9]+$/u.test(currentChatId) &&
+      (!resolvedBotId || !activeContextBotId || activeContextBotId === resolvedBotId)
+    ) {
       return currentChatId;
     }
 
-    return this.findLatestPrivateChatIdForUser(user.userId);
+    return this.findLatestPrivateChatIdForUser(user.userId, resolvedBotId);
   }
 
   private async sendRulesPublishedPrivateConfirmation(
     user: AuthUser,
     publishedUrl: string | null,
   ): Promise<void> {
-    const privateChatId = await this.resolvePrivateDialogChatId(user);
+    const privateDeliveryBotId = this.resolvePrivateDeliveryBotId();
+    const privateChatId = await this.resolvePrivateDialogChatId(user, privateDeliveryBotId);
     if (!privateChatId) {
       return;
     }
@@ -13797,7 +13824,10 @@ export class AdminService {
       : '✅ Правила опубликованы.';
 
     try {
-      await this.maxClient.sendMessage(privateChatId, message, undefined, { immediate: true });
+      await this.maxClient.sendMessage(privateChatId, message, undefined, {
+        immediate: true,
+        ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -14303,6 +14333,15 @@ export class AdminService {
 
     const [candidate] = fallbackBotUserId.split('_');
     return /^\d+$/u.test(candidate) ? candidate : null;
+  }
+
+  private resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
+    const entryBotId = this.maxBotLinkService?.getEntryBotId() ?? this.maxBotRegistry?.getEntryBot().id;
+    if (entryBotId) {
+      return entryBotId;
+    }
+
+    return this.maxBotRegistry?.getBotById(botId)?.id ?? botId?.trim() ?? undefined;
   }
 
   private isOwnBotUserId(userId: string): boolean {

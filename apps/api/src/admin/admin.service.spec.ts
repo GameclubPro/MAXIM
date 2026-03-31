@@ -11939,12 +11939,18 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      expect.objectContaining({
+        trafficClass: 'background',
+      }),
     );
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
       '98315271',
       expect.stringContaining('[Пользователь](max://user/user-1)'),
       expect.objectContaining({
         textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
       }),
     );
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
@@ -11962,6 +11968,122 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('routes admin private suggestion delivery through the canonical entry bot even when assist bot differs', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '777001' }]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-entry-bot-delivery-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T06:35:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-entry-bot-delivery-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: 'Предложка',
+        delivered: true,
+        deliveredToUserId: '98315271',
+        source: 'private_bot',
+      },
+      createdAt: new Date('2026-03-25T06:35:00.000Z'),
+    });
+
+    const tokenPublisherClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-entry-bot', url: null }),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['98315271']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '888000',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-suggestion-entry-bot-1',
+        url: null,
+        chatId: '777001',
+      }),
+      sendMessageImmediateToUser: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      getEntryBotId: jest.fn().mockReturnValue('777000_bot'),
+      getContextOrDefaultBotId: jest.fn().mockReturnValue('888000_bot'),
+      isKnownBotUserId: jest.fn().mockReturnValue(false),
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('888000_bot'),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const tokenPublisher = new AdminService(
+      prisma as never,
+      tokenPublisherClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(tokenPublisher, tokenPublisherClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Предложка',
+      },
+    );
+
+    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      capability: 'suggestion_delivery',
+    });
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '777001',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        botId: '777000_bot',
+        trafficClass: 'background',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateToUser).not.toHaveBeenCalled();
   });
 
   it('publishes a reviewed suggestion and removes admin review buttons', async () => {
