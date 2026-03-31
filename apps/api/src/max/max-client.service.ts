@@ -211,6 +211,8 @@ export type MaxActionJob = {
   actionType: MaxActionType;
   chatId: string;
   botId?: string;
+  trafficClass?: MaxApiTrafficClass;
+  actionHealthLane?: ActionHealthLane;
   messageId?: string;
   userId?: string;
   text?: string;
@@ -226,6 +228,8 @@ export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
   autoDeleteDelayMs?: number;
+  trafficClass?: MaxApiTrafficClass;
+  actionHealthLane?: ActionHealthLane;
   ignoreFailureMetricStatuses?: readonly number[];
   botId?: string;
 };
@@ -535,6 +539,7 @@ export class MaxClientService implements OnModuleDestroy {
   async sendCustomMessageImmediate(
     chatId: string,
     payload: MaxCustomMessagePayload,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<Record<string, unknown>> {
     const attachments = Array.isArray(payload.attachments)
       ? payload.attachments.filter(
@@ -549,26 +554,31 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX custom message payload is empty');
     }
 
-    return this.executeMutation(chatId, async () => {
-      return this.request<Record<string, unknown>>('post', '/messages', {
-        params: {
-          chat_id: chatId,
-        },
-        data: {
-          ...(hasText ? { text: payload.text } : {}),
-          ...(payload.textFormat ? { format: payload.textFormat } : {}),
-          ...(messageLink ? { link: messageLink } : {}),
-          ...(attachments.length > 0 ? { attachments } : {}),
-        },
-      });
-    });
+    return this.executeMutation(
+      chatId,
+      async () => {
+        return this.request<Record<string, unknown>>('post', '/messages', {
+          params: {
+            chat_id: chatId,
+          },
+          data: {
+            ...(hasText ? { text: payload.text } : {}),
+            ...(payload.textFormat ? { format: payload.textFormat } : {}),
+            ...(messageLink ? { link: messageLink } : {}),
+            ...(attachments.length > 0 ? { attachments } : {}),
+          },
+        });
+      },
+      requestOptions,
+    );
   }
 
   async sendCustomMessageImmediateWithResolvedLink(
     chatId: string,
     payload: MaxCustomMessagePayload,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
-    const sendResponse = await this.sendCustomMessageImmediate(chatId, payload);
+    const sendResponse = await this.sendCustomMessageImmediate(chatId, payload, requestOptions);
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
       throw new Error('MAX send response is missing message id');
@@ -597,19 +607,24 @@ export class MaxClientService implements OnModuleDestroy {
     sourceMessageId: string,
     fallbackText: string | null,
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
     const messageTextPayload = this.buildOutgoingMessageTextPayload(sourceMessage, fallbackText);
-    const sendResponse = await this.sendCustomMessageImmediate(chatId, {
-      ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
-        ? { text: messageTextPayload.text }
-        : {}),
-      ...(messageTextPayload.textFormat ? { textFormat: messageTextPayload.textFormat } : {}),
-      ...(attachments.length > 0 ? { attachments } : {}),
-      ...(replyLink ? { messageLink: replyLink } : {}),
-    });
+    const sendResponse = await this.sendCustomMessageImmediate(
+      chatId,
+      {
+        ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
+          ? { text: messageTextPayload.text }
+          : {}),
+        ...(messageTextPayload.textFormat ? { textFormat: messageTextPayload.textFormat } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(replyLink ? { messageLink: replyLink } : {}),
+      },
+      requestOptions,
+    );
 
     const messageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!messageId) {
@@ -640,6 +655,7 @@ export class MaxClientService implements OnModuleDestroy {
     messageId: string,
     text: string | null,
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
     const message = await this.getMessageById(messageId);
     const attachments = this.buildEditableMessageAttachments(message, options);
@@ -648,23 +664,29 @@ export class MaxClientService implements OnModuleDestroy {
         ? this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
         : null;
 
-    await this.executeMutation(chatId, async () => {
-      await this.request('put', '/messages', {
-        params: {
-          chat_id: chatId,
-          message_id: messageId,
-        },
-        data: {
-          ...(messageTextPayload && typeof messageTextPayload.text === 'string'
-            ? {
-                text: messageTextPayload.text,
-                ...(messageTextPayload.textFormat ? { format: messageTextPayload.textFormat } : {}),
-              }
-            : {}),
-          attachments,
-        },
-      });
-    });
+    await this.executeMutation(
+      chatId,
+      async () => {
+        await this.request('put', '/messages', {
+          params: {
+            chat_id: chatId,
+            message_id: messageId,
+          },
+          data: {
+            ...(messageTextPayload && typeof messageTextPayload.text === 'string'
+              ? {
+                  text: messageTextPayload.text,
+                  ...(messageTextPayload.textFormat
+                    ? { format: messageTextPayload.textFormat }
+                    : {}),
+                }
+              : {}),
+            attachments,
+          },
+        });
+      },
+      requestOptions,
+    );
   }
 
   async sendMessageReplyWithInlineKeyboard(
@@ -672,6 +694,7 @@ export class MaxClientService implements OnModuleDestroy {
     messageId: string,
     text: string,
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage | null> {
     const attachments = this.buildMessageAttachments(options);
     const messageLink = this.buildMessageLinkData({
@@ -682,18 +705,22 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const sendResponse = await this.executeMutation(chatId, async () => {
-      return this.request<Record<string, unknown>>('post', '/messages', {
-        params: {
-          chat_id: chatId,
-        },
-        data: {
-          text,
-          link: messageLink,
-          attachments,
-        },
-      });
-    });
+    const sendResponse = await this.executeMutation(
+      chatId,
+      async () => {
+        return this.request<Record<string, unknown>>('post', '/messages', {
+          params: {
+            chat_id: chatId,
+          },
+          data: {
+            text,
+            link: messageLink,
+            attachments,
+          },
+        });
+      },
+      requestOptions,
+    );
 
     const replyMessageId = this.extractMessageIdFromSendResponse(sendResponse);
     if (!replyMessageId) {
@@ -2349,6 +2376,8 @@ export class MaxClientService implements OnModuleDestroy {
     const job: MaxActionJob = {
       ...payload,
       botId: bot.id,
+      ...(options?.trafficClass ? { trafficClass: options.trafficClass } : {}),
+      ...(options?.actionHealthLane ? { actionHealthLane: options.actionHealthLane } : {}),
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
@@ -3118,6 +3147,7 @@ export class MaxClientService implements OnModuleDestroy {
     return this.executeReadRequest(operation, {
       chatId,
       trafficClass: normalizedOptions.trafficClass ?? 'critical',
+      actionHealthLane: normalizedOptions.actionHealthLane,
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
       timeoutMs: normalizedOptions.timeoutMs,
       botId: normalizedOptions.botId,
@@ -3179,6 +3209,8 @@ export class MaxClientService implements OnModuleDestroy {
   ): MaxApiRequestOptions {
     return {
       botId,
+      trafficClass: action.trafficClass,
+      actionHealthLane: action.actionHealthLane,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         action.ignoreFailureMetricStatuses,
       ),

@@ -2065,6 +2065,51 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves a background action health lane for mutations even when traffic stays critical', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            message_id: 'mid-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const actionHealthService = (
+      service as unknown as {
+        actionHealthService: {
+          recordSuccessForLane: jest.Mock;
+          recordFailureForLane: jest.Mock;
+        };
+      }
+    ).actionHealthService;
+
+    await expect(
+      service.sendMessageImmediateWithId(
+        'chat-1',
+        'Фоновое сообщение',
+        undefined,
+        {
+          actionHealthLane: 'background',
+        } as never,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        messageId: 'mid-1',
+      }),
+    );
+
+    expect(actionHealthService.recordSuccessForLane).toHaveBeenCalledWith(
+      'background',
+      '777000_bot',
+    );
+    expect(actionHealthService.recordFailureForLane).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('applies per-chat MAX API rate limit to profile lookups', async () => {
     const httpService = {
       request: jest.fn(),

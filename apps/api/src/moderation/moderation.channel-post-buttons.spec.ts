@@ -199,6 +199,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
+      undefined,
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -279,6 +280,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
+      undefined,
     );
   });
 
@@ -352,6 +354,7 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
+      undefined,
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith(
       'channel-1',
@@ -437,6 +440,7 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: '📰 Предложить пост' })],
         ],
       }),
+      undefined,
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -524,6 +528,7 @@ describe('ModerationService channel auto post buttons', () => {
           action: 'attach-buttons-reply-fallback',
         },
       }),
+      undefined,
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -648,6 +653,7 @@ describe('ModerationService channel auto post buttons', () => {
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
       }),
+      undefined,
     );
   });
 
@@ -719,6 +725,7 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
+      undefined,
     );
   });
 
@@ -848,6 +855,10 @@ describe('ModerationService channel auto post buttons', () => {
           action: 'scan-attach-buttons',
         },
       }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
   });
 
@@ -1099,6 +1110,10 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
   });
 
@@ -1197,9 +1212,15 @@ describe('ModerationService channel auto post buttons', () => {
           ],
         ],
       }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-polled-forward-1', {
       immediate: true,
+      trafficClass: 'background',
+      actionHealthLane: 'background',
     });
   });
 
@@ -1458,6 +1479,10 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-polled-batch-1',
       'Пост 1',
       expect.any(Object),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
       2,
@@ -1465,6 +1490,10 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-polled-batch-2',
       'Пост 2',
       expect.any(Object),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
       3,
@@ -1472,6 +1501,10 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-polled-batch-3',
       'Пост 3',
       expect.any(Object),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
       4,
@@ -1479,6 +1512,10 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-polled-batch-4',
       'Пост 4',
       expect.any(Object),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
     );
   });
 
@@ -1605,5 +1642,92 @@ describe('ModerationService channel auto post buttons', () => {
 
     expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
     expect(prisma.channelSettings.findMany).toHaveBeenCalled();
+  });
+
+  it('routes poll-based auto-attach mutations through the background action lane', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await (
+      service as unknown as {
+        tryAutoAttachChannelMessageButtons: (params: {
+          chatId: string;
+          messageId: string;
+          text: string | null;
+          linkType: string | null;
+          managedChannel: {
+            channelSettings: {
+              autoPostButtonsMode: 'BOTH';
+              postSuggestionsEnabled: true;
+              postSuggestionsButtonText: string;
+              commentsEnabled: true;
+            };
+            adminUserIds: string[];
+          };
+          source: 'poll';
+          senderId: string | null;
+        }) => Promise<void>;
+      }
+    ).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-poll-1',
+      text: 'Пост из фонового сканирования',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          autoPostButtonsMode: 'BOTH',
+          postSuggestionsEnabled: true,
+          postSuggestionsButtonText: '📰 Предложить пост',
+          commentsEnabled: true,
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-poll-1',
+      'Пост из фонового сканирования',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+      },
+    );
   });
 });

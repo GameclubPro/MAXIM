@@ -9454,6 +9454,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderId: string | null;
   }): Promise<void> {
     const { chatId, messageId, text, linkType, managedChannel, source, senderId } = params;
+    const backgroundMutationRequestOptions =
+      source === 'poll'
+        ? ({
+            trafficClass: 'background',
+            actionHealthLane: 'background',
+          } as const)
+        : undefined;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
       managedChannel.channelSettings,
     );
@@ -9514,6 +9521,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   : 'replace-forward-with-bot-copy',
             },
           },
+          backgroundMutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
         deliveryMode = 'replace_with_bot_message';
@@ -9521,6 +9529,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         try {
           await this.maxClient.deleteMessage(chatId, messageId, {
             immediate: true,
+            ...(backgroundMutationRequestOptions ?? {}),
           });
           originalDeleted = true;
         } catch (deleteError: unknown) {
@@ -9542,7 +9551,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             screen: 'channel-auto-post',
             action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
           },
-        });
+        }, backgroundMutationRequestOptions);
       }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
@@ -9587,6 +9596,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                     : 'attach-buttons-reply-fallback',
               },
             },
+            backgroundMutationRequestOptions,
           );
           deliveryMode = 'reply_message';
           replyMessageId = sent?.messageId ?? null;
@@ -10886,6 +10896,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.maxClient.sendMessage(params.chatId, params.text, options, {
+      trafficClass: 'background',
+      actionHealthLane: 'background',
       ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
     });
     return null;
