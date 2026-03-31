@@ -2262,6 +2262,102 @@ describe('MaxClientService delayed member actions', () => {
     );
   }
 
+  it('dispatches queued delete actions with the active bot context when botId is omitted', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const configService = {
+      getOrThrow: jest.fn((key: string) => {
+        if (key === 'MAX_API_BASE_URL') {
+          return 'https://platform-api.max.ru';
+        }
+        if (key === 'MAX_BOT_TOKEN') {
+          return 'test-token';
+        }
+        if (key === 'REDIS_URL') {
+          return 'redis://localhost:6379/0';
+        }
+        throw new Error(`Unexpected key ${key}`);
+      }),
+      get: jest.fn((key: string, fallback?: unknown) => fallback),
+    };
+    const actionHealthService = {
+      recordSuccess: jest.fn(),
+      recordFailure: jest.fn(),
+      getSnapshot: jest.fn(),
+    };
+    const botRegistry = {
+      getDefaultBot: jest.fn().mockReturnValue({
+        id: 'id613002203036_bot',
+        token: 'default-token',
+        webhookSecretPath: 'default-secret',
+        webhookHeaderSecret: 'default-header-secret',
+        webhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
+        maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+      }),
+      getBotById: jest.fn((botId?: string | null) => {
+        if (!botId || botId === 'id613002203036_bot') {
+          return {
+            id: 'id613002203036_bot',
+            token: 'default-token',
+            webhookSecretPath: 'default-secret',
+            webhookHeaderSecret: 'default-header-secret',
+            webhookUrl:
+              'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
+            maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+          };
+        }
+
+        if (botId === 'id613002203036_4_bot') {
+          return {
+            id: 'id613002203036_4_bot',
+            token: 'secondary-token',
+            webhookSecretPath: 'secondary-secret',
+            webhookHeaderSecret: 'secondary-header-secret',
+            webhookUrl:
+              'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/secondary-secret',
+            maskedWebhookUrl:
+              'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/***',
+          };
+        }
+
+        return null;
+      }),
+      getConfiguredWebhookSubscriptionTarget: jest.fn(() => ({
+        url: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/default-secret',
+        maskedUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_bot/***',
+      })),
+    };
+    const botContext = {
+      getActiveBotId: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      runWithBot: jest.fn((_botId: string, callback: () => unknown) => callback()),
+    };
+    const service = new MaxClientService(
+      {} as never,
+      configService as never,
+      actionHealthService as never,
+      botRegistry as never,
+      botContext as never,
+      queue as never,
+    );
+
+    await service.deleteMessage('-72881707399277', 'mid-delete-1');
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'DELETE_MESSAGE',
+        chatId: '-72881707399277',
+        messageId: 'mid-delete-1',
+        botId: 'id613002203036_4_bot',
+      }),
+      expect.any(Object),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('uses deterministic queue job id for delayed unban', async () => {
     const queue = {
       add: jest.fn().mockResolvedValue(undefined),

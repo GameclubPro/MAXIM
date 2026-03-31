@@ -3533,7 +3533,12 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private resolveBot(botId?: string | null): MaxBotDefinition {
-    return this.botRegistry.getBotById(botId) ?? this.botRegistry.getDefaultBot();
+    const explicitBotId = this.readTrimmedString(botId);
+    return (
+      (explicitBotId ? this.botRegistry.getBotById(explicitBotId) : null) ??
+      this.botRegistry.getBotById(this.botContext.getActiveBotId()) ??
+      this.botRegistry.getDefaultBot()
+    );
   }
 
   private getCurrentBot(): MaxBotDefinition {
