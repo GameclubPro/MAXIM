@@ -191,6 +191,7 @@ const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
+const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS = 30_000;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
@@ -372,6 +373,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<boolean | null>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
+  private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private requiredSubscriptionPressureSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
@@ -731,6 +733,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const userLabel = this.formatUserLabel(senderName, senderId);
     const mode = await this.resolveSystemModeSnapshot();
     const degradeMode = mode.mode === 'degrade';
+    const hotChatBackoffActive = this.isWebhookHotTimeoutChatBackoffActive(chatId);
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
@@ -835,13 +838,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chat.adminUserIds,
       senderId,
       {
-        allowRemoteLookup: !degradeMode,
+        allowRemoteLookup: !degradeMode && !hotChatBackoffActive,
         skipRemoteLookupWhenLocalAdminsKnown:
+          hotChatBackoffActive ||
           degradeMode ||
           manualGroupCloseActiveNow ||
           nightModeActiveNow ||
           !this.shouldForceSynchronousRemoteAdminLookup(update),
         prefetchRemoteLookupWhenLocalAdminsKnown:
+          !hotChatBackoffActive &&
           !degradeMode &&
           !manualGroupCloseActiveNow &&
           !nightModeActiveNow &&
@@ -977,6 +982,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       createdAt,
       degradeMode,
+      hotChatBackoffActive,
       systemMode: mode,
       settings,
       rulesPublishedUrl,
@@ -1032,6 +1038,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+        suppressNonEssentialMessages: hotChatBackoffActive,
       });
       return;
     }
@@ -1060,6 +1067,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+        suppressNonEssentialMessages: hotChatBackoffActive,
       });
       return;
     }
@@ -1676,6 +1684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
+    suppressNonEssentialMessages: boolean;
   }) {
     const {
       chatId,
@@ -1697,6 +1706,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
+      suppressNonEssentialMessages,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -1753,7 +1763,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId,
     );
 
-    if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
+    if (!suppressNonEssentialMessages && duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
@@ -1836,6 +1846,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
+    suppressNonEssentialMessages: boolean;
   }) {
     const {
       chatId,
@@ -1856,6 +1867,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
+      suppressNonEssentialMessages,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -1911,7 +1923,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedMessageId,
     );
 
-    if (duplicateBotMessageEnabled) {
+    if (!suppressNonEssentialMessages && duplicateBotMessageEnabled) {
       try {
         await this.sendBotMessageWithOptionalAutoDelete({
           chatId,
@@ -6109,6 +6121,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     degradeMode: boolean;
+    hotChatBackoffActive: boolean;
     systemMode: SystemModeSnapshot;
     settings: Pick<
       ChatSettings,
@@ -6136,6 +6149,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const pressureSkipReason = this.resolveRequiredSubscriptionPressureSkipReason(
       params.systemMode,
+      params.hotChatBackoffActive,
     );
     if (pressureSkipReason) {
       this.logRequiredSubscriptionPressureSkip({
@@ -6423,7 +6437,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveRequiredSubscriptionPressureSkipReason(
     mode: SystemModeSnapshot,
+    hotChatBackoffActive = false,
   ): string | null {
+    if (hotChatBackoffActive) {
+      return 'chat hot-path backoff active';
+    }
+
     if (mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC) {
       return `queue lag ${mode.queueLagSec.toFixed(1)}s`;
     }
@@ -10961,6 +10980,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.webhookUserFacingTimeoutMs;
   }
 
+  private isWebhookHotTimeoutChatBackoffActive(chatId: string): boolean {
+    const backoffUntilMs = this.webhookHotTimeoutChatBackoffUntilMs.get(chatId) ?? 0;
+    if (backoffUntilMs <= Date.now()) {
+      if (backoffUntilMs > 0) {
+        this.webhookHotTimeoutChatBackoffUntilMs.delete(chatId);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  private rememberWebhookHotTimeoutChat(chatId: string | null): void {
+    if (!chatId || !chatId.startsWith('-')) {
+      return;
+    }
+
+    this.webhookHotTimeoutChatBackoffUntilMs.set(chatId, Date.now() + WEBHOOK_HOT_CHAT_BACKOFF_MS);
+  }
+
   private extractWebhookHotPathChatId(update: MaxUpdate): string | null {
     return typeof update.message?.chatId === 'string' && update.message.chatId.trim().length > 0
       ? update.message.chatId.trim()
@@ -10989,6 +11028,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     error.webhookEventId = params.webhookEventId;
     error.chatId = this.extractWebhookHotPathChatId(params.update);
     error.activeBotId = params.activeBotId;
+    this.rememberWebhookHotTimeoutChat(error.chatId);
     this.logger.warn(
       {
         webhookEventId: params.webhookEventId,

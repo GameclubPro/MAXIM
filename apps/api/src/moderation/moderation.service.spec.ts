@@ -7555,6 +7555,60 @@ describe('ModerationService', () => {
     );
   });
 
+  it('suppresses duplicate explanation while the chat is in webhook hot-timeout backoff', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateHit: {
+          count: 1,
+          windowSec: 60,
+          hash: 'dup-hit-hot-chat-1',
+        },
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('sends duplicate explanation with inline button when button toggle is enabled', async () => {
     const prisma = {
       chat: {
@@ -11808,7 +11862,7 @@ describe('ModerationService', () => {
       expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     });
 
-    it('skips required subscription enforcement entirely when the system is under pressure', async () => {
+  it('skips required subscription enforcement entirely when the system is under pressure', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -11861,11 +11915,47 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
       expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
-    });
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+  });
 
-    it('keeps admin bypass ahead of required subscription checks', async () => {
+  it('skips required subscription enforcement while the chat is in webhook hot-timeout backoff', async () => {
+    const prisma = createPrismaForRequiredSubscription({
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+    });
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (service as any).webhookHotTimeoutChatBackoffUntilMs.set('chat-1', Date.now() + 60_000);
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps admin bypass ahead of required subscription checks', async () => {
       const prisma = createPrismaForRequiredSubscription(
         {
           requiredSubscriptionEnabled: true,
