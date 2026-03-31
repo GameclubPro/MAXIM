@@ -3492,6 +3492,189 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(result.message).toBe('Пользователь забанен.');
   });
 
+  it('queues manual mute fanout for group commands when background queue is available', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'MUTE', muteDurationHours: 6 },
+      'group_command',
+    );
+
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_mute_fanout',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        muteDurationHours: 6,
+        source: 'group_command',
+      }),
+      expect.objectContaining({
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          metadata: expect.objectContaining({
+            crossChatMuteFanout: expect.objectContaining({
+              mode: 'queued',
+              mutedChatsCount: 0,
+              mutedChatIds: [],
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(
+      prisma.moderationEvent.create.mock.calls.some(
+        (call: readonly [Record<string, unknown>]) =>
+          (call[0] as { data?: { chatId?: string } }).data?.chatId === 'chat-2',
+      ),
+    ).toBe(false);
+    expect(result).toEqual({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-2',
+      muteDurationHours: 6,
+      muteExpiresAt: expect.any(String),
+      message: 'Мут на 6ч.',
+    });
+  });
+
+  it('queues manual ban fanout for group commands when background queue is available', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    const result = await service.applyManualSystemBan(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'group_command',
+    );
+
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_ban_fanout',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        source: 'group_command',
+      }),
+      expect.objectContaining({
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1000,
+        },
+      }),
+    );
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            crossChatFanout: expect.objectContaining({
+              mode: 'queued',
+              removedChatsCount: 0,
+              removedChatIds: [],
+              deletedMessageCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-3',
+      }),
+    );
+    expect(result.message).toBe('Пользователь забанен.');
+  });
+
   it('still bans permanently when cancelling a stale scheduled unban fails', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -11145,6 +11328,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
       undefined,
       undefined,
       adminSuggestionDeliveryQueue as never,

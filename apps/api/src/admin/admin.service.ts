@@ -168,6 +168,12 @@ import {
   type SystemAccessConfig,
 } from '../system/system-access.util';
 import {
+  ADMIN_MANUAL_FANOUT_QUEUE,
+  type AdminManualFanoutJob,
+  type AdminManualBanFanoutJob,
+  type AdminManualMuteFanoutJob,
+} from './admin-manual-fanout.queue';
+import {
   ADMIN_SUGGESTION_DELIVERY_QUEUE,
   type AdminSuggestionDeliveryJob,
 } from './admin-suggestion-delivery.queue';
@@ -624,6 +630,9 @@ export class AdminService {
     @Optional()
     private readonly channelStatsCollector?: ChannelStatsCollectorService,
     @Optional() private readonly redisCounter?: RedisCounterService,
+    @Optional()
+    @InjectQueue(ADMIN_MANUAL_FANOUT_QUEUE)
+    private readonly adminManualFanoutQueue?: Queue<AdminManualFanoutJob>,
     @Optional()
     @InjectQueue(ADMIN_SUGGESTION_DELIVERY_QUEUE)
     private readonly adminSuggestionDeliveryQueue?: Queue<AdminSuggestionDeliveryJob>,
@@ -9015,35 +9024,21 @@ export class AdminService {
         }
       }
 
-      let fanout = {
-        mutedChatIds: [] as string[],
-        skippedChatIds: [] as string[],
-        failedChatIds: [] as string[],
-      };
-      if (shouldFanoutCommandMute) {
-        try {
-          fanout = await this.applyManualMuteFanout({
+      const sourceMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
+      const crossChatMuteFanout = shouldFanoutCommandMute
+        ? await this.resolveManualMuteFanoutSummary({
             sourceChatId: chatId,
             targetUserId,
             actor: user,
             muteDurationHours,
             muteExpiresAt,
             source,
+          })
+        : this.summarizeManualMuteFanout({
+            mutedChatIds: [],
+            skippedChatIds: [],
+            failedChatIds: [],
           });
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              targetUserId,
-              actorUserId: user.userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to run manual mute fanout after source chat mute',
-          );
-        }
-      }
-      const sourceMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
-      const crossChatMuteFanout = this.summarizeManualMuteFanout(fanout);
 
       await this.recordManualModerationAction({
         chatId,
@@ -9310,32 +9305,22 @@ export class AdminService {
       );
     }
 
-    let fanout = {
-      removedChatIds: [] as string[],
-      skippedChatIds: [] as string[],
-      failedChatIds: [] as string[],
-      deletedMessageCount: 0,
-      failedMessageDeleteCount: 0,
-    };
-    try {
-      fanout = await this.applyManualSystemBanFanout({
-        sourceChatId: chatId,
-        targetUserId,
-        actor: user,
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          targetUserId,
-          actorUserId: user.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to run manual system ban fanout after source chat ban',
-      );
-    }
     const recentMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
-    const crossChatFanout = this.summarizeManualBanFanout(fanout);
+    const crossChatFanout =
+      source === 'group_command' || source === 'private_command'
+        ? await this.resolveManualBanFanoutSummary({
+            sourceChatId: chatId,
+            targetUserId,
+            actor: user,
+            source,
+          })
+        : this.summarizeManualBanFanout({
+            removedChatIds: [],
+            skippedChatIds: [],
+            failedChatIds: [],
+            deletedMessageCount: 0,
+            failedMessageDeleteCount: 0,
+          });
 
     await this.recordManualModerationAction({
       chatId,
@@ -9420,6 +9405,233 @@ export class AdminService {
         'Failed to send manual ban notice message',
       );
     }
+  }
+
+  async processManualModerationFanoutJob(job: AdminManualFanoutJob): Promise<void> {
+    if (job.kind === 'manual_mute_fanout') {
+      await this.applyManualMuteFanout({
+        sourceChatId: job.sourceChatId,
+        targetUserId: job.targetUserId,
+        actor: {
+          userId: job.actor.userId,
+          username: job.actor.username,
+          displayName: job.actor.displayName,
+          chatId: job.actor.chatId ?? undefined,
+          chatTitle: job.actor.chatTitle ?? undefined,
+        },
+        muteDurationHours: job.muteDurationHours,
+        muteExpiresAt: new Date(job.muteExpiresAt),
+        source: job.source,
+      });
+      return;
+    }
+
+    await this.applyManualSystemBanFanout({
+      sourceChatId: job.sourceChatId,
+      targetUserId: job.targetUserId,
+      actor: {
+        userId: job.actor.userId,
+        username: job.actor.username,
+        displayName: job.actor.displayName,
+        chatId: job.actor.chatId ?? undefined,
+        chatTitle: job.actor.chatTitle ?? undefined,
+      },
+    });
+  }
+
+  private async resolveManualMuteFanoutSummary(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    muteDurationHours: number;
+    muteExpiresAt: Date;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }) {
+    const queuedJob = this.buildManualMuteFanoutJob(params);
+    if (await this.enqueueManualModerationFanout(queuedJob)) {
+      return this.buildQueuedManualMuteFanoutSummary(queuedJob.jobId);
+    }
+
+    try {
+      const fanout = await this.applyManualMuteFanout(params);
+      return this.summarizeManualMuteFanout(fanout);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.sourceChatId,
+          targetUserId: params.targetUserId,
+          actorUserId: params.actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run manual mute fanout after source chat mute',
+      );
+      return this.summarizeManualMuteFanout({
+        mutedChatIds: [],
+        skippedChatIds: [],
+        failedChatIds: [],
+      });
+    }
+  }
+
+  private async resolveManualBanFanoutSummary(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }) {
+    const queuedJob = this.buildManualBanFanoutJob(params);
+    if (await this.enqueueManualModerationFanout(queuedJob)) {
+      return this.buildQueuedManualBanFanoutSummary(queuedJob.jobId);
+    }
+
+    try {
+      const fanout = await this.applyManualSystemBanFanout(params);
+      return this.summarizeManualBanFanout(fanout);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.sourceChatId,
+          targetUserId: params.targetUserId,
+          actorUserId: params.actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run manual system ban fanout after source chat ban',
+      );
+      return this.summarizeManualBanFanout({
+        removedChatIds: [],
+        skippedChatIds: [],
+        failedChatIds: [],
+        deletedMessageCount: 0,
+        failedMessageDeleteCount: 0,
+      });
+    }
+  }
+
+  private buildManualMuteFanoutJob(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    muteDurationHours: number;
+    muteExpiresAt: Date;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }): AdminManualMuteFanoutJob {
+    return {
+      kind: 'manual_mute_fanout',
+      jobId: this.buildManualModerationFanoutJobId(
+        'manual_mute_fanout',
+        params.sourceChatId,
+        params.targetUserId,
+        params.source,
+      ),
+      sourceChatId: params.sourceChatId,
+      targetUserId: params.targetUserId,
+      actor: {
+        userId: params.actor.userId,
+        username: params.actor.username ?? null,
+        displayName: params.actor.displayName ?? null,
+        chatId: params.actor.chatId ?? null,
+        chatTitle: params.actor.chatTitle ?? null,
+      },
+      muteDurationHours: params.muteDurationHours,
+      muteExpiresAt: params.muteExpiresAt.toISOString(),
+      source: params.source,
+    };
+  }
+
+  private buildManualBanFanoutJob(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }): AdminManualBanFanoutJob {
+    return {
+      kind: 'manual_ban_fanout',
+      jobId: this.buildManualModerationFanoutJobId(
+        'manual_ban_fanout',
+        params.sourceChatId,
+        params.targetUserId,
+        params.source,
+      ),
+      sourceChatId: params.sourceChatId,
+      targetUserId: params.targetUserId,
+      actor: {
+        userId: params.actor.userId,
+        username: params.actor.username ?? null,
+        displayName: params.actor.displayName ?? null,
+        chatId: params.actor.chatId ?? null,
+        chatTitle: params.actor.chatTitle ?? null,
+      },
+      source: params.source,
+    };
+  }
+
+  private buildManualModerationFanoutJobId(
+    kind: AdminManualFanoutJob['kind'],
+    sourceChatId: string,
+    targetUserId: string,
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>,
+  ): string {
+    return `${kind}__${source}__${sourceChatId}__${targetUserId}__${randomUUID()}`;
+  }
+
+  private async enqueueManualModerationFanout(job: AdminManualFanoutJob): Promise<boolean> {
+    if (!this.adminManualFanoutQueue) {
+      return false;
+    }
+
+    try {
+      await this.adminManualFanoutQueue.add('execute-admin-manual-fanout', job, {
+        jobId: job.jobId,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1_000,
+        },
+      });
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          kind: job.kind,
+          sourceChatId: job.sourceChatId,
+          targetUserId: job.targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue manual moderation fanout',
+      );
+      return false;
+    }
+  }
+
+  private buildQueuedManualMuteFanoutSummary(jobId: string) {
+    return {
+      mode: 'queued',
+      jobId,
+      mutedChatsCount: 0,
+      mutedChatIds: [] as string[],
+      skippedChatsCount: 0,
+      skippedChatIds: [] as string[],
+      failedChatsCount: 0,
+      failedChatIds: [] as string[],
+    };
+  }
+
+  private buildQueuedManualBanFanoutSummary(jobId: string) {
+    return {
+      mode: 'queued',
+      jobId,
+      removedChatsCount: 0,
+      removedChatIds: [] as string[],
+      skippedChatsCount: 0,
+      skippedChatIds: [] as string[],
+      failedChatsCount: 0,
+      failedChatIds: [] as string[],
+      deletedMessageCount: 0,
+      failedMessageDeleteCount: 0,
+    };
   }
 
   private buildManualModerationUserMention(userId: string): string {
