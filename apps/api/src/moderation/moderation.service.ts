@@ -11145,41 +11145,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const startedAtMs = Date.now();
-    await Promise.race([
-      task().then(() => {
-        const durationMs = Date.now() - startedAtMs;
-        if (durationMs >= WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS) {
-          const timeoutContext = getTimeoutContext?.() ?? null;
-          this.logger.warn(
-            {
-              webhookEventId,
-              updateType: this.readLowerString(update.type),
-              chatId: this.extractWebhookHotPathChatId(update),
-              activeBotId,
-              durationMs,
-              timeoutMs,
-              ...(timeoutContext ?? {}),
-            },
-            'Slow webhook user-facing hot path completed close to the watchdog deadline',
-          );
-        }
-      }),
-      new Promise<never>((_, reject) => {
-        const timeout = setTimeout(() => {
-          const timeoutContext = getTimeoutContext?.() ?? null;
-          reject(
-            this.createWebhookHotPathTimeoutError({
-              webhookEventId,
-              update,
-              activeBotId,
-              timeoutMs,
-              timeoutContext,
-            }),
-          );
-        }, timeoutMs);
-        timeout.unref?.();
-      }),
-    ]);
+    const taskPromise = Promise.resolve().then(task);
+    taskPromise.catch(() => undefined);
+
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        const timeoutContext = getTimeoutContext?.() ?? null;
+        reject(
+          this.createWebhookHotPathTimeoutError({
+            webhookEventId,
+            update,
+            activeBotId,
+            timeoutMs,
+            timeoutContext,
+          }),
+        );
+      }, timeoutMs);
+      timeout.unref?.();
+    });
+
+    try {
+      await Promise.race([taskPromise, timeoutPromise]);
+      const durationMs = Date.now() - startedAtMs;
+      if (durationMs >= WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS) {
+        const timeoutContext = getTimeoutContext?.() ?? null;
+        this.logger.warn(
+          {
+            webhookEventId,
+            updateType: this.readLowerString(update.type),
+            chatId: this.extractWebhookHotPathChatId(update),
+            activeBotId,
+            durationMs,
+            timeoutMs,
+            ...(timeoutContext ?? {}),
+          },
+          'Slow webhook user-facing hot path completed close to the watchdog deadline',
+        );
+      }
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   private resolveWebhookHotPathTimeoutMs(update: MaxUpdate): number | null {

@@ -1307,6 +1307,51 @@ describe('ModerationService', () => {
     setTimeoutSpy.mockRestore();
   });
 
+  it('clears the user-facing watchdog after a successful hot-path completion', async () => {
+    jest.useFakeTimers();
+    try {
+      const update = {
+        ...createUpdate(),
+        message: {
+          ...createUpdate().message,
+          chatId: '-chat-1',
+        },
+      };
+      const service = new ModerationService(
+        {} as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        {
+          get: jest.fn((key: string) =>
+            key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined,
+          ),
+        } as never,
+      );
+      (service as any).webhookUserFacingTimeoutMs = 10;
+
+      const timeoutErrorSpy = jest.spyOn(service as any, 'createWebhookHotPathTimeoutError');
+      const promise = (service as any).executeWebhookUpdateWithGuard(
+        'event-4',
+        update,
+        null,
+        async () => {
+          await Promise.resolve();
+        },
+      );
+
+      await promise;
+      await jest.advanceTimersByTimeAsync(20);
+
+      expect(timeoutErrorSpy).not.toHaveBeenCalled();
+      expect((service as any).isWebhookHotTimeoutChatBackoffActive('-chat-1')).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {
