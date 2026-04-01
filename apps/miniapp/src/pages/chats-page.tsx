@@ -79,7 +79,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
     resumeOnVisibilityReturn: true,
-    freshOnLoad: true,
+    syncOnFirstLoad: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -87,7 +87,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
     resumeOnVisibilityReturn: true,
-    freshOnLoad: true,
+    syncOnFirstLoad: true,
   });
 
   const activeEntities = useMemo(() => {
