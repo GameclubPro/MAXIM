@@ -42,10 +42,12 @@ export class AdminController {
     @Query('refresh') refresh: string | undefined,
     @Query('includeRefreshState') includeRefreshState: string | undefined,
     @Query('bypassCache') bypassCache: string | undefined,
+    @Query('fresh') fresh: string | undefined,
     @Query('resetCursor') resetCursor: string | undefined,
   ) {
     const options = {
       refresh: refresh === '1',
+      fresh: fresh === '1',
       bypassRemoteCache: bypassCache === '1',
       resetRefreshCursor: resetCursor === '1',
     };
@@ -105,10 +107,12 @@ export class AdminController {
     @Query('refresh') refresh: string | undefined,
     @Query('includeRefreshState') includeRefreshState: string | undefined,
     @Query('bypassCache') bypassCache: string | undefined,
+    @Query('fresh') fresh: string | undefined,
     @Query('resetCursor') resetCursor: string | undefined,
   ) {
     const options = {
       refresh: refresh === '1',
+      fresh: fresh === '1',
       bypassRemoteCache: bypassCache === '1',
       resetRefreshCursor: resetCursor === '1',
     };

@@ -196,6 +196,7 @@ type ManagedEntitiesListOptions = {
   includeRefreshState?: boolean;
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
+  fresh?: boolean;
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
@@ -999,6 +1000,35 @@ export class AdminService {
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
     if (options.refresh !== true) {
+      if (options.fresh === true) {
+        try {
+          const fresh = await this.discoverManagedEntities(user, entityType, {
+            respectCooldown: false,
+            fullScan: false,
+            includeRefreshState: options.includeRefreshState === true,
+            bypassRemoteCache: true,
+            revalidateCachedChats: true,
+            resetRefreshCursor: options.resetRefreshCursor === true,
+            throwOnFailure: true,
+          });
+          const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
+          const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
+          const mergedFresh = this.mergeManagedEntityGroups(
+            bootstrapped ? [bootstrapped] : [],
+            recentBotAdded,
+            fresh.items,
+          );
+          const items = await this.attachManagedEntityBotAssignments(mergedFresh);
+          this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+          return {
+            items,
+            refresh: fresh.refresh,
+          };
+        } catch {
+          // Fall back to the persisted allowlist only when the live refresh itself fails.
+        }
+      }
+
       const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
       const cached = await this.revalidateCachedManagedEntities(
         user,
@@ -2209,7 +2239,9 @@ export class AdminService {
       fullScan: boolean;
       includeRefreshState?: boolean;
       bypassRemoteCache?: boolean;
+      revalidateCachedChats?: boolean;
       resetRefreshCursor?: boolean;
+      throwOnFailure?: boolean;
     },
   ): Promise<ManagedEntitiesListResult> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
@@ -2241,7 +2273,9 @@ export class AdminService {
           fullScan: options.fullScan,
           includeRefreshState: options.includeRefreshState === true,
           bypassRemoteCache: options.bypassRemoteCache === true,
+          revalidateCachedChats: options.revalidateCachedChats === true,
           resetRefreshCursor: options.resetRefreshCursor === true,
+          throwOnFailure: options.throwOnFailure === true,
         });
 
       if (!inFlight) {
@@ -2276,7 +2310,9 @@ export class AdminService {
       fullScan: boolean;
       includeRefreshState?: boolean;
       bypassRemoteCache?: boolean;
+      revalidateCachedChats?: boolean;
       resetRefreshCursor?: boolean;
+      throwOnFailure?: boolean;
     },
   ): Promise<ManagedEntitiesListResult> {
     try {
@@ -2359,6 +2395,10 @@ export class AdminService {
           return [];
         }
 
+        if (options.revalidateCachedChats === true) {
+          return [];
+        }
+
         const deferCachedChatToCurrentScanWindow =
           options.fullScan === true &&
           remoteIndex >= fullScanStartIndex &&
@@ -2387,13 +2427,17 @@ export class AdminService {
       const candidateSlice =
         options.fullScan === true
           ? supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
+          : options.revalidateCachedChats === true
+            ? supportedCandidateChats
           : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
           const cachedChat = cachedById.get(remoteChat.chatId) ?? null;
-          const shouldRevalidateCachedChat = options.fullScan === true && cachedChat !== null;
+          const shouldRevalidateCachedChat =
+            cachedChat !== null &&
+            (options.fullScan === true || options.revalidateCachedChats === true);
           if (!shouldRevalidateCachedChat && cachedIds.has(remoteChat.chatId)) {
             return null;
           }
@@ -2475,7 +2519,7 @@ export class AdminService {
         } => item !== null && item.kind === 'include',
       );
       const remainingCachedChats =
-        options.fullScan === true
+        options.fullScan === true || options.revalidateCachedChats === true
           ? []
           : [...cachedById.values()].map((chat) => ({
               chat,
@@ -2567,6 +2611,10 @@ export class AdminService {
           { err: error instanceof Error ? error.message : String(error) },
           'Failed to auto-discover chats via MAX API',
         );
+      }
+
+      if (options.throwOnFailure === true) {
+        throw error;
       }
 
       return {

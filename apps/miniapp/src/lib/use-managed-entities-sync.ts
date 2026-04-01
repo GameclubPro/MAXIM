@@ -88,8 +88,11 @@ function mergeManagedEntityPresentation(
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
+  options: { fresh?: boolean } = {},
 ): Promise<ChatSummary[]> {
-  return entityType === 'chat' ? getChats(api) : getChannels(api);
+  return entityType === 'chat'
+    ? getChats(api, { fresh: options.fresh === true })
+    : getChannels(api, { fresh: options.fresh === true });
 }
 
 async function refreshManagedEntities(
@@ -119,6 +122,7 @@ export function useManagedEntitiesSync({
   reloadNonce = 0,
   resumeOnVisibilityReturn = false,
   skipInitialSyncIfCached = false,
+  freshOnLoad = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -126,17 +130,25 @@ export function useManagedEntitiesSync({
   reloadNonce?: number;
   resumeOnVisibilityReturn?: boolean;
   skipInitialSyncIfCached?: boolean;
+  freshOnLoad?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const cacheKey = useMemo(() => ['managed-entities-sync', entityType] as const, [entityType]);
+  const cachedState = queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? null;
   const [state, setState] = useState<ManagedEntitiesSyncState>(
     () =>
-      queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? {
-        ...EMPTY_SYNC_STATE,
-      },
+      freshOnLoad
+        ? {
+            ...EMPTY_SYNC_STATE,
+          }
+        : cachedState ?? {
+            ...EMPTY_SYNC_STATE,
+          },
   );
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
-  const latestDataRef = useRef<ChatSummary[] | null>(state.data);
+  const latestDataRef = useRef<ChatSummary[] | null>(
+    freshOnLoad ? cachedState?.data ?? null : state.data,
+  );
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
   const backoffResumeAtRef = useRef<number | null>(null);
@@ -226,6 +238,7 @@ export function useManagedEntitiesSync({
     }
 
     if (
+      !freshOnLoad &&
       skipInitialSyncIfCached &&
       !skippedInitialSyncRef.current &&
       latestDataRef.current !== null
@@ -258,7 +271,9 @@ export function useManagedEntitiesSync({
     const syncEntities = async () => {
       try {
         let forceRefreshPending = forceRefreshSession;
-        const initial = await loadManagedEntities(api, entityType);
+        const initial = await loadManagedEntities(api, entityType, {
+          fresh: freshOnLoad,
+        });
         if (cancelled) {
           return;
         }
@@ -268,7 +283,7 @@ export function useManagedEntitiesSync({
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
 
-        if (!hasCachedData && !forceRefreshPending) {
+        if ((!hasCachedData || freshOnLoad) && !forceRefreshPending) {
           setState({
             data: initialData,
             error: null,
@@ -357,7 +372,15 @@ export function useManagedEntitiesSync({
     return () => {
       cancelled = true;
     };
-  }, [api, enabled, entityType, reloadNonce, skipInitialSyncIfCached, visibilityResumeNonce]);
+  }, [
+    api,
+    enabled,
+    entityType,
+    freshOnLoad,
+    reloadNonce,
+    skipInitialSyncIfCached,
+    visibilityResumeNonce,
+  ]);
 
   return {
     ...state,

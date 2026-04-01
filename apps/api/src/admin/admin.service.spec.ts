@@ -6016,6 +6016,144 @@ describe('AdminService.listChats', () => {
     await flushAsyncTasks();
   });
 
+  it('returns a fresh chat list on demand instead of stale allowlist entries', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-stale',
+          title: 'Старый чат',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-fresh',
+          title: 'Живой чат',
+          link: null,
+          entityType: 'chat',
+          lastEventTime: 1,
+          avatarUrl: null,
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { fresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-fresh',
+        title: 'Живой чат',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      },
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledWith({
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      bypassCache: true,
+    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-fresh', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+    });
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-stale', expect.anything());
+  });
+
+  it('revalidates cached chats during a fresh load before showing them', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Уже не мой чат',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          title: 'Уже не мой чат',
+          link: null,
+          entityType: 'chat',
+          lastEventTime: 1,
+          avatarUrl: null,
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { fresh: true },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+    });
+  });
+
   it('does not call live MAX hydration for cached default managed lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
