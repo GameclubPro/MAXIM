@@ -1350,6 +1350,58 @@ describe('ModerationService', () => {
     setTimeoutSpy.mockRestore();
   });
 
+  it('fails open for stuck message_callback events instead of leaving the critical queue hung', async () => {
+    const update = createPrivateCallbackUpdate('pc2|broadcast_send');
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) => (key === 'WEBHOOK_USER_FACING_TIMEOUT_MS' ? 10 : undefined)),
+      } as never,
+    );
+    (service as any).webhookUserFacingTimeoutMs = 10;
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      if (typeof callback === 'function') {
+        callback();
+      }
+      return {
+        unref() {
+          return this;
+        },
+      } as unknown as NodeJS.Timeout;
+    }) as unknown as typeof setTimeout);
+
+    await expect(
+      (service as any).executeWebhookUpdateWithGuard(
+        'event-callback-1',
+        update,
+        null,
+        () =>
+          new Promise<void>(() => {
+            // Intentionally never resolves.
+          }),
+      ),
+    ).rejects.toThrow('Webhook user-facing hot path timed out after 10ms for message_callback');
+    expect(
+      (service as any).isTerminalWebhookProcessingError(
+        (service as any).createWebhookHotPathTimeoutError({
+          webhookEventId: 'event-callback-1',
+          update,
+          activeBotId: null,
+          timeoutMs: 10,
+        }),
+      ),
+    ).toBe(true);
+
+    setTimeoutSpy.mockRestore();
+  });
+
   it('clears the user-facing watchdog after a successful hot-path completion', async () => {
     jest.useFakeTimers();
     try {

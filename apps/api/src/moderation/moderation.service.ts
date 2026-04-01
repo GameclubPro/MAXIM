@@ -11543,12 +11543,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveWebhookHotPathTimeoutMs(update: MaxUpdate): number | null {
     const updateType = this.readLowerString(update.type);
-    const chatId = this.extractWebhookHotPathChatId(update);
-    if (updateType !== 'message_created' || !chatId || !chatId.startsWith('-')) {
-      return null;
+    if (updateType === 'message_callback') {
+      return this.webhookUserFacingTimeoutMs;
     }
 
-    return this.webhookUserFacingTimeoutMs;
+    const chatId = this.extractWebhookHotPathChatId(update);
+    if (updateType === 'message_created' && chatId && chatId.startsWith('-')) {
+      return this.webhookUserFacingTimeoutMs;
+    }
+
+    return null;
   }
 
   private isWebhookHotTimeoutChatBackoffActive(chatId: string): boolean {
