@@ -169,6 +169,17 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
   }
 
   const { refresh } = value;
+  const manualRefreshBlockedReason =
+    refresh.manualRefreshBlockedReason === 'in_progress' ||
+    refresh.manualRefreshBlockedReason === 'recent_sync' ||
+    refresh.manualRefreshBlockedReason === 'backoff'
+      ? refresh.manualRefreshBlockedReason
+      : null;
+  const manualRefreshRetryAfterMs =
+    typeof refresh.manualRefreshRetryAfterMs === 'number' &&
+    refresh.manualRefreshRetryAfterMs >= 0
+      ? Math.trunc(refresh.manualRefreshRetryAfterMs)
+      : null;
   if (
     typeof refresh.complete !== 'boolean' ||
     typeof refresh.backoffActive !== 'boolean' ||
@@ -199,6 +210,8 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
           ? refresh.progressPercent
           : null,
       lastSyncedAt: typeof refresh.lastSyncedAt === 'string' ? refresh.lastSyncedAt : null,
+      manualRefreshBlockedReason,
+      manualRefreshRetryAfterMs,
     },
   };
 }

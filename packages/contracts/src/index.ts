@@ -1476,6 +1476,12 @@ export const managedEntitiesRefreshStateSchema = z.object({
   totalCandidates: z.number().int().min(0).nullable().optional().default(null),
   progressPercent: z.number().int().min(0).max(100).nullable().optional().default(null),
   lastSyncedAt: z.string().datetime().nullable().optional().default(null),
+  manualRefreshBlockedReason: z
+    .enum(['in_progress', 'recent_sync', 'backoff'])
+    .nullable()
+    .optional()
+    .default(null),
+  manualRefreshRetryAfterMs: z.number().int().min(0).nullable().optional().default(null),
 });
 export type ManagedEntitiesRefreshState = z.infer<typeof managedEntitiesRefreshStateSchema>;
 

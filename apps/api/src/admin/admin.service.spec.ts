@@ -716,8 +716,6 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
     getManagedEntitiesRefreshBackoffRemainingMs: jest.fn().mockResolvedValue(0),
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
-    getManagedEntitiesRefreshTriggerCooldownRemainingMs: jest.fn().mockResolvedValue(0),
-    activateManagedEntitiesRefreshTriggerCooldown: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesRefreshCursor: jest
       .fn()
       .mockImplementation(async (userId: string, entityType: string) =>
@@ -4791,6 +4789,8 @@ describe('AdminService.listChannels', () => {
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
       },
     });
 
@@ -4942,6 +4942,8 @@ describe('AdminService.listChannels', () => {
         totalCandidates: 1,
         progressPercent: 100,
         lastSyncedAt: expect.any(String),
+        manualRefreshBlockedReason: 'recent_sync',
+        manualRefreshRetryAfterMs: expect.any(Number),
       },
     });
 
@@ -5025,6 +5027,8 @@ describe('AdminService.listChannels', () => {
       totalCandidates: 41,
       progressPercent: 20,
       lastSyncedAt: null,
+      manualRefreshBlockedReason: 'in_progress',
+      manualRefreshRetryAfterMs: 1500,
     });
     expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
       'admin-1',
@@ -5105,6 +5109,8 @@ describe('AdminService.listChannels', () => {
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
+        manualRefreshBlockedReason: 'backoff',
+        manualRefreshRetryAfterMs: expect.any(Number),
       },
     });
     expect(result.refresh.nextPollAfterMs).toBeGreaterThan(0);
@@ -6128,6 +6134,8 @@ describe('AdminService.listChats', () => {
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
       },
     });
     expect(discoverSpy).toHaveBeenCalledTimes(1);
@@ -6226,6 +6234,8 @@ describe('AdminService.listChats', () => {
           totalCandidates: null,
           progressPercent: 100,
           lastSyncedAt: '2026-04-01T18:00:00.000Z',
+          manualRefreshBlockedReason: null,
+          manualRefreshRetryAfterMs: null,
         },
       });
 
@@ -6312,6 +6322,8 @@ describe('AdminService.listChats', () => {
           totalCandidates: null,
           progressPercent: null,
           lastSyncedAt: null,
+          manualRefreshBlockedReason: 'in_progress',
+          manualRefreshRetryAfterMs: 1500,
         },
       });
 
@@ -6327,17 +6339,12 @@ describe('AdminService.listChats', () => {
           jobId: 'managed-entities-refresh__chat__admin-1',
         }),
       );
-      expect(chatContextCache.activateManagedEntitiesRefreshTriggerCooldown).toHaveBeenCalledWith(
-        'admin-1',
-        'chat',
-        60,
-      );
     } finally {
       jest.useRealTimers();
     }
   });
 
-  it('skips repeated forced managed refresh clicks while the manual trigger cooldown is active', async () => {
+  it('skips repeated forced managed refresh clicks while the last successful sync is still recent', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:05:00.000Z'));
 
     try {
@@ -6361,7 +6368,6 @@ describe('AdminService.listChats', () => {
         getManagedEntitiesLastSyncedAt: jest
           .fn()
           .mockResolvedValue('2026-04-01T18:04:45.000Z'),
-        getManagedEntitiesRefreshTriggerCooldownRemainingMs: jest.fn().mockResolvedValue(45_000),
       });
       const service = new AdminService(
         prisma as never,
@@ -6414,6 +6420,8 @@ describe('AdminService.listChats', () => {
           totalCandidates: null,
           progressPercent: 100,
           lastSyncedAt: '2026-04-01T18:04:45.000Z',
+          manualRefreshBlockedReason: 'recent_sync',
+          manualRefreshRetryAfterMs: 15_000,
         },
       });
 
@@ -6582,6 +6590,8 @@ describe('AdminService.listChats', () => {
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
       },
     });
 
@@ -6696,6 +6706,8 @@ describe('AdminService.listChats', () => {
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
+        manualRefreshBlockedReason: 'backoff',
+        manualRefreshRetryAfterMs: 15_000,
       },
     });
 
@@ -6829,6 +6841,8 @@ describe('AdminService.listChats', () => {
         totalCandidates: 1,
         progressPercent: 100,
         lastSyncedAt: expect.any(String),
+        manualRefreshBlockedReason: 'recent_sync',
+        manualRefreshRetryAfterMs: expect.any(Number),
       },
     });
 
@@ -6887,6 +6901,8 @@ describe('AdminService.listChats', () => {
       totalCandidates: 50,
       progressPercent: 40,
       lastSyncedAt: '2026-04-01T16:00:00.000Z',
+      manualRefreshBlockedReason: 'in_progress',
+      manualRefreshRetryAfterMs: 1500,
     });
   });
 

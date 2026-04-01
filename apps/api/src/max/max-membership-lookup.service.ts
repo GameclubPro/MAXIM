@@ -15,6 +15,19 @@ export type MaxMembershipLookupPolicy =
   | 'giveaway_draw_interactive'
   | 'giveaway_draw_background';
 
+export type MaxMembershipLookupIssueKind = 'transient' | 'terminal';
+
+export type MaxMembershipLookupIssue = {
+  chatId: string;
+  policyName: MaxMembershipLookupPolicy;
+  kind: MaxMembershipLookupIssueKind;
+  retryAfterMs: number;
+  observedAtMs: number;
+  expiresAtMs: number;
+  statusCode: number | null;
+  message: string;
+};
+
 type MaxMembershipLookupOptions = {
   forceRefresh?: boolean;
   allowStaleOnError?: boolean;
@@ -145,6 +158,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   private readonly hotChannelStates = new Map<string, HotChannelState>();
   private readonly cacheEpochs = new Map<string, CacheEpochState>();
   private readonly pendingSingleLookupBatches = new Map<string, PendingSingleLookupBatch>();
+  private readonly lookupIssues = new Map<string, MaxMembershipLookupIssue>();
   private lastRedisWriteFailureLogAtMs = 0;
 
   constructor(
@@ -447,6 +461,25 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return results;
   }
 
+  getLookupIssue(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    now = Date.now(),
+  ): MaxMembershipLookupIssue | null {
+    const key = this.buildChatPolicyKey(chatId.trim(), policyName);
+    const issue = this.lookupIssues.get(key) ?? null;
+    if (!issue) {
+      return null;
+    }
+
+    if (issue.expiresAtMs <= now) {
+      this.lookupIssues.delete(key);
+      return null;
+    }
+
+    return { ...issue };
+  }
+
   private enqueueSingleLookupBatch(
     chatId: string,
     userId: string,
@@ -544,6 +577,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       const checkedAtMs = Date.now();
       this.clearChatBackoff(batch.chatId, batch.policyName);
       this.clearHotChannelMode(batch.chatId, batch.policyName);
+      this.clearLookupIssue(batch.chatId, batch.policyName);
 
       for (const [userId, lookup] of batch.lookups.entries()) {
         const isMember = accessByUserId.has(userId);
@@ -578,6 +612,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
             this.backoffUntilMs.set(lookup.cacheKey, appliedBackoff.backoffUntilMs);
           }
         }
+      }
+
+      if (terminal || transient) {
+        this.recordLookupIssue(batch.chatId, batch.policyName, error, {
+          kind: terminal ? 'terminal' : 'transient',
+          retryAfterMs: appliedBackoffMs,
+        });
       }
 
       this.logLookupError(error, {
@@ -640,6 +681,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         const results = new Map<string, boolean | null>();
         this.clearChatBackoff(chatId, policyName);
         this.clearHotChannelMode(chatId, policyName);
+        this.clearLookupIssue(chatId, policyName);
 
         for (const userId of normalizedUserIds) {
           const cacheKey = this.buildCacheKey(chatId, userId);
@@ -678,6 +720,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
               this.backoffUntilMs.set(cacheKey, appliedBackoff.backoffUntilMs);
             }
           }
+        }
+        if (terminal || transient) {
+          this.recordLookupIssue(chatId, policyName, error, {
+            kind: terminal ? 'terminal' : 'transient',
+            retryAfterMs: appliedBackoffMs,
+          });
         }
         this.logLookupError(error, {
           chatId,
@@ -1035,6 +1083,32 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const cacheKey = this.buildChatPolicyKey(chatId, policyName);
     this.chatBackoffState.delete(cacheKey);
     this.chatBackoffUntilMs.delete(cacheKey);
+  }
+
+  private clearLookupIssue(chatId: string, policyName: MaxMembershipLookupPolicy) {
+    this.lookupIssues.delete(this.buildChatPolicyKey(chatId, policyName));
+  }
+
+  private recordLookupIssue(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    error: unknown,
+    options: {
+      kind: MaxMembershipLookupIssueKind;
+      retryAfterMs: number;
+    },
+  ): void {
+    const now = Date.now();
+    this.lookupIssues.set(this.buildChatPolicyKey(chatId, policyName), {
+      chatId,
+      policyName,
+      kind: options.kind,
+      retryAfterMs: Math.max(0, Math.ceil(options.retryAfterMs)),
+      observedAtMs: now,
+      expiresAtMs: now + Math.max(1_000, Math.ceil(options.retryAfterMs)),
+      statusCode: this.extractStatusCode(error),
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 
   private applyTerminalChatBackoff(

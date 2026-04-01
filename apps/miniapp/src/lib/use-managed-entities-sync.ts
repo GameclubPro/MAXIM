@@ -20,6 +20,8 @@ const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
   totalCandidates: null,
   progressPercent: 100,
   lastSyncedAt: null,
+  manualRefreshBlockedReason: null,
+  manualRefreshRetryAfterMs: null,
 };
 
 type ManagedEntityKind = 'chat' | 'channel';

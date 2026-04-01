@@ -56,25 +56,6 @@ function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): str
   return null;
 }
 
-function formatRefreshSyncedAt(value: string | null): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const parsed = new Date(value);
-  const timestamp = parsed.getTime();
-  if (!Number.isFinite(timestamp)) {
-    return null;
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
-}
-
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
   return { default: module.SystemEntryCard };
@@ -135,10 +116,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isFetching = activeEntitiesState.isRefreshing;
   const queryError = activeEntitiesState.error;
   const refreshState = activeEntitiesState.refreshState;
+  const manualRefreshBlockedReason = refreshState?.manualRefreshBlockedReason ?? null;
+  const manualRefreshRetryAfterSec =
+    typeof refreshState?.manualRefreshRetryAfterMs === 'number' &&
+    refreshState.manualRefreshRetryAfterMs > 0
+      ? Math.max(1, Math.ceil(refreshState.manualRefreshRetryAfterMs / 1_000))
+      : null;
   const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
   const isRefreshTemporarilyBlocked =
-    activeEntitiesState.isBackoffActive && (refreshState?.nextPollAfterMs ?? 0) > 0;
+    manualRefreshBlockedReason === 'backoff' && (manualRefreshRetryAfterSec ?? 0) > 0;
+  const isManualRefreshCoolingDown =
+    manualRefreshBlockedReason === 'recent_sync' && (manualRefreshRetryAfterSec ?? 0) > 0;
+  const isManualRefreshInProgressByState =
+    manualRefreshBlockedReason === 'in_progress' && !activeEntitiesState.isRefreshing;
+  const isManualRefreshBlocked =
+    isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
 
   const isNoEntitiesForTab =
     !isLoading &&
@@ -167,7 +160,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
 
   function handleRefresh() {
-    if (isRefreshTemporarilyBlocked) {
+    if (isManualRefreshBlocked || isFetching) {
       return;
     }
 
@@ -308,21 +301,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const refreshButtonLabel = isFetching
-    ? 'Обновляем список'
-    : 'Обновить список';
   const refreshProgressLabel = formatRefreshProgress(refreshState);
-  const lastSyncedLabel = formatRefreshSyncedAt(refreshState?.lastSyncedAt ?? null);
   const refreshStatusLabel =
     isFetching || isSyncPending
       ? refreshProgressLabel
-        ? `Обновляем в фоне · ${refreshProgressLabel}`
-        : 'Обновляем в фоне'
+        ? `Фоновое обновление · ${refreshProgressLabel}`
+        : 'Фоновое обновление'
       : isRefreshTemporarilyBlocked
-        ? 'Обновление временно замедлено'
-        : lastSyncedLabel
-          ? `Обновлено ${lastSyncedLabel}`
-          : null;
+        ? `Пауза · ${manualRefreshRetryAfterSec} с`
+        : isManualRefreshCoolingDown
+          ? `Повтор через ${manualRefreshRetryAfterSec} с`
+          : isManualRefreshInProgressByState
+            ? 'Фоновое обновление'
+        : null;
   const showSystemCard = canAccessSystem;
 
   return (
@@ -338,9 +329,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     type="button"
                     className="button button--ghost chats-search-card__refresh"
                     onClick={handleRefresh}
-                    disabled={isFetching || isRefreshTemporarilyBlocked}
-                    aria-label={refreshButtonLabel}
-                    title={refreshButtonLabel}
+                    disabled={isFetching || isManualRefreshBlocked}
+                    aria-label="Обновить"
                   >
                     <svg
                       viewBox="0 0 24 24"

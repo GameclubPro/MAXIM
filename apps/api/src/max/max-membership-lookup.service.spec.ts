@@ -378,6 +378,15 @@ describe('MaxMembershipLookupService', () => {
     ).resolves.toBeNull();
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(service.getLookupIssue('channel-denied', 'giveaway_draw_background')).toEqual(
+      expect.objectContaining({
+        chatId: 'channel-denied',
+        policyName: 'giveaway_draw_background',
+        kind: 'terminal',
+        retryAfterMs: 30 * 60 * 1_000,
+        statusCode: 403,
+      }),
+    );
 
     jest.advanceTimersByTime(30 * 60 * 1_000 + 1);
 
@@ -521,6 +530,39 @@ describe('MaxMembershipLookupService', () => {
         allowStaleOnError: false,
       }),
     ).resolves.toBeNull();
+  });
+
+  it('returns stale background giveaway membership when a retained positive snapshot exists', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map([['user-3', { userId: 'user-3', isAdmin: false }]]))
+        .mockRejectedValueOnce(
+          Object.assign(new Error('MAX API rate limit exceeded'), {
+            response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+          }),
+        ),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership('channel-1', 'user-3', 'giveaway_draw_background', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBe(true);
+
+    jest.advanceTimersByTime(11_000);
+
+    await expect(
+      service.getMembership('channel-1', 'user-3', 'giveaway_draw_background', {
+        forceRefresh: true,
+        allowStaleOnError: true,
+      }),
+    ).resolves.toBe(true);
   });
 
   it('extends positive moderation freshness on hot channels after repeated transient failures', async () => {

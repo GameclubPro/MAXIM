@@ -75,13 +75,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
-  static managedEntitiesRefreshTriggerCooldownKey(
-    userId: string,
-    entityType: ManagedEntityType | 'all',
-  ): string {
-    return `chat:managed-refresh-trigger-cooldown:v1:${entityType}:${userId}`;
-  }
-
   static managedEntitiesRefreshCursorKey(
     userId: string,
     entityType: ManagedEntityType | 'all',
@@ -279,29 +272,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
-  async getManagedEntitiesRefreshTriggerCooldownRemainingMs(
-    userId: string,
-    entityType: ManagedEntityType | 'all',
-  ): Promise<number> {
-    const ttlMs = await this.redis.pttl(
-      ChatContextCacheService.managedEntitiesRefreshTriggerCooldownKey(userId, entityType),
-    );
-    return ttlMs > 0 ? ttlMs : 0;
-  }
-
-  async activateManagedEntitiesRefreshTriggerCooldown(
-    userId: string,
-    entityType: ManagedEntityType | 'all',
-    ttlSec: number,
-  ): Promise<void> {
-    await this.redis.set(
-      ChatContextCacheService.managedEntitiesRefreshTriggerCooldownKey(userId, entityType),
-      '1',
-      'EX',
-      ttlSec,
-    );
-  }
-
   async getManagedEntitiesRefreshCursor(
     userId: string,
     entityType: ManagedEntityType | 'all',
@@ -453,6 +423,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     const result = await this.redis.multi().incr(key).expire(key, ttlSec).exec();
     const count = result?.[0]?.[1];
     return typeof count === 'number' ? count : Number.parseInt(String(count ?? '1'), 10) || 1;
+  }
+
+  async clearManagedGiveawayRunnerRetryCounters(giveawayId: string): Promise<void> {
+    await this.redis.del(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
+      ChatContextCacheService.managedGiveawayRunnerFailureCountKey(giveawayId),
+    );
   }
 
   async clearManagedGiveawayRunnerFailureState(giveawayId: string): Promise<void> {

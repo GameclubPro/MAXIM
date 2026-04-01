@@ -5,7 +5,10 @@ import {
   ManagedGiveawayWinnerStatus,
 } from '@prisma/client';
 import { BadRequestException } from '@nestjs/common';
-import { ManagedGiveawayService } from './managed-giveaway.service';
+import {
+  ManagedGiveawayMembershipLookupUnavailableError,
+  ManagedGiveawayService,
+} from './managed-giveaway.service';
 
 function createConfigMock(options: { token?: string; previousToken?: string } = {}) {
   return {
@@ -133,6 +136,12 @@ function createChatContextCacheMock(options: {
         const next = (giveawayFailureCountById.get(giveawayId) ?? 0) + 1;
         giveawayFailureCountById.set(giveawayId, next);
         return next;
+      }),
+    clearManagedGiveawayRunnerRetryCounters: jest
+      .fn()
+      .mockImplementation(async (giveawayId: string) => {
+        giveawayBackoffRemainingById.delete(giveawayId);
+        giveawayFailureCountById.delete(giveawayId);
       }),
     clearManagedGiveawayRunnerFailureState: jest
       .fn()
@@ -1368,7 +1377,7 @@ describe('ManagedGiveawayService', () => {
       'giveaway_draw_background',
       {
         forceRefresh: true,
-        allowStaleOnError: false,
+        allowStaleOnError: true,
       },
     );
     expect(membershipLookup.getMemberships).toHaveBeenNthCalledWith(
@@ -1378,7 +1387,7 @@ describe('ManagedGiveawayService', () => {
       'giveaway_draw_background',
       {
         forceRefresh: true,
-        allowStaleOnError: false,
+        allowStaleOnError: true,
       },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
@@ -1447,6 +1456,57 @@ describe('ManagedGiveawayService', () => {
         'scheduled',
         expect.any(Date),
       );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('applies a longer terminal defer and clears short retry state after terminal lookup failures', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:25:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.managedGiveaway.updateMany.mockResolvedValue({ count: 1 });
+      prisma.managedGiveaway.findUnique.mockResolvedValue(
+        createGiveaway({
+          endsAt: new Date('2026-03-21T13:00:00.000Z'),
+        }),
+      );
+
+      const chatContextCache = createChatContextCacheMock();
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        chatContextCache as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      jest
+        .spyOn(service as any, 'drawGiveaway')
+        .mockRejectedValue(
+          new ManagedGiveawayMembershipLookupUnavailableError(
+            'terminal',
+            'source-1',
+            30 * 60_000,
+          ),
+        );
+
+      await expect(
+        (service as any).processDueManagedGiveaway(
+          'giveaway-1',
+          'scheduled',
+          new Date('2026-03-21T13:24:00.000Z'),
+        ),
+      ).resolves.toBeUndefined();
+
+      expect(chatContextCache.activateManagedGiveawayRunnerDefer).toHaveBeenCalledWith(
+        'giveaway-1',
+        2 * 60 * 60,
+      );
+      expect(chatContextCache.clearManagedGiveawayRunnerRetryCounters).toHaveBeenCalledWith(
+        'giveaway-1',
+      );
+      expect(chatContextCache.incrementManagedGiveawayRunnerFailureCount).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
@@ -1530,6 +1590,9 @@ describe('ManagedGiveawayService', () => {
       expect(chatContextCache.activateManagedGiveawayRunnerDefer).toHaveBeenCalledWith(
         'giveaway-1',
         30 * 60,
+      );
+      expect(chatContextCache.clearManagedGiveawayRunnerRetryCounters).toHaveBeenCalledWith(
+        'giveaway-1',
       );
       expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledTimes(8);
     } finally {

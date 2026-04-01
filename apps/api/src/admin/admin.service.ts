@@ -206,6 +206,8 @@ type ManagedEntitiesRefreshPresentation = {
   lastSyncedAt: string | null;
 };
 
+type ManagedEntitiesManualRefreshBlockReason = 'in_progress' | 'recent_sync' | 'backoff';
+
 type ManagedEntitiesListOptions = {
   refresh?: boolean;
   includeRefreshState?: boolean;
@@ -383,7 +385,7 @@ const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
-const MANAGED_ENTITIES_REFRESH_MANUAL_TRIGGER_COOLDOWN_MS = 60_000;
+const MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 1_500;
@@ -664,7 +666,6 @@ export class AdminService {
     Promise<ManagedEntitiesListResult>
   >();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
-  private readonly managedEntitiesRefreshTriggerCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
@@ -1119,10 +1120,6 @@ export class AdminService {
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
-    const manualTriggerCooldownKey = this.buildManagedEntitiesRefreshTriggerCooldownKey(
-      user.userId,
-      entityType,
-    );
     const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
       user.userId,
       entityType,
@@ -1135,13 +1132,6 @@ export class AdminService {
     const existing = this.managedEntitiesBackgroundRefreshRuns.get(refreshKey);
 
     if (!existing) {
-      if (options.bypassRemoteCache === true) {
-        await this.activateManagedEntitiesRefreshTriggerCooldown(
-          user.userId,
-          entityType,
-          manualTriggerCooldownKey,
-        );
-      }
       if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
         const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
           .catch((error: unknown) => {
@@ -1294,23 +1284,21 @@ export class AdminService {
       options.bypassRemoteCache === true &&
       (cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
     ) {
-      const manualTriggerCooldownKey = this.buildManagedEntitiesRefreshTriggerCooldownKey(
-        userId,
-        entityType,
-      );
-      const manualTriggerCooldownRemainingMs =
-        await this.getManagedEntitiesRefreshTriggerCooldownRemainingMs(
-          userId,
-          entityType,
-          manualTriggerCooldownKey,
-        );
-      if (manualTriggerCooldownRemainingMs > 0) {
+      const freshness = await this.readManagedEntitiesLastSyncFreshness(userId, entityType);
+      if (
+        typeof freshness.ageMs === 'number' &&
+        freshness.ageMs >= 0 &&
+        freshness.ageMs < MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS
+      ) {
         const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
         return this.createManagedEntitiesRefreshState(
           MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
           false,
           0,
-          presentation,
+          {
+            totalCandidates: presentation.totalCandidates,
+            lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
+          },
         );
       }
     }
@@ -15665,13 +15653,6 @@ export class AdminService {
     return `${userId}:${entityType}`;
   }
 
-  private buildManagedEntitiesRefreshTriggerCooldownKey(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-  ): string {
-    return `${userId}:${entityType}:manual-trigger`;
-  }
-
   private async isManagedEntitiesRefreshCooldownActive(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -15702,47 +15683,6 @@ export class AdminService {
     this.managedEntitiesRefreshCooldownUntilMs.set(key, untilMs);
     try {
       await this.chatContextCache.activateManagedEntitiesRefreshCooldown(
-        userId,
-        entityType,
-        Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)),
-      );
-    } catch {
-      return;
-    }
-  }
-
-  private async getManagedEntitiesRefreshTriggerCooldownRemainingMs(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    key: string,
-  ): Promise<number> {
-    const untilMs = this.managedEntitiesRefreshTriggerCooldownUntilMs.get(key) ?? 0;
-    const memoryRemainingMs = Math.max(0, untilMs - Date.now());
-    if (memoryRemainingMs === 0 && untilMs > 0) {
-      this.managedEntitiesRefreshTriggerCooldownUntilMs.delete(key);
-    }
-
-    try {
-      const persistedRemainingMs =
-        (await this.chatContextCache.getManagedEntitiesRefreshTriggerCooldownRemainingMs?.(
-          userId,
-          entityType,
-        )) ?? 0;
-      return Math.max(memoryRemainingMs, persistedRemainingMs);
-    } catch {
-      return memoryRemainingMs;
-    }
-  }
-
-  private async activateManagedEntitiesRefreshTriggerCooldown(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    key: string,
-  ): Promise<void> {
-    const untilMs = Date.now() + MANAGED_ENTITIES_REFRESH_MANUAL_TRIGGER_COOLDOWN_MS;
-    this.managedEntitiesRefreshTriggerCooldownUntilMs.set(key, untilMs);
-    try {
-      await this.chatContextCache.activateManagedEntitiesRefreshTriggerCooldown?.(
         userId,
         entityType,
         Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)),
@@ -15820,6 +15760,12 @@ export class AdminService {
             : cursor === null
               ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
               : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS;
+    const manualRefreshBlock = this.resolveManagedEntitiesManualRefreshBlockState(
+      cursor,
+      backoffActive,
+      normalizedNextPollAfterMs,
+      presentation.lastSyncedAt ?? null,
+    );
     const totalCandidates =
       typeof presentation.totalCandidates === 'number' && Number.isFinite(presentation.totalCandidates)
         ? Math.max(0, Math.trunc(presentation.totalCandidates))
@@ -15852,6 +15798,61 @@ export class AdminService {
       totalCandidates,
       progressPercent,
       lastSyncedAt: presentation.lastSyncedAt ?? null,
+      manualRefreshBlockedReason: manualRefreshBlock.reason,
+      manualRefreshRetryAfterMs: manualRefreshBlock.retryAfterMs,
+    };
+  }
+
+  private resolveManagedEntitiesManualRefreshBlockState(
+    cursor: number | null,
+    backoffActive: boolean,
+    nextPollAfterMs: number,
+    lastSyncedAt: string | null,
+  ): {
+    reason: ManagedEntitiesManualRefreshBlockReason | null;
+    retryAfterMs: number | null;
+  } {
+    if (backoffActive) {
+      return {
+        reason: 'backoff',
+        retryAfterMs: Math.max(0, Math.ceil(nextPollAfterMs)),
+      };
+    }
+
+    if (typeof cursor === 'number' && cursor >= 0) {
+      return {
+        reason: 'in_progress',
+        retryAfterMs: Math.max(0, Math.ceil(nextPollAfterMs)),
+      };
+    }
+
+    if (!lastSyncedAt) {
+      return {
+        reason: null,
+        retryAfterMs: null,
+      };
+    }
+
+    const lastSyncedAtMs = Date.parse(lastSyncedAt);
+    if (!Number.isFinite(lastSyncedAtMs)) {
+      return {
+        reason: null,
+        retryAfterMs: null,
+      };
+    }
+
+    const recentSyncRemainingMs =
+      MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS - (Date.now() - lastSyncedAtMs);
+    if (recentSyncRemainingMs <= 0) {
+      return {
+        reason: null,
+        retryAfterMs: null,
+      };
+    }
+
+    return {
+      reason: 'recent_sync',
+      retryAfterMs: Math.max(0, Math.ceil(recentSyncRemainingMs)),
     };
   }
 
@@ -15886,7 +15887,7 @@ export class AdminService {
   private async readManagedEntitiesLastSyncFreshness(
     userId: string,
     entityType: ManagedEntityTypeFilter,
-  ): Promise<{ fresh: boolean; lastSyncedAt: string | null }> {
+  ): Promise<{ fresh: boolean; lastSyncedAt: string | null; ageMs: number | null }> {
     let lastSyncedAt: string | null = null;
     try {
       lastSyncedAt =
@@ -15899,6 +15900,7 @@ export class AdminService {
       return {
         fresh: false,
         lastSyncedAt: null,
+        ageMs: null,
       };
     }
 
@@ -15907,6 +15909,7 @@ export class AdminService {
       return {
         fresh: false,
         lastSyncedAt,
+        ageMs: null,
       };
     }
 
@@ -15914,6 +15917,7 @@ export class AdminService {
     return {
       fresh: ageMs >= 0 && ageMs < MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS,
       lastSyncedAt,
+      ageMs,
     };
   }
 

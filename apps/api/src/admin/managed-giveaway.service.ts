@@ -53,6 +53,7 @@ import {
 } from '../max/max-client.service';
 import {
   MaxMembershipLookupService,
+  type MaxMembershipLookupIssueKind,
   type MaxMembershipLookupPolicy,
 } from '../max/max-membership-lookup.service';
 import {
@@ -80,6 +81,7 @@ const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_BASE_MS = 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS = 60 * 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
 const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
+const GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS = 2 * 60 * 60_000;
 const MANAGED_GIVEAWAY_INCLUDE = Prisma.validator<Prisma.ManagedGiveawayInclude>()({
   prizes: {
     orderBy: { position: 'asc' },
@@ -118,7 +120,19 @@ type GiveawayEligibilityCheckOptions = {
   forceFreshMembership?: boolean;
   lookupPolicy?: MaxMembershipLookupPolicy;
   allowStaleMembershipOnError?: boolean;
+  failedChannelId?: string;
 };
+
+export class ManagedGiveawayMembershipLookupUnavailableError extends Error {
+  constructor(
+    readonly kind: MaxMembershipLookupIssueKind,
+    readonly chatId: string,
+    readonly retryAfterMs: number | null,
+  ) {
+    super(GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE);
+    this.name = 'ManagedGiveawayMembershipLookupUnavailableError';
+  }
+}
 
 @Injectable()
 export class ManagedGiveawayService {
@@ -1813,7 +1827,10 @@ export class ManagedGiveawayService {
           },
         );
         if (membership === null) {
-          return this.resolveGiveawayEligibilityLookupFailure(giveaway, userId, options);
+          return this.resolveGiveawayEligibilityLookupFailure(giveaway, userId, {
+            ...options,
+            failedChannelId: channelId,
+          });
         }
         if (!membership) {
           missingChannelIds.push(channelId);
@@ -1916,6 +1933,15 @@ export class ManagedGiveawayService {
           giveawayId: giveaway.id,
           sourceChatId: giveaway.sourceChatId,
           userId,
+          failedChannelId: options.failedChannelId ?? giveaway.sourceChatId,
+          lookupPolicy: options.lookupPolicy ?? null,
+          lookupIssueKind:
+            options.failedChannelId && options.lookupPolicy && this.membershipLookupService
+              ? this.membershipLookupService.getLookupIssue(
+                  options.failedChannelId,
+                  options.lookupPolicy,
+                )?.kind ?? null
+              : null,
           err:
             error instanceof Error
               ? error.message
@@ -1925,8 +1951,20 @@ export class ManagedGiveawayService {
         },
         'Failed to verify giveaway participant strictly',
       );
-      throw new BadRequestException(
-        GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE,
+      const lookupIssue =
+        options.failedChannelId && options.lookupPolicy && this.membershipLookupService
+          ? this.membershipLookupService.getLookupIssue(
+              options.failedChannelId,
+              options.lookupPolicy,
+            )
+          : null;
+      if (options.lookupPolicy !== 'giveaway_draw_background') {
+        throw new BadRequestException(GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE);
+      }
+      throw new ManagedGiveawayMembershipLookupUnavailableError(
+        lookupIssue?.kind ?? 'transient',
+        options.failedChannelId ?? giveaway.sourceChatId,
+        lookupIssue?.retryAfterMs ?? null,
       );
     }
 
@@ -2039,13 +2077,14 @@ export class ManagedGiveawayService {
     const lookupPolicy: MaxMembershipLookupPolicy =
       source === 'runner' ? 'giveaway_draw_background' : 'giveaway_draw_interactive';
     const membershipByChannelId = new Map<string, Map<string, boolean | null>>();
+    const allowStaleOnError = source === 'runner';
 
     for (const channelId of mandatoryChannelIds) {
       membershipByChannelId.set(
         channelId,
         await this.membershipLookupService.getMemberships(channelId, userIds, lookupPolicy, {
           forceRefresh: true,
-          allowStaleOnError: false,
+          allowStaleOnError,
         }),
       );
     }
@@ -2054,11 +2093,13 @@ export class ManagedGiveawayService {
     for (const entry of entries) {
       const missingChannelIds: string[] = [];
       let lookupFailed = false;
+      let failedChannelId: string | null = null;
 
       for (const channelId of mandatoryChannelIds) {
         const membership = membershipByChannelId.get(channelId)?.get(entry.userId) ?? null;
         if (membership === null) {
           lookupFailed = true;
+          failedChannelId = channelId;
           break;
         }
         if (!membership) {
@@ -2072,7 +2113,8 @@ export class ManagedGiveawayService {
           this.resolveGiveawayEligibilityLookupFailure(giveaway, entry.userId, {
             forceFreshMembership: true,
             lookupPolicy,
-            allowStaleMembershipOnError: false,
+            allowStaleMembershipOnError: allowStaleOnError,
+            failedChannelId: failedChannelId ?? giveaway.sourceChatId,
           }),
         );
         continue;
@@ -2160,7 +2202,52 @@ export class ManagedGiveawayService {
         data: { lockedAt: null },
       });
     } catch (error: unknown) {
-      if (this.isManagedGiveawayRunnerRetryableError(error)) {
+      if (error instanceof ManagedGiveawayMembershipLookupUnavailableError) {
+        if (error.kind === 'terminal') {
+          const deferMs = await this.activateManagedGiveawayRunnerTerminalDefer(
+            giveawayId,
+            error.retryAfterMs,
+          );
+          this.logger.warn(
+            {
+              giveawayId,
+              reason,
+              chatId: error.chatId,
+              deferMs,
+              err: error.message,
+            },
+            'Deferred managed giveaway runner after terminal membership lookup failure',
+          );
+        } else {
+          const { backoffMs, deferMs, failureCount } =
+            await this.activateManagedGiveawayRunnerRetryBackoff(giveawayId);
+          if (deferMs > 0) {
+            this.logger.warn(
+              {
+                giveawayId,
+                reason,
+                failureCount,
+                deferMs,
+                chatId: error.chatId,
+                err: error.message,
+              },
+              'Deferred managed giveaway runner after repeated membership lookup failures',
+            );
+          } else {
+            this.logger.warn(
+              {
+                giveawayId,
+                reason,
+                failureCount,
+                backoffMs,
+                chatId: error.chatId,
+                err: error.message,
+              },
+              'Deferred managed giveaway retry after membership lookup failure',
+            );
+          }
+        }
+      } else if (this.isManagedGiveawayRunnerRetryableError(error)) {
         const { backoffMs, deferMs, failureCount } =
           await this.activateManagedGiveawayRunnerRetryBackoff(giveawayId);
         if (deferMs > 0) {
@@ -2267,6 +2354,7 @@ export class ManagedGiveawayService {
     const failureCount = await this.incrementManagedGiveawayRunnerFailureCount(giveawayId);
     if (failureCount >= GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT) {
       const deferMs = await this.activateManagedGiveawayRunnerRetryDefer(giveawayId);
+      await this.clearManagedGiveawayRunnerShortRetryState(giveawayId);
       return { failureCount, backoffMs: 0, deferMs };
     }
 
@@ -2303,6 +2391,32 @@ export class ManagedGiveawayService {
     return GIVEAWAY_RUNNER_LOOKUP_DEFER_MS;
   }
 
+  private async activateManagedGiveawayRunnerTerminalDefer(
+    giveawayId: string,
+    retryAfterMs: number | null,
+  ): Promise<number> {
+    const deferMs = Math.max(
+      GIVEAWAY_RUNNER_LOOKUP_TERMINAL_DEFER_MS,
+      typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+        ? Math.ceil(retryAfterMs)
+        : 0,
+    );
+    this.giveawayRunnerDeferredUntilMs.set(giveawayId, Date.now() + deferMs);
+
+    try {
+      await this.chatContextCache.activateManagedGiveawayRunnerDefer?.(
+        giveawayId,
+        Math.max(1, Math.ceil(deferMs / 1000)),
+      );
+    } catch {
+      await this.clearManagedGiveawayRunnerShortRetryState(giveawayId);
+      return deferMs;
+    }
+
+    await this.clearManagedGiveawayRunnerShortRetryState(giveawayId);
+    return deferMs;
+  }
+
   private async incrementManagedGiveawayRunnerFailureCount(giveawayId: string): Promise<number> {
     const now = Date.now();
     const memoryEntry = this.giveawayRunnerFailureCounts.get(giveawayId);
@@ -2332,6 +2446,17 @@ export class ManagedGiveawayService {
 
     try {
       await this.chatContextCache.clearManagedGiveawayRunnerFailureState?.(giveawayId);
+    } catch {
+      return;
+    }
+  }
+
+  private async clearManagedGiveawayRunnerShortRetryState(giveawayId: string): Promise<void> {
+    this.giveawayRunnerFailureCounts.delete(giveawayId);
+    this.giveawayRunnerBackoffUntilMs.delete(giveawayId);
+
+    try {
+      await this.chatContextCache.clearManagedGiveawayRunnerRetryCounters?.(giveawayId);
     } catch {
       return;
     }
