@@ -283,14 +283,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const refreshStatusLabel =
-    isFetching || isSyncPending || isManualRefreshInProgressByState
-      ? 'Обновляем'
-      : isRefreshTemporarilyBlocked
-        ? `Пауза ${manualRefreshRetryAfterSec} с`
-        : isManualRefreshCoolingDown
-          ? `Повтор ${manualRefreshRetryAfterSec} с`
-        : null;
   const showSystemCard = canAccessSystem;
 
   return (
@@ -340,11 +332,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   </span>
                 </div>
               </div>
-              {refreshStatusLabel ? (
-                <p className="chats-search-card__status" aria-live="polite">
-                  {refreshStatusLabel}
-                </p>
-              ) : null}
             </div>
           </div>
 
