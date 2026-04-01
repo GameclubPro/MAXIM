@@ -371,6 +371,49 @@ function createAdminLinkedModerationUpdate(
   };
 }
 
+function createAdminForwardedRulesUpdate(
+  text = 'правила',
+  forwardedChatId: string | number = 'chat-1',
+): MaxUpdate {
+  return {
+    updateId: 'upd-admin-forward-rules-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-admin-forward-rules-1',
+      chatId: 'chat-1',
+      senderId: 'admin-1',
+      senderName: 'Админ',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 'admin-1',
+          display_name: 'Админ',
+        },
+        recipient: {
+          chat_id: 'chat-1',
+        },
+        body: {
+          text,
+          forwarded_message: {
+            recipient: {
+              chat_id: forwardedChatId,
+              title: forwardedChatId === 'chat-1' ? 'Chat 1' : 'Другой чат',
+            },
+            body: {
+              mid: 'mid-rules-source-1',
+              text: '1. Без спама.\n2. Без ссылок.',
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 function createBotAuthoredUpdate(): MaxUpdate {
   return {
     updateId: 'upd-bot-1',
@@ -7065,6 +7108,99 @@ describe('ModerationService', () => {
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(sentTexts.some((text) => text.includes('Мут на 12ч.'))).toBe(true);
+  });
+
+  it('lets chat admins bind forwarded rules message to moderation buttons', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      adoptChatRulesFromMessage: jest.fn().mockResolvedValue({
+        text: '1. Без спама.\n2. Без ссылок.',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        autoTextEnabled: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        publishedMessageId: 'mid-rules-source-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+        publishedAt: '2026-03-27T01:00:00.000Z',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedRulesUpdate());
+
+    expect(adminService.adoptChatRulesFromMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+        chatTitle: null,
+      }),
+      {
+        sourceMessageId: 'mid-rules-source-1',
+        sourceMessageUrl: null,
+        text: '1. Без спама.\n2. Без ссылок.',
+      },
+      'group_command',
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-rules-1', {
+      immediate: true,
+    });
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(
+      sentTexts.some((text) =>
+        text.includes('Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.'),
+      ),
+    ).toBe(true);
   });
 
   it('rejects duration suffix for the group ban command', async () => {

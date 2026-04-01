@@ -363,13 +363,31 @@ type ForwardedModerationCommand =
   | {
       action: 'MUTE';
       muteDurationHours: number;
+    }
+  | {
+      action: 'RULES';
     };
+
+type ForwardedModerationActionCommand = Exclude<
+  ForwardedModerationCommand,
+  {
+    action: 'RULES';
+  }
+>;
 
 type ForwardedModerationTarget = {
   chatId: string;
   chatTitle: string | null;
   userId: string;
   senderName: string | null;
+};
+
+type ForwardedRulesSource = {
+  chatId: string;
+  chatTitle: string | null;
+  messageId: string | null;
+  url: string | null;
+  text: string | null;
 };
 
 const SESSION_TTL_SEC = 45 * 60;
@@ -1705,15 +1723,27 @@ export class PrivateControlService {
     const directText = this.extractDirectIncomingText(context.update);
     const forwardedModerationCommand = this.parseForwardedModerationCommand(directText);
     if (forwardedModerationCommand) {
-      const forwardedTargets = this.extractForwardedModerationTargets(context.update);
-      if (forwardedTargets.length > 0) {
-        await this.handleForwardedModerationCommand(
-          context,
-          session,
-          forwardedTargets,
-          forwardedModerationCommand,
-        );
-        return;
+      if (forwardedModerationCommand.action === 'RULES') {
+        const forwardedRulesSources = this.extractForwardedRulesSources(context.update);
+        if (forwardedRulesSources.length > 0) {
+          await this.handleForwardedRulesCommand(
+            context,
+            session,
+            forwardedRulesSources,
+          );
+          return;
+        }
+      } else {
+        const forwardedTargets = this.extractForwardedModerationTargets(context.update);
+        if (forwardedTargets.length > 0) {
+          await this.handleForwardedModerationCommand(
+            context,
+            session,
+            forwardedTargets,
+            forwardedModerationCommand,
+          );
+          return;
+        }
       }
     }
 
@@ -1806,7 +1836,7 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
     targets: ForwardedModerationTarget[],
-    command: ForwardedModerationCommand,
+    command: ForwardedModerationActionCommand,
   ): Promise<void> {
     const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
@@ -1848,6 +1878,41 @@ export class PrivateControlService {
     await this.sendImmediate(context.chatId, lines.join('\n'));
   }
 
+  private async handleForwardedRulesCommand(
+    context: PrivateContext,
+    session: PrivateSession,
+    sources: ForwardedRulesSource[],
+  ): Promise<void> {
+    const uniqueSources = this.dedupeForwardedRulesSources(sources);
+    if (uniqueSources.length !== 1) {
+      throw new BadRequestException(
+        'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «правило» или «правила».',
+      );
+    }
+
+    const sourceMessage = uniqueSources[0];
+    const result = await this.adminService.adoptChatRulesFromMessage(
+      sourceMessage.chatId,
+      context.actor,
+      {
+        sourceMessageId: sourceMessage.messageId,
+        sourceMessageUrl: sourceMessage.url,
+        text: sourceMessage.text,
+      },
+      'private_command',
+    );
+
+    await this.saveSession(context.actor.userId, session);
+
+    const chatLabel = sourceMessage.chatTitle ? sourceMessage.chatTitle : sourceMessage.chatId;
+    const lines = ['Правила привязаны к сообщению.', `Чат: ${chatLabel}`];
+    if (result.publishedUrl) {
+      lines.push(`Пост: ${result.publishedUrl}`);
+    }
+    lines.push('Кнопка «Правила» в нарушениях включена.');
+    await this.sendImmediate(context.chatId, lines.join('\n'));
+  }
+
   private parseForwardedModerationCommand(text: string): ForwardedModerationCommand | null {
     const normalized = this.readLowerString(text);
     if (!normalized) {
@@ -1876,6 +1941,12 @@ export class PrivateControlService {
     }
 
     if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
+      if (/^(?:правило|правила|rule|rules)[.!]?$/u.test(normalized)) {
+        return {
+          action: 'RULES',
+        };
+      }
+
       if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
         return {
           action: 'MUTE',
@@ -2050,6 +2121,113 @@ export class PrivateControlService {
     return [...unique.values()];
   }
 
+  private extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
+    const messageNode = this.extractIncomingMessageNode(update);
+    if (!messageNode) {
+      return [];
+    }
+
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.link,
+      messageNode.forward,
+      messageNode.forwarded_message,
+      messageNode.forwardedMessage,
+      body?.link,
+      body?.forward,
+      body?.forwarded_message,
+      body?.forwardedMessage,
+      content?.link,
+      content?.forward,
+      content?.forwarded_message,
+      content?.forwardedMessage,
+      payload?.link,
+      payload?.forward,
+      payload?.forwarded_message,
+      payload?.forwardedMessage,
+      nestedMessage?.link,
+      nestedMessage?.forward,
+      nestedMessage?.forwarded_message,
+      nestedMessage?.forwardedMessage,
+    ];
+
+    const sources: ForwardedRulesSource[] = [];
+    for (const candidate of candidates) {
+      this.collectForwardedRulesSources(candidate, sources);
+    }
+
+    return this.dedupeForwardedRulesSources(sources);
+  }
+
+  private collectForwardedRulesSources(
+    node: unknown,
+    acc: ForwardedRulesSource[],
+    depth = 0,
+  ): void {
+    if (depth > MAX_FORWARDED_COMMAND_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedRulesSources(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const source = this.parseForwardedRulesSource(row);
+    if (source) {
+      acc.push(source);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectForwardedRulesSources(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRulesSource | null {
+    const chatId = this.extractChatIdFromNode(row);
+    if (!chatId || this.isPrivateDirectChat(chatId)) {
+      return null;
+    }
+
+    const messageId = this.extractMessageIdFromNode(row);
+    const url = this.extractMessageUrlFromNode(row);
+    if (!messageId && !url) {
+      return null;
+    }
+
+    return {
+      chatId,
+      chatTitle: this.extractChatTitleFromNode(row),
+      messageId,
+      url,
+      text: this.extractMessageTextFromNode(row),
+    };
+  }
+
+  private dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
+    const unique = new Map<string, ForwardedRulesSource>();
+    for (const source of sources) {
+      const key = `${source.chatId}:${source.messageId ?? source.url ?? ''}`;
+      if (!unique.has(key)) {
+        unique.set(key, source);
+      }
+    }
+
+    return [...unique.values()];
+  }
+
   private extractChatIdFromNode(node: Record<string, unknown>): string | null {
     const chat = this.asRecord(node.chat);
     const recipient = this.asRecord(node.recipient);
@@ -2204,6 +2382,103 @@ export class PrivateControlService {
       const value = this.readString(candidate);
       if (value) {
         return value;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMessageIdFromNode(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      body?.mid,
+      body?.message_id,
+      body?.messageId,
+      content?.mid,
+      content?.message_id,
+      content?.messageId,
+      payload?.mid,
+      payload?.message_id,
+      payload?.messageId,
+      nestedMessage?.mid,
+      nestedMessage?.message_id,
+      nestedMessage?.messageId,
+      node.message_id,
+      node.messageId,
+      node.mid,
+      node.id,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' || typeof candidate === 'number') {
+        const normalized = String(candidate).trim();
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private extractMessageUrlFromNode(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      node.url,
+      node.message_url,
+      node.messageUrl,
+      body?.url,
+      body?.message_url,
+      body?.messageUrl,
+      content?.url,
+      content?.message_url,
+      content?.messageUrl,
+      payload?.url,
+      payload?.message_url,
+      payload?.messageUrl,
+      nestedMessage?.url,
+      nestedMessage?.message_url,
+      nestedMessage?.messageUrl,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.readString(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMessageTextFromNode(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      node.text,
+      node.caption,
+      node.message_text,
+      node.messageText,
+      body?.text,
+      body?.plain,
+      content?.text,
+      content?.caption,
+      payload?.text,
+      nestedMessage?.text,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.readString(candidate);
+      if (normalized) {
+        return normalized;
       }
     }
 

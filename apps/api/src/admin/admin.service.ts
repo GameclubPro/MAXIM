@@ -238,6 +238,12 @@ type AdminAccessResolution =
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
 
+type AdoptChatRulesFromMessageInput = {
+  sourceMessageId?: string | null;
+  sourceMessageUrl?: string | null;
+  text?: string | null;
+};
+
 type ManualMemberModerationAction = 'MUTE' | 'BAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
 type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
@@ -3197,6 +3203,108 @@ export class AdminService {
     await this.chatContextCache?.invalidate(chatId);
 
     return this.mapChatRules(rules);
+  }
+
+  async adoptChatRulesFromMessage(
+    chatId: string,
+    user: AuthUser,
+    input: AdoptChatRulesFromMessageInput,
+    source: AdminActionSource = 'group_command',
+  ): Promise<ChatRules> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const currentRules = await this.upsertChatRules(chatId);
+    const sourceMessageId = this.readTrimmedString(input.sourceMessageId);
+    let sourceMessageUrl = this.normalizePublishedRulesUrl(input.sourceMessageUrl);
+    if (!sourceMessageId && !sourceMessageUrl) {
+      throw new BadRequestException('Не удалось определить сообщение с правилами.');
+    }
+
+    if (!sourceMessageUrl && sourceMessageId) {
+      try {
+        sourceMessageUrl = this.normalizePublishedRulesUrl(
+          await this.maxClient.resolveMessageLink(sourceMessageId),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: user.userId,
+            messageId: sourceMessageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve chat rules message link from forwarded command',
+        );
+      }
+    }
+
+    const normalizedSourceText = this.normalizeImportedRulesText(input.text);
+    const publishedAt = new Date();
+    const updatedRules = await this.prisma.chatRules.update({
+      where: { chatId },
+      data: {
+        ...(normalizedSourceText !== null
+          ? {
+              text: normalizedSourceText,
+              autoTextEnabled: false,
+            }
+          : {}),
+        publishedMessageId: sourceMessageId ?? null,
+        publishedUrl: sourceMessageUrl,
+        publishedAt,
+      },
+    });
+
+    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Chat ${chatId}`,
+        entityType: ChatEntityType.CHAT,
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          create: {
+            rulesAttachViolationsEnabled: true,
+          },
+        },
+      },
+      update: {
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
+        settings: {
+          upsert: {
+            update: {
+              rulesAttachViolationsEnabled: true,
+            },
+            create: {
+              rulesAttachViolationsEnabled: true,
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'ADOPT_CHAT_RULES_MESSAGE',
+        payload: {
+          previousPublishedMessageId: currentRules.publishedMessageId ?? null,
+          previousPublishedUrl: currentRules.publishedUrl ?? null,
+          messageId: sourceMessageId ?? null,
+          url: sourceMessageUrl,
+          copiedText: normalizedSourceText !== null,
+          textLength: normalizedSourceText?.length ?? 0,
+          rulesAttachViolationsEnabled: true,
+          source,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return this.mapChatRules(updatedRules);
   }
 
   async publishRules(
@@ -8065,6 +8173,15 @@ export class AdminService {
       imageMimeType: value.imageMimeType.trim(),
       imageFileName: value.imageFileName.trim(),
     };
+  }
+
+  private normalizeImportedRulesText(value: string | null | undefined): string | null {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    return normalized.slice(0, 2_000);
   }
 
   private async upsertChatRules(chatId: string): Promise<PersistedChatRules> {

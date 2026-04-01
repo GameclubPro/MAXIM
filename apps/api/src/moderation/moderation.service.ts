@@ -176,6 +176,9 @@ type AdminForwardedModerationCommand =
   | {
       action: 'MUTE';
       muteDurationHours: number;
+    }
+  | {
+      action: 'RULES';
     };
 
 type ForwardedModerationTarget = {
@@ -183,6 +186,14 @@ type ForwardedModerationTarget = {
   chatTitle: string | null;
   userId: string;
   senderName: string | null;
+};
+
+type ForwardedRulesSource = {
+  chatId: string;
+  chatTitle: string | null;
+  messageId: string | null;
+  url: string | null;
+  text: string | null;
 };
 
 const DEFAULT_MUTE_DURATION_HOURS = 6;
@@ -4129,6 +4140,92 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
+    const actor: AuthUser = {
+      userId: senderId,
+      username: null,
+      displayName: senderName?.trim() || null,
+      chatId,
+      chatTitle: chatTitle?.trim() || null,
+    };
+    if (!this.adminService) {
+      this.logger.warn(
+        {
+          chatId,
+          actorUserId: senderId,
+          action: command.action,
+        },
+        'Admin forwarded command ignored: AdminService is unavailable',
+      );
+      return false;
+    }
+
+    if (command.action === 'RULES') {
+      const sources = this.extractForwardedRulesSources(update);
+      if (sources.length === 0) {
+        return false;
+      }
+
+      const uniqueSources = this.dedupeForwardedRulesSources(sources);
+      if (uniqueSources.length !== 1) {
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: 'Перешлите или ответьте на одно сообщение из этого чата и добавьте слово `правило` или `правила`.',
+        });
+        return true;
+      }
+
+      const sourceMessage = uniqueSources[0];
+      if (sourceMessage.chatId !== chatId) {
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: 'Команда `правило` работает только для сообщений из этого чата.',
+        });
+        return true;
+      }
+
+      try {
+        await this.adminService.adoptChatRulesFromMessage(
+          chatId,
+          actor,
+          {
+            sourceMessageId: sourceMessage.messageId,
+            sourceMessageUrl: sourceMessage.url,
+            text: sourceMessage.text,
+          },
+          'group_command',
+        );
+
+        await this.deleteAdminCommandMessage(chatId, messageId);
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: 'Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.',
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: senderId,
+            sourceMessageId: sourceMessage.messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to adopt forwarded chat rules message',
+        );
+
+        await this.sendGroupAdminCommandNotice({
+          chatId,
+          settings,
+          text: `Не удалось сохранить правила: ${this.escapeMaxMarkdownText(
+            this.extractGroupAdminCommandErrorMessage(error),
+          )}`,
+        });
+      }
+
+      return true;
+    }
+
     const targets = this.extractForwardedModerationTargets(update);
     if (targets.length === 0) {
       return false;
@@ -4154,25 +4251,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    if (!this.adminService) {
-      this.logger.warn(
-        {
-          chatId,
-          actorUserId: senderId,
-          targetUserId: target.userId,
-        },
-        'Admin forwarded moderation command ignored: AdminService is unavailable',
-      );
-      return false;
-    }
-
-    const actor: AuthUser = {
-      userId: senderId,
-      username: null,
-      displayName: senderName?.trim() || null,
-      chatId,
-      chatTitle: chatTitle?.trim() || null,
-    };
     try {
       const result =
         command.action === 'BAN'
@@ -4256,6 +4334,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
+      if (/^(?:правило|правила|rule|rules)[.!]?$/u.test(normalized)) {
+        return {
+          action: 'RULES',
+        };
+      }
+
       if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
         return {
           action: 'MUTE',
@@ -4431,6 +4515,114 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [...unique.values()];
   }
 
+  private extractForwardedRulesSources(update: MaxUpdate): ForwardedRulesSource[] {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return [];
+    }
+
+    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.link,
+      messageNode.forward,
+      messageNode.forwarded_message,
+      messageNode.forwardedMessage,
+      body?.link,
+      body?.forward,
+      body?.forwarded_message,
+      body?.forwardedMessage,
+      content?.link,
+      content?.forward,
+      content?.forwarded_message,
+      content?.forwardedMessage,
+      payload?.link,
+      payload?.forward,
+      payload?.forwarded_message,
+      payload?.forwardedMessage,
+      nestedMessage?.link,
+      nestedMessage?.forward,
+      nestedMessage?.forwarded_message,
+      nestedMessage?.forwardedMessage,
+    ];
+
+    const sources: ForwardedRulesSource[] = [];
+    for (const candidate of candidates) {
+      this.collectForwardedRulesSources(candidate, sources);
+    }
+
+    return this.dedupeForwardedRulesSources(sources);
+  }
+
+  private collectForwardedRulesSources(
+    node: unknown,
+    acc: ForwardedRulesSource[],
+    depth = 0,
+  ): void {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedRulesSources(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const source = this.parseForwardedRulesSource(row);
+    if (source) {
+      acc.push(source);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectForwardedRulesSources(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private parseForwardedRulesSource(row: Record<string, unknown>): ForwardedRulesSource | null {
+    const chatId = this.readChatIdFromEntity(row);
+    if (!chatId) {
+      return null;
+    }
+
+    const messageId = this.readMessageIdFromForwardedNode(row);
+    const url = this.readMessageUrlFromForwardedNode(row);
+    if (!messageId && !url) {
+      return null;
+    }
+
+    return {
+      chatId,
+      chatTitle: this.readChatTitleFromEntity(row),
+      messageId,
+      url,
+      text: this.readForwardedMessageText(row),
+    };
+  }
+
+  private dedupeForwardedRulesSources(sources: ForwardedRulesSource[]): ForwardedRulesSource[] {
+    const unique = new Map<string, ForwardedRulesSource>();
+    for (const source of sources) {
+      const key = `${source.chatId}:${source.messageId ?? source.url ?? ''}`;
+      if (!unique.has(key)) {
+        unique.set(key, source);
+      }
+    }
+
+    return [...unique.values()];
+  }
+
   private readUserIdFromForwardedNode(node: Record<string, unknown>): string | null {
     const sender = this.asRecord(node.sender);
     const from = this.asRecord(node.from);
@@ -4525,6 +4717,103 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     for (const candidate of candidates) {
       if (typeof candidate === 'string' && candidate.trim().length > 0) {
         return candidate.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private readMessageIdFromForwardedNode(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      body?.mid,
+      body?.message_id,
+      body?.messageId,
+      content?.mid,
+      content?.message_id,
+      content?.messageId,
+      payload?.mid,
+      payload?.message_id,
+      payload?.messageId,
+      nestedMessage?.mid,
+      nestedMessage?.message_id,
+      nestedMessage?.messageId,
+      node.message_id,
+      node.messageId,
+      node.mid,
+      node.id,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' || typeof candidate === 'number') {
+        const normalized = String(candidate).trim();
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private readMessageUrlFromForwardedNode(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      node.url,
+      node.message_url,
+      node.messageUrl,
+      body?.url,
+      body?.message_url,
+      body?.messageUrl,
+      content?.url,
+      content?.message_url,
+      content?.messageUrl,
+      payload?.url,
+      payload?.message_url,
+      payload?.messageUrl,
+      nestedMessage?.url,
+      nestedMessage?.message_url,
+      nestedMessage?.messageUrl,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.readString(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private readForwardedMessageText(node: Record<string, unknown>): string | null {
+    const body = this.asRecord(node.body);
+    const content = this.asRecord(node.content);
+    const payload = this.asRecord(node.payload);
+    const nestedMessage = this.asRecord(node.message);
+    const candidates = [
+      node.text,
+      node.caption,
+      node.message_text,
+      node.messageText,
+      body?.text,
+      body?.plain,
+      content?.text,
+      content?.caption,
+      payload?.text,
+      nestedMessage?.text,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.readString(candidate);
+      if (normalized) {
+        return normalized;
       }
     }
 
@@ -11098,6 +11387,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private readString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
 
   private extractStatusCode(error: unknown): number | null {

@@ -117,6 +117,47 @@ function createPrivateForwardedModerationUpdate(text = 'бан'): MaxUpdate {
   };
 }
 
+function createPrivateForwardedRulesUpdate(text = 'правила'): MaxUpdate {
+  return {
+    updateId: `upd-forwarded-rules-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-forwarded-rules-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          text,
+          forwarded_message: {
+            recipient: {
+              chat_id: -70000000000001,
+              title: 'Тестовый чат 1',
+            },
+            body: {
+              mid: 'mid-rules-source-1',
+              text: '1. Без спама.\n2. Без ссылок.',
+            },
+          },
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivateFormattedTextUpdate(
   text: string,
   markup: Array<{
@@ -665,6 +706,29 @@ function createHarness(
       });
       return currentRules;
     }),
+    adoptChatRulesFromMessage: jest
+      .fn()
+      .mockImplementation(async (_chatId, _actor, payload: Record<string, unknown>) => {
+        currentRules = createRules({
+          ...currentRules,
+          ...(typeof payload.text === 'string' && payload.text.trim()
+            ? {
+                text: payload.text,
+                autoTextEnabled: false,
+              }
+            : {}),
+          publishedMessageId:
+            typeof payload.sourceMessageId === 'string' && payload.sourceMessageId.trim()
+              ? payload.sourceMessageId
+              : null,
+          publishedUrl:
+            typeof payload.sourceMessageUrl === 'string' && payload.sourceMessageUrl.trim()
+              ? payload.sourceMessageUrl
+              : 'https://max.ru/chats/chat-1/message/321',
+          publishedAt: new Date().toISOString(),
+        });
+        return currentRules;
+      }),
     sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     sendChannelBroadcast: jest
       .fn()
@@ -1346,6 +1410,29 @@ describe('PrivateControlService', () => {
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain('Забанен: Нарушитель (user-77)');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+  });
+
+  it('binds a forwarded rules message from private chat to moderation buttons', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateForwardedRulesUpdate());
+
+    expect(adminService.adoptChatRulesFromMessage).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: '152517912',
+      }),
+      {
+        sourceMessageId: 'mid-rules-source-1',
+        sourceMessageUrl: null,
+        text: '1. Без спама.\n2. Без ссылок.',
+      },
+      'private_command',
+    );
+    expect(getLastSentText(maxClient)).toContain('Правила привязаны к сообщению.');
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastSentText(maxClient)).toContain('Кнопка «Правила» в нарушениях включена.');
   });
 
   it('mutes a forwarded sender from private chat for 6 hours by default', async () => {

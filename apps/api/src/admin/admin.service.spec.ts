@@ -9785,6 +9785,131 @@ describe('AdminService chat rules', () => {
     expect(result.publishedUrl).toBe('https://max.ru/chats/chat-1/message/999');
   });
 
+  it('adopts an existing chat message as the published rules post and enables rules button in violations', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: true,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:00:00.000Z'),
+    });
+    prisma.chatRules.update.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '1. Без спама.\n2. Без ссылок.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: 'mid-rules-source-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+      publishedAt: new Date('2026-03-09T10:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T10:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/321'),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.adoptChatRulesFromMessage(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        sourceMessageId: 'mid-rules-source-1',
+        sourceMessageUrl: null,
+        text: '1. Без спама.\n2. Без ссылок.',
+      },
+      'group_command',
+    );
+
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-source-1');
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        text: '1. Без спама.\n2. Без ссылок.',
+        autoTextEnabled: false,
+        publishedMessageId: 'mid-rules-source-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+      }),
+    });
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-1' },
+        update: expect.objectContaining({
+          settings: {
+            upsert: {
+              update: {
+                rulesAttachViolationsEnabled: true,
+              },
+              create: {
+                rulesAttachViolationsEnabled: true,
+              },
+            },
+          },
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        actorUserId: 'admin-1',
+        action: 'ADOPT_CHAT_RULES_MESSAGE',
+        payload: expect.objectContaining({
+          messageId: 'mid-rules-source-1',
+          url: 'https://max.ru/chats/chat-1/message/321',
+          copiedText: true,
+          rulesAttachViolationsEnabled: true,
+          source: 'group_command',
+        }),
+      }),
+    });
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(result).toEqual({
+      text: '1. Без спама.\n2. Без ссылок.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: 'mid-rules-source-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/321',
+      publishedAt: '2026-03-09T10:00:00.000Z',
+    });
+  });
+
   it('saves draft and publishes new rules post with persisted link', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert
