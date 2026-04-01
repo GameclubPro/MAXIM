@@ -196,7 +196,6 @@ type ManagedEntitiesListOptions = {
   includeRefreshState?: boolean;
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
-  deferDiscovery?: boolean;
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
@@ -993,27 +992,6 @@ export class AdminService {
             options.includeRefreshState === true
               ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
               : null,
-        };
-      }
-
-      if (options.deferDiscovery === true) {
-        const local = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
-          respectCooldown: true,
-          fullScan: false,
-        });
-        const items =
-          local.items.length > 0
-            ? await this.attachManagedEntityBotAssignments(local.items)
-            : [];
-        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
-        const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
-          bypassRemoteCache: options.bypassRemoteCache === true,
-          resetRefreshCursor: options.resetRefreshCursor === true,
-        });
-
-        return {
-          items,
-          refresh: options.includeRefreshState === true ? refresh : null,
         };
       }
 

@@ -83,9 +83,7 @@ async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
 ): Promise<ChatSummary[]> {
-  return entityType === 'chat'
-    ? getChats(api, { deferDiscovery: true })
-    : getChannels(api, { deferDiscovery: true });
+  return entityType === 'chat' ? getChats(api) : getChannels(api);
 }
 
 async function refreshManagedEntities(
