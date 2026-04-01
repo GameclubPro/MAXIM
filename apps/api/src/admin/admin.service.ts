@@ -383,6 +383,7 @@ const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
+const MANAGED_ENTITIES_REFRESH_MANUAL_TRIGGER_COOLDOWN_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 1_500;
@@ -663,6 +664,7 @@ export class AdminService {
     Promise<ManagedEntitiesListResult>
   >();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
+  private readonly managedEntitiesRefreshTriggerCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
@@ -1117,6 +1119,10 @@ export class AdminService {
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
+    const manualTriggerCooldownKey = this.buildManagedEntitiesRefreshTriggerCooldownKey(
+      user.userId,
+      entityType,
+    );
     const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
       user.userId,
       entityType,
@@ -1129,6 +1135,13 @@ export class AdminService {
     const existing = this.managedEntitiesBackgroundRefreshRuns.get(refreshKey);
 
     if (!existing) {
+      if (options.bypassRemoteCache === true) {
+        await this.activateManagedEntitiesRefreshTriggerCooldown(
+          user.userId,
+          entityType,
+          manualTriggerCooldownKey,
+        );
+      }
       if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
         const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
           .catch((error: unknown) => {
@@ -1275,6 +1288,31 @@ export class AdminService {
       return this.readManagedEntitiesRefreshState(userId, entityType, {
         backoffActiveOverride: true,
       });
+    }
+
+    if (
+      options.bypassRemoteCache === true &&
+      (cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
+    ) {
+      const manualTriggerCooldownKey = this.buildManagedEntitiesRefreshTriggerCooldownKey(
+        userId,
+        entityType,
+      );
+      const manualTriggerCooldownRemainingMs =
+        await this.getManagedEntitiesRefreshTriggerCooldownRemainingMs(
+          userId,
+          entityType,
+          manualTriggerCooldownKey,
+        );
+      if (manualTriggerCooldownRemainingMs > 0) {
+        const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
+        return this.createManagedEntitiesRefreshState(
+          MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+          false,
+          0,
+          presentation,
+        );
+      }
     }
 
     if (
@@ -15627,6 +15665,13 @@ export class AdminService {
     return `${userId}:${entityType}`;
   }
 
+  private buildManagedEntitiesRefreshTriggerCooldownKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:manual-trigger`;
+  }
+
   private async isManagedEntitiesRefreshCooldownActive(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -15657,6 +15702,47 @@ export class AdminService {
     this.managedEntitiesRefreshCooldownUntilMs.set(key, untilMs);
     try {
       await this.chatContextCache.activateManagedEntitiesRefreshCooldown(
+        userId,
+        entityType,
+        Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)),
+      );
+    } catch {
+      return;
+    }
+  }
+
+  private async getManagedEntitiesRefreshTriggerCooldownRemainingMs(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<number> {
+    const untilMs = this.managedEntitiesRefreshTriggerCooldownUntilMs.get(key) ?? 0;
+    const memoryRemainingMs = Math.max(0, untilMs - Date.now());
+    if (memoryRemainingMs === 0 && untilMs > 0) {
+      this.managedEntitiesRefreshTriggerCooldownUntilMs.delete(key);
+    }
+
+    try {
+      const persistedRemainingMs =
+        (await this.chatContextCache.getManagedEntitiesRefreshTriggerCooldownRemainingMs?.(
+          userId,
+          entityType,
+        )) ?? 0;
+      return Math.max(memoryRemainingMs, persistedRemainingMs);
+    } catch {
+      return memoryRemainingMs;
+    }
+  }
+
+  private async activateManagedEntitiesRefreshTriggerCooldown(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<void> {
+    const untilMs = Date.now() + MANAGED_ENTITIES_REFRESH_MANUAL_TRIGGER_COOLDOWN_MS;
+    this.managedEntitiesRefreshTriggerCooldownUntilMs.set(key, untilMs);
+    try {
+      await this.chatContextCache.activateManagedEntitiesRefreshTriggerCooldown?.(
         userId,
         entityType,
         Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)),

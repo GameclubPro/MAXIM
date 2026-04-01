@@ -102,9 +102,11 @@ function createMaxBotLinkMock(options: {
 
 function createChatContextCacheMock(options: {
   giveawayBackoffRemainingById?: Map<string, number>;
+  giveawayDeferRemainingById?: Map<string, number>;
   giveawayFailureCountById?: Map<string, number>;
 } = {}) {
   const giveawayBackoffRemainingById = options.giveawayBackoffRemainingById ?? new Map();
+  const giveawayDeferRemainingById = options.giveawayDeferRemainingById ?? new Map();
   const giveawayFailureCountById = options.giveawayFailureCountById ?? new Map();
 
   return {
@@ -112,10 +114,18 @@ function createChatContextCacheMock(options: {
     getManagedGiveawayRunnerBackoffRemainingMs: jest
       .fn()
       .mockImplementation(async (giveawayId: string) => giveawayBackoffRemainingById.get(giveawayId) ?? 0),
+    getManagedGiveawayRunnerDeferRemainingMs: jest
+      .fn()
+      .mockImplementation(async (giveawayId: string) => giveawayDeferRemainingById.get(giveawayId) ?? 0),
     activateManagedGiveawayRunnerBackoff: jest
       .fn()
       .mockImplementation(async (giveawayId: string, ttlSec: number) => {
         giveawayBackoffRemainingById.set(giveawayId, ttlSec * 1000);
+      }),
+    activateManagedGiveawayRunnerDefer: jest
+      .fn()
+      .mockImplementation(async (giveawayId: string, ttlSec: number) => {
+        giveawayDeferRemainingById.set(giveawayId, ttlSec * 1000);
       }),
     incrementManagedGiveawayRunnerFailureCount: jest
       .fn()
@@ -128,6 +138,7 @@ function createChatContextCacheMock(options: {
       .fn()
       .mockImplementation(async (giveawayId: string) => {
         giveawayBackoffRemainingById.delete(giveawayId);
+        giveawayDeferRemainingById.delete(giveawayId);
         giveawayFailureCountById.delete(giveawayId);
       }),
   };
@@ -1407,7 +1418,41 @@ describe('ManagedGiveawayService', () => {
     }
   });
 
-  it('adds exponential retry backoff when runner draw fails on membership lookup', async () => {
+  it('skips due giveaways that are already under extended retry defer', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:25:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.managedGiveaway.findMany.mockResolvedValue([{ id: 'giveaway-1' }, { id: 'giveaway-2' }]);
+
+      const chatContextCache = createChatContextCacheMock({
+        giveawayDeferRemainingById: new Map([['giveaway-1', 15 * 60_000]]),
+      });
+      const service = new ManagedGiveawayService(
+        prisma as never,
+        createMaxClientMock() as never,
+        chatContextCache as never,
+        {} as never,
+        createConfigMock() as never,
+      );
+      const processSpy = jest
+        .spyOn(service as any, 'processDueManagedGiveaway')
+        .mockResolvedValue(undefined);
+
+      await service.processDueManagedGiveaways('scheduled');
+
+      expect(processSpy).toHaveBeenCalledTimes(1);
+      expect(processSpy).toHaveBeenCalledWith(
+        'giveaway-2',
+        'scheduled',
+        expect.any(Date),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('escalates runner membership lookup retries from backoff to defer after repeated failures', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T13:25:00.000Z'));
 
     try {
@@ -1447,6 +1492,20 @@ describe('ManagedGiveawayService', () => {
           new Date('2026-03-21T13:24:00.000Z'),
         ),
       ).resolves.toBeUndefined();
+      await expect(
+        (service as any).processDueManagedGiveaway(
+          'giveaway-1',
+          'scheduled',
+          new Date('2026-03-21T13:24:00.000Z'),
+        ),
+      ).resolves.toBeUndefined();
+      await expect(
+        (service as any).processDueManagedGiveaway(
+          'giveaway-1',
+          'scheduled',
+          new Date('2026-03-21T13:24:00.000Z'),
+        ),
+      ).resolves.toBeUndefined();
 
       expect(chatContextCache.incrementManagedGiveawayRunnerFailureCount).toHaveBeenNthCalledWith(
         1,
@@ -1463,7 +1522,16 @@ describe('ManagedGiveawayService', () => {
         'giveaway-1',
         120,
       );
-      expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledTimes(4);
+      expect(chatContextCache.activateManagedGiveawayRunnerBackoff).toHaveBeenNthCalledWith(
+        3,
+        'giveaway-1',
+        240,
+      );
+      expect(chatContextCache.activateManagedGiveawayRunnerDefer).toHaveBeenCalledWith(
+        'giveaway-1',
+        30 * 60,
+      );
+      expect(prisma.managedGiveaway.updateMany).toHaveBeenCalledTimes(8);
     } finally {
       jest.useRealTimers();
     }

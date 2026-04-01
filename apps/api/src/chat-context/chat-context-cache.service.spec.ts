@@ -339,6 +339,19 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.getManagedEntitiesRefreshBackoffRemainingMs('user-1', 'channel'),
     ).resolves.toBe(45_000);
+
+    await service.activateManagedEntitiesRefreshTriggerCooldown('user-1', 'channel', 90);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntitiesRefreshTriggerCooldownKey('user-1', 'channel'),
+      '1',
+      'EX',
+      90,
+    );
+
+    redisInstance.pttl.mockResolvedValueOnce(30_000);
+    await expect(
+      service.getManagedEntitiesRefreshTriggerCooldownRemainingMs('user-1', 'channel'),
+    ).resolves.toBe(30_000);
   });
 
   it('stores managed giveaway runner retry state in redis', async () => {
@@ -377,6 +390,19 @@ describe('ChatContextCacheService', () => {
       90_000,
     );
 
+    await service.activateManagedGiveawayRunnerDefer('giveaway-1', 1800);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedGiveawayRunnerDeferKey('giveaway-1'),
+      '1',
+      'EX',
+      1800,
+    );
+
+    redisInstance.pttl.mockResolvedValueOnce(600_000);
+    await expect(service.getManagedGiveawayRunnerDeferRemainingMs('giveaway-1')).resolves.toBe(
+      600_000,
+    );
+
     await expect(
       service.incrementManagedGiveawayRunnerFailureCount('giveaway-1', 3600),
     ).resolves.toBe(3);
@@ -386,6 +412,7 @@ describe('ChatContextCacheService', () => {
     expect(redisInstance.del).toHaveBeenCalledWith(
       ChatContextCacheService.managedGiveawayRunnerBackoffKey('giveaway-1'),
       ChatContextCacheService.managedGiveawayRunnerFailureCountKey('giveaway-1'),
+      ChatContextCacheService.managedGiveawayRunnerDeferKey('giveaway-1'),
     );
   });
 });

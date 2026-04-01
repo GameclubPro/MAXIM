@@ -78,6 +78,8 @@ const GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE =
 const GIVEAWAY_RUNNER_LOOKUP_FAILURE_COUNT_TTL_SEC = 6 * 60 * 60;
 const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_BASE_MS = 60_000;
 const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS = 60 * 60_000;
+const GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT = 4;
+const GIVEAWAY_RUNNER_LOOKUP_DEFER_MS = 30 * 60_000;
 const MANAGED_GIVEAWAY_INCLUDE = Prisma.validator<Prisma.ManagedGiveawayInclude>()({
   prizes: {
     orderBy: { position: 'asc' },
@@ -131,6 +133,7 @@ export class ManagedGiveawayService {
     { count: number; expiresAtMs: number }
   >();
   private readonly giveawayRunnerBackoffUntilMs = new Map<string, number>();
+  private readonly giveawayRunnerDeferredUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -827,6 +830,9 @@ export class ManagedGiveawayService {
     for (const row of rows) {
       if (processed >= GIVEAWAY_DUE_BATCH_SIZE) {
         break;
+      }
+      if ((await this.getManagedGiveawayRunnerDeferRemainingMs(row.id)) > 0) {
+        continue;
       }
       if ((await this.getManagedGiveawayRunnerBackoffRemainingMs(row.id)) > 0) {
         continue;
@@ -2155,18 +2161,31 @@ export class ManagedGiveawayService {
       });
     } catch (error: unknown) {
       if (this.isManagedGiveawayRunnerRetryableError(error)) {
-        const { backoffMs, failureCount } =
+        const { backoffMs, deferMs, failureCount } =
           await this.activateManagedGiveawayRunnerRetryBackoff(giveawayId);
-        this.logger.warn(
-          {
-            giveawayId,
-            reason,
-            failureCount,
-            backoffMs,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Deferred managed giveaway retry after membership lookup failure',
-        );
+        if (deferMs > 0) {
+          this.logger.warn(
+            {
+              giveawayId,
+              reason,
+              failureCount,
+              deferMs,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Deferred managed giveaway runner after repeated membership lookup failures',
+          );
+        } else {
+          this.logger.warn(
+            {
+              giveawayId,
+              reason,
+              failureCount,
+              backoffMs,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Deferred managed giveaway retry after membership lookup failure',
+          );
+        }
       } else {
         this.logger.warn(
           {
@@ -2210,6 +2229,22 @@ export class ManagedGiveawayService {
     return false;
   }
 
+  private async getManagedGiveawayRunnerDeferRemainingMs(giveawayId: string): Promise<number> {
+    const memoryUntilMs = this.giveawayRunnerDeferredUntilMs.get(giveawayId) ?? 0;
+    const memoryRemainingMs = Math.max(0, memoryUntilMs - Date.now());
+    if (memoryRemainingMs === 0 && memoryUntilMs > 0) {
+      this.giveawayRunnerDeferredUntilMs.delete(giveawayId);
+    }
+
+    try {
+      const persistedRemainingMs =
+        (await this.chatContextCache.getManagedGiveawayRunnerDeferRemainingMs?.(giveawayId)) ?? 0;
+      return Math.max(memoryRemainingMs, persistedRemainingMs);
+    } catch {
+      return memoryRemainingMs;
+    }
+  }
+
   private async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
     const memoryUntilMs = this.giveawayRunnerBackoffUntilMs.get(giveawayId) ?? 0;
     const memoryRemainingMs = Math.max(0, memoryUntilMs - Date.now());
@@ -2228,8 +2263,13 @@ export class ManagedGiveawayService {
 
   private async activateManagedGiveawayRunnerRetryBackoff(
     giveawayId: string,
-  ): Promise<{ failureCount: number; backoffMs: number }> {
+  ): Promise<{ failureCount: number; backoffMs: number; deferMs: number }> {
     const failureCount = await this.incrementManagedGiveawayRunnerFailureCount(giveawayId);
+    if (failureCount >= GIVEAWAY_RUNNER_LOOKUP_DEFER_AFTER_FAILURE_COUNT) {
+      const deferMs = await this.activateManagedGiveawayRunnerRetryDefer(giveawayId);
+      return { failureCount, backoffMs: 0, deferMs };
+    }
+
     const backoffMs = Math.min(
       GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS,
       GIVEAWAY_RUNNER_LOOKUP_BACKOFF_BASE_MS * 2 ** Math.max(0, failureCount - 1),
@@ -2242,10 +2282,25 @@ export class ManagedGiveawayService {
         Math.max(1, Math.ceil(backoffMs / 1000)),
       );
     } catch {
-      return { failureCount, backoffMs };
+      return { failureCount, backoffMs, deferMs: 0 };
     }
 
-    return { failureCount, backoffMs };
+    return { failureCount, backoffMs, deferMs: 0 };
+  }
+
+  private async activateManagedGiveawayRunnerRetryDefer(giveawayId: string): Promise<number> {
+    this.giveawayRunnerDeferredUntilMs.set(giveawayId, Date.now() + GIVEAWAY_RUNNER_LOOKUP_DEFER_MS);
+
+    try {
+      await this.chatContextCache.activateManagedGiveawayRunnerDefer?.(
+        giveawayId,
+        Math.max(1, Math.ceil(GIVEAWAY_RUNNER_LOOKUP_DEFER_MS / 1000)),
+      );
+    } catch {
+      return GIVEAWAY_RUNNER_LOOKUP_DEFER_MS;
+    }
+
+    return GIVEAWAY_RUNNER_LOOKUP_DEFER_MS;
   }
 
   private async incrementManagedGiveawayRunnerFailureCount(giveawayId: string): Promise<number> {
@@ -2273,6 +2328,7 @@ export class ManagedGiveawayService {
   private async clearManagedGiveawayRunnerRetryState(giveawayId: string): Promise<void> {
     this.giveawayRunnerFailureCounts.delete(giveawayId);
     this.giveawayRunnerBackoffUntilMs.delete(giveawayId);
+    this.giveawayRunnerDeferredUntilMs.delete(giveawayId);
 
     try {
       await this.chatContextCache.clearManagedGiveawayRunnerFailureState?.(giveawayId);

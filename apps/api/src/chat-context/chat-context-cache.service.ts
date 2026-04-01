@@ -75,6 +75,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
+  static managedEntitiesRefreshTriggerCooldownKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-trigger-cooldown:v1:${entityType}:${userId}`;
+  }
+
   static managedEntitiesRefreshCursorKey(
     userId: string,
     entityType: ManagedEntityType | 'all',
@@ -102,6 +109,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   static managedGiveawayRunnerFailureCountKey(giveawayId: string): string {
     return `managed-giveaway:runner-failure-count:v1:${giveawayId}`;
+  }
+
+  static managedGiveawayRunnerDeferKey(giveawayId: string): string {
+    return `managed-giveaway:runner-defer:v1:${giveawayId}`;
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
@@ -268,6 +279,29 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async getManagedEntitiesRefreshTriggerCooldownRemainingMs(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<number> {
+    const ttlMs = await this.redis.pttl(
+      ChatContextCacheService.managedEntitiesRefreshTriggerCooldownKey(userId, entityType),
+    );
+    return ttlMs > 0 ? ttlMs : 0;
+  }
+
+  async activateManagedEntitiesRefreshTriggerCooldown(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesRefreshTriggerCooldownKey(userId, entityType),
+      '1',
+      'EX',
+      ttlSec,
+    );
+  }
+
   async getManagedEntitiesRefreshCursor(
     userId: string,
     entityType: ManagedEntityType | 'all',
@@ -397,6 +431,20 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async getManagedGiveawayRunnerDeferRemainingMs(giveawayId: string): Promise<number> {
+    const ttlMs = await this.redis.pttl(ChatContextCacheService.managedGiveawayRunnerDeferKey(giveawayId));
+    return ttlMs > 0 ? ttlMs : 0;
+  }
+
+  async activateManagedGiveawayRunnerDefer(giveawayId: string, ttlSec: number): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedGiveawayRunnerDeferKey(giveawayId),
+      '1',
+      'EX',
+      ttlSec,
+    );
+  }
+
   async incrementManagedGiveawayRunnerFailureCount(
     giveawayId: string,
     ttlSec: number,
@@ -411,6 +459,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(
       ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
       ChatContextCacheService.managedGiveawayRunnerFailureCountKey(giveawayId),
+      ChatContextCacheService.managedGiveawayRunnerDeferKey(giveawayId),
     );
   }
 
