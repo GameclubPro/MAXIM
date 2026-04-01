@@ -3567,6 +3567,90 @@ describe('AdminService.applyManualModerationAction', () => {
         'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.',
     });
   });
+
+  it('returns clear error when bot lacks add_remove_members for manual unban', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['change_chat_info'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'UNBAN' },
+      ),
+    ).rejects.toThrow(
+      'У бота нет права MAX add_remove_members, поэтому он не может возвращать участников.',
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+  });
+
+  it('returns a clearer fallback when MAX rejects manual unban without details', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockRejectedValue(new Error('Request failed with status code 400')),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-4',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'UNBAN' },
+      ),
+    ).rejects.toThrow(
+      'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+  });
 });
 
 describe('AdminService.applyManualSystemBan', () => {

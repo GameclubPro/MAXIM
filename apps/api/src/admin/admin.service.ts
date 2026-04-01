@@ -276,6 +276,7 @@ type AdoptChatRulesFromMessageInput = {
 };
 
 type ManualMemberModerationAction = 'MUTE' | 'BAN';
+type ManualMemberManageMembersAction = ManualMemberModerationAction | 'UNBAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
 type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ALREADY_PRESENT';
 
@@ -9975,6 +9976,7 @@ export class AdminService {
 
     let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId);
     if (unbanMode !== 'ALREADY_PRESENT') {
+      await this.assertBotCanManageMembers(chatId, 'UNBAN');
       try {
         await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
       } catch (error: unknown) {
@@ -9982,7 +9984,14 @@ export class AdminService {
         if (this.isAlreadyPresentMemberAddError(maxApiMessage)) {
           unbanMode = 'ALREADY_PRESENT';
         } else {
-          throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
+          const resolvedMessage = await this.resolveManualMemberUnbanErrorMessage(
+            chatId,
+            targetUserId,
+            error,
+          );
+          throw new BadRequestException(
+            resolvedMessage || 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
+          );
         }
       }
     }
@@ -10837,7 +10846,7 @@ export class AdminService {
 
   private async assertBotCanManageMembers(
     chatId: string,
-    action: ManualMemberModerationAction,
+    action: ManualMemberManageMembersAction,
   ): Promise<void> {
     const maxClientWithAccess = this.maxClient as MaxClientService & {
       getCurrentChatMemberAccess?: (chatId: string) => Promise<MaxChatMemberAccess>;
@@ -10868,7 +10877,9 @@ export class AdminService {
       throw new ForbiddenException(
         action === 'BAN'
           ? 'Бот должен быть администратором этого чата MAX, чтобы банить участников.'
-          : 'Бот должен быть администратором этого чата MAX, чтобы модерировать участников.',
+          : action === 'UNBAN'
+            ? 'Бот должен быть администратором этого чата MAX, чтобы возвращать участников.'
+            : 'Бот должен быть администратором этого чата MAX, чтобы модерировать участников.',
       );
     }
 
@@ -10879,7 +10890,9 @@ export class AdminService {
       throw new ForbiddenException(
         action === 'BAN'
           ? 'У бота нет права MAX add_remove_members, поэтому он не может банить участников.'
-          : 'У бота нет права MAX add_remove_members, поэтому он не может модерировать участников.',
+          : action === 'UNBAN'
+            ? 'У бота нет права MAX add_remove_members, поэтому он не может возвращать участников.'
+            : 'У бота нет права MAX add_remove_members, поэтому он не может модерировать участников.',
       );
     }
   }
@@ -11014,6 +11027,29 @@ export class AdminService {
     return action === 'BAN'
       ? 'MAX отклонил бан участника. Проверьте тип чата, статус цели и права бота.'
       : 'MAX отклонил модерацию участника. Проверьте статус цели.';
+  }
+
+  private async resolveManualMemberUnbanErrorMessage(
+    chatId: string,
+    targetUserId: string,
+    error: unknown,
+  ): Promise<string> {
+    const maxApiMessage = this.extractMaxApiErrorMessage(error);
+    if (maxApiMessage && !this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
+      return maxApiMessage;
+    }
+
+    try {
+      await this.assertBotCanManageMembers(chatId, 'UNBAN');
+    } catch (diagnosticError: unknown) {
+      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+    }
+
+    if (maxApiMessage) {
+      return maxApiMessage;
+    }
+
+    return 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.';
   }
 
   private isAmbiguousMaxMemberModerationError(message: string): boolean {
