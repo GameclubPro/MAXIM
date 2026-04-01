@@ -34,7 +34,6 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './lazy-pages';
-import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
 
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
@@ -43,18 +42,6 @@ const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
-
-function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): string | null {
-  if (!refresh || refresh.complete) {
-    return null;
-  }
-
-  if (typeof refresh.progressPercent === 'number') {
-    return `${refresh.progressPercent}%`;
-  }
-
-  return null;
-}
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -301,18 +288,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const refreshProgressLabel = formatRefreshProgress(refreshState);
+  const refreshProgressLabel =
+    refreshState && !refreshState.complete && typeof refreshState.progressPercent === 'number'
+      ? `${refreshState.progressPercent}%`
+      : null;
   const refreshStatusLabel =
     isFetching || isSyncPending
       ? refreshProgressLabel
-        ? `Фоновое обновление · ${refreshProgressLabel}`
-        : 'Фоновое обновление'
+        ? `Обновляем · ${refreshProgressLabel}`
+        : 'Обновляем'
       : isRefreshTemporarilyBlocked
-        ? `Пауза · ${manualRefreshRetryAfterSec} с`
+        ? `Пауза ${manualRefreshRetryAfterSec} с`
         : isManualRefreshCoolingDown
           ? `Повтор через ${manualRefreshRetryAfterSec} с`
           : isManualRefreshInProgressByState
-            ? 'Фоновое обновление'
+            ? 'Обновляем'
         : null;
   const showSystemCard = canAccessSystem;
 
