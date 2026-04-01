@@ -82,10 +82,10 @@ function mergeManagedEntityPresentation(
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
-): Promise<ChatSummary[]> {
+) : Promise<ManagedEntitiesListResponse> {
   return entityType === 'chat'
-    ? getChats(api, { deferDiscovery: true })
-    : getChannels(api, { deferDiscovery: true });
+    ? getChats(api, { deferDiscovery: true, includeRefreshState: true })
+    : getChannels(api, { deferDiscovery: true, includeRefreshState: true });
 }
 
 async function refreshManagedEntities(
@@ -259,21 +259,29 @@ export function useManagedEntitiesSync({
           return;
         }
 
-        const initialData = mergeManagedEntityPresentation(latestDataRef.current, initial);
+        const initialData = mergeManagedEntityPresentation(latestDataRef.current, initial.items);
         latestDataRef.current = initialData;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
+        const initialPhase = initial.refresh.complete
+          ? 'complete'
+          : initial.refresh.backoffActive
+            ? 'backoff'
+            : documentVisible
+              ? 'syncing'
+              : 'idle';
         setState({
           data: initialData,
           error: null,
-          refreshState: null,
-          phase: documentVisible ? 'syncing' : 'idle',
+          refreshState: initial.refresh,
+          phase: initialPhase,
         });
 
-        if (!documentVisible) {
+        if (!documentVisible || initial.refresh.complete || initial.refresh.backoffActive) {
           return;
         }
 
+        let pendingRefreshState = initial.refresh;
         while (!cancelled) {
           if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
             setState((current) => ({
@@ -285,6 +293,18 @@ export function useManagedEntitiesSync({
                   : 'idle',
             }));
             return;
+          }
+
+          const delayMs =
+            forceRefreshPending === true
+              ? 0
+              : (pendingRefreshState?.nextPollAfterMs ??
+                MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS);
+          if (delayMs > 0) {
+            await delay(delayMs);
+            if (cancelled) {
+              return;
+            }
           }
 
           const next = await refreshManagedEntities(api, entityType, {
@@ -309,12 +329,11 @@ export function useManagedEntitiesSync({
             refreshState: next.refresh,
             phase,
           });
+          pendingRefreshState = next.refresh;
 
           if (next.refresh.complete || next.refresh.backoffActive) {
             return;
           }
-
-          await delay(next.refresh.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS);
         }
       } catch (error: unknown) {
         if (cancelled) {
