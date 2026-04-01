@@ -1478,6 +1478,22 @@ export class AdminService {
     };
   }
 
+  private collectPreferredBotIds(options: {
+    botId?: string | null;
+    botIds?: readonly string[] | null;
+  }): string[] {
+    const preferredBotIds = new Set<string>();
+
+    for (const candidate of [options.botId, ...(options.botIds ?? [])]) {
+      const normalizedBotId = this.readTrimmedString(candidate);
+      if (normalizedBotId) {
+        preferredBotIds.add(normalizedBotId);
+      }
+    }
+
+    return [...preferredBotIds];
+  }
+
   private buildCurrentContextDiscoveryCandidates(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
@@ -1855,6 +1871,10 @@ export class AdminService {
         async ({ chat }) => {
           const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, {
             bypassNegativeCache: true,
+            preferredBotIds: this.collectPreferredBotIds({
+              botId: chat.primaryBotId,
+              botIds: chat.assignedBots.map((bot) => bot.botId),
+            }),
           });
 
           return access.status === 'granted' ? chat : null;
@@ -2004,6 +2024,7 @@ export class AdminService {
         async (candidate) => {
           const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
             bypassNegativeCache: true,
+            preferredBotIds: this.collectPreferredBotIds(candidate),
             trafficClass: 'interactive',
           });
           if (access.status === 'throttled') {
@@ -2373,6 +2394,7 @@ export class AdminService {
           }
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
+            preferredBotIds: this.collectPreferredBotIds(remoteChat),
             trafficClass: discoveryTrafficClass,
           });
           if (access.status === 'throttled') {
@@ -14663,6 +14685,13 @@ export class AdminService {
   }
 
   private async resolveCandidateBotIdsForChat(chatId: string): Promise<string[]> {
+    return this.resolveCandidateBotIdsForChatWithPreferences(chatId, []);
+  }
+
+  private async resolveCandidateBotIdsForChatWithPreferences(
+    chatId: string,
+    preferredBotIds: readonly string[],
+  ): Promise<string[]> {
     const persisted = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
@@ -14680,6 +14709,26 @@ export class AdminService {
     });
 
     const resolved = new Set<string>();
+    const ordered: string[] = [];
+    const appendCandidateBotId = (botId: string | null | undefined) => {
+      const normalizedInput = this.readTrimmedString(botId);
+      if (!normalizedInput) {
+        return;
+      }
+
+      const normalizedBotId = this.maxBotRegistry?.getBotById(normalizedInput)?.id ?? normalizedInput;
+      if (resolved.has(normalizedBotId)) {
+        return;
+      }
+
+      resolved.add(normalizedBotId);
+      ordered.push(normalizedBotId);
+    };
+
+    for (const botId of preferredBotIds) {
+      appendCandidateBotId(botId);
+    }
+
     for (const botId of [
       this.readTrimmedString(persisted?.primaryBotId),
       this.readTrimmedString(persisted?.botId),
@@ -14687,17 +14736,14 @@ export class AdminService {
         this.readTrimmedString(membership.botId),
       ) as Array<string | null>),
     ]) {
-      const normalizedBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? null;
-      if (normalizedBotId) {
-        resolved.add(normalizedBotId);
-      }
+      appendCandidateBotId(botId);
     }
 
     for (const bot of this.maxBotRegistry?.getDiscoveryBots() ?? []) {
-      resolved.add(bot.id);
+      appendCandidateBotId(bot.id);
     }
 
-    return [...resolved];
+    return ordered;
   }
 
   private async loadRemoteAdminAccessForBot(
@@ -14813,9 +14859,15 @@ export class AdminService {
   private async loadRemoteAdminAccess(
     chatId: string,
     userId: string,
-    options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
+    options: {
+      preferredBotIds?: readonly string[];
+      trafficClass?: 'critical' | 'interactive' | 'background';
+    } = {},
   ): Promise<AdminAccessResolution> {
-    const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
+    const candidateBotIds = await this.resolveCandidateBotIdsForChatWithPreferences(
+      chatId,
+      options.preferredBotIds ?? [],
+    );
     if (candidateBotIds.length === 0) {
       return this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
     }
@@ -14899,6 +14951,7 @@ export class AdminService {
     userId: string,
     options: {
       bypassNegativeCache?: boolean;
+      preferredBotIds?: readonly string[];
       trafficClass?: 'critical' | 'interactive' | 'background';
     } = {},
   ): Promise<AdminAccessResolution> {
@@ -14933,6 +14986,7 @@ export class AdminService {
     }
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
+      preferredBotIds: options.preferredBotIds,
       trafficClass: options.trafficClass,
     });
     this.adminAccessChecks.set(key, pending);

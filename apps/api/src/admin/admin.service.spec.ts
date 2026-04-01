@@ -5049,6 +5049,226 @@ describe('AdminService.listChannels', () => {
     });
   });
 
+  it('prefers the discovery bot when checking admin access for newly discovered chats', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: create.title ?? where.id,
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+        entityType: create.entityType ?? 'CHAT',
+      }),
+    );
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          title: 'Команда MAX',
+          lastEventTime: 10,
+          entityType: 'chat',
+          link: null,
+          botId: '888000_bot',
+          botIds: ['888000_bot'],
+        },
+      ]),
+      getChatMembersAccess: jest.fn().mockImplementation(async (_chatId: string, _userIds: string[], options?: { botId?: string }) => {
+        const botContactId = options?.botId === '888000_bot' ? '888000' : '777000';
+        return new Map([
+          [
+            'admin-1',
+            {
+              userId: 'admin-1',
+              isAdmin: options?.botId === '888000_bot',
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+          [
+            botContactId,
+            {
+              userId: botContactId,
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]);
+      }),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        const normalized = typeof botId === 'string' ? botId.trim() : '';
+        return normalized ? { id: normalized } : null;
+      }),
+      getAllBots: jest.fn().mockReturnValue([{ id: '888000_bot', label: 'Bot 888' }]),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: '888000_bot' }]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Команда MAX',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      },
+    ]);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['admin-1', '888000'],
+      {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        botId: '888000_bot',
+      },
+    );
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
+  it('falls back to other discovery bots when the preferred bot no longer grants admin access', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatMembersAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, _userIds: string[], options?: { botId?: string }) => {
+          if (options?.botId === '888000_bot') {
+            return new Map([
+              [
+                'admin-1',
+                {
+                  userId: 'admin-1',
+                  isAdmin: false,
+                  isOwner: false,
+                  permissions: [],
+                },
+              ],
+              [
+                '888000',
+                {
+                  userId: '888000',
+                  isAdmin: true,
+                  isOwner: false,
+                  permissions: [],
+                },
+              ],
+            ]);
+          }
+
+          return new Map([
+            [
+              'admin-1',
+              {
+                userId: 'admin-1',
+                isAdmin: true,
+                isOwner: false,
+                permissions: [],
+              },
+            ],
+            [
+              '777000',
+              {
+                userId: '777000',
+                isAdmin: true,
+                isOwner: false,
+                permissions: [],
+              },
+            ],
+          ]);
+        }),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId: string | null | undefined) => {
+        const normalized = typeof botId === 'string' ? botId.trim() : '';
+        return normalized ? { id: normalized } : null;
+      }),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: '777000_bot' }, { id: '888000_bot' }]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect(
+      (service as any).resolveUserAndBotAdminAccess('chat-1', 'admin-1', {
+        bypassNegativeCache: true,
+        preferredBotIds: ['888000_bot'],
+        trafficClass: 'interactive',
+      }),
+    ).resolves.toEqual({
+      status: 'granted',
+      source: 'remote',
+    });
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      ['admin-1', '888000'],
+      {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        botId: '888000_bot',
+      },
+    );
+    expect(maxClient.getChatMembersAccess).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      ['admin-1', '777000'],
+      {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        botId: '777000_bot',
+      },
+    );
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
+
   it('limits a single explicit refresh pass to the configured full refresh window', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
