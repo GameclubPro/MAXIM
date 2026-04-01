@@ -189,18 +189,8 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       cursor: refresh.cursor,
       backoffActive: refresh.backoffActive,
       nextPollAfterMs: refresh.nextPollAfterMs ?? 900,
-      processedCandidates:
-        typeof refresh.processedCandidates === 'number' &&
-        Number.isInteger(refresh.processedCandidates) &&
-        refresh.processedCandidates >= 0
-          ? refresh.processedCandidates
-          : null,
-      totalCandidates:
-        typeof refresh.totalCandidates === 'number' &&
-        Number.isInteger(refresh.totalCandidates) &&
-        refresh.totalCandidates >= 0
-          ? refresh.totalCandidates
-          : null,
+      processedCandidates: null,
+      totalCandidates: null,
       progressPercent:
         typeof refresh.progressPercent === 'number' &&
         Number.isInteger(refresh.progressPercent) &&

@@ -49,18 +49,6 @@ function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): str
     return null;
   }
 
-  if (
-    typeof refresh.processedCandidates === 'number' &&
-    typeof refresh.totalCandidates === 'number' &&
-    refresh.totalCandidates > 0
-  ) {
-    const percent =
-      typeof refresh.progressPercent === 'number'
-        ? refresh.progressPercent
-        : Math.round((refresh.processedCandidates / refresh.totalCandidates) * 100);
-    return `${refresh.processedCandidates} из ${refresh.totalCandidates} · ${percent}%`;
-  }
-
   if (typeof refresh.progressPercent === 'number') {
     return `${refresh.progressPercent}%`;
   }
