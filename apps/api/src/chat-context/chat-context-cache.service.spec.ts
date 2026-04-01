@@ -4,6 +4,7 @@ jest.mock('ioredis', () =>
     pttl: jest.fn().mockResolvedValue(-2),
     set: jest.fn().mockResolvedValue('OK'),
     del: jest.fn().mockResolvedValue(1),
+    multi: jest.fn(),
     quit: jest.fn().mockResolvedValue(undefined),
   })),
 );
@@ -338,5 +339,53 @@ describe('ChatContextCacheService', () => {
     await expect(
       service.getManagedEntitiesRefreshBackoffRemainingMs('user-1', 'channel'),
     ).resolves.toBe(45_000);
+  });
+
+  it('stores managed giveaway runner retry state in redis', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      pttl: jest.Mock;
+      multi: jest.Mock;
+      del: jest.Mock;
+    };
+    const exec = jest.fn().mockResolvedValue([[null, 3], [null, 1]]);
+    redisInstance.multi.mockReturnValue({
+      incr: jest.fn().mockReturnThis(),
+      expire: jest.fn().mockReturnThis(),
+      exec,
+    });
+
+    await service.activateManagedGiveawayRunnerBackoff('giveaway-1', 120);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey('giveaway-1'),
+      '1',
+      'EX',
+      120,
+    );
+
+    redisInstance.pttl.mockResolvedValueOnce(90_000);
+    await expect(service.getManagedGiveawayRunnerBackoffRemainingMs('giveaway-1')).resolves.toBe(
+      90_000,
+    );
+
+    await expect(
+      service.incrementManagedGiveawayRunnerFailureCount('giveaway-1', 3600),
+    ).resolves.toBe(3);
+    expect(redisInstance.multi).toHaveBeenCalled();
+
+    await service.clearManagedGiveawayRunnerFailureState('giveaway-1');
+    expect(redisInstance.del).toHaveBeenCalledWith(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey('giveaway-1'),
+      ChatContextCacheService.managedGiveawayRunnerFailureCountKey('giveaway-1'),
+    );
   });
 });

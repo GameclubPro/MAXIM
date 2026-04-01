@@ -384,6 +384,7 @@ const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
+const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 1_500;
 const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 3_000;
 const MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS = 15_000;
@@ -1240,6 +1241,7 @@ export class AdminService {
     userId: string,
     entityType: ManagedEntityTypeFilter,
     options: {
+      bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
@@ -1273,6 +1275,25 @@ export class AdminService {
       return this.readManagedEntitiesRefreshState(userId, entityType, {
         backoffActiveOverride: true,
       });
+    }
+
+    if (
+      options.bypassRemoteCache !== true &&
+      (cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
+    ) {
+      const freshness = await this.readManagedEntitiesLastSyncFreshness(userId, entityType);
+      if (freshness.fresh) {
+        const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
+        return this.createManagedEntitiesRefreshState(
+          MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+          false,
+          0,
+          {
+            totalCandidates: presentation.totalCandidates,
+            lastSyncedAt: freshness.lastSyncedAt ?? presentation.lastSyncedAt,
+          },
+        );
+      }
     }
 
     if (options.resetRefreshCursor === true || cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE) {
@@ -15772,6 +15793,40 @@ export class AdminService {
 
     return {
       totalCandidates,
+      lastSyncedAt,
+    };
+  }
+
+  private async readManagedEntitiesLastSyncFreshness(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<{ fresh: boolean; lastSyncedAt: string | null }> {
+    let lastSyncedAt: string | null = null;
+    try {
+      lastSyncedAt =
+        (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
+    } catch {
+      lastSyncedAt = null;
+    }
+
+    if (!lastSyncedAt) {
+      return {
+        fresh: false,
+        lastSyncedAt: null,
+      };
+    }
+
+    const lastSyncedAtMs = Date.parse(lastSyncedAt);
+    if (!Number.isFinite(lastSyncedAtMs)) {
+      return {
+        fresh: false,
+        lastSyncedAt,
+      };
+    }
+
+    const ageMs = Date.now() - lastSyncedAtMs;
+    return {
+      fresh: ageMs >= 0 && ageMs < MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS,
       lastSyncedAt,
     };
   }

@@ -6148,6 +6148,188 @@ describe('AdminService.listChats', () => {
     await flushAsyncTasks();
   });
 
+  it('skips auto managed refresh scheduling while the cached list is still fresh', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:05:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+        {
+          chat: {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHAT',
+          },
+        },
+      ]);
+
+      const managedEntitiesRefreshQueue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const chatContextCache = createChatContextCacheMock({
+        getManagedEntitiesLastSyncedAt: jest
+          .fn()
+          .mockResolvedValue('2026-04-01T18:00:00.000Z'),
+      });
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+          getChatAdminIds: jest.fn(),
+        } as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntitiesRefreshQueue as never,
+      );
+
+      await expect(
+        service.listChatsWithRefreshState(
+          {
+            userId: 'admin-1',
+            username: null,
+            displayName: null,
+            chatTitle: null,
+          },
+          { refresh: true },
+        ),
+      ).resolves.toEqual({
+        items: [
+          {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: '2026-03-02T10:00:00.000Z',
+            entityType: 'chat',
+            link: null,
+            channelOverview: null,
+            primaryBotId: null,
+            assignedBots: [],
+            sharedMode: 'owned',
+          },
+        ],
+        refresh: {
+          complete: true,
+          cursor: -1,
+          backoffActive: false,
+          nextPollAfterMs: 0,
+          processedCandidates: null,
+          totalCandidates: null,
+          progressPercent: 100,
+          lastSyncedAt: '2026-04-01T18:00:00.000Z',
+        },
+      });
+
+      expect(managedEntitiesRefreshQueue.add).not.toHaveBeenCalled();
+      expect(chatContextCache.setManagedEntitiesRefreshCursor).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('still queues managed refresh when bypassing remote cache even if the cached list is fresh', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:05:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+        {
+          chat: {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHAT',
+          },
+        },
+      ]);
+
+      const managedEntitiesRefreshQueue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const chatContextCache = createChatContextCacheMock({
+        getManagedEntitiesLastSyncedAt: jest
+          .fn()
+          .mockResolvedValue('2026-04-01T18:00:00.000Z'),
+      });
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+          getChatAdminIds: jest.fn(),
+        } as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntitiesRefreshQueue as never,
+      );
+
+      await expect(
+        service.listChatsWithRefreshState(
+          {
+            userId: 'admin-1',
+            username: null,
+            displayName: null,
+            chatTitle: null,
+          },
+          { refresh: true, bypassRemoteCache: true },
+        ),
+      ).resolves.toEqual({
+        items: [
+          {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: '2026-03-02T10:00:00.000Z',
+            entityType: 'chat',
+            link: null,
+            channelOverview: null,
+            primaryBotId: null,
+            assignedBots: [],
+            sharedMode: 'owned',
+          },
+        ],
+        refresh: {
+          complete: false,
+          cursor: 0,
+          backoffActive: false,
+          nextPollAfterMs: 1500,
+          processedCandidates: null,
+          totalCandidates: null,
+          progressPercent: null,
+          lastSyncedAt: null,
+        },
+      });
+
+      expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
+        'refresh-managed-entities',
+        {
+          userId: 'admin-1',
+          entityType: 'chat',
+          bypassRemoteCache: true,
+          resetRefreshCursor: false,
+        },
+        expect.objectContaining({
+          jobId: 'managed-entities-refresh__chat__admin-1',
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('returns a fresh chat list on demand instead of stale allowlist entries', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

@@ -70,8 +70,14 @@ type GiveawayActionSource = 'miniapp' | 'private_bot' | 'runner' | 'private_clai
 const GIVEAWAY_IMAGE_MAX_BYTES = 1_000_000;
 const GIVEAWAY_LOCK_STALE_MS = 60_000;
 const GIVEAWAY_DUE_BATCH_SIZE = 20;
+const GIVEAWAY_DUE_FETCH_BATCH_SIZE = GIVEAWAY_DUE_BATCH_SIZE * 4;
 const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
 const GIVEAWAY_CLAIM_START_PREFIX = 'ggc-';
+const GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE =
+  'Не удалось проверить участие в исходном чате. Повторите позже.';
+const GIVEAWAY_RUNNER_LOOKUP_FAILURE_COUNT_TTL_SEC = 6 * 60 * 60;
+const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_BASE_MS = 60_000;
+const GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS = 60 * 60_000;
 const MANAGED_GIVEAWAY_INCLUDE = Prisma.validator<Prisma.ManagedGiveawayInclude>()({
   prizes: {
     orderBy: { position: 'asc' },
@@ -120,6 +126,11 @@ export class ManagedGiveawayService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
+  private readonly giveawayRunnerFailureCounts = new Map<
+    string,
+    { count: number; expiresAtMs: number }
+  >();
+  private readonly giveawayRunnerBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -808,12 +819,20 @@ export class ManagedGiveawayService {
         ],
       },
       orderBy: [{ endsAt: 'asc' }, { startsAt: 'asc' }],
-      take: GIVEAWAY_DUE_BATCH_SIZE,
+      take: GIVEAWAY_DUE_FETCH_BATCH_SIZE,
       select: { id: true },
     });
 
+    let processed = 0;
     for (const row of rows) {
+      if (processed >= GIVEAWAY_DUE_BATCH_SIZE) {
+        break;
+      }
+      if ((await this.getManagedGiveawayRunnerBackoffRemainingMs(row.id)) > 0) {
+        continue;
+      }
       await this.processDueManagedGiveaway(row.id, reason, staleLockBefore);
+      processed += 1;
     }
   }
 
@@ -1901,7 +1920,7 @@ export class ManagedGiveawayService {
         'Failed to verify giveaway participant strictly',
       );
       throw new BadRequestException(
-        'Не удалось проверить участие в исходном чате. Повторите позже.',
+        GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE,
       );
     }
 
@@ -2108,6 +2127,7 @@ export class ManagedGiveawayService {
       const giveaway = await this.findGiveawayById(giveawayId);
       if (giveaway.endsAt.getTime() <= Date.now()) {
         await this.drawGiveaway(giveaway.id, 'runner');
+        await this.clearManagedGiveawayRunnerRetryState(giveaway.id);
         return;
       }
 
@@ -2125,6 +2145,7 @@ export class ManagedGiveawayService {
           include: MANAGED_GIVEAWAY_INCLUDE,
         });
         await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.ACTIVE);
+        await this.clearManagedGiveawayRunnerRetryState(giveaway.id);
         return;
       }
 
@@ -2133,18 +2154,130 @@ export class ManagedGiveawayService {
         data: { lockedAt: null },
       });
     } catch (error: unknown) {
-      this.logger.warn(
-        {
-          giveawayId,
-          reason,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to process managed giveaway',
-      );
+      if (this.isManagedGiveawayRunnerRetryableError(error)) {
+        const { backoffMs, failureCount } =
+          await this.activateManagedGiveawayRunnerRetryBackoff(giveawayId);
+        this.logger.warn(
+          {
+            giveawayId,
+            reason,
+            failureCount,
+            backoffMs,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Deferred managed giveaway retry after membership lookup failure',
+        );
+      } else {
+        this.logger.warn(
+          {
+            giveawayId,
+            reason,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to process managed giveaway',
+        );
+      }
       await this.prisma.managedGiveaway.updateMany({
         where: { id: giveawayId },
         data: { lockedAt: null },
       });
+    }
+  }
+
+  private isManagedGiveawayRunnerRetryableError(error: unknown): boolean {
+    if (!(error instanceof BadRequestException)) {
+      return false;
+    }
+
+    const response = error.getResponse();
+    if (typeof response === 'string') {
+      return response.includes(GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE);
+    }
+    if (!response || typeof response !== 'object') {
+      return false;
+    }
+
+    const message = (response as { message?: unknown }).message;
+    if (typeof message === 'string') {
+      return message.includes(GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE);
+    }
+    if (Array.isArray(message)) {
+      return message.some(
+        (item) => typeof item === 'string' && item.includes(GIVEAWAY_RUNNER_LOOKUP_RETRY_MESSAGE),
+      );
+    }
+
+    return false;
+  }
+
+  private async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
+    const memoryUntilMs = this.giveawayRunnerBackoffUntilMs.get(giveawayId) ?? 0;
+    const memoryRemainingMs = Math.max(0, memoryUntilMs - Date.now());
+    if (memoryRemainingMs === 0 && memoryUntilMs > 0) {
+      this.giveawayRunnerBackoffUntilMs.delete(giveawayId);
+    }
+
+    try {
+      const persistedRemainingMs =
+        (await this.chatContextCache.getManagedGiveawayRunnerBackoffRemainingMs?.(giveawayId)) ?? 0;
+      return Math.max(memoryRemainingMs, persistedRemainingMs);
+    } catch {
+      return memoryRemainingMs;
+    }
+  }
+
+  private async activateManagedGiveawayRunnerRetryBackoff(
+    giveawayId: string,
+  ): Promise<{ failureCount: number; backoffMs: number }> {
+    const failureCount = await this.incrementManagedGiveawayRunnerFailureCount(giveawayId);
+    const backoffMs = Math.min(
+      GIVEAWAY_RUNNER_LOOKUP_BACKOFF_MAX_MS,
+      GIVEAWAY_RUNNER_LOOKUP_BACKOFF_BASE_MS * 2 ** Math.max(0, failureCount - 1),
+    );
+    this.giveawayRunnerBackoffUntilMs.set(giveawayId, Date.now() + backoffMs);
+
+    try {
+      await this.chatContextCache.activateManagedGiveawayRunnerBackoff?.(
+        giveawayId,
+        Math.max(1, Math.ceil(backoffMs / 1000)),
+      );
+    } catch {
+      return { failureCount, backoffMs };
+    }
+
+    return { failureCount, backoffMs };
+  }
+
+  private async incrementManagedGiveawayRunnerFailureCount(giveawayId: string): Promise<number> {
+    const now = Date.now();
+    const memoryEntry = this.giveawayRunnerFailureCounts.get(giveawayId);
+    const memoryCount =
+      memoryEntry && memoryEntry.expiresAtMs > now ? memoryEntry.count + 1 : 1;
+    this.giveawayRunnerFailureCounts.set(giveawayId, {
+      count: memoryCount,
+      expiresAtMs: now + GIVEAWAY_RUNNER_LOOKUP_FAILURE_COUNT_TTL_SEC * 1000,
+    });
+
+    try {
+      const persistedCount =
+        (await this.chatContextCache.incrementManagedGiveawayRunnerFailureCount?.(
+          giveawayId,
+          GIVEAWAY_RUNNER_LOOKUP_FAILURE_COUNT_TTL_SEC,
+        )) ?? memoryCount;
+      return Math.max(memoryCount, persistedCount);
+    } catch {
+      return memoryCount;
+    }
+  }
+
+  private async clearManagedGiveawayRunnerRetryState(giveawayId: string): Promise<void> {
+    this.giveawayRunnerFailureCounts.delete(giveawayId);
+    this.giveawayRunnerBackoffUntilMs.delete(giveawayId);
+
+    try {
+      await this.chatContextCache.clearManagedGiveawayRunnerFailureState?.(giveawayId);
+    } catch {
+      return;
     }
   }
 

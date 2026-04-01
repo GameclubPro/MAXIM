@@ -96,6 +96,14 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-last-synced:v1:${entityType}:${userId}`;
   }
 
+  static managedGiveawayRunnerBackoffKey(giveawayId: string): string {
+    return `managed-giveaway:runner-backoff:v1:${giveawayId}`;
+  }
+
+  static managedGiveawayRunnerFailureCountKey(giveawayId: string): string {
+    return `managed-giveaway:runner-failure-count:v1:${giveawayId}`;
+  }
+
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
@@ -370,6 +378,39 @@ export class ChatContextCacheService implements OnModuleDestroy {
       isoValue,
       'EX',
       ttlSec,
+    );
+  }
+
+  async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
+    const ttlMs = await this.redis.pttl(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
+    );
+    return ttlMs > 0 ? ttlMs : 0;
+  }
+
+  async activateManagedGiveawayRunnerBackoff(giveawayId: string, ttlSec: number): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
+      '1',
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async incrementManagedGiveawayRunnerFailureCount(
+    giveawayId: string,
+    ttlSec: number,
+  ): Promise<number> {
+    const key = ChatContextCacheService.managedGiveawayRunnerFailureCountKey(giveawayId);
+    const result = await this.redis.multi().incr(key).expire(key, ttlSec).exec();
+    const count = result?.[0]?.[1];
+    return typeof count === 'number' ? count : Number.parseInt(String(count ?? '1'), 10) || 1;
+  }
+
+  async clearManagedGiveawayRunnerFailureState(giveawayId: string): Promise<void> {
+    await this.redis.del(
+      ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
+      ChatContextCacheService.managedGiveawayRunnerFailureCountKey(giveawayId),
     );
   }
 
