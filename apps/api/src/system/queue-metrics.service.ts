@@ -139,6 +139,15 @@ export type QueueMetricsSnapshot = {
   generatedAt: string;
 };
 
+export type WebhookDefaultShardSnapshot = {
+  webhookDefaultShards: Record<DefaultWebhookQueueName, QueueCounters>;
+  webhookDefaultWorkerGroups: Record<
+    DefaultWebhookWorkerGroupName,
+    WebhookDefaultWorkerGroupMetrics
+  >;
+  generatedAt: string;
+};
+
 type QueueMetricsSnapshotOptions = {
   maxAgeMs?: number;
 };
@@ -165,6 +174,9 @@ export class QueueMetricsService {
   private snapshotCache: QueueMetricsSnapshot | null = null;
   private snapshotCacheAtMs = 0;
   private snapshotPromise: Promise<QueueMetricsSnapshot> | null = null;
+  private defaultShardSnapshotCache: WebhookDefaultShardSnapshot | null = null;
+  private defaultShardSnapshotCacheAtMs = 0;
+  private defaultShardSnapshotPromise: Promise<WebhookDefaultShardSnapshot> | null = null;
   private readonly webhookJoinQueuesByName: Record<JoinWebhookQueueName, Queue | undefined>;
   private readonly webhookDefaultQueuesByName: Record<DefaultWebhookQueueName, Queue | undefined>;
 
@@ -221,6 +233,30 @@ export class QueueMetricsService {
     }
   }
 
+  async getWebhookDefaultShardSnapshot(
+    options: QueueMetricsSnapshotOptions = {},
+  ): Promise<WebhookDefaultShardSnapshot> {
+    const maxAgeMs = options.maxAgeMs ?? 0;
+    const cachedSnapshot = this.getCachedDefaultShardSnapshot(maxAgeMs);
+    if (cachedSnapshot) {
+      return cachedSnapshot;
+    }
+
+    if (this.defaultShardSnapshotPromise) {
+      return this.defaultShardSnapshotPromise;
+    }
+
+    this.defaultShardSnapshotPromise = this.buildWebhookDefaultShardSnapshot();
+
+    try {
+      const snapshot = await this.defaultShardSnapshotPromise;
+      this.setDefaultShardSnapshotCache(snapshot);
+      return snapshot;
+    } finally {
+      this.defaultShardSnapshotPromise = null;
+    }
+  }
+
   private getCachedSnapshot(maxAgeMs: number): QueueMetricsSnapshot | null {
     if (!this.snapshotCache || maxAgeMs <= 0) {
       return null;
@@ -231,6 +267,23 @@ export class QueueMetricsService {
     }
 
     return this.snapshotCache;
+  }
+
+  private getCachedDefaultShardSnapshot(maxAgeMs: number): WebhookDefaultShardSnapshot | null {
+    if (!this.defaultShardSnapshotCache || maxAgeMs <= 0) {
+      return null;
+    }
+
+    if (Date.now() - this.defaultShardSnapshotCacheAtMs > maxAgeMs) {
+      return null;
+    }
+
+    return this.defaultShardSnapshotCache;
+  }
+
+  private setDefaultShardSnapshotCache(snapshot: WebhookDefaultShardSnapshot): void {
+    this.defaultShardSnapshotCache = snapshot;
+    this.defaultShardSnapshotCacheAtMs = Date.now();
   }
 
   private async buildSnapshot(): Promise<QueueMetricsSnapshot> {
@@ -245,14 +298,13 @@ export class QueueMetricsService {
     const dynamicLeaseSummary = this.webhookDynamicLeaseStatusService
       ? await this.webhookDynamicLeaseStatusService.getSummary(2_000)
       : null;
+    const defaultShardSnapshot = await this.buildWebhookDefaultShardSnapshot(dynamicLeaseSummary);
+    this.setDefaultShardSnapshotCache(defaultShardSnapshot);
 
     const queueSnapshots = await Promise.all([
       this.readQueueCounters(this.webhookCriticalQueue),
       ...JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) =>
         this.readQueueCounters(this.webhookJoinQueuesByName[queueName]),
-      ),
-      ...DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) =>
-        this.readQueueCounters(this.webhookDefaultQueuesByName[queueName]),
       ),
       this.readQueueCounters(this.webhookBackgroundQueue),
       this.readQueueCounters(this.webhookLegacyQueue),
@@ -279,29 +331,12 @@ export class QueueMetricsService {
     ) as Record<JoinWebhookQueueName, QueueCounters>;
     const webhookJoin = this.sumQueueCounters(...Object.values(webhookJoinShards));
     const defaultSnapshotOffset = JOIN_WEBHOOK_QUEUE_NAMES.length;
-    const webhookBackground =
-      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length] ?? EMPTY_COUNTERS;
-    const webhookLegacy =
-      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length + 1] ??
-      EMPTY_COUNTERS;
-    const actions =
-      restSnapshots[defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length + 2] ??
-      EMPTY_COUNTERS;
-    const webhookDefaultShardSnapshots = restSnapshots.slice(
-      defaultSnapshotOffset,
-      defaultSnapshotOffset + DEFAULT_WEBHOOK_QUEUE_NAMES.length,
-    );
-    const webhookDefaultShards = Object.fromEntries(
-      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
-        queueName,
-        webhookDefaultShardSnapshots[index] ?? { ...EMPTY_COUNTERS },
-      ]),
-    ) as Record<DefaultWebhookQueueName, QueueCounters>;
+    const webhookBackground = restSnapshots[defaultSnapshotOffset] ?? EMPTY_COUNTERS;
+    const webhookLegacy = restSnapshots[defaultSnapshotOffset + 1] ?? EMPTY_COUNTERS;
+    const actions = restSnapshots[defaultSnapshotOffset + 2] ?? EMPTY_COUNTERS;
+    const webhookDefaultShards = defaultShardSnapshot.webhookDefaultShards;
     const webhookDefault = this.sumQueueCounters(...Object.values(webhookDefaultShards));
-    const webhookDefaultWorkerGroups = this.buildWebhookDefaultWorkerGroups(
-      webhookDefaultShards,
-      dynamicLeaseSummary,
-    );
+    const webhookDefaultWorkerGroups = defaultShardSnapshot.webhookDefaultWorkerGroups;
 
     const actionHealth = this.actionHealthService.getSnapshot(60);
     const oldestQueuedLagSec = queued.oldestLagSec;
@@ -366,6 +401,37 @@ export class QueueMetricsService {
       userFacingOldestReceivedCreatedAt: userFacingReceived.oldestCreatedAt,
       userFacingOldestReceivedLagSec,
       userFacingEffectiveLagSec,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  private async buildWebhookDefaultShardSnapshot(
+    dynamicLeaseSummary?: DefaultWebhookLeaseSummary | null,
+  ): Promise<WebhookDefaultShardSnapshot> {
+    const resolvedDynamicLeaseSummary =
+      dynamicLeaseSummary !== undefined
+        ? dynamicLeaseSummary
+        : this.webhookDynamicLeaseStatusService
+          ? await this.webhookDynamicLeaseStatusService.getSummary(2_000)
+          : null;
+    const webhookDefaultShardSnapshots = await Promise.all(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) =>
+        this.readQueueCounters(this.webhookDefaultQueuesByName[queueName]),
+      ),
+    );
+    const webhookDefaultShards = Object.fromEntries(
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName, index) => [
+        queueName,
+        webhookDefaultShardSnapshots[index] ?? { ...EMPTY_COUNTERS },
+      ]),
+    ) as Record<DefaultWebhookQueueName, QueueCounters>;
+
+    return {
+      webhookDefaultShards,
+      webhookDefaultWorkerGroups: this.buildWebhookDefaultWorkerGroups(
+        webhookDefaultShards,
+        resolvedDynamicLeaseSummary ?? null,
+      ),
       generatedAt: new Date().toISOString(),
     };
   }

@@ -2621,7 +2621,9 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<ChannelStatsResponse> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.assertChatAdmin(chatId, user.userId, 'channel', {
+      syncPersistedAccess: false,
+    });
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
     const parsed = channelStatsQuerySchema.safeParse(query);
@@ -2665,7 +2667,7 @@ export class AdminService {
         where: { id: chatId },
         select: { id: true, title: true },
       }),
-      this.getManagedEntityHeader(chatId, user, 'channel').catch(() => null),
+      this.chatContextCache.getManagedEntityHeader?.(chatId, 'channel') ?? Promise.resolve(null),
       this.prisma.$queryRaw<
         Array<{
           posts_with_buttons: unknown;
@@ -2935,7 +2937,9 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.assertChatAdmin(chatId, user.userId, 'channel', {
+      syncPersistedAccess: false,
+    });
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
     const parsed = membershipActivityQuerySchema.safeParse(query);
@@ -9043,7 +9047,9 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<LogsDashboardResponse> {
-    await this.assertChatAdmin(chatId, user.userId);
+    await this.assertChatAdmin(chatId, user.userId, null, {
+      syncPersistedAccess: false,
+    });
     const parsed = logsDashboardQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -9051,7 +9057,8 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    const headerPromise = this.getManagedEntityHeader(chatId, user, 'chat').catch(() => null);
+    const headerPromise =
+      this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
 
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
@@ -9200,7 +9207,9 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.assertChatAdmin(chatId, user.userId, 'chat', {
+      syncPersistedAccess: false,
+    });
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const parsed = membershipActivityQuerySchema.safeParse(query);
@@ -9218,7 +9227,9 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<ModerationFeedPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.assertChatAdmin(chatId, user.userId, 'chat', {
+      syncPersistedAccess: false,
+    });
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const parsed = moderationFeedQuerySchema.safeParse(query);

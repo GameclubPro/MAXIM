@@ -181,7 +181,7 @@ export class WebhookRoutingService {
     botId: string | null,
     webhookEventId: string,
     now: number,
-    preloadedSnapshot?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>,
+    preloadedSnapshot?: Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>>,
   ): Promise<DefaultWebhookQueueName> {
     const previousAssignment = this.chatAssignments.get(assignmentKey);
     const fallbackQueue =
@@ -198,7 +198,7 @@ export class WebhookRoutingService {
 
     const snapshot =
       preloadedSnapshot ??
-      (await this.queueMetricsService.getSnapshot({
+      (await this.queueMetricsService.getWebhookDefaultShardSnapshot({
         maxAgeMs: this.queueSnapshotMaxAgeMs,
       }));
     const nextQueue = this.selectLeastPressuredQueue(chatId, snapshot, fallbackQueue, now);
@@ -207,7 +207,7 @@ export class WebhookRoutingService {
 
   private selectLeastPressuredQueue(
     chatId: string,
-    snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>,
+    snapshot: Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>>,
     currentQueueName: DefaultWebhookQueueName,
     now: number,
   ): DefaultWebhookQueueName {
@@ -246,7 +246,7 @@ export class WebhookRoutingService {
   private buildQueuePressureCandidate(
     queueName: DefaultWebhookQueueName,
     tieOrder: number,
-    snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>,
+    snapshot: Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>>,
     now: number,
   ): QueuePressure {
     const queueCounters = snapshot.webhookDefaultShards[queueName];
@@ -360,7 +360,7 @@ export class WebhookRoutingService {
   private async readHotWorkerSnapshotForAssignment(
     assignment: ChatQueueAssignment,
     now: number,
-  ): Promise<Awaited<ReturnType<QueueMetricsService['getSnapshot']>> | null> {
+  ): Promise<Awaited<ReturnType<QueueMetricsService['getWebhookDefaultShardSnapshot']>> | null> {
     if (now - assignment.assignedAtMs < this.hotWorkerRebalanceMinAgeMs) {
       return null;
     }
@@ -370,7 +370,7 @@ export class WebhookRoutingService {
       return null;
     }
 
-    const snapshot = await this.queueMetricsService.getSnapshot({
+    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({
       maxAgeMs: this.queueSnapshotMaxAgeMs,
     });
     const workerGroups = Object.values(snapshot.webhookDefaultWorkerGroups);

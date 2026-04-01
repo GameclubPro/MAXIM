@@ -175,37 +175,39 @@ export class HealthService implements OnModuleDestroy {
   }
 
   private async buildReadySnapshot(): Promise<ReadinessSnapshot> {
-    const [database, redis, queueMetrics, systemMode] = await Promise.all([
+    const [database, redis, systemMode, queueMetricsResult] = await Promise.all([
       this.withTimeout(this.checkDatabase(), this.readinessDependencyTimeoutMs, 'database check'),
       this.withTimeout(this.checkRedis(), this.readinessDependencyTimeoutMs, 'redis check'),
-      this.withTimeout(
-        this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
-        this.readinessDependencyTimeoutMs,
-        'queue metrics snapshot',
-      ),
       this.withTimeout(
         this.systemModeService.getEffectiveSnapshot(),
         this.readinessDependencyTimeoutMs,
         'system mode snapshot',
       ),
+      this.tryGetQueueMetricsSnapshot(),
     ]);
+    const queueMetrics = queueMetricsResult.snapshot;
+    const queueMetricsFallbackDetail = queueMetricsResult.fallbackDetail;
 
-    const effectiveLagSec = queueMetrics.userFacingEffectiveLagSec ?? queueMetrics.effectiveLagSec ?? 0;
-    const queuedMetrics = queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued;
-    const receivedMetrics =
-      queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received;
+    const effectiveLagSec =
+      queueMetrics?.userFacingEffectiveLagSec ?? queueMetrics?.effectiveLagSec ?? systemMode.queueLagSec ?? 0;
+    const queuedMetrics = queueMetrics
+      ? queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued
+      : { count: 0 };
+    const receivedMetrics = queueMetrics
+      ? queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received
+      : { count: 0 };
     const oldestQueuedEventId =
-      queueMetrics.userFacingOldestQueuedEventId ?? queueMetrics.oldestQueuedEventId;
+      queueMetrics?.userFacingOldestQueuedEventId ?? queueMetrics?.oldestQueuedEventId ?? null;
     const oldestQueuedCreatedAt =
-      queueMetrics.userFacingOldestQueuedCreatedAt ?? queueMetrics.oldestQueuedCreatedAt;
+      queueMetrics?.userFacingOldestQueuedCreatedAt ?? queueMetrics?.oldestQueuedCreatedAt ?? null;
     const oldestQueuedLagSec =
-      queueMetrics.userFacingOldestQueuedLagSec ?? queueMetrics.oldestQueuedLagSec;
+      queueMetrics?.userFacingOldestQueuedLagSec ?? queueMetrics?.oldestQueuedLagSec ?? 0;
     const oldestReceivedEventId =
-      queueMetrics.userFacingOldestReceivedEventId ?? queueMetrics.oldestReceivedEventId;
+      queueMetrics?.userFacingOldestReceivedEventId ?? queueMetrics?.oldestReceivedEventId ?? null;
     const oldestReceivedCreatedAt =
-      queueMetrics.userFacingOldestReceivedCreatedAt ?? queueMetrics.oldestReceivedCreatedAt;
+      queueMetrics?.userFacingOldestReceivedCreatedAt ?? queueMetrics?.oldestReceivedCreatedAt ?? null;
     const oldestReceivedLagSec =
-      queueMetrics.userFacingOldestReceivedLagSec ?? queueMetrics.oldestReceivedLagSec;
+      queueMetrics?.userFacingOldestReceivedLagSec ?? queueMetrics?.oldestReceivedLagSec ?? 0;
     const evaluatedAtMs = Date.now();
     const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
     const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
@@ -215,13 +217,26 @@ export class HealthService implements OnModuleDestroy {
       : 0;
     const queueLagOk =
       !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
-    const softWarning = !rawQueueLagOk && queueLagOk;
+    const hysteresisSoftWarning = !rawQueueLagOk && queueLagOk;
+    const softWarning = hysteresisSoftWarning || Boolean(queueMetricsFallbackDetail);
+    const softWarningCode = queueMetricsFallbackDetail
+      ? STALE_READY_SOFT_WARNING_CODE
+      : hysteresisSoftWarning
+        ? 'queue-lag-hysteresis'
+        : null;
+    const softWarningDetail = queueMetricsFallbackDetail
+      ? hysteresisSoftWarning
+        ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded. ${queueMetricsFallbackDetail}`
+        : queueMetricsFallbackDetail
+      : hysteresisSoftWarning
+        ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
+        : null;
 
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
       bots: Object.fromEntries(
-        Object.entries(queueMetrics.bots ?? {}).map(([botId, botMetrics]) => [
+        Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => [
           botId,
           {
             queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
@@ -251,15 +266,13 @@ export class HealthService implements OnModuleDestroy {
           ok: queueLagOk,
           rawOk: rawQueueLagOk,
           softWarning,
-          softWarningCode: softWarning ? 'queue-lag-hysteresis' : null,
-          softWarningDetail: softWarning
-            ? `Raw user-facing queue lag ${effectiveLagSec.toFixed(1)}s already breached the ${this.queueLagThresholdSec}s threshold, but readiness stays green until the ${this.queueLagSustainSec}s sustain window is exceeded.`
-            : null,
+          softWarningCode,
+          softWarningDetail,
           thresholdSec: this.queueLagThresholdSec,
           sustainSec: this.queueLagSustainSec,
           severeThresholdSec: this.queueLagSevereSec,
           effectiveLagSec,
-          sampleGeneratedAt: queueMetrics.generatedAt,
+          sampleGeneratedAt: queueMetrics?.generatedAt ?? systemMode.updatedAt,
           breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
           breachDurationSec,
           oldestQueuedEventId,
@@ -271,6 +284,29 @@ export class HealthService implements OnModuleDestroy {
         },
       },
     };
+  }
+
+  private async tryGetQueueMetricsSnapshot(): Promise<{
+    snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>> | null;
+    fallbackDetail: string | null;
+  }> {
+    try {
+      const snapshot = await this.withTimeout(
+        this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
+        this.readinessDependencyTimeoutMs,
+        'queue metrics snapshot',
+      );
+      return {
+        snapshot,
+        fallbackDetail: null,
+      };
+    } catch (error: unknown) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return {
+        snapshot: null,
+        fallbackDetail: `Queue metrics detail is temporarily stale, so readiness fell back to the latest system-mode queue lag sample: ${detail}.`,
+      };
+    }
   }
 
   private updateQueueLagBreachState(

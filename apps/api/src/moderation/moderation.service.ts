@@ -10142,8 +10142,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           if (this.isTransientMaxApiLookupError(error)) {
             encounteredTransientThrottle = true;
             this.channelAutoPostThrottleStreak += 1;
-            this.channelAutoPostBackoffUntilMs =
-              Date.now() + this.resolveChannelAutoPostThrottleBackoffMs();
+            const backoffMs = this.resolveChannelAutoPostThrottleBackoffMs();
+            this.channelAutoPostBackoffUntilMs = Date.now() + backoffMs;
+            this.deferChannelAutoPostScan(channelSettings.chatId, backoffMs);
             break;
           }
         }
@@ -12106,6 +12107,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS *
         2 ** Math.min(Math.max(0, this.channelAutoPostThrottleStreak - 1), 3),
     );
+  }
+
+  private deferChannelAutoPostScan(chatId: string, backoffMs: number): void {
+    const current = this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
+    this.channelAutoPostScanState.set(chatId, {
+      ...current,
+      idleStreak: Math.min(current.idleStreak + 1, 8),
+      nextScanAtMs: Math.max(current.nextScanAtMs, Date.now() + backoffMs),
+    });
   }
 
   private scheduleChannelAutoPostStartupScan() {

@@ -141,4 +141,24 @@ describe('buildDefaultWebhookLeasePlan', () => {
       handoffPending: true,
     });
   });
+
+  it('keeps the current owner when a handoff would only shift the same pressure to another worker', () => {
+    const counters = buildCounters();
+    counters['moderation-default-0'] = { waiting: 4, prioritized: 0, active: 0, delayed: 0 };
+
+    const plan = buildDefaultWebhookLeasePlan({
+      mode: 'canary',
+      canaryQueues: new Set(['moderation-default-0']),
+      queueCounters: counters,
+      rebalanceCooldownMs: 30_000,
+    });
+
+    expect(plan.queues['moderation-default-0']).toMatchObject({
+      eligibleForDynamicLeases: true,
+      currentOwner: 'api-moderation',
+      desiredOwner: 'api-moderation',
+      handoffPending: false,
+      reason: 'keep-current-owner',
+    });
+  });
 });

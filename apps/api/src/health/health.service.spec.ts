@@ -293,6 +293,67 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('keeps readiness green when queue metrics detail times out but system mode stays available', async () => {
+    jest.useFakeTimers();
+    const prisma = {
+      $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+    };
+    const systemModeSnapshot = {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'system healthy',
+      updatedAt: '2026-03-31T09:10:00.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 4,
+        success: 4,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue(systemModeSnapshot),
+      peekCachedSnapshot: jest.fn().mockReturnValue(systemModeSnapshot),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+    );
+
+    const snapshotPromise = service.ready();
+    await jest.advanceTimersByTimeAsync(30);
+    const snapshot = await snapshotPromise;
+
+    expect(snapshot.ok).toBe(true);
+    expect(snapshot.checks.database).toBe(true);
+    expect(snapshot.checks.redis).toBe(true);
+    expect(snapshot.checks.queueLag).toEqual(
+      expect.objectContaining({
+        ok: true,
+        rawOk: true,
+        softWarning: true,
+        softWarningCode: 'stale-ready-fallback',
+        sampleGeneratedAt: '2026-03-31T09:10:00.000Z',
+      }),
+    );
+    expect(snapshot.checks.queueLag.softWarningDetail).toContain(
+      'Queue metrics detail is temporarily stale',
+    );
+    expect(snapshot.bots).toEqual({});
+
+    await service.onModuleDestroy();
+  });
+
   it('returns a degraded fallback snapshot when readiness data is unavailable on cold start', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:05:00.000Z'));

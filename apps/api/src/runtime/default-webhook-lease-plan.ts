@@ -56,6 +56,26 @@ export type DefaultWebhookLeasePlan = {
 };
 
 const ACTIVE_WEIGHT = 4;
+const MIN_PRESSURE_TO_REBALANCE = ACTIVE_WEIGHT;
+
+function shouldRebalanceQueue(params: {
+  currentOwner: DefaultWebhookWorkerGroupName;
+  desiredOwner: DefaultWebhookWorkerGroupName;
+  pressure: number;
+  workerLoads: Record<DefaultWebhookWorkerGroupName, number>;
+}): boolean {
+  const { currentOwner, desiredOwner, pressure, workerLoads } = params;
+  if (desiredOwner === currentOwner || pressure <= 0) {
+    return false;
+  }
+
+  const currentLoad = workerLoads[currentOwner] ?? 0;
+  const desiredLoad = workerLoads[desiredOwner] ?? 0;
+
+  // Move a shard only when it lowers the current max load instead of merely
+  // shifting the same pressure to a different worker group.
+  return currentLoad - desiredLoad > pressure;
+}
 
 function normalizeWorkerGroups(
   aliveWorkerGroups?: ReadonlySet<DefaultWebhookWorkerGroupName>,
@@ -189,6 +209,14 @@ export function buildDefaultWebhookLeasePlan(
       continue;
     }
 
+    // Avoid handing off idle or near-idle queues. Rebalancing those shards creates
+    // worker churn under live traffic but offers almost no load benefit.
+    if (queue.pressure < MIN_PRESSURE_TO_REBALANCE) {
+      queue.desiredOwner = currentOwner;
+      queue.reason = 'keep-pressure-owner';
+      continue;
+    }
+
     const desiredOwner = chooseLeastLoadedOwner({
       candidateOwners: aliveWorkerGroups,
       currentOwner,
@@ -196,7 +224,14 @@ export function buildDefaultWebhookLeasePlan(
       workerLoads,
     });
 
-    if (desiredOwner === currentOwner) {
+    if (
+      !shouldRebalanceQueue({
+        currentOwner,
+        desiredOwner,
+        pressure: queue.pressure,
+        workerLoads,
+      })
+    ) {
       queue.desiredOwner = currentOwner;
       queue.reason = 'keep-current-owner';
       continue;

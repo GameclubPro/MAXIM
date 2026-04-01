@@ -26,6 +26,7 @@ import {
   type WebhookDynamicLeasesMode,
 } from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
+import { SystemModeService } from '../system/system-mode.service';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
@@ -72,6 +73,7 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     configService: ConfigService,
     private readonly moderationService: ModerationService,
     private readonly queueMetricsService: QueueMetricsService,
+    private readonly systemModeService: SystemModeService,
   ) {
     this.redisUrl = configService.getOrThrow<string>('REDIS_URL');
     this.redis = new Redis(this.redisUrl);
@@ -189,10 +191,11 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     const claims = await this.loadClaims();
     const handoffs = await this.loadHandoffs();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
-    const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
-    const suppressRebalance =
-      (snapshot.userFacingEffectiveLagSec ?? snapshot.effectiveLagSec ?? 0) >=
-      this.suppressRebalanceQueueLagSec;
+    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({ maxAgeMs: 1_500 });
+    const systemModeSnapshot =
+      this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
+      (await this.systemModeService.getEffectiveSnapshot());
+    const suppressRebalance = systemModeSnapshot.queueLagSec >= this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,
@@ -269,10 +272,11 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private async buildSummary(): Promise<DefaultWebhookLeaseSummary> {
     const claims = await this.loadClaims();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
-    const snapshot = await this.queueMetricsService.getSnapshot({ maxAgeMs: 1_500 });
-    const suppressRebalance =
-      (snapshot.userFacingEffectiveLagSec ?? snapshot.effectiveLagSec ?? 0) >=
-      this.suppressRebalanceQueueLagSec;
+    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({ maxAgeMs: 1_500 });
+    const systemModeSnapshot =
+      this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
+      (await this.systemModeService.getEffectiveSnapshot());
+    const suppressRebalance = systemModeSnapshot.queueLagSec >= this.suppressRebalanceQueueLagSec;
     const plan = buildDefaultWebhookLeasePlan({
       mode: this.mode,
       canaryQueues: this.canaryQueues,

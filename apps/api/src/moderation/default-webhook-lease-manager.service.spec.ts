@@ -101,6 +101,36 @@ function createQueueMetricsMock() {
         Array.from({ length: 16 }, (_, index) => [`moderation-default-${index}`, { ...emptyCounters }]),
       ),
     }),
+    getWebhookDefaultShardSnapshot: jest.fn().mockResolvedValue({
+      webhookDefaultShards: Object.fromEntries(
+        Array.from({ length: 16 }, (_, index) => [`moderation-default-${index}`, { ...emptyCounters }]),
+      ),
+    }),
+  };
+}
+
+function createSystemModeMock() {
+  const snapshot = {
+    mode: 'normal',
+    source: 'auto',
+    reason: 'system healthy',
+    updatedAt: new Date().toISOString(),
+    manualMode: null,
+    queueLagSec: 0,
+    action: {
+      windowSec: 60,
+      total: 0,
+      success: 0,
+      failure: 0,
+      critical: 0,
+      errorRate: 0,
+      criticalRate: 0,
+    },
+  };
+
+  return {
+    getEffectiveSnapshot: jest.fn().mockResolvedValue(snapshot),
+    peekCachedSnapshot: jest.fn().mockReturnValue(snapshot),
   };
 }
 
@@ -123,6 +153,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       queueMetricsService as never,
+      createSystemModeMock() as never,
     );
 
     const redis = redisInstances[0]!;
@@ -162,6 +193,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
     );
 
     const queueName = 'moderation-default-0';
@@ -191,6 +223,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
     );
 
     const queueName = 'moderation-default-12';
@@ -221,6 +254,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
     );
 
     const queueName = 'moderation-default-0';
@@ -254,6 +288,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       queueMetricsService as never,
+      createSystemModeMock() as never,
     );
 
     const redis = redisInstances[0]!;
@@ -290,6 +325,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       }) as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
     );
 
     const queueName = 'moderation-default-0';
@@ -323,6 +359,7 @@ describe('DefaultWebhookLeaseManagerService', () => {
       createConfigMock() as never,
       { processWebhookEvent: jest.fn() } as never,
       createQueueMetricsMock() as never,
+      createSystemModeMock() as never,
     );
 
     const queueName = 'moderation-default-0';

@@ -539,7 +539,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                       onPointerEnter={() => prefetchChatSettings(entity.id)}
-                      onTouchStart={() => prefetchChatSettings(entity.id)}
                     >
                       Настройки
                     </Link>
@@ -552,7 +551,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                       onPointerEnter={() => prefetchChatEvents(entity.id)}
-                      onTouchStart={() => prefetchChatEvents(entity.id)}
                     >
                       События
                     </Link>
@@ -572,7 +570,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                       onPointerEnter={() => prefetchChannelSettings(entity.id)}
-                      onTouchStart={() => prefetchChannelSettings(entity.id)}
                     >
                       Настройки
                     </Link>
@@ -585,7 +582,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                       onPointerEnter={() => prefetchChannelStats(entity.id)}
-                      onTouchStart={() => prefetchChannelStats(entity.id)}
                     >
                       Статистика
                     </Link>

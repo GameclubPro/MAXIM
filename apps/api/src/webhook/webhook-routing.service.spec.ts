@@ -95,7 +95,7 @@ function createService(params?: {
     $queryRaw: jest.fn().mockResolvedValue([{ pending_count: params?.pendingCount ?? 0 }]),
   };
   const queueMetricsService = {
-    getSnapshot: jest.fn().mockResolvedValue(
+    getWebhookDefaultShardSnapshot: jest.fn().mockResolvedValue(
       params?.queueSnapshot ?? {
         webhookDefaultShards: buildDefaultShardSnapshot(),
         webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
@@ -137,7 +137,7 @@ describe('WebhookRoutingService', () => {
     );
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
-    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).not.toHaveBeenCalled();
   });
 
   it('keeps a fresh chat assignment stable during its lease window', async () => {
@@ -168,7 +168,7 @@ describe('WebhookRoutingService', () => {
         WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: 90,
       },
     });
-    queueMetricsService.getSnapshot
+    queueMetricsService.getWebhookDefaultShardSnapshot
       .mockResolvedValueOnce({
         webhookDefaultShards: firstSnapshot,
         webhookDefaultWorkerGroups: buildWorkerGroupSnapshot(),
@@ -197,7 +197,7 @@ describe('WebhookRoutingService', () => {
     ).resolves.toBe('moderation-default-7');
 
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(2);
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(2);
   });
 
   it('rebalances an expired idle chat onto the least-pressured default queue', async () => {
@@ -237,7 +237,7 @@ describe('WebhookRoutingService', () => {
     ).resolves.toBe('moderation-default-7');
 
     prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 0 }]);
-    queueMetricsService.getSnapshot.mockResolvedValueOnce({
+    queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
       webhookDefaultShards: secondSnapshot,
       webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
         'api-moderation-realtime-c': { waiting: 0, active: 0 },
@@ -292,7 +292,7 @@ describe('WebhookRoutingService', () => {
       }),
     ).resolves.toBe('moderation-default-7');
 
-    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getWebhookDefaultShardSnapshot).toHaveBeenCalledTimes(1);
   });
 
   it('prefers a queue on a colder worker group even when raw queue depth looks similar', async () => {
@@ -380,7 +380,7 @@ describe('WebhookRoutingService', () => {
     ).resolves.toBe('moderation-default-7');
 
     prisma.$queryRaw.mockResolvedValueOnce([{ pending_count: 0 }]);
-    queueMetricsService.getSnapshot.mockResolvedValueOnce({
+    queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
       webhookDefaultShards: secondSnapshot,
       webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
         'api-moderation-realtime-d': { waiting: 10, active: 2 },
@@ -389,7 +389,7 @@ describe('WebhookRoutingService', () => {
         'api-moderation-realtime-b': { waiting: 0, active: 0 },
       }),
     });
-    queueMetricsService.getSnapshot.mockResolvedValueOnce({
+    queueMetricsService.getWebhookDefaultShardSnapshot.mockResolvedValueOnce({
       webhookDefaultShards: secondSnapshot,
       webhookDefaultWorkerGroups: buildWorkerGroupSnapshot({
         'api-moderation-realtime-d': { waiting: 10, active: 2 },

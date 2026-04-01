@@ -66,7 +66,7 @@ type PendingSingleLookupBatch = {
 const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLookupPolicyConfig> =
   {
     moderation_required_subscription: {
-      positiveFreshTtlSec: 30,
+      positiveFreshTtlSec: 60,
       negativeFreshTtlSec: 10,
       backoffMs: 15_000,
       trafficClass: 'critical',
@@ -111,7 +111,7 @@ const BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
 const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
 const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
-const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 750;
+const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 400;
 const MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
 
 @Injectable()
@@ -189,7 +189,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     this.lookupTimeoutMsByTrafficClass = {
       critical: this.readConfigInt(
         configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_CRITICAL'),
-        2_000,
+        1_500,
       ),
       interactive: this.readConfigInt(
         configService.get('MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE'),

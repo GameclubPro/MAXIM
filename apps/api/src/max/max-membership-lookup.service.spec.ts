@@ -220,7 +220,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'channel-1',
       ['user-1', 'user-2', 'user-3'],
-      { trafficClass: 'critical', timeoutMs: 2_000 },
+      { trafficClass: 'critical', timeoutMs: 1_500 },
     );
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
@@ -252,7 +252,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'channel-1' });
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-1', ['user-1'], {
       trafficClass: 'critical',
-      timeoutMs: 2_000,
+      timeoutMs: 1_500,
       botId: 'id613002203036_4_bot',
     });
   });
@@ -302,7 +302,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('channel-2', ['user-7', 'user-8'], {
       trafficClass: 'critical',
-      timeoutMs: 2_000,
+      timeoutMs: 1_500,
     });
   });
 
@@ -503,7 +503,7 @@ describe('MaxMembershipLookupService', () => {
       ),
     ).resolves.toBe(true);
 
-    jest.advanceTimersByTime(31_000);
+    jest.advanceTimersByTime(61_000);
 
     await expect(
       service.getMembership('channel-hot-mode', 'user-trigger-1', 'moderation_required_subscription', {
