@@ -34,6 +34,7 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './lazy-pages';
+import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
 
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
@@ -42,6 +43,74 @@ const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
+
+function formatRefreshRetryDelay(ms: number): string {
+  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
+  if (totalSeconds < 60) {
+    return `${totalSeconds}с`;
+  }
+
+  const minutes = Math.ceil(totalSeconds / 60);
+  return `${minutes}м`;
+}
+
+function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): string | null {
+  if (!refresh || refresh.complete) {
+    return null;
+  }
+
+  if (
+    typeof refresh.processedCandidates === 'number' &&
+    typeof refresh.totalCandidates === 'number' &&
+    refresh.totalCandidates > 0
+  ) {
+    const percent =
+      typeof refresh.progressPercent === 'number'
+        ? refresh.progressPercent
+        : Math.round((refresh.processedCandidates / refresh.totalCandidates) * 100);
+    return `${refresh.processedCandidates} из ${refresh.totalCandidates} · ${percent}%`;
+  }
+
+  if (typeof refresh.progressPercent === 'number') {
+    return `${refresh.progressPercent}%`;
+  }
+
+  return null;
+}
+
+function formatRelativeSyncTime(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  const timestamp = parsed.getTime();
+  if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+
+  const diffMs = Date.now() - timestamp;
+  if (diffMs < 45_000) {
+    return 'только что';
+  }
+
+  const diffMinutes = Math.round(diffMs / 60_000);
+  if (diffMinutes < 60) {
+    return `${diffMinutes} мин назад`;
+  }
+
+  const diffHours = Math.round(diffMs / (60 * 60 * 1000));
+  if (diffHours < 24) {
+    return `${diffHours} ч назад`;
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -279,11 +348,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const refreshButtonLabel = isFetching
     ? 'Обновляем список'
     : 'Обновить список';
-  const refreshStatusLabel = isFetching
-    ? 'Обновляем в фоне'
-    : isRefreshTemporarilyBlocked
-      ? 'Обновление временно замедлено'
-      : null;
+  const refreshProgressLabel = formatRefreshProgress(refreshState);
+  const lastSyncedLabel = formatRelativeSyncTime(refreshState?.lastSyncedAt ?? null);
+  const refreshStatusLabel =
+    isFetching || isSyncPending
+      ? refreshProgressLabel
+        ? `Обновляем в фоне · ${refreshProgressLabel}`
+        : 'Обновляем в фоне'
+      : isRefreshTemporarilyBlocked
+        ? `Обновление временно замедлено · повтор через ${formatRefreshRetryDelay(
+            refreshState?.nextPollAfterMs ?? 0,
+          )}`
+        : lastSyncedLabel
+          ? `Обновлено ${lastSyncedLabel}`
+          : null;
+  const refreshMetaLabel =
+    (isFetching || isSyncPending) && lastSyncedLabel ? `Последняя синхронизация ${lastSyncedLabel}` : null;
   const showSystemCard = canAccessSystem;
 
   return (
@@ -337,6 +417,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               {refreshStatusLabel ? (
                 <p className="chats-search-card__status" aria-live="polite">
                   {refreshStatusLabel}
+                </p>
+              ) : null}
+              {refreshMetaLabel ? (
+                <p className="chats-search-card__status-meta" aria-live="polite">
+                  {refreshMetaLabel}
                 </p>
               ) : null}
             </div>

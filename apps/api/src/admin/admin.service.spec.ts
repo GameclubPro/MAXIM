@@ -701,6 +701,7 @@ function createConfigMock(
 function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
   const refreshCursorByScope = new Map<string, number | null>();
   const discoverySnapshotByScope = new Map<string, unknown[] | null>();
+  const lastSyncedAtByScope = new Map<string, string | null>();
   const buildScopeKey = (userId: string, entityType: string) => `${userId}:${entityType}`;
 
   return {
@@ -744,6 +745,16 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
       .fn()
       .mockImplementation(async (userId: string, entityType: string) => {
         discoverySnapshotByScope.delete(buildScopeKey(userId, entityType));
+      }),
+    getManagedEntitiesLastSyncedAt: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string) =>
+        lastSyncedAtByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      ),
+    setManagedEntitiesLastSyncedAt: jest
+      .fn()
+      .mockImplementation(async (userId: string, entityType: string, isoValue: string) => {
+        lastSyncedAtByScope.set(buildScopeKey(userId, entityType), isoValue);
       }),
     ...overrides,
   };
@@ -4752,10 +4763,20 @@ describe('AdminService.listChannels', () => {
         cursor: -1,
         backoffActive: false,
         nextPollAfterMs: 0,
+        processedCandidates: 121,
+        totalCandidates: 121,
+        progressPercent: 100,
+        lastSyncedAt: expect.any(String),
       },
     });
 
     expect(chatContextCache.setManagedEntitiesRefreshCursor).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesLastSyncedAt).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      expect.any(String),
+      30 * 24 * 60 * 60,
+    );
   });
 
   it('clears stale cached channels when a local refresh revalidates and loses admin access', async () => {
@@ -4869,10 +4890,20 @@ describe('AdminService.listChannels', () => {
         cursor: -1,
         backoffActive: false,
         nextPollAfterMs: 0,
+        processedCandidates: 1,
+        totalCandidates: 1,
+        progressPercent: 100,
+        lastSyncedAt: expect.any(String),
       },
     });
 
     expect(chatContextCache.setManagedEntitiesRefreshCursor).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntitiesLastSyncedAt).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      expect.any(String),
+      30 * 24 * 60 * 60,
+    );
   });
 
   it('splits local managed channels refresh into bounded cursor windows', async () => {
@@ -4932,6 +4963,10 @@ describe('AdminService.listChannels', () => {
       cursor: 8,
       backoffActive: false,
       nextPollAfterMs: 250,
+      processedCandidates: 8,
+      totalCandidates: 41,
+      progressPercent: 20,
+      lastSyncedAt: null,
     });
     expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
       'admin-1',
@@ -5012,6 +5047,10 @@ describe('AdminService.listChannels', () => {
         cursor: null,
         backoffActive: true,
         nextPollAfterMs: expect.any(Number),
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
       },
     });
     expect(result.refresh.nextPollAfterMs).toBeGreaterThan(0);
@@ -5994,6 +6033,10 @@ describe('AdminService.listChats', () => {
         cursor: 0,
         backoffActive: false,
         nextPollAfterMs: 250,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
       },
     });
     expect(discoverSpy).toHaveBeenCalledTimes(1);
@@ -6168,6 +6211,10 @@ describe('AdminService.listChats', () => {
         cursor: 0,
         backoffActive: false,
         nextPollAfterMs: 250,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
       },
     });
 
@@ -6278,6 +6325,10 @@ describe('AdminService.listChats', () => {
         cursor: null,
         backoffActive: true,
         nextPollAfterMs: 15_000,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
       },
     });
 
@@ -6388,23 +6439,31 @@ describe('AdminService.listChats', () => {
           includeRefreshState: true,
         },
       ),
-    ).resolves.toEqual(
-      expect.objectContaining({
-        items: [
-          expect.objectContaining({
-            id: 'chat-local-1',
-            title: 'Локальный чат',
-            entityType: 'chat',
-          }),
-        ],
-        refresh: {
-          complete: true,
-          cursor: -1,
-          backoffActive: false,
-          nextPollAfterMs: 0,
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'chat-local-1',
+          title: 'Локальный чат',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'chat',
+          link: null,
+          channelOverview: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
         },
-      }),
-    );
+      ],
+      refresh: {
+        complete: true,
+        cursor: -1,
+        backoffActive: false,
+        nextPollAfterMs: 0,
+        processedCandidates: 1,
+        totalCandidates: 1,
+        progressPercent: 100,
+        lastSyncedAt: expect.any(String),
+      },
+    });
 
     expect(accessSpy).toHaveBeenCalledWith(
       'chat-local-1',
@@ -6414,6 +6473,54 @@ describe('AdminService.listChats', () => {
         trafficClass: 'background',
       }),
     );
+    expect((service as any).chatContextCache.setManagedEntitiesLastSyncedAt).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.any(String),
+      30 * 24 * 60 * 60,
+    );
+  });
+
+  it('reports refresh progress from the cached discovery snapshot and last sync timestamp', async () => {
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(20),
+      getManagedEntitiesDiscoverySnapshot: jest
+        .fn()
+        .mockResolvedValue(
+          Array.from({ length: 50 }, (_, index) => ({
+            chatId: `chat-${index + 1}`,
+            title: `Чат ${index + 1}`,
+            lastEventTime: 100 - index,
+            entityType: 'chat',
+            link: null,
+          })),
+        ),
+      getManagedEntitiesLastSyncedAt: jest
+        .fn()
+        .mockResolvedValue('2026-04-01T16:00:00.000Z'),
+    });
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).readManagedEntitiesRefreshState('admin-1', 'chat'),
+    ).resolves.toEqual({
+      complete: false,
+      cursor: 20,
+      backoffActive: false,
+      nextPollAfterMs: 250,
+      processedCandidates: 20,
+      totalCandidates: 50,
+      progressPercent: 40,
+      lastSyncedAt: '2026-04-01T16:00:00.000Z',
+    });
   });
 
   it('revalidates cached chats during a fresh load before showing them', async () => {

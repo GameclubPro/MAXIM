@@ -653,6 +653,10 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
       cursor: -1,
       backoffActive: false,
       nextPollAfterMs: 0,
+      processedCandidates: items.length,
+      totalCandidates: items.length,
+      progressPercent: 100,
+      lastSyncedAt: new Date().toISOString(),
     },
   });
 }

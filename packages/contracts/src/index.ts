@@ -1472,6 +1472,10 @@ export const managedEntitiesRefreshStateSchema = z.object({
   cursor: z.number().int().nullable(),
   backoffActive: z.boolean(),
   nextPollAfterMs: z.number().int().min(0).default(900),
+  processedCandidates: z.number().int().min(0).nullable().optional().default(null),
+  totalCandidates: z.number().int().min(0).nullable().optional().default(null),
+  progressPercent: z.number().int().min(0).max(100).nullable().optional().default(null),
+  lastSyncedAt: z.string().datetime().nullable().optional().default(null),
 });
 export type ManagedEntitiesRefreshState = z.infer<typeof managedEntitiesRefreshStateSchema>;
 

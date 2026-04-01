@@ -200,6 +200,11 @@ type ManagedEntitiesListResult = {
   refresh: ManagedEntitiesRefreshState | null;
 };
 
+type ManagedEntitiesRefreshPresentation = {
+  totalCandidates: number | null;
+  lastSyncedAt: string | null;
+};
+
 type ManagedEntitiesListOptions = {
   refresh?: boolean;
   includeRefreshState?: boolean;
@@ -375,6 +380,7 @@ const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
+const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
@@ -1247,10 +1253,12 @@ export class AdminService {
     if (await this.isManagedEntitiesBackgroundRefreshPaused('schedule')) {
       const pausedCursor =
         cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
+      const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
       return this.createManagedEntitiesRefreshState(
         pausedCursor,
         true,
         MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
+        presentation,
       );
     }
 
@@ -1699,11 +1707,17 @@ export class AdminService {
           refreshCooldownKey,
         )
       : 0;
+    const lastSyncedAt =
+      (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
 
     return this.createManagedEntitiesRefreshState(
       backoffActive ? null : MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
       backoffActive,
       nextPollAfterMs,
+      {
+        totalCandidates: null,
+        lastSyncedAt,
+      },
     );
   }
 
@@ -2321,10 +2335,18 @@ export class AdminService {
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, hydratedItems);
 
       let nextCursor: number | null = null;
+      let completedAt: string | null = null;
       if (options.fullScan === true) {
         if (fullScanEndIndex >= candidateChats.length) {
           nextCursor = MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
           await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+          completedAt = new Date().toISOString();
+          await this.chatContextCache.setManagedEntitiesLastSyncedAt?.(
+            user.userId,
+            entityType,
+            completedAt,
+            MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC,
+          );
         } else {
           nextCursor = fullScanEndIndex;
           await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
@@ -2341,11 +2363,27 @@ export class AdminService {
         refresh:
           options.includeRefreshState === true
             ? options.fullScan === true
-              ? this.createManagedEntitiesRefreshState(nextCursor, false)
+              ? this.createManagedEntitiesRefreshState(nextCursor, false, undefined, {
+                  totalCandidates: candidateChats.length,
+                  lastSyncedAt:
+                    completedAt ??
+                    ((await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                      user.userId,
+                      entityType,
+                    )) ?? null),
+                })
               : this.createManagedEntitiesRefreshState(
                   MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
                   false,
                   0,
+                  {
+                    totalCandidates: null,
+                    lastSyncedAt:
+                      (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                        user.userId,
+                        entityType,
+                      )) ?? null,
+                  },
                 )
             : null,
       };
@@ -2693,6 +2731,7 @@ export class AdminService {
         ...remainingCachedChats,
       ];
       let nextCursor: number | null = null;
+      let completedAt: string | null = null;
 
       if (options.fullScan === true) {
         if (fullScanEndIndex >= supportedCandidateChats.length) {
@@ -2706,6 +2745,13 @@ export class AdminService {
           await this.chatContextCache.clearManagedEntitiesDiscoverySnapshot?.(
             user.userId,
             entityType,
+          );
+          completedAt = new Date().toISOString();
+          await this.chatContextCache.setManagedEntitiesLastSyncedAt?.(
+            user.userId,
+            entityType,
+            completedAt,
+            MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC,
           );
         } else {
           nextCursor = fullScanEndIndex;
@@ -2745,7 +2791,15 @@ export class AdminService {
         refresh:
           options.includeRefreshState === true
             ? options.fullScan === true
-              ? this.createManagedEntitiesRefreshState(nextCursor, false)
+              ? this.createManagedEntitiesRefreshState(nextCursor, false, undefined, {
+                  totalCandidates: supportedCandidateChats.length,
+                  lastSyncedAt:
+                    completedAt ??
+                    ((await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                      user.userId,
+                      entityType,
+                    )) ?? null),
+                })
               : await this.readManagedEntitiesRefreshState(user.userId, entityType)
             : null,
       };
@@ -15618,6 +15672,10 @@ export class AdminService {
     cursor: number | null,
     backoffActive: boolean,
     nextPollAfterMsOverride?: number,
+    presentation: ManagedEntitiesRefreshPresentation = {
+      totalCandidates: null,
+      lastSyncedAt: null,
+    },
   ): ManagedEntitiesRefreshState {
     const normalizedNextPollAfterMs =
       typeof nextPollAfterMsOverride === 'number'
@@ -15629,19 +15687,73 @@ export class AdminService {
             : cursor === null
               ? MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS
               : MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS;
+    const totalCandidates =
+      typeof presentation.totalCandidates === 'number' && Number.isFinite(presentation.totalCandidates)
+        ? Math.max(0, Math.trunc(presentation.totalCandidates))
+        : null;
+    const processedCandidates =
+      totalCandidates === null
+        ? null
+        : cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+          ? totalCandidates
+          : cursor === null
+            ? 0
+            : Math.max(0, Math.min(totalCandidates, Math.trunc(cursor)));
+    const progressPercent =
+      cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+        ? 100
+        : totalCandidates === null
+          ? null
+          : totalCandidates === 0
+            ? 100
+            : processedCandidates === null
+              ? null
+              : Math.max(0, Math.min(100, Math.round((processedCandidates / totalCandidates) * 100)));
 
     return {
       complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
       cursor,
       backoffActive,
       nextPollAfterMs: normalizedNextPollAfterMs,
+      processedCandidates,
+      totalCandidates,
+      progressPercent,
+      lastSyncedAt: presentation.lastSyncedAt ?? null,
+    };
+  }
+
+  private async loadManagedEntitiesRefreshPresentationData(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ManagedEntitiesRefreshPresentation> {
+    let totalCandidates: number | null = null;
+    try {
+      const snapshot =
+        (await this.chatContextCache.getManagedEntitiesDiscoverySnapshot?.(userId, entityType)) ??
+        null;
+      totalCandidates = Array.isArray(snapshot) ? snapshot.length : null;
+    } catch {
+      totalCandidates = null;
+    }
+
+    let lastSyncedAt: string | null = null;
+    try {
+      lastSyncedAt =
+        (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(userId, entityType)) ?? null;
+    } catch {
+      lastSyncedAt = null;
+    }
+
+    return {
+      totalCandidates,
+      lastSyncedAt,
     };
   }
 
   private async readManagedEntitiesRefreshState(
     userId: string,
     entityType: ManagedEntityTypeFilter,
-    options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
+  options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
     let cursor = options.cursorOverride;
@@ -15666,8 +15778,9 @@ export class AdminService {
           refreshCooldownKey,
         )
       : undefined;
+    const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
 
-    return this.createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs);
+    return this.createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs, presentation);
   }
 
   private async isManagedEntitiesBackgroundRefreshPaused(

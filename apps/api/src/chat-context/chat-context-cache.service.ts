@@ -89,6 +89,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-snapshot:v1:${entityType}:${userId}`;
   }
 
+  static managedEntitiesLastSyncedKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-last-synced:v1:${entityType}:${userId}`;
+  }
+
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
@@ -334,6 +341,35 @@ export class ChatContextCacheService implements OnModuleDestroy {
   ): Promise<void> {
     await this.redis.del(
       ChatContextCacheService.managedEntitiesDiscoverySnapshotKey(userId, entityType),
+    );
+  }
+
+  async getManagedEntitiesLastSyncedAt(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<string | null> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesLastSyncedKey(userId, entityType),
+    );
+    if (typeof raw !== 'string') {
+      return null;
+    }
+
+    const normalized = raw.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  async setManagedEntitiesLastSyncedAt(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    isoValue: string,
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesLastSyncedKey(userId, entityType),
+      isoValue,
+      'EX',
+      ttlSec,
     );
   }
 
