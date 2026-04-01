@@ -9,6 +9,12 @@ import { getChannels, getChats } from './api/root-client';
 import type { ApiTransport } from './api/transport';
 
 const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
+const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
+  complete: true,
+  cursor: -1,
+  backoffActive: false,
+  nextPollAfterMs: 0,
+};
 
 type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
@@ -261,6 +267,17 @@ export function useManagedEntitiesSync({
         latestDataRef.current = initialData;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
+
+        if (!hasCachedData && !forceRefreshPending) {
+          setState({
+            data: initialData,
+            error: null,
+            refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+            phase: documentVisible ? 'complete' : 'idle',
+          });
+          return;
+        }
+
         setState({
           data: initialData,
           error: null,
