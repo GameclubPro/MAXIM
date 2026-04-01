@@ -2,8 +2,6 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
   lazy,
-  startTransition,
-  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -67,7 +65,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   });
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
-  const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     readLastEntityType(),
@@ -132,7 +129,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return [];
     }
 
-    const normalized = deferredQuery.trim().toLowerCase();
+    const normalized = query.trim().toLowerCase();
 
     if (!normalized) {
       return activeEntities;
@@ -142,7 +139,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       const haystack = `${entity.title} ${entity.id}`.toLowerCase();
       return haystack.includes(normalized);
     });
-  }, [activeEntities, deferredQuery]);
+  }, [activeEntities, query]);
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
 
@@ -153,12 +150,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     lastRefreshAtRef.current = Date.now();
     awaitingReturnRefreshRef.current = false;
-    startTransition(() => {
-      setRefreshNonceByTab((current) => ({
-        ...current,
-        [activeTab]: current[activeTab] + 1,
-      }));
-    });
+    setRefreshNonceByTab((current) => ({
+      ...current,
+      [activeTab]: current[activeTab] + 1,
+    }));
   }
 
   useEffect(() => {
