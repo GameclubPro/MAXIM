@@ -344,7 +344,6 @@ const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === '
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 40;
-const MANAGED_ENTITIES_PROGRESSIVE_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
@@ -983,24 +982,6 @@ export class AdminService {
         recentBotAdded,
         cached,
       );
-      if (options.deferDiscovery === true) {
-        const items =
-          initial.length > 0
-            ? await this.attachManagedEntityBotAssignments(await this.hydrateManagedEntities(initial))
-            : [];
-        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
-        const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
-          bypassRemoteCache: options.bypassRemoteCache === true,
-          resetRefreshCursor: options.resetRefreshCursor === true,
-          scanWindowSize: MANAGED_ENTITIES_PROGRESSIVE_REFRESH_SCAN_WINDOW_SIZE,
-        });
-
-        return {
-          items,
-          refresh: options.includeRefreshState === true ? refresh : null,
-        };
-      }
-
       if (initial.length > 0) {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
@@ -1012,6 +993,27 @@ export class AdminService {
             options.includeRefreshState === true
               ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
               : null,
+        };
+      }
+
+      if (options.deferDiscovery === true) {
+        const local = await this.discoverManagedEntitiesFromLocalCatalog(user, entityType, {
+          respectCooldown: true,
+          fullScan: false,
+        });
+        const items =
+          local.items.length > 0
+            ? await this.attachManagedEntityBotAssignments(local.items)
+            : [];
+        this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+        const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
+          bypassRemoteCache: options.bypassRemoteCache === true,
+          resetRefreshCursor: options.resetRefreshCursor === true,
+        });
+
+        return {
+          items,
+          refresh: options.includeRefreshState === true ? refresh : null,
         };
       }
 
@@ -1051,7 +1053,6 @@ export class AdminService {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
-      scanWindowSize?: number;
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
@@ -1125,7 +1126,6 @@ export class AdminService {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
-      scanWindowSize?: number;
     } = {},
   ): Promise<void> {
     let previousCursor: number | null | undefined = undefined;
@@ -1137,7 +1137,6 @@ export class AdminService {
         includeRefreshState: true,
         bypassRemoteCache: options.bypassRemoteCache === true,
         resetRefreshCursor: pass === 0 && options.resetRefreshCursor === true,
-        scanWindowSize: options.scanWindowSize,
       });
       const refresh = result.refresh;
       if (!refresh || refresh.complete || refresh.backoffActive) {
@@ -2225,7 +2224,6 @@ export class AdminService {
       includeRefreshState?: boolean;
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
-      scanWindowSize?: number;
     },
   ): Promise<ManagedEntitiesListResult> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
@@ -2258,7 +2256,6 @@ export class AdminService {
           includeRefreshState: options.includeRefreshState === true,
           bypassRemoteCache: options.bypassRemoteCache === true,
           resetRefreshCursor: options.resetRefreshCursor === true,
-          scanWindowSize: options.scanWindowSize,
         });
 
       if (!inFlight) {
@@ -2294,7 +2291,6 @@ export class AdminService {
       includeRefreshState?: boolean;
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
-      scanWindowSize?: number;
     },
   ): Promise<ManagedEntitiesListResult> {
     try {
@@ -2368,14 +2364,7 @@ export class AdminService {
         options.fullScan === true
           ? Math.min(
               supportedCandidateChats.length,
-              fullScanStartIndex +
-                Math.max(
-                  1,
-                  Math.min(
-                    options.scanWindowSize ?? MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
-                    MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
-                  ),
-                ),
+              fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
             )
           : 0;
       const mergedKnownChats = supportedCandidateChats.flatMap((remoteChat, remoteIndex) => {

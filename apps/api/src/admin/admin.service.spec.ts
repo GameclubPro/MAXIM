@@ -4483,18 +4483,9 @@ describe('AdminService.listChannels', () => {
     );
   });
 
-  it('returns cached chats immediately and skips blocking discovery when deferred discovery is enabled', async () => {
+  it('returns local chats immediately and schedules remote refresh when deferred discovery is enabled', async () => {
     const prisma = createPrismaMock();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
-      {
-        chat: {
-          id: 'chat-cached-1',
-          title: 'Кэшированный чат',
-          createdAt: new Date('2026-03-24T00:00:00.000Z'),
-          entityType: 'CHAT',
-        },
-      },
-    ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
 
     const maxClient = {
       listBotChats: jest.fn(),
@@ -4514,7 +4505,20 @@ describe('AdminService.listChannels', () => {
       displayName: null,
       chatTitle: null,
     };
-    const localDiscoverySpy = jest.spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog');
+    const localChat = {
+      id: 'chat-local-1',
+      title: 'Локальный чат',
+      createdAt: '2026-03-24T00:00:00.000Z',
+      entityType: 'chat' as const,
+      link: null,
+      channelOverview: null,
+    };
+    const localDiscoverySpy = jest
+      .spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog')
+      .mockResolvedValue({
+        items: [localChat],
+        refresh: null,
+      });
     const blockingDiscoverySpy = jest.spyOn(service as any, 'discoverManagedEntities');
     const scheduleRefreshSpy = jest
       .spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh')
@@ -4531,16 +4535,18 @@ describe('AdminService.listChannels', () => {
 
     expect(result).toMatchObject([
       {
-        id: 'chat-cached-1',
-        title: 'Кэшированный чат',
+        id: 'chat-local-1',
+        title: 'Локальный чат',
         entityType: 'chat',
       },
     ]);
-    expect(localDiscoverySpy).not.toHaveBeenCalled();
+    expect(localDiscoverySpy).toHaveBeenCalledWith(user, 'chat', {
+      respectCooldown: true,
+      fullScan: false,
+    });
     expect(scheduleRefreshSpy).toHaveBeenCalledWith(user, 'chat', {
       bypassRemoteCache: false,
       resetRefreshCursor: false,
-      scanWindowSize: 8,
     });
     expect(blockingDiscoverySpy).not.toHaveBeenCalled();
   });
@@ -4567,7 +4573,12 @@ describe('AdminService.listChannels', () => {
       displayName: null,
       chatTitle: null,
     };
-    const localDiscoverySpy = jest.spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog');
+    const localDiscoverySpy = jest
+      .spyOn(service as any, 'discoverManagedEntitiesFromLocalCatalog')
+      .mockResolvedValue({
+        items: [],
+        refresh: null,
+      });
     const blockingDiscoverySpy = jest.spyOn(service as any, 'discoverManagedEntities');
     const scheduleRefreshSpy = jest
       .spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh')
@@ -4591,11 +4602,13 @@ describe('AdminService.listChannels', () => {
         nextPollAfterMs: 900,
       },
     });
-    expect(localDiscoverySpy).not.toHaveBeenCalled();
+    expect(localDiscoverySpy).toHaveBeenCalledWith(user, 'chat', {
+      respectCooldown: true,
+      fullScan: false,
+    });
     expect(scheduleRefreshSpy).toHaveBeenCalledWith(user, 'chat', {
       bypassRemoteCache: false,
       resetRefreshCursor: false,
-      scanWindowSize: 8,
     });
     expect(blockingDiscoverySpy).not.toHaveBeenCalled();
   });
