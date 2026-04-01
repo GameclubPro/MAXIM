@@ -1638,7 +1638,7 @@ export class AdminService {
     if (
       !Array.isArray(header.assignedBots) ||
       header.assignedBots.length === 0 ||
-      typeof this.maxClient.getChatMemberProfiles !== 'function'
+      typeof this.maxClient.getOwnProfile !== 'function'
     ) {
       return header;
     }
@@ -1672,34 +1672,42 @@ export class AdminService {
       missingBotIds.push(normalizedBotId);
     }
 
-    if (missingBotIds.length > 0) {
-      const lookupBotId = this.resolveManagedEntityBotProfileLookupBotId(header);
-      if (lookupBotId) {
-        try {
-          const profiles = await this.maxClient.getChatMemberProfiles(header.id, missingBotIds, {
-            botId: lookupBotId,
+    if (missingBotIds.length > 0 && typeof this.maxClient.getOwnProfile === 'function') {
+      const results = await Promise.allSettled(
+        missingBotIds.map(async (botId) => {
+          const profile = await this.maxClient.getOwnProfile({
+            botId,
             trafficClass: 'interactive',
             timeoutMs: 2_500,
             sourceTag: MAX_API_SOURCE_TAGS.SETTINGS_BOT_PROFILE,
           });
+          const snapshot = {
+            avatarUrl: this.readTrimmedString(profile.avatarUrl) ?? null,
+          } satisfies ManagedEntityBotProfileSnapshot;
+          cachedProfilesByBotId.set(botId, snapshot);
+          await this.chatContextCache.setManagedEntityBotProfile?.(botId, snapshot);
+        }),
+      );
 
-          for (const botId of missingBotIds) {
-            const snapshot = {
-              avatarUrl: this.readTrimmedString(profiles.get(botId)?.avatarUrl) ?? null,
-            } satisfies ManagedEntityBotProfileSnapshot;
-            cachedProfilesByBotId.set(botId, snapshot);
-            await this.chatContextCache.setManagedEntityBotProfile?.(botId, snapshot);
-          }
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId: header.id,
-              botIds: missingBotIds,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to resolve managed entity bot avatars from MAX',
-          );
-        }
+      const rejectedProfiles = results
+        .map((result, index) =>
+          result.status === 'rejected'
+            ? {
+                botId: missingBotIds[index] ?? 'unknown',
+                err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+              }
+            : null,
+        )
+        .filter((entry): entry is { botId: string; err: string } => entry !== null);
+      if (rejectedProfiles.length > 0) {
+        this.logger.warn(
+          {
+            chatId: header.id,
+            botIds: rejectedProfiles.map((entry) => entry.botId),
+            errors: rejectedProfiles.map((entry) => entry.err),
+          },
+          'Failed to resolve some managed entity bot avatars from MAX',
+        );
       }
     }
 
@@ -1718,28 +1726,6 @@ export class AdminService {
         };
       }),
     };
-  }
-
-  private resolveManagedEntityBotProfileLookupBotId(
-    header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'>,
-  ): string | null {
-    const primaryBotId = this.readTrimmedString(header.primaryBotId);
-    if (primaryBotId) {
-      return primaryBotId;
-    }
-
-    for (const bot of header.assignedBots) {
-      if (bot.membershipStatus === 'removed' || bot.lifecycleState === 'disabled') {
-        continue;
-      }
-
-      const normalizedBotId = this.readTrimmedString(bot.botId);
-      if (normalizedBotId) {
-        return normalizedBotId;
-      }
-    }
-
-    return null;
   }
 
   private readManagedEntityPermissionsSummary(

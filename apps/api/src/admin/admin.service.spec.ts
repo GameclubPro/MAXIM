@@ -7284,17 +7284,10 @@ describe('AdminService.listChats', () => {
     ]);
 
     const maxClient = {
-      getChatMemberProfiles: jest.fn().mockResolvedValue(
-        new Map([
-          [
-            'id613002203036_4_bot',
-            {
-              userId: 'id613002203036_4_bot',
-              avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
-            },
-          ],
-        ]),
-      ),
+      getOwnProfile: jest.fn().mockResolvedValue({
+        userId: '214634783',
+        avatarUrl: 'https://cdn.max.ru/u/214634783/avatar.jpg',
+      }),
     };
     const chatContextCache = createChatContextCacheMock({
       getManagedEntityBotProfile: jest.fn().mockImplementation(async (botId: string) =>
@@ -7365,16 +7358,14 @@ describe('AdminService.listChats', () => {
         lifecycleState: 'active',
         speechPersona: 'female',
         characterName: 'Майор Максимова',
-        avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
+        avatarUrl: 'https://cdn.max.ru/u/214634783/avatar.jpg',
         capabilities: [],
         permissionsSummary: null,
       },
     ]);
-    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(
-      'chat-1',
-      ['id613002203036_4_bot'],
+    expect(maxClient.getOwnProfile).toHaveBeenCalledWith(
       {
-        botId: 'id613002203036_bot',
+        botId: 'id613002203036_4_bot',
         trafficClass: 'interactive',
         timeoutMs: 2500,
         sourceTag: 'settings_bot_profile',
@@ -7383,7 +7374,7 @@ describe('AdminService.listChats', () => {
     expect(chatContextCache.setManagedEntityBotProfile).toHaveBeenCalledWith(
       'id613002203036_4_bot',
       {
-        avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
+        avatarUrl: 'https://cdn.max.ru/u/214634783/avatar.jpg',
       },
     );
   });

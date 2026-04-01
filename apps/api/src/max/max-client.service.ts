@@ -1600,6 +1600,42 @@ export class MaxClientService implements OnModuleDestroy {
     return profiles;
   }
 
+  async getOwnProfile(options: MaxApiRequestOptions = {}): Promise<MaxChatMemberProfile> {
+    const bot = this.resolveBot(options.botId);
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
+    const data = await this.executeGlobalRequest(
+      async () =>
+        this.request<Record<string, unknown>>('get', '/me', {
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
+        }),
+      options,
+    );
+
+    return {
+      userId:
+        this.readTrimmedString(data.user_id ?? data.userId ?? data.id) ??
+        bot.contactId ??
+        bot.id,
+      displayName: this.readTrimmedString(
+        data.first_name ?? data.firstName ?? data.display_name ?? data.displayName ?? data.name,
+      ),
+      username: this.readTrimmedString(data.username),
+      avatarUrl: this.readTrimmedString(
+        data.full_avatar_url ?? data.fullAvatarUrl ?? data.avatar_url ?? data.avatarUrl,
+      ),
+      profileUrl: this.readProfileUrl(
+        data.profile_url,
+        data.profileUrl,
+        data.url,
+        data.link,
+        data.username ? `https://max.ru/${String(data.username).trim()}` : null,
+      ),
+    };
+  }
+
   async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
     const botId = this.resolveBot(options.botId).id;
     if (!options.bypassCache) {

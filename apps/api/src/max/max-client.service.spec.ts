@@ -1725,6 +1725,45 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('reads the current bot profile from GET /me', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            user_id: '214634783',
+            first_name: 'Майор Максимова',
+            username: 'id613002203036_4_bot',
+            avatar_url: 'https://i.oneme.ru/i?r=small-avatar',
+            full_avatar_url: 'https://i.oneme.ru/i?r=full-avatar',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getOwnProfile({
+      botId: '777000_bot',
+      sourceTag: MAX_API_SOURCE_TAGS.SETTINGS_BOT_PROFILE,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/me',
+      }),
+    );
+    expect(result).toEqual({
+      userId: '214634783',
+      displayName: 'Майор Максимова',
+      username: 'id613002203036_4_bot',
+      avatarUrl: 'https://i.oneme.ru/i?r=full-avatar',
+      profileUrl: 'https://max.ru/id613002203036_4_bot',
+    });
+
+    await service.onModuleDestroy();
+  });
+
   it('applies global MAX API rate limit to read requests', async () => {
     const httpService = {
       request: jest.fn(),
