@@ -78,16 +78,20 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     entityType: 'chat',
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
-    resumeOnVisibilityReturn: true,
-    reloadOnMount: true,
+    skipInitialSyncIfCached: true,
+    freshOnManualReload: true,
+    persistLocalCache: true,
+    localCacheScope: 'home',
   });
   const channelsState = useManagedEntitiesSync({
     api,
     entityType: 'channel',
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
-    resumeOnVisibilityReturn: true,
-    reloadOnMount: true,
+    skipInitialSyncIfCached: true,
+    freshOnManualReload: true,
+    persistLocalCache: true,
+    localCacheScope: 'home',
   });
 
   const activeEntities = useMemo(() => {
