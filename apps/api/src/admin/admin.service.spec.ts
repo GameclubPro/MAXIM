@@ -6193,6 +6193,229 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('pauses managed entities refresh scheduling while the shared system mode is degraded', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 18.0s',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 18,
+        action: {
+          windowSec: 60,
+          total: 180,
+          success: 168,
+          failure: 12,
+          critical: 0,
+          errorRate: 0.066,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+      systemModeService as never,
+    );
+
+    await expect(
+      service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'chat',
+          link: null,
+          channelOverview: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        },
+      ],
+      refresh: {
+        complete: false,
+        cursor: null,
+        backoffActive: true,
+        nextPollAfterMs: 15_000,
+      },
+    });
+
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(managedEntitiesRefreshQueue.add).not.toHaveBeenCalled();
+    expect(managedEntitiesRefreshQueue.getJob).not.toHaveBeenCalled();
+  });
+
+  it('processes only one managed refresh chunk per background job', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
+      items: [],
+      refresh: {
+        complete: false,
+        cursor: 20,
+        backoffActive: false,
+        nextPollAfterMs: 250,
+      },
+    });
+    const repairSpy = jest
+      .spyOn(service as any, 'repairManagedEntitiesAllowlistAfterFullRefresh')
+      .mockResolvedValue(undefined);
+
+    await expect(
+      service.processManagedEntitiesRefreshJob({
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: false,
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(discoverSpy).toHaveBeenCalledTimes(1);
+    expect(discoverSpy).toHaveBeenCalledWith(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'chat',
+      expect.objectContaining({
+        respectCooldown: false,
+        fullScan: true,
+        includeRefreshState: true,
+        bypassRemoteCache: false,
+        resetRefreshCursor: false,
+      }),
+    );
+    expect(repairSpy).not.toHaveBeenCalled();
+  });
+
+  it('uses background traffic for local full-scan admin checks', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([
+      createLocalManagedEntityRow({
+        chatId: 'chat-local-1',
+        title: 'Локальный чат',
+        entityType: 'chat',
+      }),
+    ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const accessSpy = jest
+      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
+      .mockResolvedValue({
+        status: 'granted',
+        source: 'remote',
+      });
+    jest.spyOn(service as any, 'upsertUserChatAccess').mockResolvedValue({
+      id: 'chat-local-1',
+      title: 'Локальный чат',
+      createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      entityType: 'CHAT',
+    });
+
+    await expect(
+      (service as any).runManagedEntitiesLocalDiscovery(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+        'managed-refresh-cooldown:test',
+        {
+          fullScan: true,
+          includeRefreshState: true,
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        items: [
+          expect.objectContaining({
+            id: 'chat-local-1',
+            title: 'Локальный чат',
+            entityType: 'chat',
+          }),
+        ],
+        refresh: {
+          complete: true,
+          cursor: -1,
+          backoffActive: false,
+          nextPollAfterMs: 0,
+        },
+      }),
+    );
+
+    expect(accessSpy).toHaveBeenCalledWith(
+      'chat-local-1',
+      'admin-1',
+      expect.objectContaining({
+        bypassNegativeCache: true,
+        trafficClass: 'background',
+      }),
+    );
+  });
+
   it('revalidates cached chats during a fresh load before showing them', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

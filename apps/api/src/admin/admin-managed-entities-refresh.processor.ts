@@ -8,7 +8,7 @@ import {
 } from './admin-managed-entities-refresh.queue';
 
 @Processor(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE, {
-  concurrency: 2,
+  concurrency: 1,
 })
 export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
   constructor(private readonly adminService: AdminService) {

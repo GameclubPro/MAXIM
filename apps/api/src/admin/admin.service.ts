@@ -168,6 +168,11 @@ import {
   type SystemAccessConfig,
 } from '../system/system-access.util';
 import {
+  SystemModeService,
+  isSystemModeRecoveryWindow,
+  type SystemModeSnapshot,
+} from '../system/system-mode.service';
+import {
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   type AdminManagedEntitiesRefreshJob,
 } from './admin-managed-entities-refresh.queue';
@@ -364,7 +369,7 @@ const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 220;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
-const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 40;
+const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
@@ -374,6 +379,8 @@ const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
 const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 1_500;
+const MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS = 15_000;
+const MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 25;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 2;
@@ -651,6 +658,7 @@ export class AdminService {
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
+  private managedEntitiesDegradePauseLogAtMs = 0;
   private readonly logsDashboardResponseCache = new Map<
     string,
     TimedPromiseCacheEntry<LogsDashboardResponse>
@@ -676,6 +684,7 @@ export class AdminService {
     @Optional()
     @InjectQueue(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE)
     private readonly adminManagedEntitiesRefreshQueue?: Queue<AdminManagedEntitiesRefreshJob>,
+    @Optional() private readonly systemModeService?: SystemModeService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -1100,12 +1109,16 @@ export class AdminService {
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
-    const existing = this.managedEntitiesBackgroundRefreshRuns.get(refreshKey);
     const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
       user.userId,
       entityType,
       options,
     );
+    if (refreshState.backoffActive || refreshState.complete) {
+      return refreshState;
+    }
+
+    const existing = this.managedEntitiesBackgroundRefreshRuns.get(refreshKey);
 
     if (!existing) {
       if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
@@ -1223,6 +1236,24 @@ export class AdminService {
       resetRefreshCursor?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
+    let cursor: number | null = null;
+    try {
+      cursor =
+        (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(userId, entityType)) ?? null;
+    } catch {
+      cursor = null;
+    }
+
+    if (await this.isManagedEntitiesBackgroundRefreshPaused('schedule')) {
+      const pausedCursor =
+        cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
+      return this.createManagedEntitiesRefreshState(
+        pausedCursor,
+        true,
+        MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
+      );
+    }
+
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
     const backoffActive = await this.isManagedEntitiesRefreshBackoffActive(
       userId,
@@ -1235,8 +1266,6 @@ export class AdminService {
       });
     }
 
-    let cursor =
-      (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(userId, entityType)) ?? null;
     if (options.resetRefreshCursor === true || cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE) {
       cursor = 0;
       await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
@@ -1258,38 +1287,25 @@ export class AdminService {
       resetRefreshCursor?: boolean;
     } = {},
   ): Promise<void> {
-    let previousCursor: number | null | undefined = undefined;
-
-    for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
-      const result = await this.discoverManagedEntities(user, entityType, {
-        respectCooldown: false,
-        fullScan: true,
-        includeRefreshState: true,
-        bypassRemoteCache: options.bypassRemoteCache === true,
-        resetRefreshCursor: pass === 0 && options.resetRefreshCursor === true,
-      });
-      const refresh = result.refresh;
-      if (!refresh || refresh.backoffActive) {
-        return;
-      }
-      if (refresh.complete) {
-        await this.repairManagedEntitiesAllowlistAfterFullRefresh(user.userId, entityType);
-        return;
-      }
-      if (refresh.cursor === null || refresh.cursor === previousCursor) {
-        return;
-      }
-
-      previousCursor = refresh.cursor;
+    if (await this.isManagedEntitiesBackgroundRefreshPaused('job')) {
+      return;
     }
 
-    this.logger.warn(
-      {
-        entityType,
-        userId: user.userId,
-      },
-      'Managed entities background refresh stopped before completion',
-    );
+    const result = await this.discoverManagedEntities(user, entityType, {
+      respectCooldown: false,
+      fullScan: true,
+      includeRefreshState: true,
+      bypassRemoteCache: options.bypassRemoteCache === true,
+      resetRefreshCursor: options.resetRefreshCursor === true,
+    });
+    const refresh = result.refresh;
+    if (!refresh || refresh.backoffActive) {
+      return;
+    }
+
+    if (refresh.complete) {
+      await this.repairManagedEntitiesAllowlistAfterFullRefresh(user.userId, entityType);
+    }
   }
 
   private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
@@ -2208,7 +2224,7 @@ export class AdminService {
         async (candidate) => {
           const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
             bypassNegativeCache: true,
-            trafficClass: 'interactive',
+            trafficClass: options.fullScan ? 'background' : 'interactive',
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -15652,6 +15668,70 @@ export class AdminService {
       : undefined;
 
     return this.createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs);
+  }
+
+  private async isManagedEntitiesBackgroundRefreshPaused(
+    reason: 'schedule' | 'job',
+  ): Promise<boolean> {
+    const snapshot = await this.resolveSystemModeSnapshot();
+    if (snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
+      return false;
+    }
+
+    const now = Date.now();
+    if (now - this.managedEntitiesDegradePauseLogAtMs >= MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
+      this.managedEntitiesDegradePauseLogAtMs = now;
+      this.logger.log(
+        {
+          reason,
+          mode: snapshot.mode,
+          source: snapshot.source,
+          details: snapshot.reason,
+        },
+        'Paused managed entities background refresh because the system is degraded',
+      );
+    }
+
+    return true;
+  }
+
+  private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
+    if (!this.systemModeService) {
+      return this.createFallbackSystemModeSnapshot();
+    }
+
+    const systemModeService = this.systemModeService as SystemModeService & {
+      getEffectiveSnapshot?: () => Promise<SystemModeSnapshot>;
+      getSnapshot?: () => SystemModeSnapshot;
+    };
+    if (typeof systemModeService.getEffectiveSnapshot === 'function') {
+      return systemModeService.getEffectiveSnapshot();
+    }
+    if (typeof systemModeService.getSnapshot === 'function') {
+      return systemModeService.getSnapshot();
+    }
+
+    return this.createFallbackSystemModeSnapshot();
+  }
+
+  private createFallbackSystemModeSnapshot(): SystemModeSnapshot {
+    return {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'fallback',
+      updatedAt: new Date().toISOString(),
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
   }
 
   private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {
