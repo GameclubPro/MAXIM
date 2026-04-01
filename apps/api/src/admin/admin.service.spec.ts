@@ -4462,6 +4462,9 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         link: 'https://max.ru/news',
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
