@@ -1149,6 +1149,123 @@ describe('AdminService dialog admin fallback reads', () => {
 });
 
 describe('AdminService night mode settings normalization', () => {
+  it('persists primaryBotId when chat settings upsert resolves a bot assignment', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const maxBotLinkService = {
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
+      resolveContactIdSync: jest.fn().mockReturnValue(null),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_bot'),
+      getBotTokenSync: jest.fn().mockReturnValue(null),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+      buildEntryBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      chatSettingsSchema.parse({}),
+    );
+
+    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+        }),
+        update: expect.objectContaining({
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+        }),
+      }),
+    );
+  });
+
+  it('persists primaryBotId when channel settings upsert resolves a bot assignment', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Канал MAX',
+      entityType: 'CHANNEL',
+    });
+    const maxBotLinkService = {
+      resolveBotId: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveContactIdSync: jest.fn().mockReturnValue(null),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      getBotTokenSync: jest.fn().mockReturnValue(null),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+      buildEntryBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.updateChannelSettings(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      channelSettingsSchema.parse({}),
+    );
+
+    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          primaryBotId: 'id613002203036_4_bot',
+        }),
+        update: expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          primaryBotId: 'id613002203036_4_bot',
+        }),
+      }),
+    );
+  });
+
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

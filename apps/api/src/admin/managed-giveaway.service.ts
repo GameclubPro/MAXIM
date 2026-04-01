@@ -2444,11 +2444,12 @@ export class ManagedGiveawayService {
         id: giveaway.sourceChatId,
         title: await this.resolveSourceTitle(giveaway.sourceChatId),
         entityType: giveaway.entityType,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
       },
       update: resolvedBotId
         ? {
             botId: resolvedBotId,
+            primaryBotId: resolvedBotId,
           }
         : {},
     });

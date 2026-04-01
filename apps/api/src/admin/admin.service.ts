@@ -2953,13 +2953,13 @@ export class AdminService {
         id: chatId,
         title: `Chat ${chatId}`,
         entityType: ChatEntityType.CHAT,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           create: {},
         },
       },
       update: {
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           upsert: {
             update: {},
@@ -3097,7 +3097,7 @@ export class AdminService {
         id: chatId,
         title: `Chat ${chatId}`,
         entityType: ChatEntityType.CHAT,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           create: {
             ...normalizedSettings,
@@ -3105,7 +3105,7 @@ export class AdminService {
         },
       },
       update: {
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         settings: {
           upsert: {
             update: {
@@ -3431,13 +3431,13 @@ export class AdminService {
         id: chatId,
         title: `Channel ${chatId}`,
         entityType: ChatEntityType.CHANNEL,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         channelSettings: {
           create: {},
         },
       },
       update: {
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         entityType: ChatEntityType.CHANNEL,
         channelSettings: {
           upsert: {
@@ -3530,7 +3530,7 @@ export class AdminService {
         id: chatId,
         title: `Channel ${chatId}`,
         entityType: ChatEntityType.CHANNEL,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         channelSettings: {
           create: {
             ...normalizedSettings,
@@ -3538,7 +3538,7 @@ export class AdminService {
         },
       },
       update: {
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         entityType: ChatEntityType.CHANNEL,
         channelSettings: {
           upsert: {
@@ -4529,7 +4529,7 @@ export class AdminService {
               id: chatId,
               title: `Chat ${chatId}`,
               entityType: ChatEntityType.CHAT,
-              ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+              ...this.buildResolvedBotAssignmentData(resolvedBotId),
               settings: {
                 create: {
                   ...settingsCreatePayload,
@@ -4537,7 +4537,7 @@ export class AdminService {
               },
             },
             update: {
-              ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+              ...this.buildResolvedBotAssignmentData(resolvedBotId),
               settings: {
                 upsert: {
                   update: {
@@ -10625,13 +10625,9 @@ export class AdminService {
       create: {
         id: chatId,
         title: `Chat ${chatId}`,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
       },
-      update: resolvedBotId
-        ? {
-            botId: resolvedBotId,
-          }
-        : {},
+      update: this.buildResolvedBotAssignmentData(resolvedBotId),
     });
 
     await this.prisma.chatAdminAllowlist.upsert({
@@ -14567,6 +14563,24 @@ export class AdminService {
     return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
   }
 
+  private buildResolvedBotAssignmentData(
+    resolvedBotId?: string | null,
+  ): { botId?: string; primaryBotId?: string } {
+    const normalizedBotId =
+      this.maxBotRegistry?.getBotById(resolvedBotId)?.id ??
+      (typeof resolvedBotId === 'string' && resolvedBotId.trim().length > 0
+        ? resolvedBotId.trim()
+        : null);
+    if (!normalizedBotId) {
+      return {};
+    }
+
+    return {
+      botId: normalizedBotId,
+      primaryBotId: normalizedBotId,
+    };
+  }
+
   private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
   }
@@ -15703,13 +15717,11 @@ export class AdminService {
       create: {
         id: chatId,
         title: normalizedTitle ?? fallbackTitle,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        ...(resolvedBotId ? { primaryBotId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         ...(entityType ? { entityType: this.toPrismaEntityType(entityType) } : {}),
       },
       update: {
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        ...(resolvedBotId ? { primaryBotId: resolvedBotId } : {}),
+        ...this.buildResolvedBotAssignmentData(resolvedBotId),
         ...(normalizedTitle
           ? {
               title: normalizedTitle,

@@ -389,6 +389,7 @@ export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
   private readonly blockedWordListCache = new WeakMap<readonly string[], readonly string[]>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
+  private readonly blockedWordPresencePatternCache = new Map<string, RegExp>();
 
   constructor(private readonly redisCounter: RedisCounterService) {}
 
@@ -1627,6 +1628,10 @@ export class RuleEngineService {
       return null;
     }
 
+    if (!this.getMessageLimitsBlockedWordPresencePattern(blockedWordList).test(normalizedText)) {
+      return null;
+    }
+
     for (const blockedWord of blockedWordList) {
       if (this.getMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
         return {
@@ -1673,6 +1678,26 @@ export class RuleEngineService {
 
     const pattern = this.buildMessageLimitsBlockedWordPattern(value);
     this.blockedWordPatternCache.set(value, pattern);
+    return pattern;
+  }
+
+  private getMessageLimitsBlockedWordPresencePattern(blockedWords: readonly string[]): RegExp {
+    const cacheKey = blockedWords.join('\u0000');
+    const cached = this.blockedWordPresencePatternCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
+    const pattern =
+      blockedWords.length === 1
+        ? this.getMessageLimitsBlockedWordPattern(blockedWords[0])
+        : new RegExp(
+            blockedWords
+              .map((blockedWord) => this.getMessageLimitsBlockedWordPattern(blockedWord).source)
+              .join('|'),
+            'iu',
+          );
+    this.blockedWordPresencePatternCache.set(cacheKey, pattern);
     return pattern;
   }
 

@@ -183,7 +183,7 @@ export function App() {
   const apiClient = preview.enabled
     ? previewApiRef.current
     : initData
-      ? createApiTransport(initData)
+      ? createApiTransport(getInitData)
       : null;
 
   if (!apiClient) {
