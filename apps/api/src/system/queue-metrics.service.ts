@@ -233,6 +233,10 @@ export class QueueMetricsService {
     }
   }
 
+  peekCachedSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): QueueMetricsSnapshot | null {
+    return this.getCachedSnapshot(maxAgeMs);
+  }
+
   async getWebhookDefaultShardSnapshot(
     options: QueueMetricsSnapshotOptions = {},
   ): Promise<WebhookDefaultShardSnapshot> {

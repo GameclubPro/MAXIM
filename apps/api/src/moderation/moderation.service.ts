@@ -550,6 +550,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private withBotModerationEventData(
+    data: Prisma.ModerationEventUncheckedCreateInput,
+  ): Prisma.ModerationEventUncheckedCreateInput {
+    if (data.operator !== Operator.BOT) {
+      return data;
+    }
+
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    if (!activeBotId || typeof data.botId === 'string') {
+      return data;
+    }
+
+    return {
+      ...data,
+      botId: activeBotId,
+    };
+  }
+
+  private createBotModerationEvent(params: {
+    data: Prisma.ModerationEventUncheckedCreateInput;
+  }) {
+    return this.prisma.moderationEvent.create({
+      data: this.withBotModerationEventData(params.data),
+    });
+  }
+
   onModuleInit() {
     if (!roleRunsModeration(getAppRole())) {
       return;
@@ -1163,7 +1189,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (canDeleteMessage) {
         await this.maxClient.deleteMessage(chatId, messageId);
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId: senderId,
@@ -1662,7 +1688,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId,
           userId: senderId,
@@ -1767,7 +1793,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
         messageDeleted = true;
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -1857,7 +1883,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
     });
 
-    await this.prisma.moderationEvent.create({
+    await this.createBotModerationEvent({
       data: {
         chatId,
         userId,
@@ -1928,7 +1954,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
         messageDeleted = true;
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -4893,7 +4919,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await this.maxClient.deleteMessage(chatId, messageId);
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId,
           userId,
@@ -4950,7 +4976,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await this.maxClient.kickMember(chatId, userId);
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId,
           userId,
@@ -4993,7 +5019,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.maxClient.deleteMessage(chatId, messageId, {
         delayMs: safeDelayMinutes * 60 * 1000,
       });
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId,
           userId,
@@ -5126,7 +5152,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       kickedUserIds.add(userId);
       try {
         await this.maxClient.kickMember(chatId, userId);
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -5247,7 +5273,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           deleteBotMessagesDelayMinutes: greetingDeleteDelayMinutes,
         });
 
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId: member.userId,
@@ -5580,7 +5606,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { chatId, userId, messageId, text, reason } = params;
     try {
       await this.maxClient.kickMember(chatId, userId);
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId,
           userId,
@@ -6440,7 +6466,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -6494,7 +6520,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
-        await this.prisma.moderationEvent.create({
+        await this.createBotModerationEvent({
           data: {
             chatId,
             userId,
@@ -6655,7 +6681,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const isFirstRequiredSubscriptionViolation = requiredSubscriptionViolationCount24h === 1;
 
-    await this.prisma.moderationEvent.create({
+    await this.createBotModerationEvent({
       data: {
         chatId: params.chatId,
         userId: params.userId,
@@ -6796,7 +6822,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    await this.prisma.moderationEvent.create({
+    await this.createBotModerationEvent({
       data: {
         chatId: params.chatId,
         userId: params.userId,
@@ -9278,7 +9304,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ),
       );
 
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId: params.chatId,
           userId: 'system',
@@ -9404,7 +9430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ),
       );
 
-      await this.prisma.moderationEvent.create({
+      await this.createBotModerationEvent({
         data: {
           chatId: params.chatId,
           userId: 'system',

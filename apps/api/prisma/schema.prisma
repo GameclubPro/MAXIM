@@ -486,6 +486,7 @@ model Violation {
 model ModerationEvent {
   id            String         @id @default(cuid())
   chatId        String         @map("chat_id")
+  botId         String?        @map("bot_id")
   userId        String         @map("user_id")
   messageId     String?        @map("message_id")
   eventType     EventType      @map("event_type")
@@ -500,6 +501,7 @@ model ModerationEvent {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([chatId, createdAt])
+  @@index([botId, createdAt(sort: Desc)], map: "moderation_events_bot_id_created_at_idx")
   @@index([chatId, userId, createdAt])
   @@index([chatId, userId, action, createdAt(sort: Desc)])
   @@map("moderation_events")

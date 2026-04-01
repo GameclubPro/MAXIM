@@ -1,5 +1,5 @@
 import type { MaxUpdate } from '@maxim/contracts';
-import { ChatEntityType, SanctionAction } from '@prisma/client';
+import { ChatEntityType, EventType, Operator, SanctionAction } from '@prisma/client';
 import { ModerationService } from './moderation.service';
 
 declare global {
@@ -7741,6 +7741,46 @@ describe('ModerationService', () => {
     });
 
     expect(maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
+  });
+
+  it('annotates bot moderation events with the active bot id when multi-bot context is available', () => {
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('id613002203036_4_bot'),
+    };
+    const service = new ModerationService(
+      {
+        moderationEvent: {
+          create: jest.fn(),
+        },
+      } as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotContextService as never,
+    );
+
+    expect(
+      (service as any).withBotModerationEventData({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        eventType: EventType.MESSAGE,
+        ruleCode: 'RULE_CODE',
+        action: SanctionAction.DELETE_MESSAGE,
+        operator: Operator.BOT,
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+      }),
+    );
   });
 
   it('keeps the shared execution lock for binding-lookup shared chat updates', async () => {

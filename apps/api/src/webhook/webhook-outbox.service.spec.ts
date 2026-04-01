@@ -574,6 +574,39 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('skips standby shared-chat user_added events before they enter BullMQ', async () => {
+    const { service, prisma, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-standby-user-added',
+          enqueueAttempts: 0,
+          botId: 'id613002203036_4_bot',
+          normalizedPayload: {
+            type: 'user_added',
+            botId: 'id613002203036_4_bot',
+            executionOwnerBotId: 'id613002203036_bot',
+            user: { chatId: '-100123' },
+            chatId: '-100123',
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    for (const queueName of JOIN_WEBHOOK_QUEUE_NAMES) {
+      expect(queues[queueName].add).not.toHaveBeenCalled();
+    }
+    expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: WebhookStatus.PROCESSED,
+          queueName: null,
+        }),
+      }),
+    );
+  });
+
   it('removes queued standby shared-chat jobs and marks them processed', async () => {
     const job: JobMock = {
       getState: jest.fn().mockResolvedValue('prioritized'),

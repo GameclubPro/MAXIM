@@ -2,7 +2,7 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
-import { QueueMetricsService } from '../system/queue-metrics.service';
+import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 
 export type ReadinessSnapshot = {
@@ -116,6 +116,29 @@ export class HealthService implements OnModuleDestroy {
     };
   }
 
+  private mapQueueMetricsBots(
+    queueMetrics: Pick<QueueMetricsSnapshot, 'bots'> | null | undefined,
+  ): ReadinessSnapshot['bots'] {
+    return Object.fromEntries(
+      Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => [
+        botId,
+        {
+          queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
+          rawOk:
+            (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
+            this.queueLagThresholdSec,
+          queuedEvents:
+            botMetrics.userFacingWebhookEvents?.queued.count ?? botMetrics.webhookEvents.queued.count,
+          receivedEvents:
+            botMetrics.userFacingWebhookEvents?.received.count ??
+            botMetrics.webhookEvents.received.count,
+          failedEvents: botMetrics.webhookEvents.failed.count,
+          action: botMetrics.actionHealth,
+        },
+      ]),
+    );
+  }
+
   async ready(): Promise<ReadinessSnapshot> {
     const cachedSnapshot = this.getCachedReadySnapshot();
     if (cachedSnapshot) {
@@ -193,6 +216,10 @@ export class HealthService implements OnModuleDestroy {
       this.tryGetQueueMetricsSnapshot(),
     ]);
     const queueMetrics = queueMetricsResult.snapshot;
+    const cachedQueueMetrics =
+      queueMetrics ??
+      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ??
+      null;
     const queueMetricsFallbackDetail = queueMetricsResult.fallbackDetail;
 
     const effectiveLagSec =
@@ -242,24 +269,7 @@ export class HealthService implements OnModuleDestroy {
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
-      bots: Object.fromEntries(
-        Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => [
-          botId,
-          {
-            queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
-            rawOk:
-              (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
-              this.queueLagThresholdSec,
-            queuedEvents:
-              botMetrics.userFacingWebhookEvents?.queued.count ?? botMetrics.webhookEvents.queued.count,
-            receivedEvents:
-              botMetrics.userFacingWebhookEvents?.received.count ??
-              botMetrics.webhookEvents.received.count,
-            failedEvents: botMetrics.webhookEvents.failed.count,
-            action: botMetrics.actionHealth,
-          },
-        ]),
-      ),
+      bots: this.mapQueueMetricsBots(cachedQueueMetrics),
       systemMode: {
         ...systemMode,
         queueLagSec: effectiveLagSec,
@@ -408,11 +418,15 @@ export class HealthService implements OnModuleDestroy {
       : 0;
     const queueLagOk =
       !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
+    const cachedQueueSnapshot =
+      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
 
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
-      bots: this.readyCache?.bots ?? {},
+      bots: Object.keys(cachedQueueSnapshot?.bots ?? {}).length
+        ? this.mapQueueMetricsBots(cachedQueueSnapshot)
+        : this.readyCache?.bots ?? {},
       systemMode: {
         ...systemMode,
         degraded: systemMode.mode === 'degrade',

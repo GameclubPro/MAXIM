@@ -505,7 +505,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     event: WebhookEnqueueCandidate,
     queueName: AnyWebhookQueueName,
   ): Promise<boolean> {
-    if (!this.isStandbySharedChatMessage(event)) {
+    if (!this.isStandbySharedChatEvent(event)) {
       return false;
     }
 
@@ -536,7 +536,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private isStandbySharedChatMessage(event: WebhookEnqueueCandidate): boolean {
+  private isStandbySharedChatEvent(event: WebhookEnqueueCandidate): boolean {
     const payload =
       event.normalizedPayload && typeof event.normalizedPayload === 'object'
         ? (event.normalizedPayload as Record<string, unknown>)
@@ -546,7 +546,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }
 
     const updateType = this.readLowerString(payload.type);
-    if (updateType !== 'message_created') {
+    if (
+      updateType !== 'message_created' &&
+      updateType !== 'user_added' &&
+      updateType !== 'user_removed'
+    ) {
       return false;
     }
 
@@ -561,7 +565,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       payload.message && typeof payload.message === 'object'
         ? (payload.message as Record<string, unknown>)
         : null;
-    const chatId = this.readTrimmedString(message?.chatId);
+    const joinedUser =
+      payload.user && typeof payload.user === 'object'
+        ? (payload.user as Record<string, unknown>)
+        : null;
+    const chatId =
+      this.readTrimmedString(message?.chatId) ??
+      this.readTrimmedString(payload.chatId) ??
+      this.readTrimmedString(joinedUser?.chatId);
     return Boolean(chatId && chatId.startsWith('-'));
   }
 
