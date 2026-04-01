@@ -72,7 +72,7 @@ function buildManagedEntitiesLocalCacheKey(
   entityType: ManagedEntityKind,
   scope: string,
 ): string {
-  return `maxim:managed-entities:v${MANAGED_ENTITIES_LOCAL_CACHE_VERSION}:${scope}:${entityType}`;
+  return `me:v${MANAGED_ENTITIES_LOCAL_CACHE_VERSION}:${scope}:${entityType}`;
 }
 
 function readManagedEntitiesLocalCacheUserScope(): string | null {
@@ -94,7 +94,7 @@ function readManagedEntitiesLocalCacheUserScope(): string | null {
     if (typeof userId === 'string' || typeof userId === 'number') {
       const normalized = String(userId).trim();
       if (normalized) {
-        return `user:${normalized}`;
+        return `u:${normalized}`;
       }
     }
   }
@@ -285,7 +285,7 @@ export function useManagedEntitiesSync({
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const [ephemeralCacheScope] = useState(
-    () => `session:${Math.random().toString(36).slice(2, 10)}`,
+    () => `s:${Math.random().toString(36).slice(2, 10)}`,
   );
   const localCacheUserScope = readManagedEntitiesLocalCacheUserScope();
   const effectiveLocalCacheScope =
@@ -293,7 +293,7 @@ export function useManagedEntitiesSync({
   const effectiveStateCacheScope =
     effectiveLocalCacheScope ?? `${localCacheScope}:${ephemeralCacheScope}`;
   const cacheKey = useMemo(
-    () => ['managed-entities-sync', entityType, effectiveStateCacheScope] as const,
+    () => ['me-sync', entityType, effectiveStateCacheScope] as const,
     [effectiveStateCacheScope, entityType],
   );
   const cachedState = queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? null;
@@ -304,36 +304,25 @@ export function useManagedEntitiesSync({
         : null,
     [effectiveLocalCacheScope, entityType, persistLocalCache],
   );
-  const initialCachedData = useMemo(
-    () => sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData),
-    [cachedState?.data, persistedData],
-  );
-  const initialState = useMemo(
-    (): ManagedEntitiesSyncState =>
-      freshOnLoad
+  const initialCachedData = sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData);
+  const initialState: ManagedEntitiesSyncState = freshOnLoad
+    ? {
+        ...EMPTY_SYNC_STATE,
+      }
+    : cachedState ??
+      (initialCachedData !== null
         ? {
-            ...EMPTY_SYNC_STATE,
+            data: initialCachedData,
+            error: null,
+            refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+            phase: 'complete',
           }
-        : cachedState ??
-          (initialCachedData !== null
-            ? {
-                data: initialCachedData,
-                error: null,
-                refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
-                phase: 'complete',
-              }
-            : {
-                ...EMPTY_SYNC_STATE,
-              }),
-    [cachedState, freshOnLoad, initialCachedData],
-  );
-  const [state, setState] = useState<ManagedEntitiesSyncState>(
-    () => initialState,
-  );
+        : {
+            ...EMPTY_SYNC_STATE,
+          });
+  const [state, setState] = useState<ManagedEntitiesSyncState>(() => initialState);
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
-  const latestDataRef = useRef<ChatSummary[] | null>(
-    freshOnLoad ? initialCachedData : initialState.data,
-  );
+  const latestDataRef = useRef<ChatSummary[] | null>(initialState.data);
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
   const backoffResumeAtRef = useRef<number | null>(null);
@@ -347,9 +336,9 @@ export function useManagedEntitiesSync({
     cacheScopeRef.current = effectiveStateCacheScope;
     skippedInitialSyncRef.current = false;
     backoffResumeAtRef.current = null;
-    latestDataRef.current = freshOnLoad ? initialCachedData : initialState.data;
+    latestDataRef.current = initialState.data;
     setState(initialState);
-  }, [effectiveStateCacheScope, freshOnLoad, initialCachedData, initialState]);
+  }, [effectiveStateCacheScope, initialState]);
 
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
