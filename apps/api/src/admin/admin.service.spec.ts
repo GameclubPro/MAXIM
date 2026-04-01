@@ -4690,7 +4690,7 @@ describe('AdminService.listChannels', () => {
     expect(chatContextCache.getManagedEntityHeader).toHaveBeenCalledWith('channel-1', 'channel');
   });
 
-  it('returns complete refresh metadata for a local managed channels refresh', async () => {
+  it('returns cached channels immediately while managed refresh continues in the background', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -4703,34 +4703,35 @@ describe('AdminService.listChannels', () => {
       },
     ]);
     prisma.channelSettings.findMany.mockResolvedValue([]);
-
-    let storedCursor: number | null = null;
-    const chatContextCache = createChatContextCacheMock({
-      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
-      setManagedEntitiesRefreshCursor: jest
-        .fn()
-        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
-          storedCursor = cursor;
-        }),
-    });
-    const remoteChannels = Array.from({ length: 121 }, (_, index) => ({
-      chatId: `channel-${index + 1}`,
-      title: `Канал ${index + 1}`,
-      lastEventTime: 200 - index,
-      entityType: 'channel' as const,
-      link: `https://max.ru/channel-${index + 1}`,
-    }));
-    const maxClient = {
-      listBotChats: jest.fn().mockResolvedValue(remoteChannels),
-      getChatAdminIds: jest.fn().mockResolvedValue([]),
-    };
+    const chatContextCache = createChatContextCacheMock();
 
     const service = new AdminService(
       prisma as never,
-      maxClient as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
       chatContextCache as never,
       createConfigMock() as never,
     );
+
+    let resolveRefresh!: (value: {
+      items: [];
+      refresh: {
+        complete: boolean;
+        cursor: number | null;
+        backoffActive: boolean;
+        nextPollAfterMs: number;
+      };
+    }) => void;
+    const discoverSpy = jest
+      .spyOn(service as any, 'discoverManagedEntities')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            resolveRefresh = resolve as typeof resolveRefresh;
+          }) as any,
+      );
 
     await expect(
       service.listChannelsWithRefreshState(
@@ -4750,6 +4751,9 @@ describe('AdminService.listChannels', () => {
           createdAt: '2026-03-02T10:00:00.000Z',
           entityType: 'channel',
           link: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
           channelOverview: {
             enabledScenariosCount: 1,
             commentsEnabled: true,
@@ -4759,24 +4763,35 @@ describe('AdminService.listChannels', () => {
         },
       ],
       refresh: {
+        complete: false,
+        cursor: 0,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
+      },
+    });
+
+    expect(discoverSpy).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      0,
+      60 * 60,
+    );
+
+    resolveRefresh({
+      items: [],
+      refresh: {
         complete: true,
         cursor: -1,
         backoffActive: false,
         nextPollAfterMs: 0,
-        processedCandidates: 121,
-        totalCandidates: 121,
-        progressPercent: 100,
-        lastSyncedAt: expect.any(String),
       },
     });
-
-    expect(chatContextCache.setManagedEntitiesRefreshCursor).not.toHaveBeenCalled();
-    expect(chatContextCache.setManagedEntitiesLastSyncedAt).toHaveBeenCalledWith(
-      'admin-1',
-      'channel',
-      expect.any(String),
-      30 * 24 * 60 * 60,
-    );
+    await flushAsyncTasks();
   });
 
   it('clears stale cached channels when a local refresh revalidates and loses admin access', async () => {
@@ -4946,15 +4961,25 @@ describe('AdminService.listChannels', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    const refreshCooldownKey = (service as any).buildManagedEntitiesRefreshCooldownKey(
+      'admin-1',
+      'channel',
+    );
 
-    const result = await service.listChannelsWithRefreshState(
+    const result = await (service as any).runManagedEntitiesLocalDiscovery(
       {
         userId: 'admin-1',
         username: null,
         displayName: null,
         chatTitle: null,
       },
-      { refresh: true },
+      'channel',
+      refreshCooldownKey,
+      {
+        respectCooldown: false,
+        fullScan: true,
+        includeRefreshState: true,
+      },
     );
 
     expect(result.items).toHaveLength(8);
@@ -4962,7 +4987,7 @@ describe('AdminService.listChannels', () => {
       complete: false,
       cursor: 8,
       backoffActive: false,
-      nextPollAfterMs: 250,
+      nextPollAfterMs: 1500,
       processedCandidates: 8,
       totalCandidates: 41,
       progressPercent: 20,
@@ -5015,33 +5040,29 @@ describe('AdminService.listChannels', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    const refreshCooldownKey = (service as any).buildManagedEntitiesRefreshCooldownKey(
+      'admin-1',
+      'channel',
+    );
 
-    const result = await service.listChannelsWithRefreshState(
+    const result = await (service as any).runManagedEntitiesLocalDiscovery(
       {
         userId: 'admin-1',
         username: null,
         displayName: null,
         chatTitle: null,
       },
-      { refresh: true },
+      'channel',
+      refreshCooldownKey,
+      {
+        respectCooldown: false,
+        fullScan: true,
+        includeRefreshState: true,
+      },
     );
 
     expect(result).toEqual({
-      items: [
-        {
-          id: 'cached-channel-1',
-          title: 'Кэш канала',
-          createdAt: '2026-03-02T10:00:00.000Z',
-          entityType: 'channel',
-          link: null,
-          channelOverview: {
-            enabledScenariosCount: 1,
-            commentsEnabled: true,
-            postSuggestionsEnabled: false,
-            commentsModerationEnabled: false,
-          },
-        },
-      ],
+      items: [],
       refresh: {
         complete: false,
         cursor: null,
@@ -6032,7 +6053,7 @@ describe('AdminService.listChats', () => {
         complete: false,
         cursor: 0,
         backoffActive: false,
-        nextPollAfterMs: 250,
+        nextPollAfterMs: 1500,
         processedCandidates: null,
         totalCandidates: null,
         progressPercent: null,
@@ -6210,7 +6231,7 @@ describe('AdminService.listChats', () => {
         complete: false,
         cursor: 0,
         backoffActive: false,
-        nextPollAfterMs: 250,
+        nextPollAfterMs: 1500,
         processedCandidates: null,
         totalCandidates: null,
         progressPercent: null,
@@ -6354,7 +6375,7 @@ describe('AdminService.listChats', () => {
         complete: false,
         cursor: 20,
         backoffActive: false,
-        nextPollAfterMs: 250,
+        nextPollAfterMs: 1500,
       },
     });
     const repairSpy = jest
@@ -6515,7 +6536,7 @@ describe('AdminService.listChats', () => {
       complete: false,
       cursor: 20,
       backoffActive: false,
-      nextPollAfterMs: 250,
+      nextPollAfterMs: 1500,
       processedCandidates: 20,
       totalCandidates: 50,
       progressPercent: 40,
@@ -6845,17 +6866,20 @@ describe('AdminService.listChats', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-      {
-        id: 'channel-1',
-        title: 'Кэш канала',
-        createdAt: '2026-03-02T10:00:00.000Z',
-        entityType: 'channel',
-        link: null,
-        channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
-          postSuggestionsEnabled: false,
-          commentsModerationEnabled: false,
+        {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          link: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+          channelOverview: {
+            enabledScenariosCount: 1,
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
         },
       },
     ]);
@@ -8303,7 +8327,7 @@ describe('AdminService.sendBroadcast', () => {
           complete: false,
           cursor: null,
           backoffActive: false,
-          nextPollAfterMs: 250,
+          nextPollAfterMs: 1500,
         },
       });
 

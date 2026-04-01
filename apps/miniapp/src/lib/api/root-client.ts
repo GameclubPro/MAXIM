@@ -188,7 +188,7 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       complete: refresh.complete,
       cursor: refresh.cursor,
       backoffActive: refresh.backoffActive,
-      nextPollAfterMs: refresh.nextPollAfterMs ?? 900,
+      nextPollAfterMs: refresh.nextPollAfterMs ?? 1500,
       processedCandidates: null,
       totalCandidates: null,
       progressPercent:

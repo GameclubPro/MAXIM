@@ -1471,7 +1471,7 @@ export const managedEntitiesRefreshStateSchema = z.object({
   complete: z.boolean(),
   cursor: z.number().int().nullable(),
   backoffActive: z.boolean(),
-  nextPollAfterMs: z.number().int().min(0).default(900),
+  nextPollAfterMs: z.number().int().min(0).default(1500),
   processedCandidates: z.number().int().min(0).nullable().optional().default(null),
   totalCandidates: z.number().int().min(0).nullable().optional().default(null),
   progressPercent: z.number().int().min(0).max(100).nullable().optional().default(null),

@@ -113,6 +113,7 @@ const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
 const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
 const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 400;
 const MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
+const GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS = 30 * 60 * 1_000;
 
 @Injectable()
 export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy {
@@ -551,8 +552,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       }
     } catch (error: unknown) {
       const transient = this.isTransientLookupError(error);
+      const terminalBackoffMs = this.resolveTerminalChatBackoffMs(batch.policyName);
+      const terminal = terminalBackoffMs > 0 && this.isTerminalChatAccessError(error);
       let appliedBackoffMs = 0;
-      if (transient) {
+      if (terminal) {
+        const appliedBackoff = this.applyTerminalChatBackoff(
+          batch.chatId,
+          batch.policyName,
+          terminalBackoffMs,
+        );
+        appliedBackoffMs = appliedBackoff.backoffMs;
+      } else if (transient) {
         const appliedBackoff = this.applyChatBackoff(batch.chatId, batch.policyName, batch.policy);
         appliedBackoffMs = appliedBackoff.backoffMs;
         this.recordHotChannelFailure(batch.chatId, batch.policyName);
@@ -640,8 +650,17 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         return results;
       } catch (error: unknown) {
         const transient = this.isTransientLookupError(error);
+        const terminalBackoffMs = this.resolveTerminalChatBackoffMs(policyName);
+        const terminal = terminalBackoffMs > 0 && this.isTerminalChatAccessError(error);
         let appliedBackoffMs = 0;
-        if (transient) {
+        if (terminal) {
+          const appliedBackoff = this.applyTerminalChatBackoff(
+            chatId,
+            policyName,
+            terminalBackoffMs,
+          );
+          appliedBackoffMs = appliedBackoff.backoffMs;
+        } else if (transient) {
           const appliedBackoff = this.applyChatBackoff(chatId, policyName, policy);
           appliedBackoffMs = appliedBackoff.backoffMs;
           this.recordHotChannelFailure(chatId, policyName);
@@ -1010,6 +1029,30 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     this.chatBackoffUntilMs.delete(cacheKey);
   }
 
+  private applyTerminalChatBackoff(
+    chatId: string,
+    policyName: MaxMembershipLookupPolicy,
+    backoffMs: number,
+  ): {
+    backoffMs: number;
+    backoffUntilMs: number;
+  } {
+    const cacheKey = this.buildChatPolicyKey(chatId, policyName);
+    const now = Date.now();
+    const backoffUntilMs = now + backoffMs;
+
+    this.chatBackoffState.set(cacheKey, {
+      failureCount: 0,
+      lastFailureAtMs: now,
+    });
+    this.chatBackoffUntilMs.set(cacheKey, backoffUntilMs);
+
+    return {
+      backoffMs,
+      backoffUntilMs,
+    };
+  }
+
   private resolveEffectivePolicy(
     chatId: string,
     policyName: MaxMembershipLookupPolicy,
@@ -1096,6 +1139,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     return Math.min(this.maxChatBackoffMs, Math.max(policy.backoffMs * 2, 15_000));
+  }
+
+  private resolveTerminalChatBackoffMs(policyName: MaxMembershipLookupPolicy): number {
+    switch (policyName) {
+      case 'giveaway_draw_background':
+        return GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS;
+      default:
+        return 0;
+    }
   }
 
   private logRedisWriteFailure(cacheKey: string, error: unknown) {
@@ -1261,6 +1313,11 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     return this.extractErrorMessage(error).includes('timeout');
+  }
+
+  private isTerminalChatAccessError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    return status === 403 || status === 404;
   }
 
   private isTransientLookupError(error: unknown): boolean {

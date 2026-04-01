@@ -348,6 +348,50 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('applies a long chat backoff after terminal background draw access denials', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:15.000Z'));
+
+    const deniedError = Object.assign(new Error('Request failed with status code 403'), {
+      response: { status: 403, data: { message: 'Request failed with status code 403' } },
+    });
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockRejectedValueOnce(deniedError)
+        .mockResolvedValueOnce(new Map([['user-2', { userId: 'user-2', isAdmin: false }]])),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership('channel-denied', 'user-1', 'giveaway_draw_background', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBeNull();
+
+    await expect(
+      service.getMembership('channel-denied', 'user-2', 'giveaway_draw_background', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBeNull();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(30 * 60 * 1_000 + 1);
+
+    await expect(
+      service.getMembership('channel-denied', 'user-2', 'giveaway_draw_background', {
+        forceRefresh: true,
+        allowStaleOnError: false,
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('fails open instead of hanging the caller when a membership batch lookup never resolves', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:14:30.000Z'));
 

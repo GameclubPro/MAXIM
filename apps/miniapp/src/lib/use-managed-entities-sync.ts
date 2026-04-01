@@ -9,7 +9,7 @@ import { getChannels, getChats } from './api/root-client';
 import { isUnusableChatTitle, resolveChatTitle } from './chat-titles';
 import type { ApiTransport } from './api/transport';
 
-const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
+const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 1500;
 const MANAGED_ENTITIES_LOCAL_CACHE_VERSION = 2;
 const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
   complete: true,
