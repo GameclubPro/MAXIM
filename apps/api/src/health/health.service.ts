@@ -158,6 +158,13 @@ export class HealthService implements OnModuleDestroy {
         );
       }
 
+      const bestEffortSnapshot = await this.buildBestEffortReadySnapshot(
+        this.describeReadinessFallback(error),
+      );
+      if (bestEffortSnapshot) {
+        return bestEffortSnapshot;
+      }
+
       return this.buildUnavailableReadySnapshot(this.describeReadinessFallback(error));
     }
   }
@@ -377,6 +384,66 @@ export class HealthService implements OnModuleDestroy {
     };
   }
 
+  private async buildBestEffortReadySnapshot(
+    fallbackDetail: string,
+  ): Promise<ReadinessSnapshot | null> {
+    const systemMode =
+      this.systemModeService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
+    if (!systemMode) {
+      return null;
+    }
+
+    const [database, redis] = await Promise.all([
+      this.safeDependencyFallbackCheck(() => this.checkDatabase(), 'database check'),
+      this.safeDependencyFallbackCheck(() => this.checkRedis(), 'redis check'),
+    ]);
+
+    const effectiveLagSec = systemMode.queueLagSec ?? 0;
+    const evaluatedAtMs = Date.now();
+    const rawQueueLagOk = effectiveLagSec <= this.queueLagThresholdSec;
+    const severeQueueLag = effectiveLagSec > this.queueLagSevereSec;
+    const breachStartedAtMs = this.updateQueueLagBreachState(rawQueueLagOk, evaluatedAtMs);
+    const breachDurationSec = breachStartedAtMs
+      ? Math.max(0, (evaluatedAtMs - breachStartedAtMs) / 1_000)
+      : 0;
+    const queueLagOk =
+      !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
+
+    return {
+      ok: database && redis && queueLagOk,
+      timestamp: new Date().toISOString(),
+      bots: this.readyCache?.bots ?? {},
+      systemMode: {
+        ...systemMode,
+        degraded: systemMode.mode === 'degrade',
+      },
+      checks: {
+        database,
+        redis,
+        queueLag: {
+          ok: queueLagOk,
+          rawOk: rawQueueLagOk,
+          softWarning: true,
+          softWarningCode: STALE_READY_SOFT_WARNING_CODE,
+          softWarningDetail: fallbackDetail,
+          thresholdSec: this.queueLagThresholdSec,
+          sustainSec: this.queueLagSustainSec,
+          severeThresholdSec: this.queueLagSevereSec,
+          effectiveLagSec,
+          sampleGeneratedAt: systemMode.updatedAt,
+          breachStartedAt: breachStartedAtMs ? new Date(breachStartedAtMs).toISOString() : null,
+          breachDurationSec,
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+        },
+      },
+    };
+  }
+
   private buildUnavailableReadySnapshot(fallbackDetail: string): ReadinessSnapshot {
     const timestamp = new Date().toISOString();
     const systemMode = this.systemModeService.peekCachedSnapshot?.() ?? {
@@ -435,6 +502,17 @@ export class HealthService implements OnModuleDestroy {
   private describeReadinessFallback(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
     return `Serving stale readiness data because live readiness evaluation did not finish in ${this.readinessBuildTimeoutMs}ms: ${detail}`;
+  }
+
+  private async safeDependencyFallbackCheck(
+    check: () => Promise<boolean>,
+    label: string,
+  ): Promise<boolean> {
+    try {
+      return await this.withTimeout(check(), this.readinessDependencyTimeoutMs, label);
+    } catch {
+      return false;
+    }
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

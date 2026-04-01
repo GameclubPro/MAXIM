@@ -354,6 +354,80 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('uses cached system mode and fresh dependency probes on cold-start readiness timeout', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-03-31T09:07:00.000Z'));
+
+    const prisma = {
+      $queryRawUnsafe: jest
+        .fn()
+        .mockResolvedValue([{ '?column?': 1 }]),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+    };
+    const systemModeSnapshot = {
+      mode: 'degrade',
+      source: 'auto',
+      reason: 'recovery window in progress',
+      updatedAt: '2026-03-31T09:06:55.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 8,
+        success: 8,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockImplementation(() => new Promise(() => undefined)),
+      peekCachedSnapshot: jest.fn().mockReturnValue(systemModeSnapshot),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+    );
+
+    const snapshotPromise = service.ready();
+    jest.advanceTimersByTime(60);
+    const snapshot = await snapshotPromise;
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        ok: true,
+        bots: {},
+        systemMode: expect.objectContaining({
+          mode: 'degrade',
+          reason: 'recovery window in progress',
+          degraded: true,
+        }),
+        checks: expect.objectContaining({
+          database: true,
+          redis: true,
+          queueLag: expect.objectContaining({
+            ok: true,
+            rawOk: true,
+            softWarning: true,
+            softWarningCode: 'stale-ready-fallback',
+            sampleGeneratedAt: '2026-03-31T09:06:55.000Z',
+          }),
+        }),
+      }),
+    );
+    expect(snapshot.checks.queueLag.softWarningDetail).toContain(
+      'readiness build exceeded 50ms',
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns a degraded fallback snapshot when readiness data is unavailable on cold start', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:05:00.000Z'));
