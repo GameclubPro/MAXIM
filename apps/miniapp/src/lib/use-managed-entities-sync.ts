@@ -257,6 +257,7 @@ export function useManagedEntitiesSync({
   skipInitialSyncIfCached = false,
   freshOnLoad = false,
   syncOnFirstLoad = false,
+  backgroundRefreshOnFirstLoad = false,
   reloadOnMount = false,
   freshOnManualReload = false,
   persistLocalCache = false,
@@ -270,6 +271,7 @@ export function useManagedEntitiesSync({
   skipInitialSyncIfCached?: boolean;
   freshOnLoad?: boolean;
   syncOnFirstLoad?: boolean;
+  backgroundRefreshOnFirstLoad?: boolean;
   reloadOnMount?: boolean;
   freshOnManualReload?: boolean;
   persistLocalCache?: boolean;
@@ -448,6 +450,8 @@ export function useManagedEntitiesSync({
     const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
+    const shouldStartWithBackgroundRefresh =
+      forceRefreshSession || (backgroundRefreshOnFirstLoad && !hasCachedData);
     setState((current) => ({
       ...current,
       error: hasCachedData ? null : current.error,
@@ -458,57 +462,66 @@ export function useManagedEntitiesSync({
       try {
         let forceRefreshPending = forceRefreshSession;
         const manualRefreshUsesFresh = forceRefreshPending && freshOnManualReload;
-        const initial = await loadManagedEntities(api, entityType, {
-          fresh: freshOnLoad || manualRefreshUsesFresh,
-        });
-        if (cancelled) {
-          return;
-        }
-
-        const initialData = sanitizeManagedEntities(
-          mergeManagedEntityPresentation(latestDataRef.current, initial),
-        );
-        latestDataRef.current = initialData;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
 
-        if (
-          (!hasCachedData || freshOnLoad || reloadOnMount) &&
-          !forceRefreshPending &&
-          !syncOnFirstLoad
-        ) {
+        if (!shouldStartWithBackgroundRefresh || manualRefreshUsesFresh) {
+          const initial = await loadManagedEntities(api, entityType, {
+            fresh: freshOnLoad || manualRefreshUsesFresh,
+          });
+          if (cancelled) {
+            return;
+          }
+
+          const initialData = sanitizeManagedEntities(
+            mergeManagedEntityPresentation(latestDataRef.current, initial),
+          );
+          latestDataRef.current = initialData;
+
+          if (
+            (!hasCachedData || freshOnLoad || reloadOnMount) &&
+            !forceRefreshPending &&
+            !syncOnFirstLoad
+          ) {
+            setState({
+              data: initialData,
+              error: null,
+              refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+              phase: documentVisible ? 'complete' : 'idle',
+            });
+            return;
+          }
+
+          if (manualRefreshUsesFresh) {
+            setState({
+              data: initialData,
+              error: null,
+              refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+              phase: documentVisible ? 'complete' : 'idle',
+            });
+            return;
+          }
+
           setState({
             data: initialData,
             error: null,
-            refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
-            phase: documentVisible ? 'complete' : 'idle',
+            refreshState: null,
+            phase: documentVisible ? 'syncing' : 'idle',
           });
-          return;
+
+          if (!documentVisible) {
+            return;
+          }
         }
 
-        if (manualRefreshUsesFresh) {
-          setState({
-            data: initialData,
-            error: null,
-            refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
-            phase: documentVisible ? 'complete' : 'idle',
-          });
-          return;
-        }
-
-        setState({
-          data: initialData,
-          error: null,
-          refreshState: null,
-          phase: documentVisible ? 'syncing' : 'idle',
-        });
-
-        if (!documentVisible) {
-          return;
-        }
+        let resetRefreshCursor = shouldStartWithBackgroundRefresh;
 
         while (!cancelled) {
-          if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+          if (
+            typeof document !== 'undefined' &&
+            document.visibilityState !== 'visible' &&
+            latestDataRef.current !== null
+          ) {
             setState((current) => ({
               ...current,
               phase: current.refreshState?.complete
@@ -522,9 +535,10 @@ export function useManagedEntitiesSync({
 
           const next = await refreshManagedEntities(api, entityType, {
             bypassRemoteCache: forceRefreshPending,
-            resetRefreshCursor: forceRefreshPending,
+            resetRefreshCursor: resetRefreshCursor,
           });
           forceRefreshPending = false;
+          resetRefreshCursor = false;
           if (cancelled) {
             return;
           }
@@ -581,6 +595,7 @@ export function useManagedEntitiesSync({
     api,
     enabled,
     entityType,
+    backgroundRefreshOnFirstLoad,
     freshOnLoad,
     freshOnManualReload,
     reloadNonce,

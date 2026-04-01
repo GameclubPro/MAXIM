@@ -168,6 +168,10 @@ import {
   type SystemAccessConfig,
 } from '../system/system-access.util';
 import {
+  ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
+  type AdminManagedEntitiesRefreshJob,
+} from './admin-managed-entities-refresh.queue';
+import {
   ADMIN_MANUAL_FANOUT_QUEUE,
   type AdminManualFanoutJob,
   type AdminManualBanFanoutJob,
@@ -669,6 +673,9 @@ export class AdminService {
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     private readonly maxBotRegistry?: MaxBotRegistryService,
     @Optional() private readonly maxBotExecutionPlanner?: MaxBotExecutionPlannerService,
+    @Optional()
+    @InjectQueue(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE)
+    private readonly adminManagedEntitiesRefreshQueue?: Queue<AdminManagedEntitiesRefreshJob>,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -1101,26 +1108,112 @@ export class AdminService {
     );
 
     if (!existing) {
-      const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
-        .catch((error: unknown) => {
-          this.logger.warn(
-            {
-              entityType,
-              userId: user.userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Managed entities background refresh failed',
-          );
-        })
-        .finally(() => {
-          if (this.managedEntitiesBackgroundRefreshRuns.get(refreshKey) === pending) {
-            this.managedEntitiesBackgroundRefreshRuns.delete(refreshKey);
-          }
-        });
-      this.managedEntitiesBackgroundRefreshRuns.set(refreshKey, pending);
+      if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
+        const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
+          .catch((error: unknown) => {
+            this.logger.warn(
+              {
+                entityType,
+                userId: user.userId,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Managed entities background refresh failed',
+            );
+          })
+          .finally(() => {
+            if (this.managedEntitiesBackgroundRefreshRuns.get(refreshKey) === pending) {
+              this.managedEntitiesBackgroundRefreshRuns.delete(refreshKey);
+            }
+          });
+        this.managedEntitiesBackgroundRefreshRuns.set(refreshKey, pending);
+      }
     }
 
     return refreshState;
+  }
+
+  async processManagedEntitiesRefreshJob(job: AdminManagedEntitiesRefreshJob): Promise<void> {
+    const user: AuthUser = {
+      userId: job.userId,
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    await this.runManagedEntitiesRemoteFullRefresh(user, job.entityType, {
+      bypassRemoteCache: job.bypassRemoteCache,
+      resetRefreshCursor: job.resetRefreshCursor,
+    });
+  }
+
+  private buildManagedEntitiesRefreshJobId(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `managed-entities-refresh__${entityType}__${userId}`;
+  }
+
+  private async enqueueManagedEntitiesRemoteFullRefresh(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<boolean> {
+    if (!this.adminManagedEntitiesRefreshQueue) {
+      return false;
+    }
+
+    const jobId = this.buildManagedEntitiesRefreshJobId(userId, entityType);
+
+    try {
+      const existing = await this.adminManagedEntitiesRefreshQueue.getJob(jobId);
+      if (existing) {
+        const state = await existing.getState();
+        if (state !== 'failed' && state !== 'completed') {
+          return true;
+        }
+
+        await existing.remove();
+      }
+
+      await this.adminManagedEntitiesRefreshQueue.add(
+        'refresh-managed-entities',
+        {
+          userId,
+          entityType,
+          bypassRemoteCache: options.bypassRemoteCache === true,
+          resetRefreshCursor: options.resetRefreshCursor === true,
+        },
+        {
+          jobId,
+          attempts: 5,
+          removeOnComplete: true,
+          removeOnFail: false,
+          backoff: {
+            type: 'exponential',
+            delay: 1_000,
+          },
+        },
+      );
+      return true;
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.toLowerCase().includes('job') && message.toLowerCase().includes('exists')) {
+        return true;
+      }
+
+      this.logger.warn(
+        {
+          userId,
+          entityType,
+          err: message,
+        },
+        'Failed to enqueue managed entities background refresh',
+      );
+      return false;
+    }
   }
 
   private async prepareManagedEntitiesRemoteFullRefreshState(
@@ -1176,7 +1269,11 @@ export class AdminService {
         resetRefreshCursor: pass === 0 && options.resetRefreshCursor === true,
       });
       const refresh = result.refresh;
-      if (!refresh || refresh.complete || refresh.backoffActive) {
+      if (!refresh || refresh.backoffActive) {
+        return;
+      }
+      if (refresh.complete) {
+        await this.repairManagedEntitiesAllowlistAfterFullRefresh(user.userId, entityType);
         return;
       }
       if (refresh.cursor === null || refresh.cursor === previousCursor) {
@@ -2002,6 +2099,41 @@ export class AdminService {
         this.managedEntitiesDiscoveryChecks.delete(discoveryKey);
       }
     }
+  }
+
+  private async repairManagedEntitiesAllowlistAfterFullRefresh(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<void> {
+    const allowlist = await this.listChatsFromAllowlist(userId, entityType);
+    if (allowlist.length === 0) {
+      return;
+    }
+
+    await this.mapWithConcurrencyLimit(allowlist, 8, async (chat) => {
+      if (!this.isFallbackTitle(chat.id, chat.title)) {
+        return null;
+      }
+
+      const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
+        chat.id,
+        chat.entityType,
+      );
+      const presentableTitle = this.resolvePresentableManagedEntityTitle(
+        chat.id,
+        this.readTrimmedString(cachedHeader?.title),
+      );
+      if (presentableTitle) {
+        await this.prisma.chat.update({
+          where: { id: chat.id },
+          data: { title: presentableTitle },
+        });
+        return null;
+      }
+
+      await this.prunePersistedChatAccess(chat.id, userId);
+      return null;
+    });
   }
 
   private async runManagedEntitiesLocalDiscovery(

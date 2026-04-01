@@ -345,6 +345,12 @@ body.settings-home-page-open .bottom-nav__label {
   color: var(--text-muted);
 }
 
+.chats-search-card__status {
+  font-size: 0.76rem;
+  line-height: 1.25;
+  color: #086cc6;
+}
+
 .chats-search-card__field {
   gap: 0;
 }

@@ -79,6 +79,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
     skipInitialSyncIfCached: true,
+    backgroundRefreshOnFirstLoad: true,
     persistLocalCache: true,
     localCacheScope: 'home',
   });
@@ -88,6 +89,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
     skipInitialSyncIfCached: true,
+    backgroundRefreshOnFirstLoad: true,
     persistLocalCache: true,
     localCacheScope: 'home',
   });
@@ -277,6 +279,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const refreshButtonLabel = isFetching
     ? 'Обновляем список'
     : 'Обновить список';
+  const refreshStatusLabel = isFetching
+    ? 'Обновляем в фоне'
+    : isRefreshTemporarilyBlocked
+      ? 'Обновление временно замедлено'
+      : null;
   const showSystemCard = canAccessSystem;
 
   return (
@@ -327,6 +334,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   </span>
                 </div>
               </div>
+              {refreshStatusLabel ? (
+                <p className="chats-search-card__status" aria-live="polite">
+                  {refreshStatusLabel}
+                </p>
+              ) : null}
             </div>
           </div>
 
