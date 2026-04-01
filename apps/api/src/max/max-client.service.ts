@@ -213,6 +213,7 @@ export type MaxActionJob = {
   botId?: string;
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
+  sourceTag?: string;
   messageId?: string;
   userId?: string;
   text?: string;
@@ -230,6 +231,7 @@ export type MaxActionDispatchOptions = {
   autoDeleteDelayMs?: number;
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
+  sourceTag?: string;
   ignoreFailureMetricStatuses?: readonly number[];
   botId?: string;
 };
@@ -237,11 +239,18 @@ export type MaxActionDispatchOptions = {
 type MaxApiRequestOptions = {
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
+  sourceTag?: string;
   bypassCache?: boolean;
   ignoreFailureMetricStatuses?: readonly number[];
   timeoutMs?: number;
   botId?: string;
 };
+
+export const MAX_API_SOURCE_TAGS = {
+  MANAGED_REFRESH: 'managed_refresh',
+  GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
+  CHANNEL_AUTO_POST: 'channel_auto_post',
+} as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
@@ -253,6 +262,7 @@ const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
+const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
 const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
 local ttlMs = tonumber(ARGV[#ARGV])
 local keyCount = #KEYS
@@ -609,7 +619,7 @@ export class MaxClientService implements OnModuleDestroy {
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
-    const sourceMessage = await this.getMessageById(sourceMessageId);
+    const sourceMessage = await this.getMessageById(sourceMessageId, requestOptions);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
     const messageTextPayload = this.buildOutgoingMessageTextPayload(sourceMessage, fallbackText);
@@ -657,7 +667,7 @@ export class MaxClientService implements OnModuleDestroy {
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ) {
-    const message = await this.getMessageById(messageId);
+    const message = await this.getMessageById(messageId, requestOptions);
     const attachments = this.buildEditableMessageAttachments(message, options);
     const messageTextPayload =
       typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
@@ -744,6 +754,7 @@ export class MaxClientService implements OnModuleDestroy {
           from?: number | string | Date | null;
           to?: number | string | Date | null;
           trafficClass?: MaxApiTrafficClass;
+          sourceTag?: string;
           ignoreFailureMetricStatuses?: readonly number[];
         } = 10,
   ): Promise<Record<string, unknown>[]> {
@@ -755,6 +766,7 @@ export class MaxClientService implements OnModuleDestroy {
             from: countOrOptions.from ?? null,
             to: countOrOptions.to ?? null,
             trafficClass: countOrOptions.trafficClass,
+            sourceTag: countOrOptions.sourceTag,
             ignoreFailureMetricStatuses: countOrOptions.ignoreFailureMetricStatuses,
           };
     const data = await this.executeChatRequest(
@@ -774,6 +786,7 @@ export class MaxClientService implements OnModuleDestroy {
         }),
       {
         trafficClass: options.trafficClass,
+        sourceTag: options.sourceTag,
         ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
       },
     );
@@ -788,6 +801,7 @@ export class MaxClientService implements OnModuleDestroy {
       count?: number;
       maxPages?: number;
       trafficClass?: MaxApiTrafficClass;
+      sourceTag?: string;
       ignoreFailureMetricStatuses?: readonly number[];
     } = {},
   ): Promise<MaxChannelMessageSnapshot[]> {
@@ -804,6 +818,7 @@ export class MaxClientService implements OnModuleDestroy {
         count,
         ...(cursorTo !== null ? { to: cursorTo } : {}),
         trafficClass: options.trafficClass,
+        sourceTag: options.sourceTag,
         ignoreFailureMetricStatuses: options.ignoreFailureMetricStatuses,
       });
       if (rows.length === 0) {
@@ -1736,7 +1751,10 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private async getMessageById(messageId: string): Promise<Record<string, unknown> | null> {
+  private async getMessageById(
+    messageId: string,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
       return null;
@@ -1749,7 +1767,7 @@ export class MaxClientService implements OnModuleDestroy {
             message_ids: normalizedMessageId,
           },
         }),
-      'critical',
+      requestOptions,
     );
     const messages = Array.isArray(data.messages) ? data.messages : [];
     const firstMessage = messages[0];
@@ -1758,7 +1776,10 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
-  private async getMessageByPath(messageId: string): Promise<Record<string, unknown> | null> {
+  private async getMessageByPath(
+    messageId: string,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
       return null;
@@ -1770,7 +1791,7 @@ export class MaxClientService implements OnModuleDestroy {
           'get',
           `/messages/${encodeURIComponent(normalizedMessageId)}`,
         ),
-      'critical',
+      requestOptions,
     );
     return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
   }
@@ -2338,6 +2359,7 @@ export class MaxClientService implements OnModuleDestroy {
     const ignoreFailureMetricStatuses = this.normalizeFailureMetricStatuses(
       options?.ignoreFailureMetricStatuses,
     );
+    const sourceTag = this.normalizeMetricSourceTag(options?.sourceTag ?? payload.sourceTag);
     const scheduledJobId =
       delayMs > 0
         ? this.buildScheduledMemberActionJobId(
@@ -2352,6 +2374,7 @@ export class MaxClientService implements OnModuleDestroy {
       botId: bot.id,
       ...(options?.trafficClass ? { trafficClass: options.trafficClass } : {}),
       ...(options?.actionHealthLane ? { actionHealthLane: options.actionHealthLane } : {}),
+      ...(sourceTag ? { sourceTag } : {}),
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
@@ -3059,6 +3082,7 @@ export class MaxClientService implements OnModuleDestroy {
       chatId?: string | null;
       trafficClass?: MaxApiTrafficClass;
       actionHealthLane?: ActionHealthLane;
+      sourceTag?: string;
       ignoreFailureMetricStatuses?: readonly number[];
       timeoutMs?: number;
       botId?: string;
@@ -3067,8 +3091,9 @@ export class MaxClientService implements OnModuleDestroy {
     const bot = this.resolveBot(options.botId);
     const trafficClass = options.trafficClass ?? 'interactive';
     const actionHealthLane = options.actionHealthLane ?? trafficClass;
+    const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
     await this.ensureCircuitClosed(bot.id);
-    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, trafficClass);
+    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, trafficClass, sourceTag);
 
     try {
       const result = await this.botContext.runWithBot(bot.id, () => operation());
@@ -3122,6 +3147,7 @@ export class MaxClientService implements OnModuleDestroy {
       chatId,
       trafficClass: normalizedOptions.trafficClass ?? 'critical',
       actionHealthLane: normalizedOptions.actionHealthLane,
+      sourceTag: normalizedOptions.sourceTag,
       ignoreFailureMetricStatuses: normalizedOptions.ignoreFailureMetricStatuses,
       timeoutMs: normalizedOptions.timeoutMs,
       botId: normalizedOptions.botId,
@@ -3131,6 +3157,7 @@ export class MaxClientService implements OnModuleDestroy {
   private normalizeReadRequestOptions(options: MaxApiRequestOptions | MaxApiTrafficClass): {
     trafficClass?: MaxApiTrafficClass;
     actionHealthLane?: ActionHealthLane;
+    sourceTag?: string;
     ignoreFailureMetricStatuses?: readonly number[];
     timeoutMs?: number;
     botId?: string;
@@ -3142,6 +3169,7 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       trafficClass: options.trafficClass,
       actionHealthLane: options.actionHealthLane,
+      sourceTag: this.normalizeMetricSourceTag(options.sourceTag) ?? undefined,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         options.ignoreFailureMetricStatuses,
       ),
@@ -3185,6 +3213,7 @@ export class MaxClientService implements OnModuleDestroy {
       botId,
       trafficClass: action.trafficClass,
       actionHealthLane: action.actionHealthLane,
+      sourceTag: this.normalizeMetricSourceTag(action.sourceTag) ?? undefined,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         action.ignoreFailureMetricStatuses,
       ),
@@ -3318,6 +3347,7 @@ export class MaxClientService implements OnModuleDestroy {
     botId: string,
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
+    sourceTag?: string | null,
   ) {
     const maxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
     const startedAtMs = Date.now();
@@ -3325,6 +3355,9 @@ export class MaxClientService implements OnModuleDestroy {
     while (true) {
       const reservation = await this.tryReserveRateLimitSlot(botId, chatId, trafficClass);
       if (reservation.ok) {
+        if (sourceTag) {
+          await this.recordSourceRateLimitUsage(botId, trafficClass, sourceTag);
+        }
         return;
       }
 
@@ -3393,6 +3426,34 @@ export class MaxClientService implements OnModuleDestroy {
         Math.trunc(rejectedKeyIndex),
       ),
     };
+  }
+
+  private async recordSourceRateLimitUsage(
+    botId: string,
+    trafficClass: MaxApiTrafficClass,
+    sourceTag: string,
+  ): Promise<void> {
+    const normalizedSourceTag = this.normalizeMetricSourceTag(sourceTag);
+    if (!normalizedSourceTag) {
+      return;
+    }
+
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const key = `maxapi:rps:source:v1:${botId}:${trafficClass}:${normalizedSourceTag}:${nowSec}`;
+
+    try {
+      await this.limiterRedis.multi().incr(key).expire(key, MAX_API_SOURCE_METRICS_TTL_SEC).exec();
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          botId,
+          trafficClass,
+          sourceTag: normalizedSourceTag,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to record MAX API source usage metric',
+      );
+    }
   }
 
   private resolveTrafficClassGlobalRpsLimit(trafficClass: MaxApiTrafficClass): number {
@@ -3950,5 +4011,15 @@ export class MaxClientService implements OnModuleDestroy {
   private readLowerString(value: unknown): string | null {
     const normalized = this.readTrimmedString(value);
     return normalized ? normalized.toLowerCase() : null;
+  }
+
+  private normalizeMetricSourceTag(value: string | null | undefined): string | null {
+    const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    const sanitized = normalized.replace(/[^a-z0-9_-]+/g, '_').replace(/_+/g, '_').slice(0, 64);
+    return sanitized.length > 0 ? sanitized : null;
   }
 }

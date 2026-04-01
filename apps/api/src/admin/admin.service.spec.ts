@@ -6158,10 +6158,12 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       bypassCache: true,
+      sourceTag: 'managed_refresh',
     });
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-fresh', {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      sourceTag: 'managed_refresh',
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-stale', expect.anything());
   });
@@ -6593,6 +6595,7 @@ describe('AdminService.listChats', () => {
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
+      sourceTag: 'managed_refresh',
     });
   });
 
@@ -6888,6 +6891,7 @@ describe('AdminService.listChats', () => {
 
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
       trafficClass: 'background',
+      sourceTag: 'managed_refresh',
     });
     expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
       'admin-1',

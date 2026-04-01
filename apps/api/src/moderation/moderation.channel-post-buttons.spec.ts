@@ -834,6 +834,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
       count: 10,
       trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
     });
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
@@ -858,6 +859,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
   });
@@ -1113,6 +1115,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
   });
@@ -1215,12 +1218,14 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-polled-forward-1', {
       immediate: true,
       trafficClass: 'background',
       actionHealthLane: 'background',
+      sourceTag: 'channel_auto_post',
     });
   });
 
@@ -1296,6 +1301,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
       count: 10,
       trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
     });
   });
 
@@ -1383,6 +1389,84 @@ describe('ModerationService channel auto post buttons', () => {
 
     expect(maxClient.listMessages).toHaveBeenCalledTimes(3);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips not-yet-due channels when selecting the next polling batch', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T02:30:00.000Z'));
+
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-skip',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [{ userId: 'admin-1' }],
+            },
+          },
+          {
+            chatId: 'channel-due',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [{ userId: 'admin-1' }],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_SCAN_MAX_CHANNELS: 2,
+      }) as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    (service as any).channelAutoPostScanState.set('channel-skip', {
+      latestTimestampMs: 0,
+      latestMessageIdsAtTimestamp: [],
+      idleStreak: 4,
+      nextScanAtMs: Date.now() + 60_000,
+    });
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-due', {
+      count: 10,
+      trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
+    });
   });
 
   it('limits background auto-attach work per channel scan and catches up gradually', async () => {
@@ -1482,6 +1566,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
@@ -1493,6 +1578,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
@@ -1504,6 +1590,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenNthCalledWith(
@@ -1515,6 +1602,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
   });
@@ -1727,6 +1815,7 @@ describe('ModerationService channel auto post buttons', () => {
       {
         trafficClass: 'background',
         actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
       },
     );
   });

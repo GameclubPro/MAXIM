@@ -34,6 +34,7 @@ import {
 import type { Job } from 'bullmq';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
+  MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxActionDispatchOptions,
   type MaxLinkButton,
@@ -548,6 +549,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!this.backgroundTasksEnabled) {
       return;
     }
+
+    this.logger.log(
+      {
+        channelAutoPostScanIntervalMs: this.channelAutoPostScanIntervalMs,
+        channelAutoPostScanMaxChannels: this.channelAutoPostScanMaxChannels,
+        channelAutoPostIdleBackoffMaxMs: this.channelAutoPostIdleBackoffMaxMs,
+        channelAutoPostStartupDelayMs: this.channelAutoPostStartupDelayMs,
+        channelAutoPostStartupJitterMs: this.channelAutoPostStartupJitterMs,
+        channelAutoPostMaxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
+      },
+      'Moderation background polling is enabled',
+    );
 
     this.nightModeAnnounceTimer = setInterval(() => {
       void this.processNightModeAnnouncements();
@@ -10175,6 +10188,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messages = await this.maxClient.listMessages(chatId, {
       count: 10,
       trafficClass: 'background',
+      sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
       ...(scanBotId ? { botId: scanBotId } : {}),
     });
     const normalizedMessages = messages
@@ -10310,6 +10324,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? ({
             trafficClass: 'background',
             actionHealthLane: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
           } as const)
         : undefined;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
@@ -11989,7 +12004,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private selectChannelAutoPostScanBatch<T>(
+  private selectChannelAutoPostScanBatch<T extends { chatId: string }>(
     channels: T[],
     maxChannels = this.channelAutoPostScanMaxChannels,
   ): T[] {
@@ -11997,20 +12012,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       1,
       Math.min(maxChannels, this.channelAutoPostScanMaxChannels),
     );
-    if (channels.length <= normalizedMaxChannels) {
+    const dueChannels = channels.filter((channel) => this.isChannelAutoPostScanDue(channel.chatId));
+    if (dueChannels.length === 0) {
+      return [];
+    }
+    if (dueChannels.length <= normalizedMaxChannels) {
       this.channelAutoPostCursor = 0;
-      return channels;
+      return dueChannels;
     }
 
-    const startIndex = this.channelAutoPostCursor % channels.length;
+    const startIndex = this.channelAutoPostCursor % dueChannels.length;
     const batch: T[] = [];
 
     for (let index = 0; index < normalizedMaxChannels; index += 1) {
-      batch.push(channels[(startIndex + index) % channels.length]!);
+      batch.push(dueChannels[(startIndex + index) % dueChannels.length]!);
     }
 
-    this.channelAutoPostCursor = (startIndex + batch.length) % channels.length;
+    this.channelAutoPostCursor = (startIndex + batch.length) % dueChannels.length;
     return batch;
+  }
+
+  private isChannelAutoPostScanDue(chatId: string): boolean {
+    const current = this.channelAutoPostScanState.get(chatId) ?? null;
+    return !current || Date.now() >= current.nextScanAtMs;
   }
 
   private isChannelAutoPostScanMessageNew(

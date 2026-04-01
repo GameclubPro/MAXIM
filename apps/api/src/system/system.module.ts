@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
 import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { ActionHealthService } from './action-health.service';
+import { MaxApiMetricsService } from './max-api-metrics.service';
 import { QueueMetricsService } from './queue-metrics.service';
 import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
@@ -20,6 +21,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
   providers: [
     QueueMetricsService,
     ActionHealthService,
+    MaxApiMetricsService,
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,
@@ -28,6 +30,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
   exports: [
     QueueMetricsService,
     ActionHealthService,
+    MaxApiMetricsService,
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,

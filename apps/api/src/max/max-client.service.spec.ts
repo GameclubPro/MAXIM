@@ -1,4 +1,4 @@
-import { MaxClientService } from './max-client.service';
+import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
 import { of, throwError } from 'rxjs';
 import Redis from 'ioredis';
 
@@ -1947,6 +1947,75 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'MAX API background rate limit exceeded',
     );
     expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('records source-level MAX API usage for tagged background reads', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:05.000Z'));
+
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            title: 'Chat 1',
+            participants_count: 10,
+            status: 'active',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    await expect(
+      service.getChatSnapshot('chat-1', {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      } as never),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        title: 'Chat 1',
+      }),
+    );
+
+    await expect(
+      limiterRedis.get(`maxapi:rps:source:v1:777000_bot:background:managed_refresh:${nowSec}`),
+    ).resolves.toBe('1');
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves source-level MAX API usage tags for immediate dispatched mutations', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-01T18:00:25.000Z'));
+
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {},
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const limiterRedis = (service as unknown as { limiterRedis: { get: jest.Mock } }).limiterRedis;
+    const nowSec = Math.floor(Date.now() / 1_000);
+
+    await expect(
+      service.deleteMessage('channel-1', 'mid-1', {
+        immediate: true,
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      }),
+    ).resolves.toBeUndefined();
+
+    await expect(
+      limiterRedis.get(`maxapi:rps:source:v1:777000_bot:background:channel_auto_post:${nowSec}`),
+    ).resolves.toBe('1');
 
     await service.onModuleDestroy();
   });

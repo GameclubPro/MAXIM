@@ -1,7 +1,11 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
-import { MaxClientService, type MaxApiTrafficClass } from './max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  type MaxApiTrafficClass,
+} from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
 
 export type MaxMembershipLookupPolicy =
@@ -44,6 +48,7 @@ type MembershipLookupPolicyConfig = {
   backoffMs: number;
   trafficClass: MaxApiTrafficClass;
   allowStaleOnError: boolean;
+  sourceTag?: string;
 };
 
 type PendingSingleLookup = {
@@ -99,6 +104,7 @@ const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLo
       backoffMs: 5_000,
       trafficClass: 'background',
       allowStaleOnError: false,
+      sourceTag: MAX_API_SOURCE_TAGS.GIVEAWAY_DRAW_BACKGROUND,
     },
   };
 
@@ -525,6 +531,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
           this.maxClient.getChatMembersAccess(batch.chatId, userIds, {
             trafficClass: batch.policy.trafficClass,
             timeoutMs: this.resolveLookupTimeoutMs(batch.policy.trafficClass),
+            ...(batch.policy.sourceTag ? { sourceTag: batch.policy.sourceTag } : {}),
             ...(batch.botId ? { botId: batch.botId } : {}),
           }),
         {
@@ -618,6 +625,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
               {
                 trafficClass: policy.trafficClass,
                 timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+                ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
                 ...(botId ? { botId } : {}),
               },
             ),

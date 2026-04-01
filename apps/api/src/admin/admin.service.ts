@@ -139,6 +139,7 @@ import {
   isValidMaxMiniappStartPayload,
 } from '../max/max-deep-link.util';
 import {
+  MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxAttachmentPayload,
   type MaxBotChat,
@@ -2239,6 +2240,7 @@ export class AdminService {
           const access = await this.resolveUserAndBotAdminAccess(candidate.chatId, user.userId, {
             bypassNegativeCache: true,
             trafficClass: options.fullScan ? 'background' : 'interactive',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -2646,6 +2648,7 @@ export class AdminService {
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
             trafficClass: discoveryTrafficClass,
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -2862,6 +2865,7 @@ export class AdminService {
       const legacyChats = await this.maxClient.listBotChats({
         trafficClass: options.trafficClass,
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         ...(options.bypassCache === true ? { bypassCache: true } : {}),
       });
       const candidateChats =
@@ -2879,6 +2883,7 @@ export class AdminService {
         const chats = await this.maxClient.listBotChats({
           trafficClass: options.trafficClass,
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           ...(options.bypassCache === true ? { bypassCache: true } : {}),
           botId: bot.id,
         });
@@ -15189,23 +15194,35 @@ export class AdminService {
     chatId: string,
     userId: string,
     botId: string | null,
-    options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
+    options: {
+      trafficClass?: 'critical' | 'interactive' | 'background';
+      sourceTag?: string;
+    } = {},
   ): Promise<AdminAccessResolution> {
     try {
       const requestOptions =
         options.trafficClass === undefined
-          ? (botId ? ({ botId, actionHealthLane: ADMIN_ACTION_HEALTH_LANE } as const) : ({
-              actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-            } as const))
+          ? (botId
+              ? ({
+                  botId,
+                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+                } as const)
+              : ({
+                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+                } as const))
           : (botId
               ? ({
                   trafficClass: options.trafficClass,
                   actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
                   botId,
                 } as const)
               : ({
                   trafficClass: options.trafficClass,
                   actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
                 } as const));
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
@@ -15298,7 +15315,10 @@ export class AdminService {
   private async loadRemoteAdminAccess(
     chatId: string,
     userId: string,
-    options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
+    options: {
+      trafficClass?: 'critical' | 'interactive' | 'background';
+      sourceTag?: string;
+    } = {},
   ): Promise<AdminAccessResolution> {
     const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
     if (candidateBotIds.length === 0) {
@@ -15385,6 +15405,7 @@ export class AdminService {
     options: {
       bypassNegativeCache?: boolean;
       trafficClass?: 'critical' | 'interactive' | 'background';
+      sourceTag?: string;
     } = {},
   ): Promise<AdminAccessResolution> {
     const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
@@ -15419,6 +15440,7 @@ export class AdminService {
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
       trafficClass: options.trafficClass,
+      sourceTag: options.sourceTag,
     });
     this.adminAccessChecks.set(key, pending);
 
@@ -16184,6 +16206,7 @@ export class AdminService {
         try {
           const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
             trafficClass: 'background',
+            sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
             ...(chat.primaryBotId ? { botId: chat.primaryBotId } : {}),
           });
           await this.persistManagedEntityHeaderSnapshot(chat, snapshot);

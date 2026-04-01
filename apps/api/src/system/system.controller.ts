@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Get,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -13,11 +14,15 @@ import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { QueueMetricsService } from './queue-metrics.service';
 import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from './system-access.util';
+import { MaxApiMetricsService } from './max-api-metrics.service';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
 
 const systemModeBodySchema = z.object({
   mode: z.enum(['normal', 'degrade', 'auto']),
+});
+const maxApiMetricsQuerySchema = z.object({
+  windowSec: z.coerce.number().int().min(60).max(6 * 60 * 60).optional(),
 });
 
 @Controller('v1/system')
@@ -29,6 +34,7 @@ export class SystemController {
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
     private readonly systemDashboardService: SystemDashboardService,
+    private readonly maxApiMetricsService: MaxApiMetricsService,
     configService: ConfigService,
   ) {
     this.systemAccessConfig = readSystemAccessConfig(configService);
@@ -42,6 +48,19 @@ export class SystemController {
       this.systemModeService.getEffectiveSnapshot(),
     ]);
     return { queues, mode };
+  }
+
+  @Get('metrics/max-api')
+  async getMaxApiMetrics(@CurrentUser() user: AuthUser, @Query() query: unknown) {
+    this.assertSystemAdmin(user);
+    const parsed = maxApiMetricsQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    return this.maxApiMetricsService.getSourceSnapshot({
+      windowSec: parsed.data.windowSec,
+    });
   }
 
   @Get('dashboard')
