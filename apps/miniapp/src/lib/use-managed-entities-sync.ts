@@ -124,6 +124,7 @@ export function useManagedEntitiesSync({
   skipInitialSyncIfCached = false,
   freshOnLoad = false,
   syncOnFirstLoad = false,
+  reloadOnMount = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -133,6 +134,7 @@ export function useManagedEntitiesSync({
   skipInitialSyncIfCached?: boolean;
   freshOnLoad?: boolean;
   syncOnFirstLoad?: boolean;
+  reloadOnMount?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const cacheKey = useMemo(() => ['managed-entities-sync', entityType] as const, [entityType]);
@@ -285,7 +287,11 @@ export function useManagedEntitiesSync({
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
 
-        if ((!hasCachedData || freshOnLoad) && !forceRefreshPending && !syncOnFirstLoad) {
+        if (
+          (!hasCachedData || freshOnLoad || reloadOnMount) &&
+          !forceRefreshPending &&
+          !syncOnFirstLoad
+        ) {
           setState({
             data: initialData,
             error: null,
@@ -380,6 +386,7 @@ export function useManagedEntitiesSync({
     entityType,
     freshOnLoad,
     reloadNonce,
+    reloadOnMount,
     skipInitialSyncIfCached,
     syncOnFirstLoad,
     visibilityResumeNonce,
