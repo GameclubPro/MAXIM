@@ -79,7 +79,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
     skipInitialSyncIfCached: true,
-    freshOnManualReload: true,
     persistLocalCache: true,
     localCacheScope: 'home',
   });
@@ -89,7 +88,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
     skipInitialSyncIfCached: true,
-    freshOnManualReload: true,
     persistLocalCache: true,
     localCacheScope: 'home',
   });
