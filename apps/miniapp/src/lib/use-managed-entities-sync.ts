@@ -143,37 +143,6 @@ function sanitizeManagedEntitiesOrNull(items: ChatSummary[] | null | undefined):
   return sanitized.length > 0 ? sanitized : null;
 }
 
-function buildManagedEntitiesInitialState(options: {
-  freshOnLoad: boolean;
-  cachedState: ManagedEntitiesSyncState | null;
-  initialCachedData: ChatSummary[] | null;
-}): ManagedEntitiesSyncState {
-  const { freshOnLoad, cachedState, initialCachedData } = options;
-
-  if (freshOnLoad) {
-    return {
-      ...EMPTY_SYNC_STATE,
-    };
-  }
-
-  if (cachedState) {
-    return cachedState;
-  }
-
-  if (initialCachedData !== null) {
-    return {
-      data: initialCachedData,
-      error: null,
-      refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
-      phase: 'complete',
-    };
-  }
-
-  return {
-    ...EMPTY_SYNC_STATE,
-  };
-}
-
 function readManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
@@ -340,12 +309,22 @@ export function useManagedEntitiesSync({
     [cachedState?.data, persistedData],
   );
   const initialState = useMemo(
-    () =>
-      buildManagedEntitiesInitialState({
-        freshOnLoad,
-        cachedState,
-        initialCachedData,
-      }),
+    (): ManagedEntitiesSyncState =>
+      freshOnLoad
+        ? {
+            ...EMPTY_SYNC_STATE,
+          }
+        : cachedState ??
+          (initialCachedData !== null
+            ? {
+                data: initialCachedData,
+                error: null,
+                refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+                phase: 'complete',
+              }
+            : {
+                ...EMPTY_SYNC_STATE,
+              }),
     [cachedState, freshOnLoad, initialCachedData],
   );
   const [state, setState] = useState<ManagedEntitiesSyncState>(
@@ -359,7 +338,6 @@ export function useManagedEntitiesSync({
   const handledReloadNonceRef = useRef(reloadNonce);
   const backoffResumeAtRef = useRef<number | null>(null);
   const cacheScopeRef = useRef(effectiveStateCacheScope);
-  const skipQueryCacheWriteRef = useRef(false);
 
   useEffect(() => {
     if (cacheScopeRef.current === effectiveStateCacheScope) {
@@ -367,19 +345,13 @@ export function useManagedEntitiesSync({
     }
 
     cacheScopeRef.current = effectiveStateCacheScope;
-    skipQueryCacheWriteRef.current = true;
     skippedInitialSyncRef.current = false;
-    handledReloadNonceRef.current = reloadNonce;
     backoffResumeAtRef.current = null;
     latestDataRef.current = freshOnLoad ? initialCachedData : initialState.data;
     setState(initialState);
-  }, [effectiveStateCacheScope, freshOnLoad, initialCachedData, initialState, reloadNonce]);
+  }, [effectiveStateCacheScope, freshOnLoad, initialCachedData, initialState]);
 
   useEffect(() => {
-    if (skipQueryCacheWriteRef.current) {
-      skipQueryCacheWriteRef.current = false;
-      return;
-    }
     queryClient.setQueryData(cacheKey, state);
   }, [cacheKey, queryClient, state]);
 
