@@ -1127,7 +1127,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
-  it('reuses cached blocked-word patterns across repeated detects for the same settings list', async () => {
+  it('avoids compiling blocked-word regexes for repeated non-matching detects on the same settings list', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const buildPatternSpy = jest.spyOn(service as any, 'buildMessageLimitsBlockedWordPattern');
     const settings = buildSettings({
@@ -1149,7 +1149,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(buildPatternSpy).toHaveBeenCalledTimes(3);
+    expect(buildPatternSpy).toHaveBeenCalledTimes(0);
   });
 
   it('does not normalize malformed configured blocked words into a different token', async () => {
