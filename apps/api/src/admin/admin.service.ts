@@ -217,6 +217,9 @@ type ManagedEntitiesListOptions = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+type ManagedEntityBotProfileSnapshot = {
+  avatarUrl: string | null;
+};
 
 type AssertChatAdminOptions = {
   syncPersistedAccess?: boolean;
@@ -1456,7 +1459,8 @@ export class AdminService {
     header: ManagedEntityHeader,
   ): Promise<ManagedEntityHeader> {
     const assignmentsByChatId = await this.readManagedEntityBotAssignments([header.id]);
-    return this.applyManagedEntityBotAssignments(header, assignmentsByChatId);
+    const enrichedHeader = this.applyManagedEntityBotAssignments(header, assignmentsByChatId);
+    return this.attachManagedEntityBotProfiles(enrichedHeader);
   }
 
   private async readManagedEntityBotAssignments(
@@ -1526,6 +1530,27 @@ export class AdminService {
     const botMetaById = new Map(
       (this.maxBotRegistry?.getAllBots() ?? []).map((bot) => [bot.id, bot] as const),
     );
+    const existingBotProfilesById = new Map(
+      (Array.isArray(entity.assignedBots) ? entity.assignedBots : [])
+        .map((bot) => {
+          const normalizedBotId = this.readTrimmedString(bot.botId);
+          if (!normalizedBotId) {
+            return null;
+          }
+
+          return [
+            normalizedBotId,
+            {
+              avatarUrl: this.readTrimmedString(bot.avatarUrl) ?? null,
+            } satisfies ManagedEntityBotProfileSnapshot,
+          ] as const;
+        })
+        .filter(
+          (
+            entry,
+          ): entry is readonly [string, ManagedEntityBotProfileSnapshot] => entry !== null,
+        ),
+    );
     const seenBotIds = new Set<string>();
     const assignedBots: ManagedEntityAssignedBot[] = [];
 
@@ -1537,6 +1562,7 @@ export class AdminService {
 
       seenBotIds.add(normalizedBotId);
       const botMeta = botMetaById.get(normalizedBotId);
+      const existingProfile = existingBotProfilesById.get(normalizedBotId);
       assignedBots.push({
         botId: normalizedBotId,
         label: botMeta?.label ?? normalizedBotId,
@@ -1545,6 +1571,7 @@ export class AdminService {
         lifecycleState: botMeta?.state ?? 'disabled',
         speechPersona: botMeta?.speechPersona ?? 'male',
         characterName: botMeta?.characterName ?? null,
+        avatarUrl: existingProfile?.avatarUrl ?? null,
         capabilities: this.normalizeManagedEntityBotCapabilities(membership.capabilities),
         permissionsSummary: this.readManagedEntityPermissionsSummary(
           membership.permissionsSnapshot,
@@ -1554,6 +1581,7 @@ export class AdminService {
 
     if (primaryBotId && !seenBotIds.has(primaryBotId)) {
       const botMeta = botMetaById.get(primaryBotId);
+      const existingProfile = existingBotProfilesById.get(primaryBotId);
       assignedBots.unshift({
         botId: primaryBotId,
         label: botMeta?.label ?? primaryBotId,
@@ -1562,6 +1590,7 @@ export class AdminService {
         lifecycleState: botMeta?.state ?? 'disabled',
         speechPersona: botMeta?.speechPersona ?? 'male',
         characterName: botMeta?.characterName ?? null,
+        avatarUrl: existingProfile?.avatarUrl ?? null,
         capabilities: [],
         permissionsSummary: null,
       });
@@ -1601,6 +1630,116 @@ export class AdminService {
           }),
       ),
     );
+  }
+
+  private async attachManagedEntityBotProfiles(
+    header: ManagedEntityHeader,
+  ): Promise<ManagedEntityHeader> {
+    if (
+      !Array.isArray(header.assignedBots) ||
+      header.assignedBots.length === 0 ||
+      typeof this.maxClient.getChatMemberProfiles !== 'function'
+    ) {
+      return header;
+    }
+
+    const cachedProfilesByBotId = new Map<string, ManagedEntityBotProfileSnapshot>();
+    const missingBotIds: string[] = [];
+
+    for (const bot of header.assignedBots) {
+      const normalizedBotId = this.readTrimmedString(bot.botId);
+      if (!normalizedBotId) {
+        continue;
+      }
+
+      const existingAvatarUrl = this.readTrimmedString(bot.avatarUrl) ?? null;
+      if (existingAvatarUrl) {
+        cachedProfilesByBotId.set(normalizedBotId, {
+          avatarUrl: existingAvatarUrl,
+        });
+        continue;
+      }
+
+      const cachedProfile =
+        await this.chatContextCache.getManagedEntityBotProfile?.(normalizedBotId);
+      if (cachedProfile) {
+        cachedProfilesByBotId.set(normalizedBotId, {
+          avatarUrl: this.readTrimmedString(cachedProfile.avatarUrl) ?? null,
+        });
+        continue;
+      }
+
+      missingBotIds.push(normalizedBotId);
+    }
+
+    if (missingBotIds.length > 0) {
+      const lookupBotId = this.resolveManagedEntityBotProfileLookupBotId(header);
+      if (lookupBotId) {
+        try {
+          const profiles = await this.maxClient.getChatMemberProfiles(header.id, missingBotIds, {
+            botId: lookupBotId,
+            trafficClass: 'interactive',
+            timeoutMs: 2_500,
+            sourceTag: MAX_API_SOURCE_TAGS.SETTINGS_BOT_PROFILE,
+          });
+
+          for (const botId of missingBotIds) {
+            const snapshot = {
+              avatarUrl: this.readTrimmedString(profiles.get(botId)?.avatarUrl) ?? null,
+            } satisfies ManagedEntityBotProfileSnapshot;
+            cachedProfilesByBotId.set(botId, snapshot);
+            await this.chatContextCache.setManagedEntityBotProfile?.(botId, snapshot);
+          }
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: header.id,
+              botIds: missingBotIds,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to resolve managed entity bot avatars from MAX',
+          );
+        }
+      }
+    }
+
+    return {
+      ...header,
+      assignedBots: header.assignedBots.map((bot) => {
+        const normalizedBotId = this.readTrimmedString(bot.botId);
+        if (!normalizedBotId) {
+          return bot;
+        }
+
+        const cachedProfile = cachedProfilesByBotId.get(normalizedBotId);
+        return {
+          ...bot,
+          avatarUrl: cachedProfile?.avatarUrl ?? this.readTrimmedString(bot.avatarUrl) ?? null,
+        };
+      }),
+    };
+  }
+
+  private resolveManagedEntityBotProfileLookupBotId(
+    header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'>,
+  ): string | null {
+    const primaryBotId = this.readTrimmedString(header.primaryBotId);
+    if (primaryBotId) {
+      return primaryBotId;
+    }
+
+    for (const bot of header.assignedBots) {
+      if (bot.membershipStatus === 'removed' || bot.lifecycleState === 'disabled') {
+        continue;
+      }
+
+      const normalizedBotId = this.readTrimmedString(bot.botId);
+      if (normalizedBotId) {
+        return normalizedBotId;
+      }
+    }
+
+    return null;
   }
 
   private readManagedEntityPermissionsSummary(

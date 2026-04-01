@@ -248,6 +248,7 @@ type MaxApiRequestOptions = {
 
 export const MAX_API_SOURCE_TAGS = {
   MANAGED_REFRESH: 'managed_refresh',
+  SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   CHANNEL_AUTO_POST: 'channel_auto_post',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',

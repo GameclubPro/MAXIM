@@ -1401,6 +1401,7 @@ export const managedEntityAssignedBotSchema = z.object({
   lifecycleState: managedEntityBotLifecycleStateSchema,
   speechPersona: botSpeechPersonaSchema.default('male'),
   characterName: z.string().nullable().optional().default(null),
+  avatarUrl: z.string().trim().url().nullable().optional().default(null),
   capabilities: z.array(managedEntityBotCapabilitySchema).optional().default([]),
   permissionsSummary: z
     .object({

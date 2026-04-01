@@ -20,6 +20,9 @@ export type ChatContext = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+type ManagedEntityBotProfileSnapshot = {
+  avatarUrl: string | null;
+};
 
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
@@ -27,9 +30,11 @@ export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
+  private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly managedEntityHeaderTtlSec: number;
+  private readonly managedEntityBotProfileTtlSec: number;
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
 
   constructor(
@@ -43,6 +48,12 @@ export class ChatContextCacheService implements OnModuleDestroy {
         'MANAGED_ENTITY_HEADER_CACHE_SEC',
       ),
       ChatContextCacheService.DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC,
+    );
+    this.managedEntityBotProfileTtlSec = this.readPositiveInt(
+      (configService as { get?: (key: string) => unknown }).get?.(
+        'MANAGED_ENTITY_BOT_PROFILE_CACHE_SEC',
+      ),
+      ChatContextCacheService.DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC,
     );
   }
 
@@ -60,6 +71,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   static managedEntityHeaderKey(chatId: string, entityType: ManagedEntityType): string {
     return `chat:managed-header:v1:${entityType}:${chatId}`;
+  }
+
+  static managedEntityBotProfileKey(botId: string): string {
+    return `chat:managed-bot-profile:v1:${botId}`;
   }
 
   static managedEntitiesRefreshCooldownKey(
@@ -225,6 +240,69 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(
       ChatContextCacheService.managedEntityHeaderKey(chatId, 'chat'),
       ChatContextCacheService.managedEntityHeaderKey(chatId, 'channel'),
+    );
+  }
+
+  async getManagedEntityBotProfile(
+    botId: string,
+  ): Promise<ManagedEntityBotProfileSnapshot | null> {
+    const normalizedBotId = botId.trim();
+    if (!normalizedBotId) {
+      return null;
+    }
+
+    const cached = await this.redis.get(
+      ChatContextCacheService.managedEntityBotProfileKey(normalizedBotId),
+    );
+    if (!cached) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(cached) as ManagedEntityBotProfileSnapshot;
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        Array.isArray(parsed) ||
+        !(parsed.avatarUrl === null || typeof parsed.avatarUrl === 'string')
+      ) {
+        return null;
+      }
+
+      return {
+        avatarUrl:
+          typeof parsed.avatarUrl === 'string' && parsed.avatarUrl.trim().length > 0
+            ? parsed.avatarUrl.trim()
+            : null,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        { botId: normalizedBotId, err: error instanceof Error ? error.message : String(error) },
+        'Failed to parse managed entity bot profile cache',
+      );
+      return null;
+    }
+  }
+
+  async setManagedEntityBotProfile(
+    botId: string,
+    profile: ManagedEntityBotProfileSnapshot,
+  ): Promise<void> {
+    const normalizedBotId = botId.trim();
+    if (!normalizedBotId) {
+      return;
+    }
+
+    await this.redis.set(
+      ChatContextCacheService.managedEntityBotProfileKey(normalizedBotId),
+      JSON.stringify({
+        avatarUrl:
+          typeof profile.avatarUrl === 'string' && profile.avatarUrl.trim().length > 0
+            ? profile.avatarUrl.trim()
+            : null,
+      }),
+      'EX',
+      this.managedEntityBotProfileTtlSec,
     );
   }
 

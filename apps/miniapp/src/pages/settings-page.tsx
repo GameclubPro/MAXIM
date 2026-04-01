@@ -4896,64 +4896,65 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"
             aside={
-              <>
-                {headerBotLoadItems.length > 0 ? (
-                  <div className="settings-bot-load" aria-label="Состояние ботов">
-                    {headerBotLoadItems.map(({ bot, load }) => {
-                      const botTitle = bot.characterName?.trim() || bot.label;
-                      return (
-                        <div
-                          key={bot.botId}
-                          className={cn(
-                            'settings-bot-load__item',
-                            bot.speechPersona === 'female'
-                              ? 'settings-bot-load__item--female'
-                              : 'settings-bot-load__item--male',
-                            load.tone === 'warm'
-                              ? 'settings-bot-load__item--warm'
-                              : load.tone === 'hot'
-                                ? 'settings-bot-load__item--hot'
-                                : 'settings-bot-load__item--cool',
-                          )}
-                          title={botTitle}
-                          aria-label={botTitle}
-                        >
-                          <EntityAvatar
-                            title={botTitle}
-                            entityType="chat"
-                            className="settings-bot-load__avatar"
-                          />
-                          <span className="settings-bot-load__meter" aria-hidden="true">
-                            <span
-                              className="settings-bot-load__meter-fill"
-                              style={{ width: `${Math.round(load.value * 100)}%` }}
-                            />
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                ) : null}
-
-                {showHeaderStatus ? (
-                  <span
-                    className={cn(
-                      'compact-page-header__status',
-                      isHeaderSaving
-                        ? 'compact-page-header__status--saving'
-                        : 'compact-page-header__status--draft',
-                    )}
-                    aria-label={
-                      isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'
-                    }
-                    title={isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'}
-                  >
-                    {compactHeaderStatusLabel}
-                  </span>
-                ) : null}
-              </>
+              showHeaderStatus ? (
+                <span
+                  className={cn(
+                    'compact-page-header__status',
+                    isHeaderSaving
+                      ? 'compact-page-header__status--saving'
+                      : 'compact-page-header__status--draft',
+                  )}
+                  aria-label={
+                    isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'
+                  }
+                  title={isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'}
+                >
+                  {compactHeaderStatusLabel}
+                </span>
+              ) : null
             }
           />
+
+          {headerBotLoadItems.length > 0 ? (
+            <div className="settings-bot-load-strip stagger-in" aria-label="Состояние ботов">
+              <div className="settings-bot-load">
+                {headerBotLoadItems.map(({ bot, load }) => {
+                  const botTitle = bot.characterName?.trim() || bot.label;
+                  return (
+                    <div
+                      key={bot.botId}
+                      className={cn(
+                        'settings-bot-load__item',
+                        bot.speechPersona === 'female'
+                          ? 'settings-bot-load__item--female'
+                          : 'settings-bot-load__item--male',
+                        load.tone === 'warm'
+                          ? 'settings-bot-load__item--warm'
+                          : load.tone === 'hot'
+                            ? 'settings-bot-load__item--hot'
+                            : 'settings-bot-load__item--cool',
+                      )}
+                      title={botTitle}
+                      aria-label={botTitle}
+                    >
+                      <EntityAvatar
+                        title={botTitle}
+                        entityType="chat"
+                        avatarUrl={bot.avatarUrl ?? null}
+                        className="settings-bot-load__avatar"
+                      />
+                      <span className="settings-bot-load__meter" aria-hidden="true">
+                        <span
+                          className="settings-bot-load__meter-fill"
+                          style={{ width: `${Math.round(load.value * 100)}%` }}
+                        />
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
 
           <SettingsDrilldownPanel
             id="settings-bot-speech-style"

@@ -711,6 +711,8 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     getManagedEntityHeader: jest.fn().mockResolvedValue(null),
     setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
     invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+    getManagedEntityBotProfile: jest.fn().mockResolvedValue(null),
+    setManagedEntityBotProfile: jest.fn().mockResolvedValue(undefined),
     isManagedEntitiesRefreshCooldownActive: jest.fn().mockResolvedValue(false),
     activateManagedEntitiesRefreshCooldown: jest.fn().mockResolvedValue(undefined),
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
@@ -7252,6 +7254,137 @@ describe('AdminService.listChats', () => {
       'admin-1',
       'channel',
       60,
+    );
+  });
+
+  it('hydrates assigned bot avatars for managed entity headers and caches fresh misses', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([
+      {
+        id: 'chat-1',
+        botId: 'id613002203036_bot',
+        primaryBotId: 'id613002203036_bot',
+        botMemberships: [
+          {
+            botId: 'id613002203036_bot',
+            role: 'PRIMARY',
+            status: 'ACTIVE',
+            capabilities: [],
+            permissionsSnapshot: null,
+          },
+          {
+            botId: 'id613002203036_4_bot',
+            role: 'STANDBY',
+            status: 'ACTIVE',
+            capabilities: [],
+            permissionsSnapshot: null,
+          },
+        ],
+      },
+    ]);
+
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'id613002203036_4_bot',
+            {
+              userId: 'id613002203036_4_bot',
+              avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
+            },
+          ],
+        ]),
+      ),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityBotProfile: jest.fn().mockImplementation(async (botId: string) =>
+        botId === 'id613002203036_bot'
+          ? { avatarUrl: 'https://cdn.max.ru/u/613002203036/avatar.jpg' }
+          : null,
+      ),
+    });
+    const maxBotRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: 'id613002203036_bot',
+          label: 'MAXIM',
+          state: 'active',
+          speechPersona: 'male',
+          characterName: 'Майор Максимов',
+        },
+        {
+          id: 'id613002203036_4_bot',
+          label: 'MAXIM 2',
+          state: 'active',
+          speechPersona: 'female',
+          characterName: 'Майор Максимова',
+        },
+      ]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'id613002203036_bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const result = await (service as any).attachManagedEntityHeaderBotAssignments(
+      createManagedEntityHeaderFixture({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'chat',
+        primaryBotId: 'id613002203036_bot',
+      }),
+    );
+
+    expect(result.assignedBots).toEqual([
+      {
+        botId: 'id613002203036_bot',
+        label: 'MAXIM',
+        role: 'primary',
+        membershipStatus: 'active',
+        lifecycleState: 'active',
+        speechPersona: 'male',
+        characterName: 'Майор Максимов',
+        avatarUrl: 'https://cdn.max.ru/u/613002203036/avatar.jpg',
+        capabilities: [],
+        permissionsSummary: null,
+      },
+      {
+        botId: 'id613002203036_4_bot',
+        label: 'MAXIM 2',
+        role: 'standby',
+        membershipStatus: 'active',
+        lifecycleState: 'active',
+        speechPersona: 'female',
+        characterName: 'Майор Максимова',
+        avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
+        capabilities: [],
+        permissionsSummary: null,
+      },
+    ]);
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(
+      'chat-1',
+      ['id613002203036_4_bot'],
+      {
+        botId: 'id613002203036_bot',
+        trafficClass: 'interactive',
+        timeoutMs: 2500,
+        sourceTag: 'settings_bot_profile',
+      },
+    );
+    expect(chatContextCache.setManagedEntityBotProfile).toHaveBeenCalledWith(
+      'id613002203036_4_bot',
+      {
+        avatarUrl: 'https://cdn.max.ru/u/613002203040/avatar.jpg',
+      },
     );
   });
 });

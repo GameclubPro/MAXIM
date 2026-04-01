@@ -359,6 +359,41 @@ describe('ChatContextCacheService', () => {
     );
   });
 
+  it('stores and reads managed entity bot avatar snapshots', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+      get: jest.fn().mockReturnValue(null),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      get: jest.Mock;
+    };
+
+    await service.setManagedEntityBotProfile('777000_bot', {
+      avatarUrl: 'https://cdn.max.ru/u/777000/avatar.jpg',
+    });
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntityBotProfileKey('777000_bot'),
+      JSON.stringify({ avatarUrl: 'https://cdn.max.ru/u/777000/avatar.jpg' }),
+      'EX',
+      6 * 60 * 60,
+    );
+
+    redisInstance.get.mockResolvedValueOnce(
+      JSON.stringify({ avatarUrl: 'https://cdn.max.ru/u/777000/avatar.jpg' }),
+    );
+
+    await expect(service.getManagedEntityBotProfile('777000_bot')).resolves.toEqual({
+      avatarUrl: 'https://cdn.max.ru/u/777000/avatar.jpg',
+    });
+  });
+
   it('stores managed entity refresh cooldown and backoff markers in redis', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

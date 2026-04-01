@@ -132,6 +132,7 @@ function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
       lifecycleState: 'active',
       speechPersona: 'neutral',
       characterName: 'Чат-бот',
+      avatarUrl: buildPreviewAvatarDataUrl('MAXIM', '#22b6b7', '#1484a0'),
       capabilities: [],
       permissionsSummary: null,
     },
@@ -143,6 +144,7 @@ function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
       lifecycleState: 'active',
       speechPersona: 'female',
       characterName: 'Майор Максимова',
+      avatarUrl: buildPreviewAvatarDataUrl('Майор Максимова', '#ff89b8', '#de5a82'),
       capabilities: [],
       permissionsSummary: null,
     },
@@ -1885,7 +1887,7 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       avatarUrl: resolveChatAvatarUrl(chatId, state),
       primaryBotId: PREVIEW_PRIMARY_BOT_ID,
       assignedBots: buildPreviewAssignedBots(),
-      sharedMode: 'shared-primary',
+      sharedMode: 'shared-standby',
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
@@ -1920,7 +1922,7 @@ function buildChannelSettingsScreen(
       avatarUrl: resolveChannelAvatarUrl(channelId, state),
       primaryBotId: PREVIEW_PRIMARY_BOT_ID,
       assignedBots: buildPreviewAssignedBots(),
-      sharedMode: 'shared-primary',
+      sharedMode: 'shared-standby',
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });

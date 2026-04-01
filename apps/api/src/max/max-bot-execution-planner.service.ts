@@ -401,6 +401,7 @@ export class MaxBotExecutionPlannerService {
         lifecycleState: bot.state,
         speechPersona: bot.speechPersona,
         characterName: bot.characterName,
+        avatarUrl: null,
         capabilities: this.normalizeCapabilities(membership.capabilities),
         permissionsSummary: this.normalizePermissionsSummary(membership.permissionsSnapshot),
       });
@@ -417,6 +418,7 @@ export class MaxBotExecutionPlannerService {
           lifecycleState: bot.state,
           speechPersona: bot.speechPersona,
           characterName: bot.characterName,
+          avatarUrl: null,
           capabilities: [],
           permissionsSummary: null,
         });

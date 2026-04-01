@@ -74,6 +74,10 @@ function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
         typeof item.characterName === 'string' && item.characterName.trim().length > 0
           ? item.characterName.trim()
           : null,
+      avatarUrl:
+        typeof item.avatarUrl === 'string' && item.avatarUrl.trim().length > 0
+          ? item.avatarUrl.trim()
+          : null,
       capabilities: Array.isArray(item.capabilities)
         ? Array.from(
             new Set(

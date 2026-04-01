@@ -320,7 +320,7 @@
 
 .settings-home-sticky-header .compact-page-header__bar {
   grid-template-columns: auto minmax(0, 1fr) auto;
-  padding: calc(var(--compact-page-header-safe-top) + 7px) 14px 9px;
+  padding: calc(var(--compact-page-header-safe-top) + 4px) 14px 6px;
   border-bottom-color: rgba(217, 227, 236, 0.78);
   border-radius: 0 0 var(--compact-page-header-radius) var(--compact-page-header-radius);
   background:
@@ -334,7 +334,7 @@
 }
 
 .settings-home-sticky-header.compact-page-header.is-compact .compact-page-header__bar {
-  padding: calc(var(--compact-page-header-safe-top) + 6px) 14px 8px;
+  padding: calc(var(--compact-page-header-safe-top) + 4px) 14px 6px;
   border-radius: 0 0 18px 18px;
   box-shadow:
     0 10px 18px rgba(24, 55, 83, 0.04),
@@ -384,10 +384,25 @@
   box-shadow: 0 0 0 4px rgba(11, 132, 255, 0.14);
 }
 
+.settings-bot-load-strip {
+  display: flex;
+  justify-content: flex-end;
+  padding: 1px 4px 1px;
+}
+
 .settings-bot-load {
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  padding: 5px 7px;
+  border-radius: 999px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.9), rgba(245, 249, 253, 0.84)),
+    rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(219, 229, 238, 0.7);
+  box-shadow:
+    0 10px 18px rgba(24, 55, 83, 0.04),
+    0 1px 0 rgba(255, 255, 255, 0.78) inset;
 }
 
 .settings-bot-load__item {
@@ -396,13 +411,13 @@
   justify-items: center;
   gap: 4px;
   padding: 4px 4px 5px;
-  border-radius: 14px;
-  border: 1px solid rgba(212, 224, 234, 0.74);
+  border-radius: 15px;
+  border: 1px solid rgba(220, 230, 238, 0.78);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 254, 0.88)),
-    rgba(255, 255, 255, 0.76);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(243, 248, 253, 0.9)),
+    rgba(255, 255, 255, 0.8);
   box-shadow:
-    0 8px 18px rgba(24, 55, 83, 0.05),
+    0 8px 16px rgba(24, 55, 83, 0.04),
     0 1px 0 rgba(255, 255, 255, 0.8) inset;
 }
 
@@ -423,15 +438,15 @@
 }
 
 .settings-bot-load__avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 11px;
-  font-size: 0.52rem;
+  width: 30px;
+  height: 30px;
+  border-radius: 12px;
+  font-size: 0.54rem;
   letter-spacing: 0.03em;
 }
 
 .settings-bot-load__meter {
-  width: 28px;
+  width: 30px;
   height: 4px;
   overflow: hidden;
   border-radius: 999px;
@@ -455,8 +470,13 @@
 }
 
 @media (max-width: 389px) {
+  .settings-bot-load-strip {
+    padding-inline: 2px;
+  }
+
   .settings-bot-load {
     gap: 5px;
+    padding: 4px 6px;
   }
 
   .settings-bot-load__item {
