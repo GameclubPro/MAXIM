@@ -144,7 +144,7 @@ function sanitizeManagedEntitiesOrNull(items: ChatSummary[] | null | undefined):
 function readManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
-): ManagedEntitiesLocalCachePayload | null {
+): ChatSummary[] | null {
   if (typeof window === 'undefined') {
     return null;
   }
@@ -160,19 +160,7 @@ function readManagedEntitiesLocalCache(
       return null;
     }
 
-    const items = Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : null;
-    if (!items) {
-      return null;
-    }
-
-    return {
-      version: parsed.version,
-      items,
-      updatedAt:
-        typeof parsed.updatedAt === 'string' && parsed.updatedAt.trim()
-          ? parsed.updatedAt
-          : new Date().toISOString(),
-    };
+    return Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : null;
   } catch {
     return null;
   }
@@ -182,7 +170,6 @@ function saveManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
   items: ChatSummary[],
-  options: { updatedAt?: string | null } = {},
 ): void {
   if (typeof window === 'undefined') {
     return;
@@ -193,10 +180,7 @@ function saveManagedEntitiesLocalCache(
     const payload: ManagedEntitiesLocalCachePayload = {
       version: MANAGED_ENTITIES_LOCAL_CACHE_VERSION,
       items: sanitizedItems,
-      updatedAt:
-        typeof options.updatedAt === 'string' && options.updatedAt.trim()
-          ? options.updatedAt
-          : new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
     window.localStorage.setItem(
       buildManagedEntitiesLocalCacheKey(entityType, scope),
@@ -304,12 +288,11 @@ export function useManagedEntitiesSync({
     [localCacheScope],
   );
   const cachedState = queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? null;
-  const persistedCache = useMemo(
+  const persistedData = useMemo(
     () =>
       persistLocalCache ? readManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope) : null,
     [effectiveLocalCacheScope, entityType, persistLocalCache],
   );
-  const persistedData = persistedCache?.items ?? null;
   const initialCachedData = useMemo(
     () => sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData),
     [cachedState?.data, persistedData],
@@ -325,10 +308,7 @@ export function useManagedEntitiesSync({
             ? {
                 data: initialCachedData,
                 error: null,
-                refreshState: {
-                  ...MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
-                  lastSyncedAt: persistedCache?.updatedAt ?? null,
-                },
+                refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
                 phase: 'complete',
               }
             : {
@@ -359,9 +339,7 @@ export function useManagedEntitiesSync({
       return;
     }
 
-    saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, state.data, {
-      updatedAt: state.refreshState?.lastSyncedAt ?? null,
-    });
+    saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, state.data);
   }, [
     effectiveLocalCacheScope,
     entityType,
@@ -369,7 +347,6 @@ export function useManagedEntitiesSync({
     state.data,
     state.error,
     state.refreshState?.complete,
-    state.refreshState?.lastSyncedAt,
   ]);
 
   useEffect(() => {

@@ -174,25 +174,6 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
     typeof refresh.backoffActive !== 'boolean' ||
     (refresh.cursor !== null &&
       (typeof refresh.cursor !== 'number' || !Number.isInteger(refresh.cursor))) ||
-    (refresh.processedCandidates !== undefined &&
-      refresh.processedCandidates !== null &&
-      (typeof refresh.processedCandidates !== 'number' ||
-        !Number.isInteger(refresh.processedCandidates) ||
-        refresh.processedCandidates < 0)) ||
-    (refresh.totalCandidates !== undefined &&
-      refresh.totalCandidates !== null &&
-      (typeof refresh.totalCandidates !== 'number' ||
-        !Number.isInteger(refresh.totalCandidates) ||
-        refresh.totalCandidates < 0)) ||
-    (refresh.progressPercent !== undefined &&
-      refresh.progressPercent !== null &&
-      (typeof refresh.progressPercent !== 'number' ||
-        !Number.isInteger(refresh.progressPercent) ||
-        refresh.progressPercent < 0 ||
-        refresh.progressPercent > 100)) ||
-    (refresh.lastSyncedAt !== undefined &&
-      refresh.lastSyncedAt !== null &&
-      typeof refresh.lastSyncedAt !== 'string') ||
     (refresh.nextPollAfterMs !== undefined &&
       (typeof refresh.nextPollAfterMs !== 'number' ||
         !Number.isInteger(refresh.nextPollAfterMs) ||
@@ -209,9 +190,24 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       backoffActive: refresh.backoffActive,
       nextPollAfterMs: refresh.nextPollAfterMs ?? 900,
       processedCandidates:
-        typeof refresh.processedCandidates === 'number' ? refresh.processedCandidates : null,
-      totalCandidates: typeof refresh.totalCandidates === 'number' ? refresh.totalCandidates : null,
-      progressPercent: typeof refresh.progressPercent === 'number' ? refresh.progressPercent : null,
+        typeof refresh.processedCandidates === 'number' &&
+        Number.isInteger(refresh.processedCandidates) &&
+        refresh.processedCandidates >= 0
+          ? refresh.processedCandidates
+          : null,
+      totalCandidates:
+        typeof refresh.totalCandidates === 'number' &&
+        Number.isInteger(refresh.totalCandidates) &&
+        refresh.totalCandidates >= 0
+          ? refresh.totalCandidates
+          : null,
+      progressPercent:
+        typeof refresh.progressPercent === 'number' &&
+        Number.isInteger(refresh.progressPercent) &&
+        refresh.progressPercent >= 0 &&
+        refresh.progressPercent <= 100
+          ? refresh.progressPercent
+          : null,
       lastSyncedAt: typeof refresh.lastSyncedAt === 'string' ? refresh.lastSyncedAt : null,
     },
   };

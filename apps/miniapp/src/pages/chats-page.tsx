@@ -44,16 +44,6 @@ const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 
-function formatRefreshRetryDelay(ms: number): string {
-  const totalSeconds = Math.max(1, Math.ceil(ms / 1000));
-  if (totalSeconds < 60) {
-    return `${totalSeconds}с`;
-  }
-
-  const minutes = Math.ceil(totalSeconds / 60);
-  return `${minutes}м`;
-}
-
 function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): string | null {
   if (!refresh || refresh.complete) {
     return null;
@@ -78,7 +68,7 @@ function formatRefreshProgress(refresh: ManagedEntitiesRefreshState | null): str
   return null;
 }
 
-function formatRelativeSyncTime(value: string | null): string | null {
+function formatRefreshSyncedAt(value: string | null): string | null {
   if (!value) {
     return null;
   }
@@ -89,24 +79,9 @@ function formatRelativeSyncTime(value: string | null): string | null {
     return null;
   }
 
-  const diffMs = Date.now() - timestamp;
-  if (diffMs < 45_000) {
-    return 'только что';
-  }
-
-  const diffMinutes = Math.round(diffMs / 60_000);
-  if (diffMinutes < 60) {
-    return `${diffMinutes} мин назад`;
-  }
-
-  const diffHours = Math.round(diffMs / (60 * 60 * 1000));
-  if (diffHours < 24) {
-    return `${diffHours} ч назад`;
-  }
-
   return new Intl.DateTimeFormat('ru-RU', {
     day: '2-digit',
-    month: 'short',
+    month: '2-digit',
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
@@ -349,21 +324,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     ? 'Обновляем список'
     : 'Обновить список';
   const refreshProgressLabel = formatRefreshProgress(refreshState);
-  const lastSyncedLabel = formatRelativeSyncTime(refreshState?.lastSyncedAt ?? null);
+  const lastSyncedLabel = formatRefreshSyncedAt(refreshState?.lastSyncedAt ?? null);
   const refreshStatusLabel =
     isFetching || isSyncPending
       ? refreshProgressLabel
         ? `Обновляем в фоне · ${refreshProgressLabel}`
         : 'Обновляем в фоне'
       : isRefreshTemporarilyBlocked
-        ? `Обновление временно замедлено · повтор через ${formatRefreshRetryDelay(
-            refreshState?.nextPollAfterMs ?? 0,
-          )}`
+        ? 'Обновление временно замедлено'
         : lastSyncedLabel
           ? `Обновлено ${lastSyncedLabel}`
           : null;
-  const refreshMetaLabel =
-    (isFetching || isSyncPending) && lastSyncedLabel ? `Последняя синхронизация ${lastSyncedLabel}` : null;
   const showSystemCard = canAccessSystem;
 
   return (
@@ -417,11 +388,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               {refreshStatusLabel ? (
                 <p className="chats-search-card__status" aria-live="polite">
                   {refreshStatusLabel}
-                </p>
-              ) : null}
-              {refreshMetaLabel ? (
-                <p className="chats-search-card__status-meta" aria-live="polite">
-                  {refreshMetaLabel}
                 </p>
               ) : null}
             </div>
