@@ -694,7 +694,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const { pushToast } = useToast();
-  const [range, setRange] = useState<LogsDashboardRange>('7d');
+  const [range, setRange] = useState<LogsDashboardRange>('24h');
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
