@@ -3538,6 +3538,69 @@ describe('ModerationService', () => {
     });
   });
 
+  it('skips system mode lookup for user_added service events', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+    );
+
+    await service.handleUpdate(createUserAddedUpdate());
+
+    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      `Добро пожаловать, ${userMention('Новый участник user_added', 'user-added-1')}! добро пожаловать в чат.`,
+    );
+  });
+
   it('skips moderation flow for user_removed update', async () => {
     const prisma = {
       chat: {

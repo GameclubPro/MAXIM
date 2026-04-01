@@ -776,6 +776,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      if (serviceAuthored || serviceMembersEvent) {
+        const chat = await this.loadChatContext(chatId, chatTitle);
+        this.markWebhookHotPathStage(hotPathProfile, 'chat-context');
+        const updateType = this.readLowerString(update.type);
+        const senderIsOwnBotInMessage =
+          updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
+        if (senderIsOwnBotInMessage) {
+          await this.handleOwnBotMessageAutoDelete({
+            chatId,
+            userId: senderId,
+            messageId,
+            text,
+            settings: chat.settings,
+          });
+          return;
+        }
+
+        await this.handleServiceMembershipUpdate({
+          chatId,
+          messageId,
+          text,
+          update,
+          settings: chat.settings,
+          adminUserIds: chat.adminUserIds,
+          rulesPublishedUrl: chat.rulesPublishedUrl,
+          rulesPublishedMessageId: chat.rulesPublishedMessageId,
+        });
+        return;
+      }
+
       const userLabel = this.formatUserLabel(senderName, senderId);
       const mode = await this.resolveSystemModeSnapshot();
       this.markWebhookHotPathStage(hotPathProfile, 'system-mode');
@@ -800,58 +830,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           settings,
         });
-        return;
-      }
-
-      if (serviceAuthored || serviceMembersEvent) {
-        const excludedGreetingUserIds = new Set<string>();
-
-        if (settings.deleteSpammersEnabled) {
-          const kickedUserIds = await this.handleServiceKnownSpammerMembersEvent({
-            chatId,
-            adminUserIds: chat.adminUserIds,
-            messageId,
-            text,
-            update,
-          });
-          for (const userId of kickedUserIds) {
-            excludedGreetingUserIds.add(userId);
-          }
-        }
-
-        if (settings.removeBotsFromGroupEnabled) {
-          const kickedUserIds = await this.handleServiceBotEvent({
-            chatId,
-            messageId,
-            text,
-            update,
-          });
-          for (const userId of kickedUserIds) {
-            excludedGreetingUserIds.add(userId);
-          }
-        }
-
-        if (settings.greetingEnabled) {
-          await this.handleServiceGreetingEvent({
-            chatId,
-            messageId,
-            update,
-            greetingBotMessageEnabled: settings.greetingBotMessageEnabled,
-            greetingDeleteBotMessageEnabled: settings.greetingDeleteBotMessageEnabled,
-            greetingDeleteBotMessageDelayMinutes: settings.greetingDeleteBotMessageDelayMinutes,
-            greetingBotMessageText: settings.greetingBotMessageText,
-            botSpeechStyle: settings.botSpeechStyle,
-            greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
-            greetingBotButtonUrl: settings.greetingBotButtonUrl,
-            greetingBotButtonText: settings.greetingBotButtonText,
-            greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-            deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
-            deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-            excludedUserIds: excludedGreetingUserIds,
-          });
-        }
         return;
       }
 
@@ -5297,6 +5275,79 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
       }
     }
+  }
+
+  private async handleServiceMembershipUpdate(params: {
+    chatId: string;
+    messageId: string;
+    text: string;
+    update: MaxUpdate;
+    settings: ChatSettings;
+    adminUserIds: string[];
+    rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
+  }): Promise<void> {
+    const {
+      chatId,
+      messageId,
+      text,
+      update,
+      settings,
+      adminUserIds,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
+    } = params;
+
+    const excludedGreetingUserIds = new Set<string>();
+
+    if (settings.deleteSpammersEnabled) {
+      const kickedUserIds = await this.handleServiceKnownSpammerMembersEvent({
+        chatId,
+        adminUserIds,
+        messageId,
+        text,
+        update,
+      });
+      for (const userId of kickedUserIds) {
+        excludedGreetingUserIds.add(userId);
+      }
+    }
+
+    if (settings.removeBotsFromGroupEnabled) {
+      const kickedUserIds = await this.handleServiceBotEvent({
+        chatId,
+        messageId,
+        text,
+        update,
+      });
+      for (const userId of kickedUserIds) {
+        excludedGreetingUserIds.add(userId);
+      }
+    }
+
+    if (!settings.greetingEnabled) {
+      return;
+    }
+
+    await this.handleServiceGreetingEvent({
+      chatId,
+      messageId,
+      update,
+      greetingBotMessageEnabled: settings.greetingBotMessageEnabled,
+      greetingDeleteBotMessageEnabled: settings.greetingDeleteBotMessageEnabled,
+      greetingDeleteBotMessageDelayMinutes: settings.greetingDeleteBotMessageDelayMinutes,
+      greetingBotMessageText: settings.greetingBotMessageText,
+      botSpeechStyle: settings.botSpeechStyle,
+      greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
+      greetingBotButtonUrl: settings.greetingBotButtonUrl,
+      greetingBotButtonText: settings.greetingBotButtonText,
+      greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
+      deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+      excludedUserIds: excludedGreetingUserIds,
+    });
   }
 
   private extractHumanServiceMembers(
