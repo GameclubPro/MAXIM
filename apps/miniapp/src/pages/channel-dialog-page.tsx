@@ -38,6 +38,7 @@ import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import { isSessionExpiredApiMessage } from '../lib/api-error';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,
@@ -1227,6 +1228,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: ({ signal }) => getMe(api, { signal }),
+    retry: (failureCount, error) =>
+      !isSessionExpiredApiMessage(normalizeApiError(error)) && failureCount < 1,
   });
 
   useEffect(() => {
@@ -1251,7 +1254,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         ? getChannelDialog(api, chatId, dialogType, token, { signal })
         : getChatDialog(api, chatId, dialogType, token, { signal }),
     enabled: Boolean(chatId && token),
-    refetchInterval: dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false,
+    retry: (failureCount, error) =>
+      !isSessionExpiredApiMessage(normalizeApiError(error)) && failureCount < 1,
+    refetchInterval: (query) => {
+      const message = query.state.error ? normalizeApiError(query.state.error) : '';
+      if (
+        message &&
+        (isSessionExpiredApiMessage(message) || shouldRedirectFromDialogError(message))
+      ) {
+        return false;
+      }
+
+      return dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false;
+    },
   });
 
   useEffect(() => {

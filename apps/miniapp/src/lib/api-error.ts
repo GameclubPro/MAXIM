@@ -54,6 +54,21 @@ function formatStatusFallback(status: number): string {
   return `Ошибка запроса (${status}).`;
 }
 
+export function isSessionExpiredApiMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    normalized.includes('сессия истекла') ||
+    normalized.includes('доступ запрещ') ||
+    normalized.includes('init data has expired') ||
+    normalized.includes('missing initdata authorization header') ||
+    normalized.includes('invalid init data signature')
+  );
+}
+
 export function buildApiErrorMessage(
   status: number,
   payload: string,
@@ -63,6 +78,10 @@ export function buildApiErrorMessage(
   const apiMessage = extractApiMessageFromJsonPayload(trimmedPayload);
   if (apiMessage) {
     return apiMessage;
+  }
+
+  if (status === 401 || status === 403) {
+    return formatStatusFallback(status);
   }
 
   if (!trimmedPayload) {
