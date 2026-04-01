@@ -384,6 +384,98 @@
   box-shadow: 0 0 0 4px rgba(11, 132, 255, 0.14);
 }
 
+.settings-bot-load {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.settings-bot-load__item {
+  position: relative;
+  display: inline-grid;
+  justify-items: center;
+  gap: 4px;
+  padding: 4px 4px 5px;
+  border-radius: 14px;
+  border: 1px solid rgba(212, 224, 234, 0.74);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 254, 0.88)),
+    rgba(255, 255, 255, 0.76);
+  box-shadow:
+    0 8px 18px rgba(24, 55, 83, 0.05),
+    0 1px 0 rgba(255, 255, 255, 0.8) inset;
+}
+
+.settings-bot-load__item::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.84;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.36);
+}
+
+.settings-bot-load__item--female {
+  background:
+    linear-gradient(180deg, rgba(255, 253, 254, 0.96), rgba(251, 243, 248, 0.9)),
+    rgba(255, 255, 255, 0.76);
+}
+
+.settings-bot-load__avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 11px;
+  font-size: 0.52rem;
+  letter-spacing: 0.03em;
+}
+
+.settings-bot-load__meter {
+  width: 28px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(166, 187, 205, 0.24);
+}
+
+.settings-bot-load__meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #6cb9ff, #2f7cff);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18) inset;
+}
+
+.settings-bot-load__item--warm .settings-bot-load__meter-fill {
+  background: linear-gradient(90deg, #f7c965, #f08b2f);
+}
+
+.settings-bot-load__item--hot .settings-bot-load__meter-fill {
+  background: linear-gradient(90deg, #ff8e78, #e45263);
+}
+
+@media (max-width: 389px) {
+  .settings-bot-load {
+    gap: 5px;
+  }
+
+  .settings-bot-load__item {
+    padding: 3px 3px 4px;
+    border-radius: 13px;
+  }
+
+  .settings-bot-load__avatar,
+  .settings-bot-load__meter {
+    width: 25px;
+  }
+
+  .settings-bot-load__avatar {
+    height: 25px;
+    border-radius: 10px;
+    font-size: 0.48rem;
+  }
+}
+
 .settings-home-group-head {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);

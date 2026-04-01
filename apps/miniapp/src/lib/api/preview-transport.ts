@@ -112,6 +112,8 @@ const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
 const PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY = 'maxim.preview.giveaway.runtime';
 const PREVIEW_PRIMARY_BOT_ID = '777000_bot';
 const PREVIEW_PRIMARY_BOT_LABEL = 'MAXIM';
+const PREVIEW_STANDBY_BOT_ID = '777001_bot';
+const PREVIEW_STANDBY_BOT_LABEL = 'MAXIM 2';
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
 type PreviewGiveawayParticipantVariant = PreviewGiveawayVariant | 'blocked-entered';
@@ -130,6 +132,17 @@ function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
       lifecycleState: 'active',
       speechPersona: 'neutral',
       characterName: 'Чат-бот',
+      capabilities: [],
+      permissionsSummary: null,
+    },
+    {
+      botId: PREVIEW_STANDBY_BOT_ID,
+      label: PREVIEW_STANDBY_BOT_LABEL,
+      role: 'standby',
+      membershipStatus: 'active',
+      lifecycleState: 'active',
+      speechPersona: 'female',
+      characterName: 'Майор Максимова',
       capabilities: [],
       permissionsSummary: null,
     },
@@ -1870,6 +1883,9 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
       avatarUrl: resolveChatAvatarUrl(chatId, state),
+      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+      assignedBots: buildPreviewAssignedBots(),
+      sharedMode: 'shared-primary',
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
@@ -1902,6 +1918,9 @@ function buildChannelSettingsScreen(
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
       avatarUrl: resolveChannelAvatarUrl(channelId, state),
+      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
+      assignedBots: buildPreviewAssignedBots(),
+      sharedMode: 'shared-primary',
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
