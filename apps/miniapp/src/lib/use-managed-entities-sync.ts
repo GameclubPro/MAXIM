@@ -6,10 +6,11 @@ import type {
   ManagedEntitiesRefreshState,
 } from '@maxim/contracts';
 import { getChannels, getChats } from './api/root-client';
+import { isUnusableChatTitle, resolveChatTitle } from './chat-titles';
 import type { ApiTransport } from './api/transport';
 
 const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 900;
-const MANAGED_ENTITIES_LOCAL_CACHE_VERSION = 1;
+const MANAGED_ENTITIES_LOCAL_CACHE_VERSION = 2;
 const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
   complete: true,
   cursor: -1,
@@ -95,6 +96,47 @@ function readManagedEntitiesLocalCacheUserScope(): string {
   return 'default';
 }
 
+function sanitizeManagedEntities(
+  items: ChatSummary[],
+  options: { dropUnusableTitles?: boolean } = {},
+): ChatSummary[] {
+  const sanitized: ChatSummary[] = [];
+  const seen = new Set<string>();
+
+  for (const item of items) {
+    const normalizedId = item.id.trim();
+    if (!normalizedId || seen.has(normalizedId)) {
+      continue;
+    }
+    seen.add(normalizedId);
+
+    const resolvedTitle = resolveChatTitle(normalizedId, item.title);
+    if (options.dropUnusableTitles === true && isUnusableChatTitle(normalizedId, resolvedTitle)) {
+      continue;
+    }
+
+    sanitized.push(
+      resolvedTitle === item.title
+        ? item
+        : {
+            ...item,
+            title: resolvedTitle,
+          },
+    );
+  }
+
+  return sanitized;
+}
+
+function sanitizeManagedEntitiesOrNull(items: ChatSummary[] | null | undefined): ChatSummary[] | null {
+  if (!Array.isArray(items) || items.length === 0) {
+    return null;
+  }
+
+  const sanitized = sanitizeManagedEntities(items);
+  return sanitized.length > 0 ? sanitized : null;
+}
+
 function readManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
@@ -114,7 +156,7 @@ function readManagedEntitiesLocalCache(
       return null;
     }
 
-    return Array.isArray(parsed.items) ? parsed.items : null;
+    return Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : null;
   } catch {
     return null;
   }
@@ -130,9 +172,10 @@ function saveManagedEntitiesLocalCache(
   }
 
   try {
+    const sanitizedItems = sanitizeManagedEntities(items, { dropUnusableTitles: true });
     const payload: ManagedEntitiesLocalCachePayload = {
       version: MANAGED_ENTITIES_LOCAL_CACHE_VERSION,
-      items,
+      items: sanitizedItems,
       updatedAt: new Date().toISOString(),
     };
     window.localStorage.setItem(
@@ -244,7 +287,10 @@ export function useManagedEntitiesSync({
       persistLocalCache ? readManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope) : null,
     [effectiveLocalCacheScope, entityType, persistLocalCache],
   );
-  const initialCachedData = cachedState?.data ?? persistedData;
+  const initialCachedData = useMemo(
+    () => sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData),
+    [cachedState?.data, persistedData],
+  );
   const [state, setState] = useState<ManagedEntitiesSyncState>(
     () =>
       freshOnLoad
@@ -265,7 +311,9 @@ export function useManagedEntitiesSync({
   );
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(
-    freshOnLoad ? cachedState?.data ?? persistedData ?? null : state.data,
+    freshOnLoad
+      ? sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData)
+      : state.data,
   );
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
@@ -276,12 +324,24 @@ export function useManagedEntitiesSync({
   }, [cacheKey, queryClient, state]);
 
   useEffect(() => {
-    if (!persistLocalCache || state.error !== null || state.data === null) {
+    if (
+      !persistLocalCache ||
+      state.error !== null ||
+      state.data === null ||
+      state.refreshState?.complete !== true
+    ) {
       return;
     }
 
     saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, state.data);
-  }, [effectiveLocalCacheScope, entityType, persistLocalCache, state.data, state.error]);
+  }, [
+    effectiveLocalCacheScope,
+    entityType,
+    persistLocalCache,
+    state.data,
+    state.error,
+    state.refreshState?.complete,
+  ]);
 
   useEffect(() => {
     if (!state.refreshState?.backoffActive) {
@@ -405,7 +465,9 @@ export function useManagedEntitiesSync({
           return;
         }
 
-        const initialData = mergeManagedEntityPresentation(latestDataRef.current, initial);
+        const initialData = sanitizeManagedEntities(
+          mergeManagedEntityPresentation(latestDataRef.current, initial),
+        );
         latestDataRef.current = initialData;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
@@ -467,7 +529,9 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          const nextData = mergeManagedEntityPresentation(latestDataRef.current, next.items);
+          const nextData = sanitizeManagedEntities(
+            mergeManagedEntityPresentation(latestDataRef.current, next.items),
+          );
           latestDataRef.current = nextData;
           const phase = next.refresh.complete
             ? 'complete'

@@ -6154,6 +6154,56 @@ describe('AdminService.listChats', () => {
     });
   });
 
+  it('skips recent bot-added chats when only fallback titles are available', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        chat_id: 'chat-fallback',
+        chat_title: null,
+        is_channel: 'false',
+      },
+    ]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Chat chat-fallback',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue({
+        id: 'chat-fallback',
+        title: 'Chat chat-fallback',
+        entityType: 'chat',
+        link: null,
+        participantsCount: null,
+        avatarUrl: null,
+      }),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([]);
+
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
   it('does not call live MAX hydration for cached default managed lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

@@ -1852,10 +1852,23 @@ export class AdminService {
           title: true,
         },
       });
+      const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
+        chatId,
+        hintedEntityType,
+      );
+      const resolvedTitle = this.resolvePresentableManagedEntityTitle(
+        chatId,
+        this.readTrimmedString(row.chat_title),
+        this.readTrimmedString(cachedHeader?.title),
+        this.readTrimmedString(existing?.title),
+      );
+      if (!resolvedTitle) {
+        continue;
+      }
       const persistedChat = await this.upsertUserChatAccess(
         chatId,
         normalizedUserId,
-        this.readTrimmedString(row.chat_title) ?? existing?.title ?? null,
+        resolvedTitle,
         hintedEntityType,
         { updateEntityType: true },
       );
@@ -14914,6 +14927,22 @@ export class AdminService {
   private isFallbackTitle(chatId: string, title: string): boolean {
     const normalized = title.trim();
     return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
+  }
+
+  private resolvePresentableManagedEntityTitle(
+    chatId: string,
+    ...candidates: Array<string | null | undefined>
+  ): string | null {
+    for (const candidate of candidates) {
+      const normalized = this.readTrimmedString(candidate);
+      if (!normalized || normalized === chatId || this.isFallbackTitle(chatId, normalized)) {
+        continue;
+      }
+
+      return normalized;
+    }
+
+    return null;
   }
 
   private async resolveCandidateBotIdsForChat(chatId: string): Promise<string[]> {
