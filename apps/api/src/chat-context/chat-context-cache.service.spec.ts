@@ -220,6 +220,72 @@ describe('ChatContextCacheService', () => {
     expect(redisInstance.set).toHaveBeenCalledTimes(1);
   });
 
+  it('deduplicates concurrent cold chat context loads', async () => {
+    const chatId = 'chat-1';
+    const settings = buildSettings(chatId);
+    let resolveFindUnique!: (value: unknown) => void;
+    const findUniquePromise = new Promise((resolve) => {
+      resolveFindUnique = resolve;
+    });
+    const prisma = {
+      chat: {
+        create: jest.fn().mockResolvedValue({ id: chatId }),
+        update: jest.fn().mockResolvedValue(undefined),
+        findUnique: jest.fn().mockReturnValue(findUniquePromise),
+      },
+      chatSettings: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+      set: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValue(null);
+
+    const firstLoad = service.getChatContext(chatId, 'Chat title');
+    const secondLoad = service.getChatContext(chatId, 'Chat title');
+
+    resolveFindUnique({
+      id: chatId,
+      title: 'Chat title',
+      settings,
+      domains: [{ domain: 'example.com' }],
+      admins: [{ userId: 'user-1' }],
+    });
+
+    await expect(firstLoad).resolves.toEqual({
+      chatId,
+      title: 'Chat title',
+      settings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+    await expect(secondLoad).resolves.toEqual({
+      chatId,
+      title: 'Chat title',
+      settings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
+    expect(prisma.chatSettings.createMany).toHaveBeenCalledTimes(1);
+    expect(redisInstance.set).toHaveBeenCalledTimes(1);
+  });
+
   it('stores admin access decisions in redis with ttl', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

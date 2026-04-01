@@ -110,6 +110,7 @@ type RequiredSubscriptionChannelMetadata = {
   title: string;
   link: string | null;
   usable: boolean;
+  checkMembership: boolean;
 };
 
 type SharedChatExecutionGuard =
@@ -6537,21 +6538,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const resolvedRequiredChannels = await this.resolveRequiredSubscriptionChannels(
       requiredChannelIds,
-      { allowRemoteFetch: true },
+      { allowRemoteFetch: !this.chatContextCache },
     );
-    const usableRequiredChannels = resolvedRequiredChannels.filter((channel) => channel.usable);
-    if (usableRequiredChannels.length === 0) {
+    const requiredMembershipChannelIds = resolvedRequiredChannels
+      .filter((channel) => channel.checkMembership)
+      .map((channel) => channel.id);
+    if (requiredMembershipChannelIds.length === 0) {
       return false;
     }
 
-    const usableRequiredChannelsById = new Map(
-      usableRequiredChannels.map((channel) => [channel.id, channel] as const),
+    const resolvedRequiredChannelsById = new Map(
+      resolvedRequiredChannels.map((channel) => [channel.id, channel] as const),
     );
 
     const membership = await this.resolveRequiredSubscriptionMembership(
       params.chatId,
       params.userId,
-      usableRequiredChannels.map((channel) => channel.id),
+      requiredMembershipChannelIds,
     );
     if (!membership || membership.missingChannelIds.length === 0) {
       return false;
@@ -6574,9 +6577,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     await this.maxClient.deleteMessage(params.chatId, params.messageId);
 
     const missingChannels = membership.missingChannelIds
-      .map((channelId) => usableRequiredChannelsById.get(channelId) ?? null)
+      .map((channelId) => resolvedRequiredChannelsById.get(channelId) ?? null)
       .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== null);
-    const missingChannelTitles = missingChannels.map((channel) => channel.title);
+    const missingChannelTitles = missingChannels
+      .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
+      .filter((title) => title.length > 0);
 
     await this.prisma.violation.create({
       data: {
@@ -6984,6 +6989,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           title: persistedChat.title?.trim() || `Чат ${channelId}`,
           link: null,
           usable: false,
+          checkMembership: false,
         };
       }
 
@@ -6997,6 +7003,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           title: cachedTitle,
           link: cachedLink,
           usable: true,
+          checkMembership: true,
         };
       }
 
@@ -7006,6 +7013,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           title: fallbackTitle,
           link: cachedLink,
           usable: false,
+          checkMembership: true,
         };
       }
 
@@ -7026,6 +7034,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             title,
             link: null,
             usable: false,
+            checkMembership: false,
           };
         }
         await this.chatContextCache?.setManagedEntityHeader({
@@ -7043,6 +7052,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           title,
           link,
           usable: this.isUsableRequiredSubscriptionChannelMetadata(channelId, title, link),
+          checkMembership: true,
         };
       } catch (error: unknown) {
         this.logger.warn(
@@ -7057,6 +7067,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           title: fallbackTitle,
           link: cachedLink,
           usable: false,
+          checkMembership: true,
         };
       }
     });
@@ -11259,16 +11270,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }> {
     if (this.chatContextCache) {
       const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
-      const resolvedRulesPublishedUrl = await this.resolveRulesPublishedUrl(
-        chatId,
-        cached.rulesPublishedUrl ?? null,
-        cached.rulesPublishedMessageId ?? null,
-      );
       return {
         settings: cached.settings,
         domainAllowlist: cached.domainAllowlist,
         adminUserIds: cached.adminUserIds,
-        rulesPublishedUrl: resolvedRulesPublishedUrl,
+        rulesPublishedUrl: cached.rulesPublishedUrl ?? null,
         rulesPublishedMessageId: cached.rulesPublishedMessageId ?? null,
       };
     }
@@ -11319,17 +11325,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       throw new Error(`Chat settings missing for chat ${chatId}`);
     }
 
-    const resolvedRulesPublishedUrl = await this.resolveRulesPublishedUrl(
-      chatId,
-      chat.rules?.publishedUrl ?? null,
-      chat.rules?.publishedMessageId ?? null,
-    );
-
     return {
       settings: chat.settings,
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
-      rulesPublishedUrl: resolvedRulesPublishedUrl,
+      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
       rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
   }

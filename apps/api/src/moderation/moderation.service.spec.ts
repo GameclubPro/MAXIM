@@ -8241,7 +8241,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('suppresses duplicate explanation while the chat is in webhook hot-timeout backoff', async () => {
+  it('skips duplicate moderation entirely while the chat is in webhook hot-timeout backoff', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8291,7 +8291,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
@@ -10134,7 +10134,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('recovers direct rules link by message id when published url is missing', async () => {
+  it('uses reply link to rules post without resolving a direct rules url in the hot path', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -10193,13 +10193,14 @@ describe('ModerationService', () => {
       'chat-1',
       linkWarnNotice('Алексей'),
       {
-        button: {
-          text: 'Правила',
-          url: 'https://max.ru/chats/chat-1/message/123',
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-rules-1',
         },
         textFormat: 'markdown',
       },
     );
+    expect(maxClient.resolveMessageLink).not.toHaveBeenCalled();
   });
 
   it('falls back to reply link on rules post when published url is still unavailable', async () => {
@@ -12206,8 +12207,118 @@ describe('ModerationService', () => {
           title: 'Новости MAX',
           link: 'https://max.ru/channels/news-max',
           usable: true,
+          checkMembership: true,
         },
       ]);
+    });
+
+    it('enforces required subscription without remote metadata fetch when chat context cache is present', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const chatContextCache = {
+        getChatContext: jest.fn().mockResolvedValue({
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['channel-1'],
+            rulesAttachViolationsEnabled: true,
+          }),
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: 'mid-rules-1',
+        }),
+        getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('обязательные каналы');
+      expect(noticeOptions).toEqual(
+        expect.objectContaining({
+          textFormat: 'markdown',
+          messageLink: {
+            type: 'reply',
+            mid: 'mid-rules-1',
+          },
+        }),
+      );
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('does not resolve rules links during ordinary chat context loads from cache', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const chatContextCache = {
+        getChatContext: jest.fn().mockResolvedValue({
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: 'mid-rules-1',
+        }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.resolveMessageLink).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
     it('ignores chats in required subscription config and only checks real channels', async () => {
@@ -12285,7 +12396,7 @@ describe('ModerationService', () => {
       );
     });
 
-    it('fails open when required subscription metadata cannot produce a channel button and title', async () => {
+    it('enforces required subscription with a generic notice when metadata cannot produce a channel button and title', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -12294,7 +12405,7 @@ describe('ModerationService', () => {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
       const maxClient = {
-        hasChatMember: jest.fn(),
+        hasChatMember: jest.fn().mockResolvedValue(false),
         getChatSnapshot: jest.fn().mockResolvedValue({
           title: '',
           link: null,
@@ -12323,15 +12434,21 @@ describe('ModerationService', () => {
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
-      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('обязательные каналы');
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('fails open when required subscription metadata only resolves an english fallback title', async () => {
+    it('enforces required subscription with a generic notice when metadata only resolves an english fallback title', async () => {
       const channelId = '-71476678048456';
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
@@ -12377,12 +12494,18 @@ describe('ModerationService', () => {
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',
       });
-      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith(channelId, 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('обязательные каналы');
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
     it('suppresses repeated notice during cooldown and reuses membership cache', async () => {

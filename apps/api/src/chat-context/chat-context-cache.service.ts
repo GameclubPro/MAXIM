@@ -30,6 +30,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly managedEntityHeaderTtlSec: number;
+  private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -126,8 +127,19 @@ export class ChatContextCacheService implements OnModuleDestroy {
       }
     }
 
-    const fresh = await this.loadAndCache(chatId, chatTitle);
-    return fresh;
+    const existingLoad = this.chatContextInFlightLoads.get(chatId);
+    if (existingLoad) {
+      return existingLoad;
+    }
+
+    let loadPromise!: Promise<ChatContext>;
+    loadPromise = this.loadAndCache(chatId, chatTitle).finally(() => {
+      if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
+        this.chatContextInFlightLoads.delete(chatId);
+      }
+    });
+    this.chatContextInFlightLoads.set(chatId, loadPromise);
+    return loadPromise;
   }
 
   async invalidate(chatId: string) {
