@@ -54,6 +54,12 @@ function formatStatusFallback(status: number): string {
   return `Ошибка запроса (${status}).`;
 }
 
+const DIALOG_TERMINAL_ERROR_PATTERNS = [
+  /^Комментарии для этого (чата|канала) сейчас закрыты\.$/u,
+  /^Кнопка устарела\./u,
+  /^Неверный токен кнопки\./u,
+] as const;
+
 export function isSessionExpiredApiMessage(message: string): boolean {
   const normalized = message.trim().toLowerCase();
   if (!normalized) {
@@ -66,6 +72,18 @@ export function isSessionExpiredApiMessage(message: string): boolean {
     normalized.includes('init data has expired') ||
     normalized.includes('missing initdata authorization header') ||
     normalized.includes('invalid init data signature')
+  );
+}
+
+export function isTerminalDialogApiMessage(message: string): boolean {
+  const normalized = message.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  return (
+    isSessionExpiredApiMessage(normalized) ||
+    DIALOG_TERMINAL_ERROR_PATTERNS.some((pattern) => pattern.test(normalized))
   );
 }
 

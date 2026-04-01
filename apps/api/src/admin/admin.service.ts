@@ -204,6 +204,16 @@ type AssertChatAdminOptions = {
   syncPersistedAccess?: boolean;
 };
 
+type AdminReadBypassOptions = {
+  skipAdminCheck?: boolean;
+  skipEntityCheck?: boolean;
+};
+
+type TimedPromiseCacheEntry<T> = {
+  expiresAtMs: number;
+  promise: Promise<T>;
+};
+
 type ManagedEntityBotAssignmentsRow = {
   id: string;
   botId: string | null;
@@ -341,6 +351,7 @@ const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
+const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 5_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
@@ -635,6 +646,10 @@ export class AdminService {
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
+  private readonly logsDashboardResponseCache = new Map<
+    string,
+    TimedPromiseCacheEntry<LogsDashboardResponse>
+  >();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -804,12 +819,20 @@ export class AdminService {
     return result.items;
   }
 
-  async getChatHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
-    return this.getManagedEntityHeader(chatId, user, 'chat');
+  async getChatHeader(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ManagedEntityHeader> {
+    return this.getManagedEntityHeader(chatId, user, 'chat', options);
   }
 
-  async getChannelHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
-    return this.getManagedEntityHeader(chatId, user, 'channel');
+  async getChannelHeader(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ManagedEntityHeader> {
+    return this.getManagedEntityHeader(chatId, user, 'channel', options);
   }
 
   async getChatBotExecutionPlan(
@@ -2952,9 +2975,17 @@ export class AdminService {
     return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'channel');
   }
 
-  async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
+  async getSettings(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChatSettings> {
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(chatId, user.userId, 'chat');
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(chatId, user.userId, 'chat');
+    }
     const resolvedBotId = await this.resolveBotAssignment(chatId);
 
     const chat = await this.prisma.chat.upsert({
@@ -3027,12 +3058,15 @@ export class AdminService {
   }
 
   async getChatSettingsScreen(chatId: string, user: AuthUser): Promise<ChatSettingsScreenResponse> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
     const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
-      this.getSettings(chatId, user),
-      this.getRules(chatId, user),
-      this.getChatHeader(chatId, user),
-      this.getDomainAllowlistDetails(chatId, user),
-      this.listManagedBroadcasts(chatId, user),
+      this.getSettings(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.getRules(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.getChatHeader(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.getDomainAllowlistDetails(chatId, user, { skipAdminCheck: true }),
+      this.listManagedBroadcasts(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
     ]);
     const requiredSubscriptionChannels = await this.resolveRequiredSubscriptionChannelHeaders(
       settings.requiredSubscriptionChannelIds,
@@ -3145,9 +3179,17 @@ export class AdminService {
     return normalizedSettings;
   }
 
-  async getRules(chatId: string, user: AuthUser): Promise<ChatRules> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
+  async getRules(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChatRules> {
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(chatId, user.userId, 'chat');
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(chatId, user.userId, 'chat');
+    }
 
     const rules = await this.upsertChatRules(chatId);
     const hydratedRules = await this.hydratePublishedRulesUrl(chatId, rules);
@@ -3532,9 +3574,17 @@ export class AdminService {
     return this.closeManagedPoll(chatId, user, 'channel', source);
   }
 
-  async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
-    await this.ensureEntityType(chatId, user.userId, 'channel');
+  async getChannelSettings(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<ChannelSettings> {
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(chatId, user.userId, 'channel');
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(chatId, user.userId, 'channel');
+    }
     const resolvedBotId = await this.resolveBotAssignment(chatId);
 
     const chat = await this.prisma.chat.upsert({
@@ -3608,10 +3658,19 @@ export class AdminService {
     chatId: string,
     user: AuthUser,
   ): Promise<ChannelSettingsScreenResponse> {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+
     const [settings, header, managedBroadcasts] = await Promise.all([
-      this.getChannelSettings(chatId, user),
-      this.getChannelHeader(chatId, user),
-      this.listChannelManagedBroadcasts(chatId, user),
+      this.getChannelSettings(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
+      this.getChannelHeader(chatId, user, { skipAdminCheck: true, skipEntityCheck: true }),
+      this.listChannelManagedBroadcasts(chatId, user, {
+        skipAdminCheck: true,
+        skipEntityCheck: true,
+      }),
     ]);
 
     return channelSettingsScreenResponseSchema.parse({
@@ -5472,15 +5531,17 @@ export class AdminService {
   async listManagedBroadcasts(
     sourceChatId: string,
     user: AuthUser,
+    options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'chat');
+    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'chat', options);
   }
 
   async listChannelManagedBroadcasts(
     sourceChatId: string,
     user: AuthUser,
+    options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'channel');
+    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'channel', options);
   }
 
   async getManagedBroadcast(
@@ -5584,9 +5645,14 @@ export class AdminService {
     sourceChatId: string,
     user: AuthUser,
     entityType: ManagedEntityType,
+    options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    }
 
     const rows = await this.prisma.managedBroadcast.findMany({
       where: {
@@ -9055,86 +9121,84 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const now = new Date();
-    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    const headerPromise =
-      this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
+    const cacheKey = this.buildLogsDashboardResponseCacheKey(chatId, user.userId, parsed.data.range);
+    const cached = this.logsDashboardResponseCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
 
-    const chat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: { id: true, title: true },
+    let pending!: Promise<LogsDashboardResponse>;
+    pending = this.buildLogsDashboardResponse(chatId, parsed.data.range).catch(
+      (error: unknown) => {
+        const current = this.logsDashboardResponseCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.logsDashboardResponseCache.delete(cacheKey);
+        }
+        throw error;
+      },
+    );
+
+    this.logsDashboardResponseCache.set(cacheKey, {
+      expiresAtMs: Date.now() + LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
+      promise: pending,
     });
 
-    const membershipRows = await this.prisma.$queryRaw<
-      Array<{ joined_users: unknown; left_users: unknown }>
-    >`
-      SELECT
-        COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_added') AS joined_users,
-        COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_removed') AS left_users
-      FROM webhook_events
-      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-        AND normalized_payload->>'type' IN ('user_added', 'user_removed')
-        AND created_at >= ${from}
-        AND created_at <= ${now}
-    `;
+    return pending;
+  }
+
+  private async buildLogsDashboardResponse(
+    chatId: string,
+    range: LogsDashboardRange,
+  ): Promise<LogsDashboardResponse> {
+    const now = new Date();
+    const from = this.resolveLogsDashboardFrom(range, now);
+    const headerPromise =
+      this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
 
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const [
+      chat,
+      membershipRows,
       chatHeader,
-      warnCount,
-      deleteMessageCount,
-      muteCount,
-      banCount,
-      unmuteCount,
-      unbanCount,
+      moderationSummaryRows,
       affectedUsers,
       violationRows,
     ] = await Promise.all([
+      this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { id: true, title: true },
+      }),
+      this.prisma.$queryRaw<
+        Array<{ joined_users: unknown; left_users: unknown }>
+      >`
+        SELECT
+          COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_added') AS joined_users,
+          COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_removed') AS left_users
+        FROM webhook_events
+        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+          AND normalized_payload->>'type' IN ('user_added', 'user_removed')
+          AND created_at >= ${from}
+          AND created_at <= ${now}
+      `,
       headerPromise,
-      this.prisma.moderationEvent.count({
+      this.prisma.moderationEvent.groupBy({
+        by: ['action', 'ruleCode'],
         where: {
           chatId,
-          action: 'WARN',
           createdAt: { gte: from, lte: now },
+          OR: [
+            { action: 'WARN' },
+            { action: 'DELETE_MESSAGE' },
+            { action: 'MUTE' },
+            { action: { in: [SanctionAction.BAN, SanctionAction.KICK] } },
+            {
+              action: SanctionAction.NONE,
+              ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] },
+            },
+          ],
         },
-      }),
-      this.prisma.moderationEvent.count({
-        where: {
-          chatId,
-          action: 'DELETE_MESSAGE',
-          createdAt: { gte: from, lte: now },
-        },
-      }),
-      this.prisma.moderationEvent.count({
-        where: {
-          chatId,
-          action: 'MUTE',
-          createdAt: { gte: from, lte: now },
-        },
-      }),
-      this.prisma.moderationEvent.count({
-        where: {
-          chatId,
-          action: { in: [SanctionAction.BAN, SanctionAction.KICK] },
-          createdAt: { gte: from, lte: now },
-        },
-      }),
-      this.prisma.moderationEvent.count({
-        where: {
-          chatId,
-          action: SanctionAction.NONE,
-          ruleCode: 'MANUAL_UNMUTE',
-          createdAt: { gte: from, lte: now },
-        },
-      }),
-      this.prisma.moderationEvent.count({
-        where: {
-          chatId,
-          action: SanctionAction.NONE,
-          ruleCode: 'MANUAL_UNBAN',
-          createdAt: { gte: from, lte: now },
-        },
+        _count: { _all: true },
       }),
       this.prisma.moderationEvent.findMany({
         where: violationsWhere,
@@ -9152,6 +9216,7 @@ export class AdminService {
       'chat',
       violationRows.map((row) => row.userId),
     );
+    const moderationSummary = this.summarizeLogsDashboardModerationCounts(moderationSummaryRows);
 
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
@@ -9161,7 +9226,7 @@ export class AdminService {
       from,
       now,
       {
-        range: parsed.data.range,
+        range,
         filter: 'all',
         limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
       },
@@ -9174,7 +9239,7 @@ export class AdminService {
         avatarUrl: chatHeader?.avatarUrl?.trim() || null,
       },
       period: {
-        range: parsed.data.range,
+        range,
         from: from.toISOString(),
         to: now.toISOString(),
       },
@@ -9184,14 +9249,20 @@ export class AdminService {
         netUsers: joinedUsers - leftUsers,
       },
       violationsSummary: {
-        warn: warnCount,
-        deleteMessage: deleteMessageCount,
-        mute: muteCount,
-        ban: banCount,
-        unmute: unmuteCount,
-        unban: unbanCount,
+        warn: moderationSummary.warn,
+        deleteMessage: moderationSummary.deleteMessage,
+        mute: moderationSummary.mute,
+        ban: moderationSummary.ban,
+        unmute: moderationSummary.unmute,
+        unban: moderationSummary.unban,
         affectedUsers: affectedUsers.length,
-        total: warnCount + deleteMessageCount + muteCount + banCount + unmuteCount + unbanCount,
+        total:
+          moderationSummary.warn +
+          moderationSummary.deleteMessage +
+          moderationSummary.mute +
+          moderationSummary.ban +
+          moderationSummary.unmute +
+          moderationSummary.unban,
       },
       violations: violationRows.map((row) =>
         this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
@@ -10673,6 +10744,7 @@ export class AdminService {
         },
       }),
     ]);
+    this.invalidateLogsDashboardResponseCache(chatId);
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
@@ -10831,8 +10903,14 @@ export class AdminService {
     return normalizedRows.map((row) => row.domain);
   }
 
-  async getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
-    await this.assertChatAdmin(chatId, user.userId);
+  async getDomainAllowlistDetails(
+    chatId: string,
+    user: AuthUser,
+    options: AdminReadBypassOptions = {},
+  ): Promise<DomainAllowlistEntry[]> {
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(chatId, user.userId);
+    }
 
     const rows = await this.prisma.domainAllowlist.findMany({
       where: this.activeDomainWhere(chatId),
@@ -16023,9 +16101,14 @@ export class AdminService {
     chatId: string,
     user: AuthUser,
     entityType: ManagedEntityType,
+    options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
-    await this.ensureEntityType(chatId, user.userId, entityType);
+    if (!options.skipAdminCheck) {
+      await this.assertChatAdmin(chatId, user.userId, entityType);
+    }
+    if (!options.skipEntityCheck) {
+      await this.ensureEntityType(chatId, user.userId, entityType);
+    }
 
     const cached = await this.chatContextCache.getManagedEntityHeader?.(chatId, entityType);
     if (
@@ -16104,6 +16187,79 @@ export class AdminService {
     const enrichedHeader = await this.attachManagedEntityHeaderBotAssignments(fallbackHeader);
     await this.chatContextCache.setManagedEntityHeader?.(enrichedHeader);
     return enrichedHeader;
+  }
+
+  private summarizeLogsDashboardModerationCounts(
+    rows: Array<{
+      action: SanctionAction;
+      ruleCode: string | null;
+      _count: { _all: number };
+    }>,
+  ): {
+    warn: number;
+    deleteMessage: number;
+    mute: number;
+    ban: number;
+    unmute: number;
+    unban: number;
+  } {
+    const summary = {
+      warn: 0,
+      deleteMessage: 0,
+      mute: 0,
+      ban: 0,
+      unmute: 0,
+      unban: 0,
+    };
+
+    for (const row of rows) {
+      const count = this.toSafeInteger(row._count._all);
+      if (row.action === 'WARN') {
+        summary.warn += count;
+        continue;
+      }
+      if (row.action === 'DELETE_MESSAGE') {
+        summary.deleteMessage += count;
+        continue;
+      }
+      if (row.action === 'MUTE') {
+        summary.mute += count;
+        continue;
+      }
+      if (row.action === SanctionAction.BAN || row.action === SanctionAction.KICK) {
+        summary.ban += count;
+        continue;
+      }
+      if (row.action !== SanctionAction.NONE) {
+        continue;
+      }
+      if (row.ruleCode === 'MANUAL_UNMUTE') {
+        summary.unmute += count;
+        continue;
+      }
+      if (row.ruleCode === 'MANUAL_UNBAN') {
+        summary.unban += count;
+      }
+    }
+
+    return summary;
+  }
+
+  private buildLogsDashboardResponseCacheKey(
+    chatId: string,
+    userId: string,
+    range: LogsDashboardRange,
+  ): string {
+    return `${chatId}:${userId}:${range}`;
+  }
+
+  private invalidateLogsDashboardResponseCache(chatId: string): void {
+    const prefix = `${chatId}:`;
+    for (const key of this.logsDashboardResponseCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.logsDashboardResponseCache.delete(key);
+      }
+    }
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

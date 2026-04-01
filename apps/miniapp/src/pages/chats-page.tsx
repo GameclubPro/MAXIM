@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
@@ -49,6 +50,10 @@ const LazySystemEntryCard = lazy(async () => {
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
+}
+
+function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): boolean {
+  return event.pointerType === 'mouse';
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
@@ -538,7 +543,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveLastEntityId('chat', entity.id);
                         saveChatTitle(entity.id, entity.title);
                       }}
-                      onPointerEnter={() => prefetchChatSettings(entity.id)}
+                      onPointerEnter={(event) => {
+                        if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChatSettings(entity.id);
+                        }
+                      }}
                     >
                       Настройки
                     </Link>
@@ -550,7 +559,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveLastEntityId('chat', entity.id);
                         saveChatTitle(entity.id, entity.title);
                       }}
-                      onPointerEnter={() => prefetchChatEvents(entity.id)}
+                      onPointerEnter={(event) => {
+                        if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChatEvents(entity.id);
+                        }
+                      }}
                     >
                       События
                     </Link>
@@ -569,7 +582,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveLastEntityId('channel', entity.id);
                         saveChatTitle(entity.id, entity.title);
                       }}
-                      onPointerEnter={() => prefetchChannelSettings(entity.id)}
+                      onPointerEnter={(event) => {
+                        if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChannelSettings(entity.id);
+                        }
+                      }}
                     >
                       Настройки
                     </Link>
@@ -581,7 +598,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                         saveLastEntityId('channel', entity.id);
                         saveChatTitle(entity.id, entity.title);
                       }}
-                      onPointerEnter={() => prefetchChannelStats(entity.id)}
+                      onPointerEnter={(event) => {
+                        if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChannelStats(entity.id);
+                        }
+                      }}
                     >
                       Статистика
                     </Link>

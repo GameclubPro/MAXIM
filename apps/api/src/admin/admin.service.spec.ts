@@ -271,6 +271,7 @@ function createPrismaMock() {
     moderationEvent: {
       create: jest.fn().mockResolvedValue(undefined),
       count: jest.fn(),
+      groupBy: jest.fn(),
       findMany: jest.fn(),
     },
     $queryRaw: jest.fn().mockResolvedValue([]),
@@ -2350,13 +2351,15 @@ describe('AdminService.getLogsDashboard', () => {
           sender_name: 'Мария',
         },
       ]);
-    prisma.moderationEvent.count
-      .mockResolvedValueOnce(3)
-      .mockResolvedValueOnce(4)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(2)
-      .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(1);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([
+      { action: 'WARN', ruleCode: null, _count: { _all: 3 } },
+      { action: 'DELETE_MESSAGE', ruleCode: null, _count: { _all: 4 } },
+      { action: 'MUTE', ruleCode: null, _count: { _all: 1 } },
+      { action: 'BAN', ruleCode: null, _count: { _all: 1 } },
+      { action: 'KICK', ruleCode: null, _count: { _all: 1 } },
+      { action: 'NONE', ruleCode: 'MANUAL_UNMUTE', _count: { _all: 1 } },
+      { action: 'NONE', ruleCode: 'MANUAL_UNBAN', _count: { _all: 1 } },
+    ]);
     prisma.moderationEvent.findMany
       .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
       .mockResolvedValueOnce([
@@ -2462,13 +2465,13 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violations[0]?.avatarUrl).toBe('https://cdn.max.ru/u/1/avatar-full.jpg');
     expect(result.violations[0]?.profileUrl).toBe('https://max.ru/aleksey');
     expect(result.violations[0]?.profileHandoffUrl).toEqual(
-      expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+      expect.stringContaining('https://max.ru/777000_bot?start=pm'),
     );
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
     expect(result.violations[1]?.avatarUrl).toBe('https://cdn.max.ru/u/2/avatar-full.jpg');
     expect(result.violations[1]?.profileUrl).toBe('https://max.ru/maria');
     expect(result.violations[1]?.profileHandoffUrl).toEqual(
-      expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+      expect.stringContaining('https://max.ru/777000_bot?start=pm'),
     );
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
     expect(result.activityFeed).toEqual({
@@ -2480,7 +2483,7 @@ describe('AdminService.getLogsDashboard', () => {
           userDisplayName: 'Ирина',
           avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
           profileUrl: 'https://max.ru/irina',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
         {
@@ -2490,7 +2493,7 @@ describe('AdminService.getLogsDashboard', () => {
           userDisplayName: 'Мария',
           avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
           profileUrl: 'https://max.ru/maria',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm'),
           createdAt: '2026-03-02T09:30:00.000Z',
         },
       ],
@@ -2505,7 +2508,7 @@ describe('AdminService.getLogsDashboard', () => {
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]?.[0]);
     expect(activitySqlText).toContain('ORDER BY created_at DESC, id DESC');
 
-    expect(prisma.moderationEvent.count).toHaveBeenCalledWith(
+    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
     );
     expect(prisma.moderationEvent.findMany).toHaveBeenCalledWith(
@@ -2521,13 +2524,7 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([]);
-    prisma.moderationEvent.count
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0)
-      .mockResolvedValueOnce(0);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
     prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const maxClient = {
@@ -2559,10 +2556,44 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.period.from).toBe('2026-03-01T12:00:00.000Z');
     expect(result.period.to).toBe('2026-03-02T12:00:00.000Z');
 
-    const countArgs = prisma.moderationEvent.count.mock.calls[0]?.[0];
+    const countArgs = prisma.moderationEvent.groupBy.mock.calls[0]?.[0];
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+  });
+
+  it('reuses a short-lived cached dashboard response for identical requests', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
+    prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    const first = await service.getLogsDashboard('chat-1', actor, { range: '24h' });
+    const second = await service.getLogsDashboard('chat-1', actor, { range: '24h' });
+
+    expect(second).toEqual(first);
+    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(2);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -6254,9 +6285,9 @@ describe('AdminService settings screen endpoints', () => {
       autoTextEnabled: false,
     });
 
-    jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
-    jest.spyOn(service, 'getRules').mockResolvedValue(rules);
-    jest
+    const getSettingsSpy = jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
+    const getRulesSpy = jest.spyOn(service, 'getRules').mockResolvedValue(rules);
+    const getChatHeaderSpy = jest
       .spyOn(service, 'getChatHeader')
       .mockResolvedValue(
         createManagedEntityHeaderFixture({
@@ -6266,7 +6297,9 @@ describe('AdminService settings screen endpoints', () => {
           participantsCount: 128,
         }),
       );
-    jest.spyOn(service, 'getDomainAllowlistDetails').mockResolvedValue([
+    const getDomainAllowlistDetailsSpy = jest
+      .spyOn(service, 'getDomainAllowlistDetails')
+      .mockResolvedValue([
       {
         domain: 'https://example.com',
         normalizedValue: 'https://example.com',
@@ -6274,7 +6307,11 @@ describe('AdminService settings screen endpoints', () => {
         removeAfterAt: null,
       },
     ]);
-    jest.spyOn(service, 'listManagedBroadcasts').mockResolvedValue([]);
+    const listManagedBroadcastsSpy = jest
+      .spyOn(service, 'listManagedBroadcasts')
+      .mockResolvedValue([]);
+    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'ensureEntityType').mockResolvedValue(undefined);
 
     const result = await service.getChatSettingsScreen('chat-1', {
       userId: 'admin-1',
@@ -6292,6 +6329,9 @@ describe('AdminService settings screen endpoints', () => {
         entityType: 'chat',
         link: null,
         participantsCount: 128,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
       },
       requiredSubscriptionChannels: [],
       domains: [
@@ -6304,6 +6344,31 @@ describe('AdminService settings screen endpoints', () => {
       ],
       managedBroadcasts: [],
     });
+    expect(getSettingsSpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      { skipAdminCheck: true, skipEntityCheck: true },
+    );
+    expect(getRulesSpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      { skipAdminCheck: true, skipEntityCheck: true },
+    );
+    expect(getChatHeaderSpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      { skipAdminCheck: true, skipEntityCheck: true },
+    );
+    expect(getDomainAllowlistDetailsSpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      { skipAdminCheck: true },
+    );
+    expect(listManagedBroadcastsSpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      { skipAdminCheck: true, skipEntityCheck: true },
+    );
   });
 
   it('routes section apply-to-all through partial settings keys', async () => {

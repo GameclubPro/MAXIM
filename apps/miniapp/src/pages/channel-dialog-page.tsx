@@ -38,7 +38,7 @@ import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { isSessionExpiredApiMessage } from '../lib/api-error';
+import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/api-error';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,
@@ -92,11 +92,6 @@ const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
 const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
 const SWIPE_REPLY_TRIGGER_DISTANCE = 54;
 const SWIPE_REPLY_MAX_OFFSET = 78;
-const DIALOG_REDIRECTABLE_ERROR_PATTERNS = [
-  /^Комментарии для этого (чата|канала) сейчас закрыты\.$/u,
-  /^Кнопка устарела\./u,
-  /^Неверный токен кнопки\./u,
-] as const;
 
 type CommentBackdropIconName =
   | 'conversation'
@@ -242,11 +237,6 @@ function normalizeApiError(error: unknown): string {
   }
 
   return normalized;
-}
-
-function shouldRedirectFromDialogError(message: string): boolean {
-  const normalized = message.trim();
-  return DIALOG_REDIRECTABLE_ERROR_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
 function resolveDialogType(mode: string | undefined): ChannelDialogType {
@@ -1196,6 +1186,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
+  const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
@@ -1229,7 +1220,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     queryKey: ['me'],
     queryFn: ({ signal }) => getMe(api, { signal }),
     retry: (failureCount, error) =>
-      !isSessionExpiredApiMessage(normalizeApiError(error)) && failureCount < 1,
+      !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
+    refetchOnWindowFocus: terminalDialogError === null,
+    retryOnMount: terminalDialogError === null,
   });
 
   useEffect(() => {
@@ -1253,15 +1246,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       entityType === 'channel'
         ? getChannelDialog(api, chatId, dialogType, token, { signal })
         : getChatDialog(api, chatId, dialogType, token, { signal }),
-    enabled: Boolean(chatId && token),
+    enabled: Boolean(chatId && token) && terminalDialogError === null,
     retry: (failureCount, error) =>
-      !isSessionExpiredApiMessage(normalizeApiError(error)) && failureCount < 1,
+      !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
+    refetchOnWindowFocus: terminalDialogError === null,
+    retryOnMount: terminalDialogError === null,
     refetchInterval: (query) => {
       const message = query.state.error ? normalizeApiError(query.state.error) : '';
-      if (
-        message &&
-        (isSessionExpiredApiMessage(message) || shouldRedirectFromDialogError(message))
-      ) {
+      if (message && isTerminalDialogApiMessage(message)) {
         return false;
       }
 
@@ -1270,24 +1262,31 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    if (!dialogQuery.error || launchErrorRedirectedRef.current) {
+    if (launchErrorRedirectedRef.current) {
       return;
     }
 
-    const message = normalizeApiError(dialogQuery.error);
-    if (!shouldRedirectFromDialogError(message)) {
+    const dialogErrorMessage = dialogQuery.error ? normalizeApiError(dialogQuery.error) : '';
+    const meErrorMessage = meQuery.error ? normalizeApiError(meQuery.error) : '';
+    const message =
+      (dialogErrorMessage && isTerminalDialogApiMessage(dialogErrorMessage) && dialogErrorMessage) ||
+      (meErrorMessage && isTerminalDialogApiMessage(meErrorMessage) && meErrorMessage) ||
+      '';
+    if (!message) {
       return;
     }
 
     launchErrorRedirectedRef.current = true;
+    setTerminalDialogError(message);
+    void queryClient.cancelQueries({ queryKey: dialogQueryKey });
     pushToast({
       tone: 'info',
-      title: 'Диалог недоступен',
+      title: isSessionExpiredApiMessage(message) ? 'Откройте мини-приложение заново' : 'Диалог недоступен',
       description: message,
       durationMs: 4_000,
     });
     navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-  }, [dialogQuery.error, entityType, navigate, pushToast]);
+  }, [dialogQuery.error, dialogQueryKey, entityType, meQuery.error, navigate, pushToast, queryClient]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
