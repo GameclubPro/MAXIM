@@ -6,7 +6,7 @@ import {
   WebhookSubscriptionStatusService,
   type WebhookSubscriptionBotSyncState,
 } from '../system/webhook-subscription-status.service';
-import { MaxClientService } from './max-client.service';
+import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
 import {
   MaxBotRegistryService,
   type MaxBotDefinition,
@@ -206,6 +206,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     const existing = await this.maxClient.listWebhookSubscriptions({
       trafficClass: 'background',
       botId: bot.id,
+      sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
     });
     const current = existing.find((item) =>
       this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
@@ -236,16 +237,19 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       await this.maxClient.deleteWebhookSubscription(target.url, {
         trafficClass: 'background',
         botId: bot.id,
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
       await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
         trafficClass: 'background',
         botId: bot.id,
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
       reconciledAt = new Date().toISOString();
     } else if (!current || missingUpdateTypes.length > 0) {
       await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
         trafficClass: 'background',
         botId: bot.id,
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
       });
       reconciledAt = new Date().toISOString();
     }
@@ -256,6 +260,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         await this.maxClient.deleteWebhookSubscription(previousConfiguredUrl, {
           trafficClass: 'background',
           botId: bot.id,
+          sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
         });
         reconciledAt = reconciledAt ?? new Date().toISOString();
         effectiveOtherSubscriptionsCount = Math.max(0, effectiveOtherSubscriptionsCount - 1);

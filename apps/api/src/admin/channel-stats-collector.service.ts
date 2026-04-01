@@ -4,7 +4,11 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
-import { MaxClientService, type MaxChannelMessageSnapshot } from '../max/max-client.service';
+import {
+  MAX_API_SOURCE_TAGS,
+  MaxClientService,
+  type MaxChannelMessageSnapshot,
+} from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
@@ -349,6 +353,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           const snapshot = await this.maxClient.getChatSnapshot(chatId, {
             trafficClass: 'background',
             ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
             ...(statsBotId ? { botId: statsBotId } : {}),
           });
           await this.prisma.$transaction([
@@ -395,11 +400,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               from: lookbackFrom,
               to: now,
               count: 100,
-              maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
-              trafficClass: 'background',
-              ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
-              ...(statsBotId ? { botId: statsBotId } : {}),
-            });
+            maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
+            trafficClass: 'background',
+            ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+            ...(statsBotId ? { botId: statsBotId } : {}),
+          });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;
           } catch (error: unknown) {
@@ -515,6 +521,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       async () => {
         await this.maxClient.ensureWebhookSubscription([...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES], {
           trafficClass: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
         });
         ensuredAt = new Date();
       },

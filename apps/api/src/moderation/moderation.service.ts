@@ -278,6 +278,7 @@ const DEFAULT_CHANNEL_AUTO_POST_IDLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
 const DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN = 3;
+const DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS = 10 * 60 * 1_000;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
@@ -416,6 +417,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly channelAutoPostStartupDelayMs: number;
   private readonly channelAutoPostStartupJitterMs: number;
   private readonly channelAutoPostMaxNewMessagesPerScan: number;
+  private readonly channelAutoPostRepairSweepMs: number;
   private readonly channelAutoPostThrottleBackoffMaxMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
@@ -485,6 +487,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.channelAutoPostMaxNewMessagesPerScan = this.readPositiveConfigInt(
       configService?.get<number>('CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN'),
       DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN,
+    );
+    this.channelAutoPostRepairSweepMs = this.readPositiveConfigInt(
+      configService?.get<number>('CHANNEL_AUTO_POST_REPAIR_SWEEP_MS'),
+      DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS,
+      this.channelAutoPostScanIntervalMs,
     );
     this.channelAutoPostThrottleBackoffMaxMs = this.readPositiveConfigInt(
       configService?.get<number>('CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS'),
@@ -558,6 +565,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         channelAutoPostStartupDelayMs: this.channelAutoPostStartupDelayMs,
         channelAutoPostStartupJitterMs: this.channelAutoPostStartupJitterMs,
         channelAutoPostMaxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
+        channelAutoPostRepairSweepMs: this.channelAutoPostRepairSweepMs,
       },
       'Moderation background polling is enabled',
     );
@@ -6900,6 +6908,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const isMember = await this.maxClient.hasChatMember(channelId, userId, {
           trafficClass: 'critical',
           timeoutMs: 2_000,
+          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_MEMBERSHIP,
         });
         const ttlSec = isMember
           ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
@@ -7004,6 +7013,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const snapshot = await this.maxClient.getChatSnapshot(channelId, {
           trafficClass: 'interactive',
           timeoutMs: 2_500,
+          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
         });
         const title =
           this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') ||
@@ -10050,6 +10060,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    this.markChannelAutoPostWebhookSeen(
+      chatId,
+      messageId,
+      this.resolveChannelAutoPostEventTimestampMs(update),
+    );
+
     if (senderId) {
       const mode = await this.resolveSystemModeSnapshot();
       const senderAdminCheck = await this.resolveSenderChatAdminCheck(
@@ -10307,6 +10323,52 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null;
       })(),
     };
+  }
+
+  private resolveChannelAutoPostEventTimestampMs(update: MaxUpdate): number {
+    const raw = this.asRecord(update.raw);
+    const rawMessage = this.asRecord(raw?.message);
+    const candidates: unknown[] = [
+      update.message?.createdAt,
+      rawMessage?.timestamp,
+      rawMessage?.created_at,
+      rawMessage?.createdAt,
+      raw?.timestamp,
+      raw?.created_at,
+      raw?.createdAt,
+    ];
+
+    for (const candidate of candidates) {
+      const timestampMs =
+        typeof candidate === 'number'
+          ? candidate
+          : typeof candidate === 'string' && candidate.trim().length > 0
+            ? Date.parse(candidate)
+            : Number.NaN;
+      if (Number.isFinite(timestampMs) && timestampMs > 0) {
+        return Math.trunc(timestampMs);
+      }
+    }
+
+    return Date.now();
+  }
+
+  private markChannelAutoPostWebhookSeen(
+    chatId: string,
+    messageId: string,
+    timestampMs: number,
+  ): void {
+    const current = this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
+    const nextState =
+      Number.isFinite(timestampMs) && timestampMs > 0
+        ? this.advanceChannelAutoPostScanState(current, { messageId, timestampMs })
+        : current;
+
+    this.channelAutoPostScanState.set(chatId, {
+      ...nextState,
+      idleStreak: 0,
+      nextScanAtMs: Math.max(nextState.nextScanAtMs, Date.now() + this.channelAutoPostRepairSweepMs),
+    });
   }
 
   private async tryAutoAttachChannelMessageButtons(params: {

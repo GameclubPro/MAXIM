@@ -864,6 +864,97 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('treats polling as a repair sweep and skips scans right after a webhook-seen channel post', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-06T15:10:00.000Z'));
+
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      listMessages: jest.fn().mockResolvedValue([]),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        CHANNEL_AUTO_POST_REPAIR_SWEEP_MS: 60_000,
+      }) as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.listMessages).not.toHaveBeenCalled();
+
+    jest.setSystemTime(new Date('2026-03-06T15:11:01.000Z'));
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
+      count: 10,
+      trafficClass: 'background',
+      sourceTag: 'channel_auto_post',
+    });
+  });
+
   it('records a terminal skip marker for non-retryable channel post edit failures', async () => {
     const prisma = {
       chat: {

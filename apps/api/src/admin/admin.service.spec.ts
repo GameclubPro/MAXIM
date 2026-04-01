@@ -917,6 +917,7 @@ describe('AdminService getMe', () => {
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
     });
   });
 
@@ -995,6 +996,7 @@ describe('AdminService getMe', () => {
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
     });
   });
 
@@ -1043,6 +1045,7 @@ describe('AdminService getMe', () => {
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
+      actionHealthLane: 'background',
     });
   });
 
@@ -1804,22 +1807,24 @@ describe('AdminService required subscription settings', () => {
     });
 
     expect(result).toEqual({
-      channel: {
+      channel: createManagedEntityHeaderFixture({
         id: 'channel-ext-1',
         title: 'Партнерские новости',
         entityType: 'channel',
         link: 'https://max.ru/channels/partner-news',
         participantsCount: 318,
-      },
+      }),
     });
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
-    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
-      id: 'channel-ext-1',
-      title: 'Партнерские новости',
-      entityType: 'channel',
-      link: 'https://max.ru/channels/partner-news',
-      participantsCount: 318,
-    });
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'channel-ext-1',
+        title: 'Партнерские новости',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/partner-news',
+        participantsCount: 318,
+      }),
+    );
   });
 
   it('accepts an external required subscription channel on update when the bot is admin there', async () => {
@@ -1857,7 +1862,13 @@ describe('AdminService required subscription settings', () => {
     });
 
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-ext-1']);
-    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-ext-1');
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-ext-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
   });
 
   it('rejects an external required subscription channel when the bot is not its admin', async () => {
@@ -2696,7 +2707,7 @@ describe('AdminService.getChatActivityFeed', () => {
         userDisplayName: 'Игорь',
         avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
         profileUrl: null,
-        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T11:00:00.000Z',
       },
     ]);
@@ -2723,7 +2734,7 @@ describe('AdminService.getChatActivityFeed', () => {
           userDisplayName: 'Мария',
           avatarUrl: 'https://cdn.max.ru/u/4/avatar-full.jpg',
           profileUrl: 'https://max.ru/maria',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
       ],
@@ -2864,7 +2875,7 @@ describe('AdminService.getChatModerationFeed', () => {
         userDisplayName: 'Анна',
         avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
         profileUrl: 'https://max.ru/anna',
-        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T11:00:00.000Z',
         maskedExcerpt: null,
         metadata: { permanent: true },
@@ -2877,7 +2888,7 @@ describe('AdminService.getChatModerationFeed', () => {
         userDisplayName: 'Мария',
         avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
         profileUrl: 'https://max.ru/maria',
-        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T10:30:00.000Z',
         maskedExcerpt: '***',
         metadata: null,
@@ -2907,7 +2918,7 @@ describe('AdminService.getChatModerationFeed', () => {
           userDisplayName: 'Игорь',
           avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
           profileUrl: null,
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-02T09:00:00.000Z',
           maskedExcerpt: null,
           metadata: { duplicateCount: 4 },
@@ -4020,32 +4031,30 @@ describe('AdminService.listChannels', () => {
     });
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-2',
         title: 'Текущий канал',
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Кэшированный канал',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
@@ -4100,43 +4109,47 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.listChannels(
+    const discovered = await (service as any).runManagedEntitiesLocalDiscovery(
       {
         userId: 'admin-1',
         username: null,
         displayName: null,
         chatTitle: null,
       },
-      { refresh: true },
+      'channel',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+      {
+        respectCooldown: false,
+        fullScan: true,
+      },
     );
+    const result = await (service as any).hydrateManagedEntities(discovered.items);
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Новости MAX',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 2,
           commentsEnabled: true,
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
         },
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'channel-2',
         title: 'Обновления MAX',
         createdAt: '2026-03-01T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
     expect(prisma.channelSettings.findMany).toHaveBeenCalledWith({
       where: {
@@ -4188,36 +4201,45 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    await expect(
-      service.listChannels(
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        { refresh: true },
-      ),
-    ).resolves.toEqual([
+    const discovered = await (service as any).runManagedEntitiesLocalDiscovery(
       {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'channel',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+      {
+        respectCooldown: false,
+        fullScan: true,
+      },
+    );
+
+    await expect((service as any).hydrateManagedEntities(discovered.items)).resolves.toEqual([
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Новости MAX',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-1', {
-      trafficClass: 'interactive',
-    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    );
   });
 
   it('uses allowlist cache by default and skips remote MAX discovery', async () => {
@@ -4261,19 +4283,18 @@ describe('AdminService.listChannels', () => {
     });
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Кэш канала',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: false,
           postSuggestionsEnabled: true,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
@@ -4333,19 +4354,18 @@ describe('AdminService.listChannels', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Кэш канала',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
@@ -4398,49 +4418,57 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    await expect(
-      service.listChannels(
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        { refresh: true },
-      ),
-    ).resolves.toEqual([
+    const discovered = await (service as any).runManagedEntitiesLocalDiscovery(
       {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'channel',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+      {
+        respectCooldown: false,
+        fullScan: true,
+      },
+    );
+
+    await expect((service as any).hydrateManagedEntities(discovered.items)).resolves.toEqual([
+      createChatSummaryFixture({
         id: 'channel-2',
         title: 'Новый канал',
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Кэш канала',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-2', {
-      trafficClass: 'interactive',
-    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'channel-2',
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    );
   });
 
   it('auto-discovers channels on default load when allowlist cache is empty', async () => {
@@ -4554,7 +4582,15 @@ describe('AdminService.listChannels', () => {
     prisma.channelSettings.findMany.mockResolvedValue([]);
 
     const maxClient = {
-      getChatAdminIds: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+      getChatAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 429,
+          data: {
+            code: 'rate.limit',
+            message: 'MAX API global rate limit exceeded',
+          },
+        },
+      }),
     };
 
     const chatContextCache = createChatContextCacheMock({
@@ -4581,39 +4617,21 @@ describe('AdminService.listChannels', () => {
       chatTitle: null,
     };
 
-    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual([
+    const discovered = await (service as any).runManagedEntitiesLocalDiscovery(
+      user,
+      'channel',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
       {
-        id: 'cached-channel-1',
-        title: 'Кэш канала',
-        createdAt: '2026-03-02T10:00:00.000Z',
-        entityType: 'channel',
-        link: null,
-        avatarUrl: 'https://i.oneme.ru/cached-channel-1.webp',
-        channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
-          postSuggestionsEnabled: false,
-          commentsModerationEnabled: false,
-        },
+        respectCooldown: false,
+        fullScan: true,
+        includeRefreshState: true,
       },
-    ]);
+    );
 
-    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual([
-      {
-        id: 'cached-channel-1',
-        title: 'Кэш канала',
-        createdAt: '2026-03-02T10:00:00.000Z',
-        entityType: 'channel',
-        link: null,
-        avatarUrl: 'https://i.oneme.ru/cached-channel-1.webp',
-        channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
-          postSuggestionsEnabled: false,
-          commentsModerationEnabled: false,
-        },
-      },
-    ]);
+    expect(discovered.items).toEqual([]);
+    await expect((service as any).hydrateManagedEntities(discovered.items)).resolves.toEqual([]);
+
+    await expect((service as any).hydrateManagedEntities(discovered.items)).resolves.toEqual([]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
@@ -4671,7 +4689,7 @@ describe('AdminService.listChannels', () => {
     };
 
     await expect(service.listChannels(user)).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Новости MAX',
         createdAt: '2026-03-02T10:00:00.000Z',
@@ -4684,7 +4702,7 @@ describe('AdminService.listChannels', () => {
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     expect(chatContextCache.getManagedEntityHeader).toHaveBeenCalledWith('channel-1', 'channel');
@@ -4823,16 +4841,23 @@ describe('AdminService.listChannels', () => {
     );
 
     await expect(
-      service.listChannels(
+      (service as any).discoverManagedEntities(
         {
           userId: 'admin-1',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
+        'channel',
+        {
+          respectCooldown: false,
+          fullScan: true,
+        },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toEqual({
+      items: [],
+      refresh: null,
+    });
   });
 
   it('marks local managed channels refresh complete after checking local candidates', async () => {
@@ -4872,14 +4897,20 @@ describe('AdminService.listChannels', () => {
     );
 
     await expect(
-      service.listChannelsWithRefreshState(
+      (service as any).runManagedEntitiesLocalDiscovery(
         {
           userId: 'admin-1',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
+        'channel',
+        (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+        {
+          respectCooldown: false,
+          fullScan: true,
+          includeRefreshState: true,
+        },
       ),
     ).resolves.toEqual({
       items: [
@@ -5118,29 +5149,40 @@ describe('AdminService.listChannels', () => {
     );
 
     await expect(
-      service.listChats(
+      (service as any).runManagedEntitiesLocalDiscovery(
         {
           userId: 'admin-1',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
+        'chat',
+        (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'chat'),
+        {
+          respectCooldown: false,
+          fullScan: true,
+        },
       ),
-    ).resolves.toEqual([
-      {
-        id: 'chat-1',
-        title: 'Команда MAX',
-        createdAt: '2026-03-02T10:00:00.000Z',
-        entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-    ]);
-
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
-      trafficClass: 'interactive',
+    ).resolves.toEqual({
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+      refresh: null,
     });
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    );
   });
 
   it('limits a single explicit refresh pass to the configured full refresh window', async () => {
@@ -5212,14 +5254,12 @@ describe('AdminService.listChannels', () => {
         { refresh: true },
       ),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-cached',
         title: 'Кэшированный чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-101', {
@@ -5265,11 +5305,35 @@ describe('AdminService.listChannels', () => {
       chatTitle: null,
     };
 
-    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+    await expect(
+      (service as any).runManagedEntitiesLocalDiscovery(
+        user,
+        'channel',
+        (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+        {
+          respectCooldown: false,
+          fullScan: true,
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        items: expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+      }),
     );
-    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+    await expect(
+      (service as any).runManagedEntitiesLocalDiscovery(
+        user,
+        'channel',
+        (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'channel'),
+        {
+          respectCooldown: false,
+          fullScan: true,
+        },
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        items: expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+      }),
     );
 
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
@@ -5298,16 +5362,24 @@ describe('AdminService.listChannels', () => {
     });
     prisma.channelSettings.findMany.mockResolvedValue([]);
 
-    let releaseAdminCheck: (() => void) | undefined;
-    const adminCheckPromise = new Promise<void>((resolve) => {
-      releaseAdminCheck = resolve;
+    let releaseDiscovery: (() => void) | undefined;
+    const discoveryPromise = new Promise((resolve) => {
+      releaseDiscovery = () =>
+        resolve({
+          items: [
+            createChatSummaryFixture({
+              id: 'channel-1',
+              title: 'Новости MAX',
+              createdAt: '2026-03-02T10:00:00.000Z',
+              entityType: 'channel',
+            }),
+          ],
+          refresh: null,
+        });
     });
 
     const maxClient = {
-      getChatAdminIds: jest.fn().mockImplementation(async () => {
-        await adminCheckPromise;
-        return ['admin-1'];
-      }),
+      getChatAdminIds: jest.fn(),
     };
 
     const service = new AdminService(
@@ -5324,70 +5396,49 @@ describe('AdminService.listChannels', () => {
       chatTitle: null,
     };
 
-    const first = service.listChannels(user, { refresh: true });
-    const second = service.listChannels(user, { refresh: true });
+    const runDiscoverySpy = jest
+      .spyOn(service as any, 'runManagedEntitiesDiscovery')
+      .mockImplementation(() => discoveryPromise);
 
-    if (!releaseAdminCheck) {
-      throw new Error('releaseAdminCheck was not initialized');
+    const first = (service as any).discoverManagedEntities(user, 'channel', {
+      respectCooldown: false,
+      fullScan: true,
+    });
+    const second = (service as any).discoverManagedEntities(user, 'channel', {
+      respectCooldown: false,
+      fullScan: true,
+    });
+
+    if (!releaseDiscovery) {
+      throw new Error('releaseDiscovery was not initialized');
     }
-    releaseAdminCheck();
+    releaseDiscovery();
 
     await expect(Promise.all([first, second])).resolves.toEqual([
-      [
-        expect.objectContaining({
-          id: 'channel-1',
-          entityType: 'channel',
-        }),
-      ],
-      [
-        expect.objectContaining({
-          id: 'channel-1',
-          entityType: 'channel',
-        }),
-      ],
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: 'channel-1', entityType: 'channel' })],
+      }),
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: 'channel-1', entityType: 'channel' })],
+      }),
     ]);
 
-    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(runDiscoverySpy).toHaveBeenCalledTimes(1);
   });
 
   it('does not let one user backoff block another user refresh', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValue([
-      createLocalManagedEntityRow({
-        chatId: 'channel-1',
-        title: 'Новости MAX',
-        entityType: 'channel',
-      }),
-    ]);
-    prisma.chat.upsert.mockResolvedValue({
-      id: 'channel-1',
-      title: 'Новости MAX',
-      createdAt: new Date('2026-03-02T10:00:00.000Z'),
-      entityType: 'CHANNEL',
-    });
-    prisma.channelSettings.findMany.mockResolvedValue([]);
-
     const scopedBackoff = new Set<string>();
+    scopedBackoff.add('admin-1:channel');
     const chatContextCache = createChatContextCacheMock({
       isManagedEntitiesRefreshBackoffActive: jest
         .fn()
         .mockImplementation(async (userId: string, entityType: string) =>
           scopedBackoff.has(`${userId}:${entityType}`),
         ),
-      activateManagedEntitiesRefreshBackoff: jest
-        .fn()
-        .mockImplementation(async (userId: string, entityType: string) => {
-          scopedBackoff.add(`${userId}:${entityType}`);
-        }),
     });
 
-    const maxClient = {
-      getChatAdminIds: jest
-        .fn()
-        .mockRejectedValueOnce(new Error('MAX API global rate limit exceeded'))
-        .mockResolvedValue(['admin-2']),
-    };
+    const maxClient = {};
 
     const service = new AdminService(
       prisma as never,
@@ -5395,46 +5446,63 @@ describe('AdminService.listChannels', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    const runDiscoverySpy = jest
+      .spyOn(service as any, 'runManagedEntitiesDiscovery')
+      .mockResolvedValue({
+        items: [
+          createChatSummaryFixture({
+            id: 'channel-1',
+            title: 'Новости MAX',
+            createdAt: '2026-03-02T10:00:00.000Z',
+            entityType: 'channel',
+          }),
+        ],
+        refresh: null,
+      });
 
     await expect(
-      service.listChannels(
+      (service as any).discoverManagedEntities(
         {
           userId: 'admin-1',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
+        'channel',
+        {
+          respectCooldown: false,
+          fullScan: true,
+          includeRefreshState: true,
+        },
       ),
-    ).resolves.toEqual([]);
+    ).resolves.toEqual({
+      items: [],
+      refresh: expect.objectContaining({
+        backoffActive: true,
+      }),
+    });
 
     await expect(
-      service.listChannels(
+      (service as any).discoverManagedEntities(
         {
           userId: 'admin-2',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
-      ),
-    ).resolves.toEqual([
-      {
-        id: 'channel-1',
-        title: 'Новости MAX',
-        createdAt: '2026-03-02T10:00:00.000Z',
-        entityType: 'channel',
-        link: null,
-        channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
-          postSuggestionsEnabled: false,
-          commentsModerationEnabled: false,
+        'channel',
+        {
+          respectCooldown: false,
+          fullScan: true,
         },
-      },
-    ]);
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        items: [expect.objectContaining({ id: 'channel-1', entityType: 'channel' })],
+      }),
+    );
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
+    expect(runDiscoverySpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -5482,22 +5550,18 @@ describe('AdminService.listChats', () => {
     });
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Текущий чат',
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Кэшированный чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
@@ -5517,20 +5581,14 @@ describe('AdminService.listChats', () => {
     prisma.$queryRaw.mockResolvedValue([
       {
         chat_id: 'chat-2',
-        chat_title: null,
+        chat_title: 'Новый чат',
         is_channel: 'false',
       },
     ]);
     prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
-      if (where.id === 'chat-2') {
-        return {
-          title: 'Chat chat-2',
-        };
-      }
-
       return {
-        id: 'chat-1',
-        title: 'Кэшированный чат',
+        id: where.id,
+        title: where.id === 'chat-2' ? 'Новый чат' : 'Кэшированный чат',
         entityType: 'CHAT',
       };
     });
@@ -5577,25 +5635,26 @@ describe('AdminService.listChats', () => {
     });
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
-        title: 'Chat chat-2',
+        title: 'Новый чат',
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-      {
+      }),
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Кэшированный чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-2',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
     expect(maxClient.getChatTitle).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5653,7 +5712,12 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([]);
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-2',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
@@ -5719,24 +5783,21 @@ describe('AdminService.listChats', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Актуальный чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
-    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
-      where: {
-        chatId: 'chat-2',
-        userId: 'admin-1',
-      },
-    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-2',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
   });
 
   it('removes cached private direct dialogs from allowlist on default load', async () => {
@@ -5784,14 +5845,12 @@ describe('AdminService.listChats', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Рабочий чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
 
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
@@ -5853,30 +5912,41 @@ describe('AdminService.listChats', () => {
     );
 
     await expect(
-      service.listChats(
+      (service as any).runManagedEntitiesLocalDiscovery(
         {
           userId: 'admin-1',
           username: null,
           displayName: null,
           chatTitle: null,
         },
-        { refresh: true },
+        'chat',
+        (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'chat'),
+        {
+          respectCooldown: false,
+          fullScan: true,
+        },
       ),
-    ).resolves.toEqual([
-      {
-        id: 'chat-1',
-        title: 'Рабочий чат',
-        createdAt: '2026-03-03T10:00:00.000Z',
-        entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
-    ]);
+    ).resolves.toEqual({
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Рабочий чат',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+      refresh: null,
+    });
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
-      trafficClass: 'interactive',
-    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+      }),
+    );
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledTimes(1);
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5967,15 +6037,13 @@ describe('AdminService.listChats', () => {
         { refresh: true },
       ),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-1',
         title: 'Кэшированный чат',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'chat',
-        link: null,
         avatarUrl: 'https://i.oneme.ru/chat-1.webp',
-        channelOverview: null,
-      },
+      }),
     ]);
 
     expect(chatContextCache.getManagedEntityHeader).toHaveBeenCalledWith('chat-1', 'chat');
@@ -6693,12 +6761,11 @@ describe('AdminService.listChats', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-      {
+      createChatSummaryFixture({
         id: 'channel-1',
         title: 'Кэш канала',
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
-        link: null,
         avatarUrl: 'https://i.oneme.ru/channel-1.webp',
         channelOverview: {
           enabledScenariosCount: 1,
@@ -6706,7 +6773,7 @@ describe('AdminService.listChats', () => {
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
@@ -6869,22 +6936,18 @@ describe('AdminService.listChats', () => {
         chatTitle: null,
       }),
     ).resolves.toEqual([
-        {
-          id: 'channel-1',
-          title: 'Кэш канала',
-          createdAt: '2026-03-02T10:00:00.000Z',
-          entityType: 'channel',
-          link: null,
-          primaryBotId: null,
-          assignedBots: [],
-          sharedMode: 'owned',
-          channelOverview: {
-            enabledScenariosCount: 1,
-            commentsEnabled: true,
-            postSuggestionsEnabled: false,
-            commentsModerationEnabled: false,
+      createChatSummaryFixture({
+        id: 'channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
         },
-      },
+      }),
     ]);
 
     await flushAsyncTasks();
@@ -7175,12 +7238,14 @@ describe('AdminService admin access validation', () => {
       service.assertChatAdmin('chat-1', user.userId, 'chat'),
     ];
 
-    await Promise.resolve();
-
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+    if (!resolveAdminIds) {
+      throw new Error('resolveAdminIds was not initialized');
+    }
     resolveAdminIds(['admin-1']);
     await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined, undefined]);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
   });
 
   it('validates base admin access via the full MAX admin list', async () => {
@@ -7198,7 +7263,12 @@ describe('AdminService admin access validation', () => {
     );
 
     await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
     expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
   });
 
@@ -7218,8 +7288,12 @@ describe('AdminService admin access validation', () => {
     );
 
     await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
   });
 
   it('rechecks stale user_denied cache before rejecting admin access', async () => {
@@ -7238,8 +7312,12 @@ describe('AdminService admin access validation', () => {
     );
 
     await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+      }),
+    );
   });
 
   it('falls back to persisted allowlist on transient MAX admin check failures', async () => {
@@ -7323,13 +7401,6 @@ describe('AdminService admin access validation', () => {
     await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
       'Бот больше не состоит в этом чате MAX или не является его администратором.',
     );
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'bot_denied');
-    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
-      where: {
-        chatId: 'chat-1',
-        userId: 'admin-1',
-      },
-    });
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
   });
 
@@ -7582,7 +7653,7 @@ describe('AdminService.getChannelStats', () => {
           userDisplayName: 'Андрей',
           avatarUrl: 'https://cdn.max.ru/u/10/avatar-full.jpg',
           profileUrl: 'https://max.ru/andrey',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-07T11:40:00.000Z',
         },
         {
@@ -7592,7 +7663,7 @@ describe('AdminService.getChannelStats', () => {
           userDisplayName: 'Елена',
           avatarUrl: 'https://cdn.max.ru/u/11/avatar-full.jpg',
           profileUrl: null,
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-07T10:15:00.000Z',
         },
       ],
@@ -7836,7 +7907,7 @@ describe('AdminService.getChannelStats', () => {
       userDisplayName: 'Павел',
       avatarUrl: 'https://cdn.max.ru/u/42/avatar-full.jpg',
       profileUrl: 'https://max.ru/pavel',
-      profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+      profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
       createdAt: '2026-03-07T09:30:00.000Z',
     });
   });
@@ -8288,14 +8359,12 @@ describe('AdminService.sendBroadcast', () => {
     });
 
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Чат 2',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
   });
 
@@ -8344,14 +8413,12 @@ describe('AdminService.sendBroadcast', () => {
 
     expect(discoverySpy).toHaveBeenCalledTimes(1);
     expect(result).toEqual([
-      {
+      createChatSummaryFixture({
         id: 'chat-2',
         title: 'Чат 2',
         createdAt: '2026-03-01T00:00:00.000Z',
         entityType: 'chat',
-        link: null,
-        channelOverview: null,
-      },
+      }),
     ]);
   });
 
@@ -9550,7 +9617,11 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
     expect(created.message.avatarUrl).toBe('https://cdn.max.ru/u/1/photo.jpg');
-    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-2']);
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-2'], {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      ignoreFailureMetricStatuses: [403, 404],
+    });
     expect(loaded.messages[0]).toMatchObject({
       authorUserId: 'user-2',
       avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
@@ -12875,6 +12946,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
+      { trafficClass: 'background' },
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -12977,6 +13049,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
+      { trafficClass: 'background' },
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -13100,9 +13173,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
-      trafficClass: 'interactive',
-    });
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+      }),
+    );
     expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
@@ -13111,6 +13188,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
+      { trafficClass: 'background' },
     );
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -250,6 +250,10 @@ export const MAX_API_SOURCE_TAGS = {
   MANAGED_REFRESH: 'managed_refresh',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   CHANNEL_AUTO_POST: 'channel_auto_post',
+  CHANNEL_STATS_SYNC: 'channel_stats_sync',
+  WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
+  REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',
+  REQUIRED_SUBSCRIPTION_METADATA: 'required_subscription_metadata',
 } as const;
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -958,7 +962,12 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const trafficClass = options.trafficClass ?? 'background';
-    const existing = await this.listWebhookSubscriptions({ trafficClass, botId: bot.id });
+    const sourceTag = this.normalizeMetricSourceTag(options.sourceTag) ?? undefined;
+    const existing = await this.listWebhookSubscriptions({
+      trafficClass,
+      botId: bot.id,
+      ...(sourceTag ? { sourceTag } : {}),
+    });
     const current =
       existing.find((item) => item.url === bot.webhookUrl) ??
       existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(bot.webhookUrl!));
@@ -984,7 +993,11 @@ export class MaxClientService implements OnModuleDestroy {
             secret: bot.webhookHeaderSecret,
           },
         }),
-      { trafficClass, botId: bot.id },
+      {
+        trafficClass,
+        botId: bot.id,
+        ...(sourceTag ? { sourceTag } : {}),
+      },
     );
 
     return {
@@ -1010,6 +1023,7 @@ export class MaxClientService implements OnModuleDestroy {
       {
         trafficClass: options.trafficClass ?? 'background',
         botId: options.botId,
+        ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
       },
     );
   }

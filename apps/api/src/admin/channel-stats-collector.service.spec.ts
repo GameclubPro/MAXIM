@@ -1,3 +1,4 @@
+import { MAX_API_SOURCE_TAGS } from '../max/max-client.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
 jest.mock('ioredis', () => ({
@@ -135,7 +136,27 @@ describe('ChannelStatsCollectorService', () => {
       markOpportunistic: true,
     });
 
-    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+    expect(maxClient.listMessageSnapshots).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
     expect(prisma.chat.update).toHaveBeenCalledWith({
       where: { id: 'channel-1' },
       data: {
@@ -405,6 +426,7 @@ describe('ChannelStatsCollectorService', () => {
         count: 100,
         maxPages: 12,
         trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
       }),
     );
 

@@ -1,4 +1,5 @@
 import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscription-reconciler.service';
+import { MAX_API_SOURCE_TAGS } from './max-client.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
 
 describe('MaxWebhookSubscriptionReconcilerService', () => {
@@ -70,7 +71,11 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-      { trafficClass: 'background', botId: '777000_bot' },
+      {
+        trafficClass: 'background',
+        botId: '777000_bot',
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+      },
     );
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -214,11 +219,19 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
 
     expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
       'https://maxim.play-team.ru/api/webhook/max/777000_bot/secret-path',
-      { trafficClass: 'background', botId: '777000_bot' },
+      {
+        trafficClass: 'background',
+        botId: '777000_bot',
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+      },
     );
     expect(maxClient.ensureWebhookSubscription).toHaveBeenCalledWith(
       [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
-      { trafficClass: 'background', botId: '777000_bot' },
+      {
+        trafficClass: 'background',
+        botId: '777000_bot',
+        sourceTag: MAX_API_SOURCE_TAGS.WEBHOOK_SUBSCRIPTION_RECONCILE,
+      },
     );
     expect(statusService.writeSyncState).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -11952,6 +11952,7 @@ describe('ModerationService', () => {
       expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
         trafficClass: 'critical',
         timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
       });
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -12187,6 +12188,7 @@ describe('ModerationService', () => {
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
         trafficClass: 'interactive',
         timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
       });
       expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
         id: 'channel-1',
@@ -12257,11 +12259,13 @@ describe('ModerationService', () => {
       expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
         trafficClass: 'critical',
         timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
       });
       expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
         trafficClass: 'interactive',
         timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
       });
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
@@ -12317,6 +12321,7 @@ describe('ModerationService', () => {
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
         trafficClass: 'interactive',
         timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
       });
       expect(maxClient.hasChatMember).not.toHaveBeenCalled();
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
@@ -12370,6 +12375,7 @@ describe('ModerationService', () => {
       expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(channelId, {
         trafficClass: 'interactive',
         timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
       });
       expect(maxClient.hasChatMember).not.toHaveBeenCalled();
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();

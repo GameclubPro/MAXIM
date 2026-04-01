@@ -5309,9 +5309,11 @@ export class AdminService {
         ? await this.maxClient.getChatSnapshot(normalizedChatId, {
             botId: resolvedBotId,
             actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+            sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
           })
         : await this.maxClient.getChatSnapshot(normalizedChatId, {
             actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+            sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
           });
     } catch (error: unknown) {
       this.logger.warn(
@@ -5416,6 +5418,7 @@ export class AdminService {
         const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
           trafficClass: 'interactive',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
           botId,
         });
         if (access.isAdmin || access.isOwner) {
@@ -5434,6 +5437,7 @@ export class AdminService {
         const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
           trafficClass: 'interactive',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
         });
         if (access.isAdmin || access.isOwner) {
           return;
