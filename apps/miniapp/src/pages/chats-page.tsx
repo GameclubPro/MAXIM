@@ -288,21 +288,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const refreshProgressLabel =
-    refreshState && !refreshState.complete && typeof refreshState.progressPercent === 'number'
-      ? `${refreshState.progressPercent}%`
-      : null;
   const refreshStatusLabel =
-    isFetching || isSyncPending
-      ? refreshProgressLabel
-        ? `Обновляем · ${refreshProgressLabel}`
-        : 'Обновляем'
+    isFetching || isSyncPending || isManualRefreshInProgressByState
+      ? 'Обновляем'
       : isRefreshTemporarilyBlocked
         ? `Пауза ${manualRefreshRetryAfterSec} с`
         : isManualRefreshCoolingDown
-          ? `Повтор через ${manualRefreshRetryAfterSec} с`
-          : isManualRefreshInProgressByState
-            ? 'Обновляем'
+          ? `Повтор ${manualRefreshRetryAfterSec} с`
         : null;
   const showSystemCard = canAccessSystem;
 
