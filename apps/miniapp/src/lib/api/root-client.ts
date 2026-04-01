@@ -10,6 +10,7 @@ type ManagedEntitiesFetchOptions = {
   includeRefreshState?: boolean;
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
+  deferDiscovery?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,6 +210,9 @@ function buildManagedEntitiesPath(
   if (options.resetRefreshCursor) {
     query.set('resetCursor', '1');
   }
+  if (options.deferDiscovery) {
+    query.set('deferDiscovery', '1');
+  }
 
   const basePath = entityType === 'chat' ? '/chats' : '/channels';
   return query.size > 0 ? `${basePath}?${query.toString()}` : basePath;
@@ -239,6 +243,10 @@ export async function getChats(
 ): Promise<ManagedEntitiesListResponse>;
 export async function getChats(
   api: ApiTransport,
+  options: ManagedEntitiesFetchOptions,
+): Promise<ChatSummary[]>;
+export async function getChats(
+  api: ApiTransport,
   options?: ManagedEntitiesFetchOptions,
 ): Promise<ChatSummary[] | ManagedEntitiesListResponse> {
   const response = await api.request(buildManagedEntitiesPath('chat', options ?? {}));
@@ -258,6 +266,10 @@ export async function getChannels(
   api: ApiTransport,
   options: ManagedEntitiesFetchOptions & { includeRefreshState: true },
 ): Promise<ManagedEntitiesListResponse>;
+export async function getChannels(
+  api: ApiTransport,
+  options: ManagedEntitiesFetchOptions,
+): Promise<ChatSummary[]>;
 export async function getChannels(
   api: ApiTransport,
   options?: ManagedEntitiesFetchOptions,

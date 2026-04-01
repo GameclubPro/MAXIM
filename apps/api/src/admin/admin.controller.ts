@@ -43,11 +43,13 @@ export class AdminController {
     @Query('includeRefreshState') includeRefreshState: string | undefined,
     @Query('bypassCache') bypassCache: string | undefined,
     @Query('resetCursor') resetCursor: string | undefined,
+    @Query('deferDiscovery') deferDiscovery: string | undefined,
   ) {
     const options = {
       refresh: refresh === '1',
       bypassRemoteCache: bypassCache === '1',
       resetRefreshCursor: resetCursor === '1',
+      deferDiscovery: deferDiscovery === '1',
     };
     if (includeRefreshState === '1') {
       return this.adminService.listChatsWithRefreshState(user, options);
@@ -106,11 +108,13 @@ export class AdminController {
     @Query('includeRefreshState') includeRefreshState: string | undefined,
     @Query('bypassCache') bypassCache: string | undefined,
     @Query('resetCursor') resetCursor: string | undefined,
+    @Query('deferDiscovery') deferDiscovery: string | undefined,
   ) {
     const options = {
       refresh: refresh === '1',
       bypassRemoteCache: bypassCache === '1',
       resetRefreshCursor: resetCursor === '1',
+      deferDiscovery: deferDiscovery === '1',
     };
     if (includeRefreshState === '1') {
       return this.adminService.listChannelsWithRefreshState(user, options);
