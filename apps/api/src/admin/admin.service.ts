@@ -4052,7 +4052,9 @@ export class AdminService {
         entityType: ChatEntityType.CHANNEL,
         ...this.buildResolvedBotAssignmentData(resolvedBotId),
         channelSettings: {
-          create: {},
+          create: {
+            commentsEnabled: false,
+          },
         },
       },
       update: {
@@ -4061,7 +4063,9 @@ export class AdminService {
         channelSettings: {
           upsert: {
             update: {},
-            create: {},
+            create: {
+              commentsEnabled: false,
+            },
           },
         },
       },
@@ -4209,6 +4213,7 @@ export class AdminService {
       where: { chatId },
       create: {
         chatId,
+        commentsEnabled: false,
       },
       update: {},
       select: {
@@ -8541,7 +8546,10 @@ export class AdminService {
 
     const channelSettings = await this.prisma.channelSettings.upsert({
       where: { chatId },
-      create: { chatId },
+      create: {
+        chatId,
+        commentsEnabled: false,
+      },
       update: {},
       select: {
         autoPostButtonsMode: true,

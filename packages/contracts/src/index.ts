@@ -1063,7 +1063,7 @@ export const channelSettingsSchema = z
     postSuggestionsButtonEnabled: z.boolean().default(false),
     postSuggestionsButtonText: z.string().trim().max(32).default('Предложить пост'),
     postSuggestionsButtonUrl: botButtonUrlSchema,
-    commentsEnabled: z.boolean().default(true),
+    commentsEnabled: z.boolean().default(false),
     commentsModerationEnabled: z.boolean().default(false),
     commentsBlockLinksEnabled: z.boolean().default(true),
     commentsAntiSpamEnabled: z.boolean().default(true),

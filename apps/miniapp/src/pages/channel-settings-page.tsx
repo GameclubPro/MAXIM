@@ -936,10 +936,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     .filter(Boolean)
     .join(' · ');
   const commentsCardSummary = !draft.commentsEnabled
-    ? 'обсуждение выключено'
+    ? 'обсуждение через бота выключено'
     : draft.commentsModerationEnabled
-      ? 'обсуждение с модерацией'
-      : 'обсуждение без модерации';
+      ? 'обсуждение через бота с модерацией'
+      : 'обсуждение через бота без модерации';
   const commentsCardStatus = !draft.commentsEnabled
     ? 'Выкл'
     : draft.commentsModerationEnabled
@@ -1173,7 +1173,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Комментарии"
+            title="Обсуждение"
             summary=""
             status={commentsCardStatus}
             icon="comments"
@@ -1187,7 +1187,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <SettingsDrilldownPanel
           id="channel-settings-comments"
           open={expandedSections.comments}
-          title="Комментарии"
+          title="Обсуждение"
           summary={commentsCardSummary}
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
@@ -1199,8 +1199,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.comments ? (
               <div className="settings-section__collapse-inner">
                 <ChannelSettingsToggleCard
-                  title="Включить комментарии"
-                  description="Обсуждение под постами."
+                  title="Включить обсуждение"
+                  description="Тред под постами через бота. Это отдельно от нативных комментариев MAX."
                   hintKey="commentsEnabled"
                   openHintKey={openHintKey}
                   onToggleHint={toggleHint}

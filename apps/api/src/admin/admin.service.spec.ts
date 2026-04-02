@@ -138,7 +138,7 @@ function createPrismaMock() {
         autoPostButtonsMode: 'OFF',
         postSuggestionsEnabled: false,
         postSuggestionsButtonText: 'Предложить пост',
-        commentsEnabled: true,
+        commentsEnabled: false,
         engagementPublishedMessageId: null,
         engagementPublishedThreadId: null,
         engagementPublishedAt: null,
@@ -4649,8 +4649,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -4661,8 +4661,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -4756,8 +4756,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-01T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -4835,8 +4835,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -4972,8 +4972,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -5052,8 +5052,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-03T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -5064,8 +5064,8 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -5148,8 +5148,8 @@ describe('AdminService.listChannels', () => {
         assignedBots: [],
         sharedMode: 'owned',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -5309,8 +5309,8 @@ describe('AdminService.listChannels', () => {
         link: 'https://max.ru/news',
         avatarUrl: 'https://i.oneme.ru/news.webp',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -5385,8 +5385,8 @@ describe('AdminService.listChannels', () => {
           assignedBots: [],
           sharedMode: 'owned',
           channelOverview: {
-            enabledScenariosCount: 1,
-            commentsEnabled: true,
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
             postSuggestionsEnabled: false,
             commentsModerationEnabled: false,
           },
@@ -5538,8 +5538,8 @@ describe('AdminService.listChannels', () => {
           assignedBots: [],
           sharedMode: 'owned',
           channelOverview: {
-            enabledScenariosCount: 1,
-            commentsEnabled: true,
+            enabledScenariosCount: 0,
+            commentsEnabled: false,
             postSuggestionsEnabled: false,
             commentsModerationEnabled: false,
           },
@@ -7672,8 +7672,8 @@ describe('AdminService.listChats', () => {
         entityType: 'channel',
         avatarUrl: 'https://i.oneme.ru/channel-1.webp',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -7846,8 +7846,8 @@ describe('AdminService.listChats', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         channelOverview: {
-          enabledScenariosCount: 1,
-          commentsEnabled: true,
+          enabledScenariosCount: 0,
+          commentsEnabled: false,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
         },
@@ -8943,6 +8943,64 @@ describe('AdminService.getChannelStats', () => {
 });
 
 describe('AdminService.updateChannelSettings', () => {
+  it('creates fresh channel settings with comments disabled by default', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Канал MAX',
+      entityType: 'CHANNEL',
+      channelSettings: {
+        chatId: 'channel-1',
+        ...channelSettingsSchema.parse({ commentsEnabled: false }),
+      },
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChannelSettings('channel-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.commentsEnabled).toBe(false);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          channelSettings: {
+            create: expect.objectContaining({
+              commentsEnabled: false,
+            }),
+          },
+        }),
+        update: expect.objectContaining({
+          channelSettings: {
+            upsert: expect.objectContaining({
+              create: expect.objectContaining({
+                commentsEnabled: false,
+              }),
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
   it('syncs auto post buttons mode with the comments and suggestion toggles', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

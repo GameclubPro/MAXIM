@@ -213,6 +213,87 @@ describe('ModerationService channel auto post buttons', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
+  it('does not auto-attach comments when channel settings are auto-created with fresh defaults', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: null,
+          admins: [],
+        }),
+        update: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: false,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+          },
+          admins: [
+            {
+              userId: 'admin-1',
+            },
+          ],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'channel-1' },
+        data: expect.objectContaining({
+          channelSettings: {
+            upsert: {
+              update: {},
+              create: {
+                commentsEnabled: false,
+              },
+            },
+          },
+        }),
+      }),
+    );
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('auto-attaches buttons when MAX omits sender metadata for a channel post', async () => {
     const prisma = {
       chat: {

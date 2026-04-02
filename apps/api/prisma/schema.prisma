@@ -354,7 +354,7 @@ model ChannelSettings {
   postSuggestionsButtonEnabled Boolean                    @default(false) @map("post_suggestions_button_enabled")
   postSuggestionsButtonText    String                     @default("Предложить пост") @map("post_suggestions_button_text")
   postSuggestionsButtonUrl     String                     @default("") @map("post_suggestions_button_url")
-  commentsEnabled              Boolean                    @default(true) @map("comments_enabled")
+  commentsEnabled              Boolean                    @default(false) @map("comments_enabled")
   commentsModerationEnabled    Boolean                    @default(false) @map("comments_moderation_enabled")
   commentsBlockLinksEnabled    Boolean                    @default(true) @map("comments_block_links_enabled")
   commentsAntiSpamEnabled      Boolean                    @default(true) @map("comments_anti_spam_enabled")

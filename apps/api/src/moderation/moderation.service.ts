@@ -10768,7 +10768,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           channelSettings: {
             upsert: {
               update: {},
-              create: {},
+              create: {
+                commentsEnabled: false,
+              },
             },
           },
         },
