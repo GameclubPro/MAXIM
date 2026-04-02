@@ -6621,6 +6621,11 @@ describe('AdminService.listChats', () => {
         chat_title: 'Чат 2',
         is_channel: 'false',
       },
+      {
+        chat_id: 'chat-3',
+        chat_title: 'Чат 3',
+        is_channel: 'false',
+      },
     ]);
 
     const maxClient = {
@@ -6634,13 +6639,17 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    const nowValues = [0, 0, 1_700];
+    const nowValues = [0, 0, 0, 0, 1_700];
     const dateNowSpy = jest
       .spyOn(Date, 'now')
       .mockImplementation(() => nowValues.shift() ?? 1_700);
 
     try {
       jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+      jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+        items: [],
+        refresh: null,
+      });
 
       await expect(
         service.listChats({
@@ -6651,9 +6660,18 @@ describe('AdminService.listChats', () => {
         }),
       ).resolves.toEqual([]);
 
-      expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
       expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
         'chat-1',
+        expect.objectContaining({
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: 'managed_refresh',
+          timeoutMs: 250,
+        }),
+      );
+      expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+        'chat-2',
         expect.objectContaining({
           trafficClass: 'interactive',
           actionHealthLane: 'background',
@@ -6828,6 +6846,36 @@ describe('AdminService.listChats', () => {
         userId: 'admin-1',
       },
     });
+  });
+
+  it('keeps listChats alive when the allowlist read hits a saturated Prisma pool', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockRejectedValueOnce({ code: 'P2024' }).mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn(),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
   });
 
   it('revalidates cached chats with stale negative admin cache on default load', async () => {
@@ -7385,6 +7433,66 @@ describe('AdminService.listChats', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('keeps refresh responses alive when the allowlist read hits a saturated Prisma pool', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockRejectedValueOnce({ code: 'P2024' }).mockResolvedValue([]);
+
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn().mockResolvedValue([]),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+
+    await expect(
+      service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          refresh: true,
+          bypassRemoteCache: true,
+          resetRefreshCursor: true,
+        },
+      ),
+    ).resolves.toEqual({
+      items: [],
+      refresh: {
+        complete: false,
+        cursor: 0,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
+      },
+    });
   });
 
   it('does not wait for an uncached runtime governor decision before returning a refresh response', async () => {

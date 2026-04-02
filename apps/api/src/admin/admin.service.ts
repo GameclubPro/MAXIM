@@ -400,6 +400,8 @@ const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 10;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
+const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
+const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
 const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS = 750;
 const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
@@ -702,6 +704,10 @@ export class AdminService {
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesAllowlistCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ChatSummary[]>
+  >();
   private readonly managedEntitiesResponseWarmupRuns = new Map<
     string,
     Promise<ManagedEntitiesListResult>
@@ -1156,7 +1162,9 @@ export class AdminService {
 
       const cached = await this.revalidateCachedManagedEntities(
         user,
-        await this.listChatsFromAllowlist(user.userId, entityType),
+        await this.listChatsFromAllowlistWithinResponseBudget(user.userId, entityType, {
+          source: 'default',
+        }),
       );
       const initial = await mergeWithLightweightBootstrap(cached);
       if (initial.length > 0) {
@@ -1225,7 +1233,9 @@ export class AdminService {
       bypassRemoteCache: options.bypassRemoteCache === true,
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
-    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+    const cached = await this.listChatsFromAllowlistWithinResponseBudget(user.userId, entityType, {
+      source: 'refresh',
+    });
     const responseWarmupPromise =
       eagerWarmupPromise ??
       (cached.length === 0
@@ -1721,6 +1731,47 @@ export class AdminService {
     entityType: ManagedEntityTypeFilter,
   ): string {
     return `${userId}:${entityType}:response-warmup`;
+  }
+
+  private buildManagedEntitiesAllowlistCacheKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:allowlist`;
+  }
+
+  private invalidateManagedEntitiesAllowlistCache(userId: string): void {
+    const prefix = `${userId}:`;
+    for (const key of this.managedEntitiesAllowlistCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.managedEntitiesAllowlistCache.delete(key);
+      }
+    }
+  }
+
+  private listChatsFromAllowlistWithinResponseBudget(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      source: 'default' | 'refresh';
+    },
+  ): Promise<ChatSummary[]> {
+    return this.awaitManagedEntitiesResponseValueWithinBudget(
+      this.listChatsFromAllowlist(userId, entityType),
+      {
+        fallback: [],
+        budgetMs: MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS,
+        timeoutMessage:
+          'Detached managed entities allowlist read from response after response budget exceeded',
+        failureMessage:
+          'Managed entities allowlist read failed during user-facing managed entities response',
+        logData: {
+          entityType,
+          source: options.source,
+          userId,
+        },
+      },
+    );
   }
 
   private startManagedEntitiesResponseWarmup(
@@ -17519,6 +17570,7 @@ export class AdminService {
         userId,
       },
     });
+    this.invalidateManagedEntitiesAllowlistCache(userId);
   }
 
   private schedulePersistedChatAccessPrune(
@@ -17577,6 +17629,30 @@ export class AdminService {
     userId: string,
     entityType: ManagedEntityTypeFilter,
   ): Promise<ChatSummary[]> {
+    const cacheKey = this.buildManagedEntitiesAllowlistCacheKey(userId, entityType);
+    const cachedEntry = this.managedEntitiesAllowlistCache.get(cacheKey);
+    if (cachedEntry && cachedEntry.expiresAtMs > Date.now()) {
+      return cachedEntry.promise;
+    }
+
+    const pending = this.listChatsFromAllowlistUncached(userId, entityType).catch((error) => {
+      if (this.managedEntitiesAllowlistCache.get(cacheKey)?.promise === pending) {
+        this.managedEntitiesAllowlistCache.delete(cacheKey);
+      }
+      throw error;
+    });
+    this.managedEntitiesAllowlistCache.set(cacheKey, {
+      expiresAtMs: Date.now() + MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS,
+      promise: pending,
+    });
+
+    return pending;
+  }
+
+  private async listChatsFromAllowlistUncached(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ChatSummary[]> {
     const whereClause =
       entityType === 'all'
         ? { userId }
@@ -17586,15 +17662,38 @@ export class AdminService {
               entityType: this.toPrismaEntityType(entityType),
             },
           };
-    const rows = await this.prisma.chatAdminAllowlist.findMany({
-      where: whereClause,
-      include: { chat: true },
-      orderBy: {
-        chat: {
-          createdAt: 'desc',
+    let rows: Array<{
+      chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
+    }> = [];
+    try {
+      rows = await this.prisma.chatAdminAllowlist.findMany({
+        where: whereClause,
+        include: { chat: true },
+        orderBy: {
+          chat: {
+            createdAt: 'desc',
+          },
         },
-      },
-    });
+      });
+    } catch (error) {
+      if (this.isPrismaKnownError(error, 'P2024')) {
+        this.logger.warn(
+          {
+            entityType,
+            userId,
+            code:
+              error instanceof Prisma.PrismaClientKnownRequestError
+                ? error.code
+                : (error as { code?: string } | null)?.code ?? null,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Using empty managed entities allowlist because the Prisma pool is saturated',
+        );
+        return [];
+      }
+
+      throw error;
+    }
 
     const chats = rows.map(
       (row: { chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType } }) =>
@@ -17610,14 +17709,32 @@ export class AdminService {
       .filter((chat) => this.isUnsupportedManagedChat(chat.id, chat.entityType))
       .map((chat) => chat.id);
     if (unsupportedChatIds.length > 0) {
-      await this.prisma.chatAdminAllowlist.deleteMany({
-        where: {
-          userId,
-          chatId: {
-            in: unsupportedChatIds,
+      try {
+        await this.prisma.chatAdminAllowlist.deleteMany({
+          where: {
+            userId,
+            chatId: {
+              in: unsupportedChatIds,
+            },
           },
-        },
-      });
+        });
+        this.invalidateManagedEntitiesAllowlistCache(userId);
+      } catch (error) {
+        this.logger.warn(
+          {
+            userId,
+            chatIds: unsupportedChatIds,
+            code:
+              error instanceof Prisma.PrismaClientKnownRequestError
+                ? error.code
+                : (error as { code?: string } | null)?.code ?? null,
+            err: error,
+          },
+          this.isPrismaKnownError(error, 'P2024')
+            ? 'Skipped managed entities allowlist cleanup because the Prisma pool is saturated'
+            : 'Failed to clean unsupported managed entities from allowlist',
+        );
+      }
     }
 
     return chats.filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType));
@@ -18055,6 +18172,7 @@ export class AdminService {
       },
       update: {},
     });
+    this.invalidateManagedEntitiesAllowlistCache(userId);
 
     if (this.maxBotLinkService) {
       await this.maxBotLinkService.bindDiscoveredChatBots({
