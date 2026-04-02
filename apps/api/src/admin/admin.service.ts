@@ -3427,7 +3427,7 @@ export class AdminService {
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, 'chat');
     }
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -3574,7 +3574,7 @@ export class AdminService {
       chatId,
     );
     await this.assertRequiredSubscriptionSettings(normalizedSettings);
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -3743,7 +3743,7 @@ export class AdminService {
       },
     });
 
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
     await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
@@ -4026,7 +4026,7 @@ export class AdminService {
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, 'channel');
     }
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -4134,7 +4134,7 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
     const normalizedSettings = this.normalizeChannelSettings(parsed.data, chatId);
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -9771,7 +9771,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     const metadataBase = {
       source,
@@ -10086,7 +10086,7 @@ export class AdminService {
     source: Extract<AdminActionSource, 'group_command' | 'private_command'> = 'group_command',
   ): Promise<ManualModerationActionResult> {
     const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
-    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
     await this.assertManualMemberModerationPreconditions(
       chatId,
       targetUserId,
@@ -15338,6 +15338,84 @@ export class AdminService {
 
   private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
+  }
+
+  private async resolveManualActionBotAssignment(chatId: string): Promise<string | undefined> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return undefined;
+    }
+
+    const persisted = await this.prisma.chat.findUnique({
+      where: { id: normalizedChatId },
+      select: { primaryBotId: true, botId: true },
+    });
+    const persistedBotId =
+      this.maxBotRegistry?.getBotById(persisted?.primaryBotId ?? persisted?.botId ?? null)?.id ??
+      this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId);
+    if (persistedBotId) {
+      return persistedBotId;
+    }
+
+    for (const bot of this.maxBotRegistry?.getActionableBots() ?? []) {
+      try {
+        const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
+          trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          botId: bot.id,
+        });
+        if (!access.isAdmin && !access.isOwner) {
+          continue;
+        }
+
+        try {
+          if (this.maxBotLinkService?.bindChatToBot) {
+            await this.maxBotLinkService.bindChatToBot({
+              chatId: normalizedChatId,
+              entityType: ChatEntityType.CHAT,
+              botId: bot.id,
+            });
+          } else {
+            await this.prisma.chat.upsert({
+              where: { id: normalizedChatId },
+              create: {
+                id: normalizedChatId,
+                title: `Chat ${normalizedChatId}`,
+                entityType: ChatEntityType.CHAT,
+                ...this.buildResolvedBotAssignmentData(bot.id),
+              },
+              update: this.buildResolvedBotAssignmentData(bot.id),
+            });
+          }
+        } catch (persistError: unknown) {
+          this.logger.warn(
+            {
+              chatId: normalizedChatId,
+              botId: bot.id,
+              err: persistError instanceof Error ? persistError.message : String(persistError),
+            },
+            'Failed to persist recovered chat bot assignment for manual action',
+          );
+        }
+
+        return bot.id;
+      } catch (error: unknown) {
+        if (this.isBotAdminLookupDeniedError(error)) {
+          continue;
+        }
+
+        this.logger.debug(
+          {
+            chatId: normalizedChatId,
+            botId: bot.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to probe actionable bot while resolving manual action bot assignment',
+        );
+      }
+    }
+
+    return (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
   }
 
   private async resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {

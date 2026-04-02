@@ -3544,6 +3544,101 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('repairs missing chat bot assignment before manual unban', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({ primaryBotId: null, botId: null });
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockRejectedValueOnce({
+          response: { status: 403, data: { code: 'chat.denied', message: 'not in chat' } },
+        })
+        .mockResolvedValueOnce({
+          userId: 'bot-2-user',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['add_remove_members'],
+        })
+        .mockResolvedValueOnce({
+          userId: 'bot-2-user',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['add_remove_members'],
+        }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      bindChatToBot: jest.fn().mockResolvedValue('bot-2'),
+      resolveBotId: jest.fn().mockResolvedValue('bot-1'),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => {
+        if (!botId) {
+          return null;
+        }
+        return { id: botId };
+      }),
+      getActionableBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+    (service as any).prepareManualModerationTarget = jest.fn().mockResolvedValue('user-4');
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-4',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'UNBAN' },
+    );
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        botId: 'bot-1',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'CHAT',
+      botId: 'bot-2',
+    });
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
+      botId: 'bot-2',
+    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
+      immediate: true,
+      botId: 'bot-2',
+    });
+  });
+
   it('releases active block without re-adding a member who is already in chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
