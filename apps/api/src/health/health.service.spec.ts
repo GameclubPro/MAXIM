@@ -461,6 +461,165 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('serves a recent stale queue snapshot immediately and refreshes metrics in the background', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-03-31T09:12:10.000Z'));
+
+    const prisma = {
+      $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+    };
+    const staleQueueSnapshot = {
+      moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookEvents: {
+        received: { count: 2, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      userFacingWebhookEvents: {
+        received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      actionHealth: {
+        windowSec: 60,
+        total: 5,
+        success: 5,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+      oldestQueuedEventId: 'queued-1',
+      oldestQueuedCreatedAt: '2026-03-31T09:12:03.000Z',
+      oldestQueuedLagSec: 2,
+      oldestReceivedEventId: 'received-1',
+      oldestReceivedCreatedAt: '2026-03-31T09:12:04.000Z',
+      oldestReceivedLagSec: 1,
+      effectiveLagSec: 2,
+      userFacingOldestQueuedEventId: 'queued-1',
+      userFacingOldestQueuedCreatedAt: '2026-03-31T09:12:03.000Z',
+      userFacingOldestQueuedLagSec: 2,
+      userFacingOldestReceivedEventId: 'received-1',
+      userFacingOldestReceivedCreatedAt: '2026-03-31T09:12:04.000Z',
+      userFacingOldestReceivedLagSec: 1,
+      userFacingEffectiveLagSec: 2,
+      generatedAt: '2026-03-31T09:12:05.000Z',
+      bots: {
+        id613002203036_bot: {
+          webhookEvents: {
+            received: { count: 2, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          userFacingWebhookEvents: {
+            received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          queuedByQueue: {},
+          actionHealth: {
+            windowSec: 60,
+            total: 5,
+            success: 5,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          oldestQueuedEventId: 'queued-1',
+          oldestQueuedCreatedAt: '2026-03-31T09:12:03.000Z',
+          oldestQueuedLagSec: 2,
+          oldestReceivedEventId: 'received-1',
+          oldestReceivedCreatedAt: '2026-03-31T09:12:04.000Z',
+          oldestReceivedLagSec: 1,
+          effectiveLagSec: 2,
+          userFacingOldestQueuedEventId: 'queued-1',
+          userFacingOldestQueuedCreatedAt: '2026-03-31T09:12:03.000Z',
+          userFacingOldestQueuedLagSec: 2,
+          userFacingOldestReceivedEventId: 'received-1',
+          userFacingOldestReceivedCreatedAt: '2026-03-31T09:12:04.000Z',
+          userFacingOldestReceivedLagSec: 1,
+          userFacingEffectiveLagSec: 2,
+        },
+      },
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue(staleQueueSnapshot),
+      peekCachedSnapshot: jest.fn().mockReturnValue(staleQueueSnapshot),
+    };
+    const systemModeSnapshot = {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'system healthy',
+      updatedAt: '2026-03-31T09:12:10.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 5,
+        success: 5,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue(systemModeSnapshot),
+      peekCachedSnapshot: jest.fn().mockReturnValue(systemModeSnapshot),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+    );
+
+    const snapshot = await service.ready();
+
+    expect(snapshot.ok).toBe(true);
+    expect(snapshot.checks.queueLag).toEqual(
+      expect.objectContaining({
+        ok: true,
+        rawOk: true,
+        softWarning: true,
+        softWarningCode: 'stale-ready-fallback',
+        sampleGeneratedAt: '2026-03-31T09:12:05.000Z',
+      }),
+    );
+    expect(snapshot.checks.queueLag.softWarningDetail).toContain(
+      'served a recent cached snapshot while refreshing metrics in the background',
+    );
+    expect(snapshot.bots).toEqual({
+      id613002203036_bot: {
+        queueLagSec: 2,
+        rawOk: true,
+        queuedEvents: 1,
+        receivedEvents: 1,
+        failedEvents: 0,
+        action: {
+          windowSec: 60,
+          total: 5,
+          success: 5,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+      },
+    });
+    expect(queueMetricsService.getSnapshot).toHaveBeenCalledTimes(1);
+    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 0 });
+
+    await service.onModuleDestroy();
+  });
+
   it('uses cached system mode and fresh dependency probes on cold-start readiness timeout', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:07:00.000Z'));

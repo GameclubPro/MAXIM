@@ -77,6 +77,8 @@ export class HealthService implements OnModuleDestroy {
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
+  private backgroundQueueMetricsRefreshPromise: Promise<void> | null = null;
+  private backgroundQueueMetricsRefreshStartedAtMs = 0;
   private queueLagBreachStartedAtMs: number | null = null;
   private readonly dependencyHealth = new Map<DependencyHealthKey, DependencyHealthState>();
 
@@ -325,6 +327,30 @@ export class HealthService implements OnModuleDestroy {
     snapshot: Awaited<ReturnType<QueueMetricsService['getSnapshot']>> | null;
     fallbackDetail: string | null;
   }> {
+    const staleCachedSnapshot =
+      this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
+    const freshCachedSnapshot =
+      staleCachedSnapshot &&
+      Date.now() - new Date(staleCachedSnapshot.generatedAt).getTime() <= this.queueSnapshotMaxAgeMs
+        ? staleCachedSnapshot
+        : null;
+
+    if (freshCachedSnapshot) {
+      return {
+        snapshot: freshCachedSnapshot,
+        fallbackDetail: null,
+      };
+    }
+
+    if (staleCachedSnapshot) {
+      this.refreshQueueMetricsSnapshotInBackground();
+      return {
+        snapshot: staleCachedSnapshot,
+        fallbackDetail:
+          'Queue metrics detail is temporarily stale, so readiness served a recent cached snapshot while refreshing metrics in the background.',
+      };
+    }
+
     try {
       const snapshot = await this.withTimeout(
         this.queueMetricsService.getSnapshot({ maxAgeMs: this.queueSnapshotMaxAgeMs }),
@@ -342,6 +368,28 @@ export class HealthService implements OnModuleDestroy {
         fallbackDetail: `Queue metrics detail is temporarily stale, so readiness fell back to the latest system-mode queue lag sample: ${detail}.`,
       };
     }
+  }
+
+  private refreshQueueMetricsSnapshotInBackground(): void {
+    const now = Date.now();
+    if (
+      this.backgroundQueueMetricsRefreshPromise ||
+      now - this.backgroundQueueMetricsRefreshStartedAtMs < this.queueSnapshotMaxAgeMs
+    ) {
+      return;
+    }
+
+    this.backgroundQueueMetricsRefreshStartedAtMs = now;
+    const refreshPromise = this.queueMetricsService
+      .getSnapshot({ maxAgeMs: 0 })
+      .then(() => undefined)
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.backgroundQueueMetricsRefreshPromise === refreshPromise) {
+          this.backgroundQueueMetricsRefreshPromise = null;
+        }
+      });
+    this.backgroundQueueMetricsRefreshPromise = refreshPromise;
   }
 
   private updateQueueLagBreachState(
