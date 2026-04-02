@@ -15353,11 +15353,47 @@ export class AdminService {
     const persistedBotId =
       this.maxBotRegistry?.getBotById(persisted?.primaryBotId ?? persisted?.botId ?? null)?.id ??
       this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId);
+    let fallbackBotId = persistedBotId ?? ((await this.resolveBotAssignment(normalizedChatId)) ?? undefined);
+    const seenBotIds = new Set<string>();
+
     if (persistedBotId) {
-      return persistedBotId;
+      seenBotIds.add(persistedBotId);
+      try {
+        const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
+          trafficClass: 'interactive',
+          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          botId: persistedBotId,
+        });
+        if (access.isAdmin || access.isOwner) {
+          return persistedBotId;
+        }
+
+        this.logger.warn(
+          {
+            chatId: normalizedChatId,
+            botId: persistedBotId,
+          },
+          'Persisted chat bot assignment is no longer admin-capable for manual action',
+        );
+      } catch (error: unknown) {
+        if (!this.isBotAdminLookupDeniedError(error)) {
+          this.logger.debug(
+            {
+              chatId: normalizedChatId,
+              botId: persistedBotId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to verify persisted chat bot assignment for manual action',
+          );
+        }
+      }
     }
 
     for (const bot of this.maxBotRegistry?.getActionableBots() ?? []) {
+      if (seenBotIds.has(bot.id)) {
+        continue;
+      }
+      seenBotIds.add(bot.id);
       try {
         const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
           trafficClass: 'interactive',
@@ -15415,7 +15451,7 @@ export class AdminService {
       }
     }
 
-    return (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
+    return fallbackBotId;
   }
 
   private async resolveBackgroundReadBotAssignment(chatId: string): Promise<string | undefined> {
