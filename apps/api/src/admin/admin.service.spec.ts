@@ -3488,6 +3488,62 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('uses the resolved chat bot for manual unban in multi-bot chats', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-2',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    (service as any).resolveBotAssignment = jest.fn().mockResolvedValue('bot-2');
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-4',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'UNBAN' },
+    );
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      'user-4',
+      expect.objectContaining({
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        botId: 'bot-2',
+      }),
+    );
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4', {
+      botId: 'bot-2',
+    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', {
+      immediate: true,
+      botId: 'bot-2',
+    });
+  });
+
   it('releases active block without re-adding a member who is already in chat', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

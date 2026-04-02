@@ -1148,12 +1148,12 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  async cancelScheduledUnban(chatId: string, userId: string) {
+  async cancelScheduledUnban(chatId: string, userId: string, options?: { botId?: string }) {
     const jobId = this.buildScheduledMemberActionJobId(
       'UNBAN_MEMBER',
       chatId,
       userId,
-      this.getCurrentBot().id,
+      this.resolveBot(options?.botId).id,
     );
     if (!jobId) {
       return;

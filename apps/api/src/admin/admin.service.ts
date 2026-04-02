@@ -9771,6 +9771,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    const resolvedBotId = await this.resolveBotAssignment(chatId);
 
     const metadataBase = {
       source,
@@ -9784,7 +9785,12 @@ export class AdminService {
         throw new BadRequestException('Укажите длительность мута в часах.');
       }
 
-      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'MUTE');
+      await this.assertManualMemberModerationPreconditions(
+        chatId,
+        targetUserId,
+        'MUTE',
+        resolvedBotId,
+      );
       const muteExpiresAt = new Date(Date.now() + muteDurationHours * ONE_HOUR_MS);
       let sourceCleanup = {
         candidateMessageIds: [] as string[],
@@ -9870,12 +9876,23 @@ export class AdminService {
     }
 
     if (parsed.data.action === 'BAN') {
-      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'BAN');
-      const executionMode = await this.resolveManualBanExecutionMode(chatId);
+      await this.assertManualMemberModerationPreconditions(
+        chatId,
+        targetUserId,
+        'BAN',
+        resolvedBotId,
+      );
+      const executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
 
       try {
         try {
-          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+          if (resolvedBotId) {
+            await this.maxClient.cancelScheduledUnban(chatId, targetUserId, {
+              botId: resolvedBotId,
+            });
+          } else {
+            await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+          }
         } catch (cancelError: unknown) {
           this.logger.warn(
             {
@@ -9888,9 +9905,15 @@ export class AdminService {
         }
 
         if (executionMode === 'MAX_REMOVE_ONLY') {
-          await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
+          await this.maxClient.kickMember(chatId, targetUserId, {
+            immediate: true,
+            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          });
         } else {
-          await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+          await this.maxClient.banMember(chatId, targetUserId, {
+            immediate: true,
+            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          });
         }
       } catch (error: unknown) {
         const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
@@ -9898,6 +9921,7 @@ export class AdminService {
           targetUserId,
           'BAN',
           error,
+          resolvedBotId,
         );
         throw new BadRequestException(resolvedMessage || 'Не удалось применить бан.');
       }
@@ -9929,6 +9953,7 @@ export class AdminService {
         targetUserId,
         source,
         removedOnly: executionMode === 'MAX_REMOVE_ONLY',
+        botId: resolvedBotId,
       });
 
       return manualModerationActionResultSchema.parse({
@@ -9972,13 +9997,22 @@ export class AdminService {
       });
     }
 
-    await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+    if (resolvedBotId) {
+      await this.maxClient.cancelScheduledUnban(chatId, targetUserId, {
+        botId: resolvedBotId,
+      });
+    } else {
+      await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+    }
 
-    let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId);
+    let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId, resolvedBotId);
     if (unbanMode !== 'ALREADY_PRESENT') {
-      await this.assertBotCanManageMembers(chatId, 'UNBAN');
+      await this.assertBotCanManageMembers(chatId, 'UNBAN', resolvedBotId);
       try {
-        await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
+        await this.maxClient.unbanMember(chatId, targetUserId, {
+          immediate: true,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
       } catch (error: unknown) {
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
         if (this.isAlreadyPresentMemberAddError(maxApiMessage)) {
@@ -9988,6 +10022,7 @@ export class AdminService {
             chatId,
             targetUserId,
             error,
+            resolvedBotId,
           );
           throw new BadRequestException(
             resolvedMessage || 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
@@ -10051,10 +10086,22 @@ export class AdminService {
     source: Extract<AdminActionSource, 'group_command' | 'private_command'> = 'group_command',
   ): Promise<ManualModerationActionResult> {
     const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
-    await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'BAN');
+    const resolvedBotId = await this.resolveBotAssignment(chatId);
+    await this.assertManualMemberModerationPreconditions(
+      chatId,
+      targetUserId,
+      'BAN',
+      resolvedBotId,
+    );
 
     try {
-      await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+      if (resolvedBotId) {
+        await this.maxClient.cancelScheduledUnban(chatId, targetUserId, {
+          botId: resolvedBotId,
+        });
+      } else {
+        await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -10067,13 +10114,17 @@ export class AdminService {
     }
 
     try {
-      await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+      await this.maxClient.banMember(chatId, targetUserId, {
+        immediate: true,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+      });
     } catch (error: unknown) {
       const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
         chatId,
         targetUserId,
         'BAN',
         error,
+        resolvedBotId,
       );
       throw new BadRequestException(resolvedMessage || 'Не удалось применить системный бан.');
     }
@@ -10147,6 +10198,7 @@ export class AdminService {
       targetUserId,
       source,
       removedOnly: false,
+      botId: resolvedBotId,
     });
 
     return manualModerationActionResultSchema.parse({
@@ -10164,6 +10216,7 @@ export class AdminService {
     targetUserId: string;
     source: AdminActionSource;
     removedOnly: boolean;
+    botId?: string;
   }): Promise<void> {
     if (params.source === 'group_command') {
       return;
@@ -10186,7 +10239,10 @@ export class AdminService {
         params.chatId,
         text,
         { textFormat: 'markdown' },
-        { immediate: true },
+        {
+          immediate: true,
+          ...(params.botId ? { botId: params.botId } : {}),
+        },
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -10837,16 +10893,18 @@ export class AdminService {
     chatId: string,
     targetUserId: string,
     action: ManualMemberModerationAction,
+    botId?: string,
   ): Promise<void> {
     if (action === 'BAN') {
-      await this.assertBotCanManageMembers(chatId, action);
+      await this.assertBotCanManageMembers(chatId, action, botId);
     }
-    await this.assertTargetUserCanBeModerated(chatId, targetUserId, action);
+    await this.assertTargetUserCanBeModerated(chatId, targetUserId, action, botId);
   }
 
   private async assertBotCanManageMembers(
     chatId: string,
     action: ManualMemberManageMembersAction,
+    botId?: string,
   ): Promise<void> {
     const maxClientWithAccess = this.maxClient as MaxClientService & {
       getCurrentChatMemberAccess?: (chatId: string) => Promise<MaxChatMemberAccess>;
@@ -10859,6 +10917,7 @@ export class AdminService {
     try {
       botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId, {
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ...(botId ? { botId } : {}),
       } as never);
     } catch (error: unknown) {
       if (this.isBotAdminLookupDeniedError(error)) {
@@ -10901,6 +10960,7 @@ export class AdminService {
     chatId: string,
     targetUserId: string,
     action: ManualMemberModerationAction,
+    botId?: string,
   ): Promise<void> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
@@ -10914,6 +10974,7 @@ export class AdminService {
       targetUserId,
       {
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ...(botId ? { botId } : {}),
       } as never,
     );
     if (!targetAccess) {
@@ -10929,7 +10990,10 @@ export class AdminService {
     }
   }
 
-  private async resolveManualBanExecutionMode(chatId: string): Promise<ManualBanExecutionMode> {
+  private async resolveManualBanExecutionMode(
+    chatId: string,
+    botId?: string,
+  ): Promise<ManualBanExecutionMode> {
     const maxClientWithSnapshot = this.maxClient as MaxClientService & {
       getChatSnapshot?: (
         chatId: string,
@@ -10942,6 +11006,7 @@ export class AdminService {
     try {
       const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId, {
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ...(botId ? { botId } : {}),
       } as never);
       if (snapshot.isPublic === false && !snapshot.link) {
         return 'MAX_REMOVE_ONLY';
@@ -10962,6 +11027,7 @@ export class AdminService {
   private async resolveManualUnbanExecutionMode(
     chatId: string,
     targetUserId: string,
+    botId?: string,
   ): Promise<ManualUnbanExecutionMode> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
@@ -10976,6 +11042,7 @@ export class AdminService {
         targetUserId,
         {
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+          ...(botId ? { botId } : {}),
         } as never,
       );
       return targetAccess ? 'ALREADY_PRESENT' : 'MAX_UNBLOCK';
@@ -11006,6 +11073,7 @@ export class AdminService {
     targetUserId: string,
     action: ManualMemberModerationAction,
     error: unknown,
+    botId?: string,
   ): Promise<string> {
     const maxApiMessage = this.extractMaxApiErrorMessage(error);
     if (!this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
@@ -11013,13 +11081,13 @@ export class AdminService {
     }
 
     try {
-      await this.assertBotCanManageMembers(chatId, action);
+      await this.assertBotCanManageMembers(chatId, action, botId);
     } catch (diagnosticError: unknown) {
       return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
     }
 
     try {
-      await this.assertTargetUserCanBeModerated(chatId, targetUserId, action);
+      await this.assertTargetUserCanBeModerated(chatId, targetUserId, action, botId);
     } catch (diagnosticError: unknown) {
       return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
     }
@@ -11033,6 +11101,7 @@ export class AdminService {
     chatId: string,
     targetUserId: string,
     error: unknown,
+    botId?: string,
   ): Promise<string> {
     const maxApiMessage = this.extractMaxApiErrorMessage(error);
     if (maxApiMessage && !this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
@@ -11040,7 +11109,7 @@ export class AdminService {
     }
 
     try {
-      await this.assertBotCanManageMembers(chatId, 'UNBAN');
+      await this.assertBotCanManageMembers(chatId, 'UNBAN', botId);
     } catch (diagnosticError: unknown) {
       return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
     }
