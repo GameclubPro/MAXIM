@@ -6579,13 +6579,13 @@ describe('AdminService.listChats', () => {
       }),
     ).resolves.toEqual([]);
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(8);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(4);
     expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
       1,
       'chat-1',
       expect.objectContaining({
         actionHealthLane: 'background',
-        timeoutMs: 750,
+        timeoutMs: 500,
       }),
     );
   });

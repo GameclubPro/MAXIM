@@ -3156,7 +3156,13 @@ export class MaxClientService implements OnModuleDestroy {
     const actionHealthLane = options.actionHealthLane ?? trafficClass;
     const sourceTag = this.normalizeMetricSourceTag(options.sourceTag);
     await this.ensureCircuitClosed(bot.id);
-    await this.reserveRateLimitSlot(bot.id, options.chatId ?? null, trafficClass, sourceTag);
+    await this.reserveRateLimitSlot(
+      bot.id,
+      options.chatId ?? null,
+      trafficClass,
+      sourceTag,
+      options.timeoutMs,
+    );
 
     try {
       const result = await this.botContext.runWithBot(bot.id, () => operation());
@@ -3411,8 +3417,13 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string | null,
     trafficClass: MaxApiTrafficClass,
     sourceTag?: string | null,
+    maxWaitMsOverride?: number,
   ) {
-    const maxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
+    const configuredMaxWaitMs = this.resolveTrafficClassRateLimitWaitMs(trafficClass);
+    const maxWaitMs =
+      typeof maxWaitMsOverride === 'number' && Number.isFinite(maxWaitMsOverride)
+        ? Math.max(0, Math.min(configuredMaxWaitMs, Math.trunc(maxWaitMsOverride)))
+        : configuredMaxWaitMs;
     const startedAtMs = Date.now();
 
     while (true) {
