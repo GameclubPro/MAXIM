@@ -1882,6 +1882,167 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('binds an external required subscription channel to the bot that actually has access', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue(null);
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(async (_chatId: string, options?: {
+        botId?: string;
+      }) => ({
+        userId: options?.botId ?? 'unknown',
+        isAdmin: options?.botId === 'id613002203036_4_bot',
+        isOwner: false,
+        permissions: [],
+      })),
+      getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return {
+            chatId: 'chat-1',
+            title: 'Команда MAX',
+            participantsCount: 128,
+            status: 'active',
+            isPublic: false,
+            link: null,
+            lastEventAt: null,
+            entityType: 'chat',
+          };
+        }
+
+        return {
+          chatId: 'channel-ext-2',
+          title: 'Канал второго бота',
+          participantsCount: 41,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/channels/second-bot',
+          lastEventAt: null,
+          entityType: 'channel',
+        };
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveContactIdSync: jest.fn((botId?: string | null) => {
+        if (botId === 'id613002203036_4_bot') {
+          return '214634783';
+        }
+        if (botId === 'id613002203036_bot') {
+          return '613002203036';
+        }
+        return null;
+      }),
+      getBotTokenSync: jest.fn().mockReturnValue(null),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) => {
+        if (botId === 'id613002203036_bot') {
+          return {
+            id: 'id613002203036_bot',
+            label: 'MAXIM',
+            state: 'active',
+            speechPersona: 'male',
+            characterName: 'Майор Максимов',
+          };
+        }
+        if (botId === 'id613002203036_4_bot') {
+          return {
+            id: 'id613002203036_4_bot',
+            label: 'MAXIM 2',
+            state: 'active',
+            speechPersona: 'female',
+            characterName: 'Майор Максимова',
+          };
+        }
+        return null;
+      }),
+      getDiscoveryBots: jest.fn().mockReturnValue([
+        { id: 'id613002203036_bot' },
+        { id: 'id613002203036_4_bot' },
+      ]),
+      getActionableBots: jest.fn().mockReturnValue([
+        { id: 'id613002203036_bot' },
+        { id: 'id613002203036_4_bot' },
+      ]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock({ botId: 'id613002203036_bot' }) as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotRegistry as never,
+    );
+
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-ext-2'],
+    });
+
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-ext-2']);
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      1,
+      'channel-ext-2',
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
+      2,
+      'channel-ext-2',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-ext-2',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'channel-ext-2' },
+        create: expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          primaryBotId: 'id613002203036_4_bot',
+        }),
+        update: expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          primaryBotId: 'id613002203036_4_bot',
+        }),
+      }),
+    );
+    expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'channel-ext-2',
+        primaryBotId: 'id613002203036_4_bot',
+        botIds: ['id613002203036_4_bot'],
+      }),
+    );
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'channel-ext-2',
+        title: 'Канал второго бота',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/second-bot',
+        participantsCount: 41,
+        primaryBotId: 'id613002203036_4_bot',
+      }),
+    );
+  });
+
   it('rejects an external required subscription channel when the bot is not its admin', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

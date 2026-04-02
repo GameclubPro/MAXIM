@@ -5498,11 +5498,16 @@ export class AdminService {
       this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ??
       (await this.resolveBotAssignment(normalizedChatId)) ??
       null;
+    const verifiedBotId =
+      (await this.assertBotCanInspectRequiredSubscriptionChannel(normalizedChatId, {
+        preferredBotId: resolvedBotId,
+        observedBotIds: options.observedBotIds ?? [],
+      })) ?? resolvedBotId;
     let snapshot: Awaited<ReturnType<MaxClientService['getChatSnapshot']>>;
     try {
-      snapshot = resolvedBotId
+      snapshot = verifiedBotId
         ? await this.maxClient.getChatSnapshot(normalizedChatId, {
-            botId: resolvedBotId,
+            botId: verifiedBotId,
             actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
             sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
           })
@@ -5532,11 +5537,6 @@ export class AdminService {
       );
     }
 
-    await this.assertBotCanInspectRequiredSubscriptionChannel(normalizedChatId, {
-      preferredBotId: resolvedBotId,
-      observedBotIds: options.observedBotIds ?? [],
-    });
-
     const header = this.createManagedEntityHeader({
       id: normalizedChatId,
       title: snapshot.title?.trim() || normalizedChatId,
@@ -5544,7 +5544,7 @@ export class AdminService {
       link,
       participantsCount: snapshot.participantsCount,
       avatarUrl: snapshot.avatarUrl,
-      primaryBotId: resolvedBotId,
+      primaryBotId: verifiedBotId,
     });
 
     try {
@@ -5554,20 +5554,20 @@ export class AdminService {
           id: normalizedChatId,
           title: header.title,
           entityType: ChatEntityType.CHANNEL,
-          ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
+          ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
         update: {
           title: header.title,
           entityType: ChatEntityType.CHANNEL,
-          ...(resolvedBotId ? { botId: resolvedBotId, primaryBotId: resolvedBotId } : {}),
+          ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
       });
       await this.maxBotLinkService?.bindDiscoveredChatBots({
         chatId: normalizedChatId,
-        primaryBotId: resolvedBotId,
+        primaryBotId: verifiedBotId,
         botIds:
-          resolvedBotId || (options.observedBotIds?.length ?? 0) > 0
-            ? [resolvedBotId, ...(options.observedBotIds ?? [])].filter(
+          verifiedBotId || (options.observedBotIds?.length ?? 0) > 0
+            ? [verifiedBotId, ...(options.observedBotIds ?? [])].filter(
                 (botId): botId is string => typeof botId === 'string' && botId.trim().length > 0,
               )
             : [],
@@ -5594,7 +5594,7 @@ export class AdminService {
       preferredBotId?: string | null;
       observedBotIds?: readonly string[] | null;
     } = {},
-  ): Promise<void> {
+  ): Promise<string | null> {
     const candidateBotIds = Array.from(
       new Set(
         [
@@ -5617,7 +5617,7 @@ export class AdminService {
           botId,
         });
         if (access.isAdmin || access.isOwner) {
-          return;
+          return botId;
         }
       } catch (error: unknown) {
         if (this.isBotAdminLookupDeniedError(error)) {
@@ -5635,7 +5635,7 @@ export class AdminService {
           sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
         });
         if (access.isAdmin || access.isOwner) {
-          return;
+          return this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ?? null;
         }
       } catch (error: unknown) {
         if (!this.isBotAdminLookupDeniedError(error)) {
