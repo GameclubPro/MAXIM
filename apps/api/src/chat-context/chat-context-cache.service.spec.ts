@@ -441,6 +441,29 @@ describe('ChatContextCacheService', () => {
     );
   });
 
+  it('fails open when managed entity header redis reads stall', async () => {
+    jest.useFakeTimers();
+
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+    };
+    redisInstance.get.mockImplementationOnce(() => new Promise(() => undefined));
+
+    const pendingHeader = service.getManagedEntityHeader('chat-1', 'channel');
+    await jest.advanceTimersByTimeAsync(150);
+
+    await expect(pendingHeader).resolves.toBeNull();
+  });
+
   it('stores and reads managed entity bot avatar snapshots', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

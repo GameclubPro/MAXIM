@@ -188,6 +188,43 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('does not let a stalled redis membership read block the fallback MAX lookup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:11:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(
+          new Map([['user-redis-timeout', { userId: 'user-redis-timeout', isAdmin: false }]]),
+        ),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results[0]?.value as {
+      mget: jest.Mock;
+    };
+    redisInstance.mget.mockImplementationOnce(() => new Promise(() => undefined));
+
+    const pendingLookup = service.getMembership(
+      'channel-redis-timeout',
+      'user-redis-timeout',
+      'moderation_required_subscription',
+    );
+    await jest.advanceTimersByTimeAsync(150);
+
+    await expect(pendingLookup).resolves.toBe(true);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'channel-redis-timeout',
+      ['user-redis-timeout'],
+      expect.objectContaining({
+        trafficClass: 'critical',
+        timeoutMs: 1500,
+      }),
+    );
+    expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+  });
+
   it('coalesces concurrent single-user lookups for the same chat into one MAX batch request', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:12:00.000Z'));
 

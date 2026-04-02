@@ -130,6 +130,7 @@ const BASE_MEMBERSHIP_RETENTION_NEGATIVE_TTL_SEC = Math.max(
 const MEMBERSHIP_INVALIDATION_CHANNEL = 'max:membership:invalidate:v1';
 const MEMBERSHIP_INVALIDATION_GUARD_TTL_MS = 120_000;
 const MEMBERSHIP_CACHE_WRITE_LOG_INTERVAL_MS = 10_000;
+const MEMBERSHIP_REDIS_READ_TIMEOUT_MS = 100;
 const MEMBERSHIP_LOOKUP_GUARD_SLACK_MS = 400;
 const MEMBERSHIP_LOOKUP_SLOW_LOG_THRESHOLD_MS = 1_500;
 const GIVEAWAY_DRAW_TERMINAL_CHAT_BACKOFF_MS = 30 * 60 * 1_000;
@@ -927,7 +928,15 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return new Map();
     }
 
-    const rawValues = await this.redis.mget(...normalizedCacheKeys);
+    const rawValues = await this.runRedisReadWithin(
+      this.redis
+        .mget(...normalizedCacheKeys)
+        .catch(() => normalizedCacheKeys.map(() => null)),
+      MEMBERSHIP_REDIS_READ_TIMEOUT_MS,
+    );
+    if (!rawValues) {
+      return new Map();
+    }
     const snapshots = new Map<string, MembershipCacheSnapshot>();
 
     for (const [index, rawValue] of rawValues.entries()) {
@@ -958,6 +967,25 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
         ? this.membershipRetentionPositiveTtlSec
         : this.membershipRetentionNegativeTtlSec,
     );
+  }
+
+  private async runRedisReadWithin<T>(
+    operation: Promise<T>,
+    maxWaitMs: number,
+  ): Promise<T | null> {
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), Math.max(1, Math.trunc(maxWaitMs)));
+      timeout.unref?.();
+    });
+
+    try {
+      return await Promise.race([operation, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   private parseRedisSnapshot(raw: string): MembershipCacheSnapshot | null {

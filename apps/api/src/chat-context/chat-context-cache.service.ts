@@ -34,6 +34,8 @@ export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 30_000;
   private static readonly CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS = 150;
   private static readonly CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS = 150;
+  private static readonly MANAGED_ENTITY_HEADER_REDIS_READ_TIMEOUT_MS = 100;
+  private static readonly MANAGED_ENTITY_BOT_PROFILE_REDIS_READ_TIMEOUT_MS = 100;
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS = 100;
@@ -232,8 +234,9 @@ export class ChatContextCacheService implements OnModuleDestroy {
     chatId: string,
     entityType: ManagedEntityType,
   ): Promise<ManagedEntityHeader | null> {
-    const cached = await this.redis.get(
+    const cached = await this.readRedisStringWithin(
       ChatContextCacheService.managedEntityHeaderKey(chatId, entityType),
+      ChatContextCacheService.MANAGED_ENTITY_HEADER_REDIS_READ_TIMEOUT_MS,
     );
     if (!cached) {
       return null;
@@ -282,8 +285,9 @@ export class ChatContextCacheService implements OnModuleDestroy {
       return null;
     }
 
-    const cached = await this.redis.get(
+    const cached = await this.readRedisStringWithin(
       ChatContextCacheService.managedEntityBotProfileKey(normalizedBotId),
+      ChatContextCacheService.MANAGED_ENTITY_BOT_PROFILE_REDIS_READ_TIMEOUT_MS,
     );
     if (!cached) {
       return null;
