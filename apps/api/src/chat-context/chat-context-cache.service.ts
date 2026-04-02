@@ -577,8 +577,71 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const title = chatTitle?.trim();
+    let chat = await this.findChatContextRow(chatId);
+    if (!chat?.settings) {
+      chat = await this.initializeChatContextRow(chatId, title);
+    }
+
+    if (!chat) {
+      throw new Error(`Chat context missing for chat ${chatId}`);
+    }
+
+    if (title && chat.title !== title) {
+      void this.updateTitle(chatId, title);
+    }
+
+    if (!chat.settings) {
+      throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
+    }
+
+    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
+
+    const value: ChatContext = {
+      chatId: chat.id,
+      title: chat.title,
+      settings: chat.settings,
+      domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
+      adminUserIds: (chat.admins ?? []).map((item) => item.userId),
+      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
+      rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
+    };
+
+    this.writeLocalChatContext(chatId, value);
+    this.writeChatContextToRedis(chatId, value);
+    return value;
+  }
+
+  private async findChatContextRow(chatId: string) {
+    return this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        settings: true,
+        rules: {
+          select: {
+            publishedUrl: true,
+            publishedMessageId: true,
+          },
+        },
+        domains: {
+          where: {
+            OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+          },
+          select: {
+            domain: true,
+          },
+        },
+        admins: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+  }
+
+  private async initializeChatContextRow(chatId: string, title?: string | null) {
     const defaultBotId = this.maxBotLinkService.getContextOrDefaultBotId();
-    const chat = await this.prisma.chat.upsert({
+    return this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
@@ -621,26 +684,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
         },
       },
     });
-
-    if (!chat.settings) {
-      throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
-    }
-
-    this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
-
-    const value: ChatContext = {
-      chatId: chat.id,
-      title: chat.title,
-      settings: chat.settings,
-      domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
-      adminUserIds: (chat.admins ?? []).map((item) => item.userId),
-      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
-      rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
-    };
-
-    this.writeLocalChatContext(chatId, value);
-    this.writeChatContextToRedis(chatId, value);
-    return value;
   }
 
   private async updateTitle(chatId: string, title: string) {
