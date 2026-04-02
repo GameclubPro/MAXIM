@@ -401,6 +401,7 @@ const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
 const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 750;
 const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_000;
@@ -1559,15 +1560,73 @@ export class AdminService {
     currentChat: ChatSummary | null;
     recentBotAdded: ChatSummary[];
   }> {
-    const [recentBotAdded, currentChat] = await Promise.all([
-      this.bootstrapRecentBotAddedEntities(user, entityType),
-      this.bootstrapCurrentChat(user, entityType),
+    const recentBotAddedPromise = this.bootstrapRecentBotAddedEntities(user, entityType);
+    const currentChatPromise = this.bootstrapCurrentChat(user, entityType);
+
+    const [currentChat, recentBotAdded] = await Promise.all([
+      currentChatPromise,
+      this.awaitManagedEntitiesLightweightRecentBootstrapWithinResponseBudget(
+        user.userId,
+        entityType,
+        recentBotAddedPromise,
+      ),
     ]);
 
     return {
       currentChat,
       recentBotAdded,
     };
+  }
+
+  private awaitManagedEntitiesLightweightRecentBootstrapWithinResponseBudget(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    recentBotAddedPromise: Promise<ChatSummary[]>,
+  ): Promise<ChatSummary[]> {
+    return new Promise<ChatSummary[]>((resolve) => {
+      let settled = false;
+      const finish = (items: ChatSummary[]) => {
+        if (settled) {
+          return;
+        }
+
+        settled = true;
+        clearTimeout(timer);
+        resolve(items);
+      };
+      const timer = setTimeout(() => {
+        this.logger.warn(
+          {
+            entityType,
+            userId,
+            budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
+          },
+          'Detached recent bot_added bootstrap from lightweight managed entities response after response budget exceeded',
+        );
+        finish([]);
+      }, MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS);
+
+      void recentBotAddedPromise.then(
+        (items) => {
+          finish(items);
+        },
+        (error: unknown) => {
+          if (settled) {
+            return;
+          }
+
+          this.logger.warn(
+            {
+              entityType,
+              userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Recent bot_added bootstrap failed during lightweight managed entities response',
+          );
+          finish([]);
+        },
+      );
+    });
   }
 
   private createManagedEntitySummary(params: {

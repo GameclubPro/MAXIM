@@ -7275,6 +7275,118 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('does not wait for a slow recent bot_added bootstrap before returning a refresh response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-03T10:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+        {
+          chat: {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: new Date('2026-03-01T10:00:00.000Z'),
+            entityType: 'CHAT',
+          },
+        },
+      ]);
+
+      const managedEntitiesRefreshQueue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+          getChatAdminIds: jest.fn(),
+        } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntitiesRefreshQueue as never,
+      );
+
+      const recentBootstrap = createDeferred<ChatSummary[]>();
+      jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(
+        createChatSummaryFixture({
+          id: 'chat-2',
+          title: 'Текущий чат',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      );
+      jest
+        .spyOn(service as any, 'bootstrapRecentBotAddedEntities')
+        .mockReturnValue(recentBootstrap.promise);
+
+      const responsePromise = service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-2',
+          chatTitle: 'Текущий чат',
+        },
+        {
+          refresh: true,
+          bypassRemoteCache: true,
+          resetRefreshCursor: true,
+        },
+      );
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(1_000);
+
+      await expect(responsePromise).resolves.toEqual({
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-2',
+            title: 'Текущий чат',
+            createdAt: '2026-03-03T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: '2026-03-01T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+        refresh: {
+          complete: false,
+          cursor: 0,
+          backoffActive: false,
+          nextPollAfterMs: 1500,
+          processedCandidates: null,
+          totalCandidates: null,
+          progressPercent: null,
+          lastSyncedAt: null,
+          manualRefreshBlockedReason: 'in_progress',
+          manualRefreshRetryAfterMs: 1500,
+        },
+      });
+
+      recentBootstrap.resolve([
+        createChatSummaryFixture({
+          id: 'chat-3',
+          title: 'Недавно добавленный чат',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ]);
+      await Promise.resolve();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('caps current chat bootstrap admin lookup during the first managed refresh response', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
