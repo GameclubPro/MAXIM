@@ -1401,6 +1401,7 @@ export class AdminService {
     }
 
     if (
+      options.resetRefreshCursor !== true &&
       options.bypassRemoteCache === true &&
       (cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
     ) {
@@ -1427,6 +1428,7 @@ export class AdminService {
     }
 
     if (
+      options.resetRefreshCursor !== true &&
       options.bypassRemoteCache !== true &&
       (cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
     ) {

@@ -54,6 +54,17 @@ const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
   hasLoadedFromServer: false,
 };
 
+export function shouldStartManagedEntitiesBackgroundRefresh(options: {
+  forceRefreshSession: boolean;
+  backgroundRefreshOnFirstLoad: boolean;
+  hasLoadedFromServer: boolean;
+}): boolean {
+  return (
+    options.forceRefreshSession ||
+    (options.backgroundRefreshOnFirstLoad && !options.hasLoadedFromServer)
+  );
+}
+
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
   isLoading: boolean;
   isRefreshing: boolean;
@@ -333,6 +344,7 @@ export function useManagedEntitiesSync({
   const [state, setState] = useState<ManagedEntitiesSyncState>(() => initialState);
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(initialState.data);
+  const hasLoadedFromServerRef = useRef(initialState.hasLoadedFromServer);
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
   const backoffResumeAtRef = useRef<number | null>(null);
@@ -347,8 +359,13 @@ export function useManagedEntitiesSync({
     skippedInitialSyncRef.current = false;
     backoffResumeAtRef.current = null;
     latestDataRef.current = initialState.data;
+    hasLoadedFromServerRef.current = initialState.hasLoadedFromServer;
     setState(initialState);
   }, [effectiveStateCacheScope, initialState]);
+
+  useEffect(() => {
+    hasLoadedFromServerRef.current = state.hasLoadedFromServer;
+  }, [state.hasLoadedFromServer]);
 
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
@@ -483,8 +500,11 @@ export function useManagedEntitiesSync({
       forceRefreshSession && (reloadBehavior === 'manual' || reloadBehavior === 'recovery');
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
-    const shouldStartWithBackgroundRefresh =
-      forceRefreshSession || (backgroundRefreshOnFirstLoad && !hasCachedData);
+    const shouldStartWithBackgroundRefresh = shouldStartManagedEntitiesBackgroundRefresh({
+      forceRefreshSession,
+      backgroundRefreshOnFirstLoad,
+      hasLoadedFromServer: hasLoadedFromServerRef.current,
+    });
     setState((current) => ({
       ...current,
       error: hasCachedData ? null : current.error,
