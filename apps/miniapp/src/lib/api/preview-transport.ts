@@ -130,10 +130,12 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function buildPreviewAssignedBots(options: {
-  primaryBotId?: string | null;
-  assistEnabled?: boolean;
-} = {}): ChatSummary['assignedBots'] {
+function buildPreviewAssignedBots(
+  options: {
+    primaryBotId?: string | null;
+    assistEnabled?: boolean;
+  } = {},
+): ChatSummary['assignedBots'] {
   const primaryBotId = options.primaryBotId ?? PREVIEW_PRIMARY_BOT_ID;
   const assistEnabled = options.assistEnabled === true;
 
@@ -235,8 +237,7 @@ function buildPreviewBotExecutionPlan(
   entityType: 'chat' | 'channel',
   chatId: string,
 ): ManagedEntityBotExecutionPlan {
-  const primaryBotId =
-    entityType === 'chat' ? state.chatPrimaryBotId : state.channelPrimaryBotId;
+  const primaryBotId = entityType === 'chat' ? state.chatPrimaryBotId : state.channelPrimaryBotId;
   const assistEnabled =
     entityType === 'chat' ? state.chatPartnerAssistEnabled : state.channelPartnerAssistEnabled;
   const assignedBots = buildPreviewAssignedBots({ primaryBotId, assistEnabled });
@@ -1853,6 +1854,7 @@ function createInitialState(): PreviewState {
       displayName: 'Алексей',
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('designer'),
+      launchContext: null,
       canAccessSystem: true,
     },
     systemModeSelection: 'auto',
@@ -2570,7 +2572,12 @@ async function handleChatRequest(
 
     if (tail.length === 2 && method === 'GET') {
       return cloneJson(
-        buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType], state.me.userId),
+        buildPreviewDialogResponse(
+          chatId,
+          dialogType,
+          state.chatDialogs[dialogType],
+          state.me.userId,
+        ),
       );
     }
 

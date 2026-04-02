@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import type { Job } from 'bullmq';
+import { DelayedError, type Job } from 'bullmq';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { AdminService } from './admin.service';
 import {
@@ -20,6 +20,12 @@ export class AdminManagedEntitiesRefreshProcessor extends WorkerHost {
       return;
     }
 
-    await this.adminService.processManagedEntitiesRefreshJob(job.data);
+    const outcome = await this.adminService.processManagedEntitiesRefreshJob(job.data);
+    if (!outcome) {
+      return;
+    }
+
+    await job.moveToDelayed(Date.now() + outcome.continueAfterMs, job.token);
+    throw new DelayedError();
   }
 }

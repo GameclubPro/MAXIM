@@ -1,8 +1,4 @@
-import type {
-  ChatSummary,
-  ManagedEntitiesListResponse,
-  Me,
-} from '@maxim/contracts';
+import type { ChatSummary, ManagedEntitiesListResponse, Me } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
 type ManagedEntitiesFetchOptions = {
@@ -79,17 +75,16 @@ function parseAssignedBots(value: unknown): ChatSummary['assignedBots'] {
           ? item.avatarUrl.trim()
           : null,
       capabilities: Array.isArray(item.capabilities)
-        ? Array.from(
+        ? (Array.from(
             new Set(
               item.capabilities
                 .map((value) => (typeof value === 'string' ? value.trim() : ''))
                 .filter((value): value is string => value.length > 0),
             ),
-          ) as ChatSummary['assignedBots'][number]['capabilities']
+          ) as ChatSummary['assignedBots'][number]['capabilities'])
         : [],
       permissionsSummary:
-        isRecord(item.permissionsSummary) &&
-        Array.isArray(item.permissionsSummary.permissions)
+        isRecord(item.permissionsSummary) && Array.isArray(item.permissionsSummary.permissions)
           ? {
               checkedAt:
                 typeof item.permissionsSummary.checkedAt === 'string' &&
@@ -157,12 +152,28 @@ function parseMe(value: unknown): Me {
     throw new Error('Invalid me response');
   }
 
+  const launchContext = isRecord(value.launchContext) ? value.launchContext : null;
+  const launchContextChatType =
+    launchContext?.chatType === 'chat' ||
+    launchContext?.chatType === 'channel' ||
+    launchContext?.chatType === 'dialog'
+      ? launchContext.chatType
+      : null;
+
   return {
     userId: value.userId,
     username: typeof value.username === 'string' ? value.username : null,
     displayName: typeof value.displayName === 'string' ? value.displayName : null,
     avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : null,
     profileUrl: typeof value.profileUrl === 'string' ? value.profileUrl : null,
+    launchContext:
+      launchContext !== null && typeof launchContext.chatId === 'string'
+        ? {
+            chatId: launchContext.chatId,
+            chatTitle: typeof launchContext.chatTitle === 'string' ? launchContext.chatTitle : null,
+            chatType: launchContextChatType,
+          }
+        : null,
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
   };
 }
@@ -180,8 +191,7 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       ? refresh.manualRefreshBlockedReason
       : null;
   const manualRefreshRetryAfterMs =
-    typeof refresh.manualRefreshRetryAfterMs === 'number' &&
-    refresh.manualRefreshRetryAfterMs >= 0
+    typeof refresh.manualRefreshRetryAfterMs === 'number' && refresh.manualRefreshRetryAfterMs >= 0
       ? Math.trunc(refresh.manualRefreshRetryAfterMs)
       : null;
   if (
@@ -204,8 +214,18 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       cursor: refresh.cursor,
       backoffActive: refresh.backoffActive,
       nextPollAfterMs: refresh.nextPollAfterMs ?? 1500,
-      processedCandidates: null,
-      totalCandidates: null,
+      processedCandidates:
+        typeof refresh.processedCandidates === 'number' &&
+        Number.isInteger(refresh.processedCandidates) &&
+        refresh.processedCandidates >= 0
+          ? refresh.processedCandidates
+          : null,
+      totalCandidates:
+        typeof refresh.totalCandidates === 'number' &&
+        Number.isInteger(refresh.totalCandidates) &&
+        refresh.totalCandidates >= 0
+          ? refresh.totalCandidates
+          : null,
       progressPercent:
         typeof refresh.progressPercent === 'number' &&
         Number.isInteger(refresh.progressPercent) &&

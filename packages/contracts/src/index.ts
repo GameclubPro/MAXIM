@@ -93,9 +93,7 @@ export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
   typeof managedEntityBotMembershipStatusSchema
 >;
-export type ManagedEntityBotLifecycleState = z.infer<
-  typeof managedEntityBotLifecycleStateSchema
->;
+export type ManagedEntityBotLifecycleState = z.infer<typeof managedEntityBotLifecycleStateSchema>;
 export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabilitySchema>;
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
@@ -1538,6 +1536,15 @@ export const meSchema = z.object({
   displayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
+  launchContext: z
+    .object({
+      chatId: z.string().trim().min(1),
+      chatTitle: z.string().nullable().optional().default(null),
+      chatType: z.enum(['chat', 'channel', 'dialog']).nullable().optional().default(null),
+    })
+    .nullable()
+    .optional()
+    .default(null),
   canAccessSystem: z.boolean().optional(),
 });
 export type Me = z.infer<typeof meSchema>;
@@ -1670,9 +1677,7 @@ export const botWebhookSubscriptionSnapshotSchema = z.object({
   lastError: z.string().nullable(),
   note: z.string().nullable(),
 });
-export type BotWebhookSubscriptionSnapshot = z.infer<
-  typeof botWebhookSubscriptionSnapshotSchema
->;
+export type BotWebhookSubscriptionSnapshot = z.infer<typeof botWebhookSubscriptionSnapshotSchema>;
 
 export const webhookSubscriptionSnapshotSchema = z.object({
   status: webhookSubscriptionSnapshotStatusSchema,
@@ -1756,9 +1761,7 @@ export const botOwnershipFoundationSnapshotSchema = z.object({
   anomalies: botOwnershipAnomaliesSchema,
   repair: botOwnershipRepairSnapshotSchema,
 });
-export type BotOwnershipFoundationSnapshot = z.infer<
-  typeof botOwnershipFoundationSnapshotSchema
->;
+export type BotOwnershipFoundationSnapshot = z.infer<typeof botOwnershipFoundationSnapshotSchema>;
 
 export const systemDashboardBurstSchema = z.object({
   active: z.boolean(),
@@ -1832,9 +1835,7 @@ export const systemDashboardBackgroundBudgetSchema = z.object({
   topSources: z.array(systemDashboardBackgroundBudgetSourceSchema),
   pauseReasons: z.array(systemDashboardBackgroundBudgetPauseReasonSchema),
 });
-export type SystemDashboardBackgroundBudget = z.infer<
-  typeof systemDashboardBackgroundBudgetSchema
->;
+export type SystemDashboardBackgroundBudget = z.infer<typeof systemDashboardBackgroundBudgetSchema>;
 
 export const systemDashboardMembershipLookupSampleSchema = z.object({
   chatId: z.string(),
@@ -1864,9 +1865,7 @@ export const systemDashboardMembershipLookupSchema = z.object({
   backoffSample: z.array(systemDashboardMembershipLookupSampleSchema),
   issueSample: z.array(systemDashboardMembershipLookupIssueSampleSchema),
 });
-export type SystemDashboardMembershipLookup = z.infer<
-  typeof systemDashboardMembershipLookupSchema
->;
+export type SystemDashboardMembershipLookup = z.infer<typeof systemDashboardMembershipLookupSchema>;
 
 export const systemDashboardResponseSchema = z.object({
   summary: systemDashboardSummarySchema,

@@ -26,6 +26,7 @@ const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
 
 type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
+type ManagedEntitiesReloadBehavior = 'default' | 'recovery';
 type ManagedEntitiesRefreshRequestOptions = {
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
@@ -42,6 +43,7 @@ type ManagedEntitiesSyncState = {
   error: Error | null;
   refreshState: ManagedEntitiesRefreshState | null;
   phase: ManagedEntitiesSyncPhase;
+  hasLoadedFromServer: boolean;
 };
 
 const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
@@ -49,6 +51,7 @@ const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
   error: null,
   refreshState: null,
   phase: 'loading',
+  hasLoadedFromServer: false,
 };
 
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
@@ -68,10 +71,7 @@ function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Не удалось загрузить список.');
 }
 
-function buildManagedEntitiesLocalCacheKey(
-  entityType: ManagedEntityKind,
-  scope: string,
-): string {
+function buildManagedEntitiesLocalCacheKey(entityType: ManagedEntityKind, scope: string): string {
   return `me:v${MANAGED_ENTITIES_LOCAL_CACHE_VERSION}:${scope}:${entityType}`;
 }
 
@@ -134,7 +134,9 @@ function sanitizeManagedEntities(
   return sanitized;
 }
 
-function sanitizeManagedEntitiesOrNull(items: ChatSummary[] | null | undefined): ChatSummary[] | null {
+function sanitizeManagedEntitiesOrNull(
+  items: ChatSummary[] | null | undefined,
+): ChatSummary[] | null {
   if (!Array.isArray(items) || items.length === 0) {
     return null;
   }
@@ -259,6 +261,7 @@ export function useManagedEntitiesSync({
   entityType,
   enabled = true,
   reloadNonce = 0,
+  reloadBehavior = 'default',
   resumeOnVisibilityReturn = false,
   skipInitialSyncIfCached = false,
   freshOnLoad = false,
@@ -273,6 +276,7 @@ export function useManagedEntitiesSync({
   entityType: ManagedEntityKind;
   enabled?: boolean;
   reloadNonce?: number;
+  reloadBehavior?: ManagedEntitiesReloadBehavior;
   resumeOnVisibilityReturn?: boolean;
   skipInitialSyncIfCached?: boolean;
   freshOnLoad?: boolean;
@@ -284,9 +288,7 @@ export function useManagedEntitiesSync({
   localCacheScope?: string;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
-  const [ephemeralCacheScope] = useState(
-    () => `s:${Math.random().toString(36).slice(2, 10)}`,
-  );
+  const [ephemeralCacheScope] = useState(() => `s:${Math.random().toString(36).slice(2, 10)}`);
   const localCacheUserScope = readManagedEntitiesLocalCacheUserScope();
   const effectiveLocalCacheScope =
     localCacheUserScope !== null ? `${localCacheScope}:${localCacheUserScope}` : null;
@@ -297,6 +299,13 @@ export function useManagedEntitiesSync({
     [effectiveStateCacheScope, entityType],
   );
   const cachedState = queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? null;
+  const normalizedCachedState =
+    cachedState === null
+      ? null
+      : {
+          ...cachedState,
+          hasLoadedFromServer: cachedState.hasLoadedFromServer === true,
+        };
   const persistedData = useMemo(
     () =>
       persistLocalCache && effectiveLocalCacheScope !== null
@@ -309,17 +318,18 @@ export function useManagedEntitiesSync({
     ? {
         ...EMPTY_SYNC_STATE,
       }
-    : cachedState ??
+    : (normalizedCachedState ??
       (initialCachedData !== null
         ? {
             data: initialCachedData,
             error: null,
             refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
             phase: 'complete',
+            hasLoadedFromServer: false,
           }
         : {
             ...EMPTY_SYNC_STATE,
-          });
+          }));
   const [state, setState] = useState<ManagedEntitiesSyncState>(() => initialState);
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(initialState.data);
@@ -345,24 +355,25 @@ export function useManagedEntitiesSync({
   }, [cacheKey, queryClient, state]);
 
   useEffect(() => {
-    if (
-      !persistLocalCache ||
-      effectiveLocalCacheScope === null ||
-      state.error !== null ||
-      state.data === null ||
-      state.refreshState?.complete !== true
-    ) {
+    const dataToPersist = state.data;
+    const shouldPersistServerState =
+      state.error === null &&
+      dataToPersist !== null &&
+      state.hasLoadedFromServer &&
+      (state.refreshState === null || state.refreshState.complete === true);
+    if (!persistLocalCache || effectiveLocalCacheScope === null || !shouldPersistServerState) {
       return;
     }
 
-    saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, state.data);
+    saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, dataToPersist);
   }, [
     effectiveLocalCacheScope,
     entityType,
     persistLocalCache,
     state.data,
     state.error,
-    state.refreshState?.complete,
+    state.hasLoadedFromServer,
+    state.refreshState,
   ]);
 
   useEffect(() => {
@@ -468,6 +479,7 @@ export function useManagedEntitiesSync({
 
     let cancelled = false;
     const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
+    const forceRefreshUsesBypassRemoteCache = forceRefreshSession && reloadBehavior === 'recovery';
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
     const shouldStartWithBackgroundRefresh =
@@ -508,6 +520,7 @@ export function useManagedEntitiesSync({
               error: null,
               refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
               phase: documentVisible ? 'complete' : 'idle',
+              hasLoadedFromServer: true,
             });
             return;
           }
@@ -518,6 +531,7 @@ export function useManagedEntitiesSync({
               error: null,
               refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
               phase: documentVisible ? 'complete' : 'idle',
+              hasLoadedFromServer: true,
             });
             return;
           }
@@ -527,6 +541,7 @@ export function useManagedEntitiesSync({
             error: null,
             refreshState: null,
             phase: documentVisible ? 'syncing' : 'idle',
+            hasLoadedFromServer: true,
           });
 
           if (!documentVisible) {
@@ -554,7 +569,7 @@ export function useManagedEntitiesSync({
           }
 
           const next = await refreshManagedEntities(api, entityType, {
-            bypassRemoteCache: forceRefreshPending,
+            bypassRemoteCache: forceRefreshPending && forceRefreshUsesBypassRemoteCache,
             resetRefreshCursor: resetRefreshCursor,
           });
           forceRefreshPending = false;
@@ -577,6 +592,7 @@ export function useManagedEntitiesSync({
             error: null,
             refreshState: next.refresh,
             phase,
+            hasLoadedFromServer: true,
           });
 
           if (next.refresh.complete || next.refresh.backoffActive) {
@@ -619,6 +635,7 @@ export function useManagedEntitiesSync({
     freshOnLoad,
     freshOnManualReload,
     reloadNonce,
+    reloadBehavior,
     reloadOnMount,
     skipInitialSyncIfCached,
     syncOnFirstLoad,
@@ -632,5 +649,6 @@ export function useManagedEntitiesSync({
     isRefreshing: state.phase === 'syncing',
     isSyncComplete: state.refreshState?.complete === true,
     isBackoffActive: state.refreshState?.backoffActive === true,
+    hasLoadedFromServer: state.hasLoadedFromServer,
   };
 }

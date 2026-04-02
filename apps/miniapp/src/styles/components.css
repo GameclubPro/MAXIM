@@ -1471,6 +1471,75 @@
   gap: var(--space-2);
 }
 
+.launch-context-card {
+  position: relative;
+  overflow: hidden;
+  display: grid;
+  gap: 14px;
+  border-color: rgba(255, 255, 255, 0.8);
+  background:
+    radial-gradient(140% 140% at 0% 0%, rgba(11, 132, 255, 0.18), transparent 52%),
+    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(233, 245, 255, 0.72));
+}
+
+.launch-context-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.launch-context-card__badge {
+  color: #07558f;
+  border-color: rgba(8, 119, 206, 0.22);
+  background: rgba(230, 244, 255, 0.9);
+}
+
+.launch-context-card__meta {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #086cc6;
+}
+
+.launch-context-card__body {
+  display: grid;
+  gap: 14px;
+}
+
+.launch-context-card__identity {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.launch-context-card__avatar {
+  flex: 0 0 auto;
+}
+
+.launch-context-card__copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.launch-context-card__copy h2 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.28;
+}
+
+.launch-context-card__copy p {
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.launch-context-card__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
 .channel-overview-card {
   position: relative;
   overflow: hidden;
@@ -8105,8 +8174,7 @@
   padding: 0;
   color: #fff;
   background:
-    linear-gradient(180deg, rgba(42, 153, 255, 1), rgba(11, 132, 255, 1)),
-    rgba(11, 132, 255, 1);
+    linear-gradient(180deg, rgba(42, 153, 255, 1), rgba(11, 132, 255, 1)), rgba(11, 132, 255, 1);
   box-shadow: 0 10px 18px rgba(11, 132, 255, 0.22);
   cursor: pointer;
   transition:

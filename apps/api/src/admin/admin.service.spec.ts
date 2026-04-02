@@ -729,8 +729,9 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
     getManagedEntitiesRefreshCursor: jest
       .fn()
-      .mockImplementation(async (userId: string, entityType: string) =>
-        refreshCursorByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      .mockImplementation(
+        async (userId: string, entityType: string) =>
+          refreshCursorByScope.get(buildScopeKey(userId, entityType)) ?? null,
       ),
     setManagedEntitiesRefreshCursor: jest
       .fn()
@@ -744,8 +745,9 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
       }),
     getManagedEntitiesDiscoverySnapshot: jest
       .fn()
-      .mockImplementation(async (userId: string, entityType: string) =>
-        discoverySnapshotByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      .mockImplementation(
+        async (userId: string, entityType: string) =>
+          discoverySnapshotByScope.get(buildScopeKey(userId, entityType)) ?? null,
       ),
     setManagedEntitiesDiscoverySnapshot: jest
       .fn()
@@ -759,8 +761,9 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
       }),
     getManagedEntitiesLastSyncedAt: jest
       .fn()
-      .mockImplementation(async (userId: string, entityType: string) =>
-        lastSyncedAtByScope.get(buildScopeKey(userId, entityType)) ?? null,
+      .mockImplementation(
+        async (userId: string, entityType: string) =>
+          lastSyncedAtByScope.get(buildScopeKey(userId, entityType)) ?? null,
       ),
     setManagedEntitiesLastSyncedAt: jest
       .fn()
@@ -873,6 +876,8 @@ describe('AdminService getMe', () => {
         displayName: 'Designer',
         avatarUrl: 'https://cdn.max/avatar.png',
         chatId: 'chat-1',
+        chatTitle: 'Рабочий чат',
+        chatType: 'chat',
       }),
     ).resolves.toEqual({
       userId: 'admin-1',
@@ -880,6 +885,11 @@ describe('AdminService getMe', () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
+      launchContext: {
+        chatId: 'chat-1',
+        chatTitle: 'Рабочий чат',
+        chatType: 'chat',
+      },
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -925,6 +935,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer',
+      launchContext: null,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -959,6 +970,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer-direct',
+      launchContext: null,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -1004,6 +1016,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: null,
+      launchContext: null,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1053,6 +1066,7 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: 'https://max.ru/designer-direct',
+      launchContext: null,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -1089,6 +1103,7 @@ describe('AdminService getMe', () => {
       displayName: null,
       avatarUrl: null,
       profileUrl: null,
+      launchContext: null,
     });
     expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
   });
@@ -1099,19 +1114,17 @@ describe('AdminService dialog admin fallback reads', () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     const maxClient = {
-      getChatAdminIds: jest
-        .fn()
-        .mockRejectedValue(
-          Object.assign(new Error('Request failed with status code 403'), {
-            response: {
-              status: 403,
-              data: {
-                code: 'chat.denied',
-                message: 'Request failed with status code 403',
-              },
+      getChatAdminIds: jest.fn().mockRejectedValue(
+        Object.assign(new Error('Request failed with status code 403'), {
+          response: {
+            status: 403,
+            data: {
+              code: 'chat.denied',
+              message: 'Request failed with status code 403',
             },
-          }),
-        ),
+          },
+        }),
+      ),
     };
 
     const service = new AdminService(
@@ -1141,7 +1154,9 @@ describe('AdminService dialog admin fallback reads', () => {
       resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
-      buildEntryBotStartUrlSync: jest.fn().mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
@@ -1944,14 +1959,19 @@ describe('AdminService required subscription settings', () => {
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getCurrentChatMemberAccess: jest.fn().mockImplementation(async (_chatId: string, options?: {
-        botId?: string;
-      }) => ({
-        userId: options?.botId ?? 'unknown',
-        isAdmin: options?.botId === 'id613002203036_4_bot',
-        isOwner: false,
-        permissions: [],
-      })),
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(
+        async (
+          _chatId: string,
+          options?: {
+            botId?: string;
+          },
+        ) => ({
+          userId: options?.botId ?? 'unknown',
+          isAdmin: options?.botId === 'id613002203036_4_bot',
+          isOwner: false,
+          permissions: [],
+        }),
+      ),
       getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => {
         if (chatId === 'chat-1') {
           return {
@@ -2015,14 +2035,12 @@ describe('AdminService required subscription settings', () => {
         }
         return null;
       }),
-      getDiscoveryBots: jest.fn().mockReturnValue([
-        { id: 'id613002203036_bot' },
-        { id: 'id613002203036_4_bot' },
-      ]),
-      getActionableBots: jest.fn().mockReturnValue([
-        { id: 'id613002203036_bot' },
-        { id: 'id613002203036_4_bot' },
-      ]),
+      getDiscoveryBots: jest
+        .fn()
+        .mockReturnValue([{ id: 'id613002203036_bot' }, { id: 'id613002203036_4_bot' }]),
+      getActionableBots: jest
+        .fn()
+        .mockReturnValue([{ id: 'id613002203036_bot' }, { id: 'id613002203036_4_bot' }]),
     };
 
     const service = new AdminService(
@@ -4535,9 +4553,7 @@ describe('AdminService.applyManualSystemBan', () => {
     );
     jest
       .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockImplementation(async (...args: unknown[]) =>
-        args[0] === 'chat-2' ? 'bot-2' : 'bot-1',
-      );
+      .mockImplementation(async (...args: unknown[]) => (args[0] === 'chat-2' ? 'bot-2' : 'bot-1'));
 
     await service.applyManualSystemBan(
       'chat-1',
@@ -4664,8 +4680,10 @@ describe('AdminService.applyManualSystemBan', () => {
 
   it('queues manual ban fanout for group commands when background queue is available', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw
-      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }]);
+    prisma.$queryRaw.mockResolvedValueOnce([
+      { message_id: 'mid-source-1' },
+      { message_id: 'mid-source-2' },
+    ]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
@@ -5571,14 +5589,12 @@ describe('AdminService.listChannels', () => {
         nextPollAfterMs: number;
       };
     }) => void;
-    const discoverSpy = jest
-      .spyOn(service as any, 'discoverManagedEntities')
-      .mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            resolveRefresh = resolve as typeof resolveRefresh;
-          }) as any,
-      );
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve as typeof resolveRefresh;
+        }) as any,
+    );
 
     await expect(
       service.listChannelsWithRefreshState(
@@ -5710,8 +5726,7 @@ describe('AdminService.listChannels', () => {
     });
     prisma.channelSettings.findMany.mockResolvedValue([]);
 
-    const chatContextCache = createChatContextCacheMock({
-    });
+    const chatContextCache = createChatContextCacheMock({});
     const maxClient = {
       getChatAdminIds: jest
         .fn()
@@ -5799,13 +5814,7 @@ describe('AdminService.listChannels', () => {
     );
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     prisma.chat.upsert.mockImplementation(
-      async ({
-        where,
-        create,
-      }: {
-        where: { id: string };
-        create: { title: string };
-      }) => ({
+      async ({ where, create }: { where: { id: string }; create: { title: string } }) => ({
         id: where.id,
         title: create.title,
         createdAt: new Date('2026-03-03T10:00:00.000Z'),
@@ -6921,14 +6930,12 @@ describe('AdminService.listChats', () => {
         nextPollAfterMs: number;
       };
     }) => void;
-    const discoverSpy = jest
-      .spyOn(service as any, 'discoverManagedEntities')
-      .mockImplementation(
-        () =>
-          new Promise((resolve) => {
-            resolveRefresh = resolve as typeof resolveRefresh;
-          }) as any,
-      );
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve as typeof resolveRefresh;
+        }) as any,
+    );
 
     const result = await service.listChatsWithRefreshState(
       {
@@ -7008,9 +7015,7 @@ describe('AdminService.listChats', () => {
         add: jest.fn().mockResolvedValue(undefined),
       };
       const chatContextCache = createChatContextCacheMock({
-        getManagedEntitiesLastSyncedAt: jest
-          .fn()
-          .mockResolvedValue('2026-04-01T18:00:00.000Z'),
+        getManagedEntitiesLastSyncedAt: jest.fn().mockResolvedValue('2026-04-01T18:00:00.000Z'),
       });
       const service = new AdminService(
         prisma as never,
@@ -7096,9 +7101,7 @@ describe('AdminService.listChats', () => {
         add: jest.fn().mockResolvedValue(undefined),
       };
       const chatContextCache = createChatContextCacheMock({
-        getManagedEntitiesLastSyncedAt: jest
-          .fn()
-          .mockResolvedValue('2026-04-01T18:00:00.000Z'),
+        getManagedEntitiesLastSyncedAt: jest.fn().mockResolvedValue('2026-04-01T18:00:00.000Z'),
       });
       const service = new AdminService(
         prisma as never,
@@ -7194,9 +7197,7 @@ describe('AdminService.listChats', () => {
         add: jest.fn().mockResolvedValue(undefined),
       };
       const chatContextCache = createChatContextCacheMock({
-        getManagedEntitiesLastSyncedAt: jest
-          .fn()
-          .mockResolvedValue('2026-04-01T18:04:45.000Z'),
+        getManagedEntitiesLastSyncedAt: jest.fn().mockResolvedValue('2026-04-01T18:04:45.000Z'),
       });
       const service = new AdminService(
         prisma as never,
@@ -7545,7 +7546,7 @@ describe('AdminService.listChats', () => {
     expect(managedEntitiesRefreshQueue.getJob).not.toHaveBeenCalled();
   });
 
-  it('processes only one managed refresh chunk per background job', async () => {
+  it('returns a continuation delay when a managed refresh background job needs more chunks', async () => {
     const service = new AdminService(
       createPrismaMock() as never,
       {
@@ -7576,7 +7577,9 @@ describe('AdminService.listChats', () => {
         bypassRemoteCache: false,
         resetRefreshCursor: false,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual({
+      continueAfterMs: 1500,
+    });
 
     expect(discoverSpy).toHaveBeenCalledTimes(1);
     expect(discoverSpy).toHaveBeenCalledWith(
@@ -7596,6 +7599,42 @@ describe('AdminService.listChats', () => {
       }),
     );
     expect(repairSpy).not.toHaveBeenCalled();
+  });
+
+  it('repairs the allowlist when a managed refresh background job reaches completion', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
+      items: [],
+      refresh: {
+        complete: true,
+        cursor: -1,
+        backoffActive: false,
+        nextPollAfterMs: 0,
+      },
+    });
+    const repairSpy = jest
+      .spyOn(service as any, 'repairManagedEntitiesAllowlistAfterFullRefresh')
+      .mockResolvedValue(undefined);
+
+    await expect(
+      service.processManagedEntitiesRefreshJob({
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: false,
+      }),
+    ).resolves.toBeNull();
+
+    expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat');
   });
 
   it('uses background traffic for local full-scan admin checks', async () => {
@@ -7619,12 +7658,10 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-    const accessSpy = jest
-      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
-      .mockResolvedValue({
-        status: 'granted',
-        source: 'remote',
-      });
+    const accessSpy = jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'granted',
+      source: 'remote',
+    });
     jest.spyOn(service as any, 'upsertUserChatAccess').mockResolvedValue({
       id: 'chat-local-1',
       title: 'Локальный чат',
@@ -7694,20 +7731,16 @@ describe('AdminService.listChats', () => {
   it('reports refresh progress from the cached discovery snapshot and last sync timestamp', async () => {
     const chatContextCache = createChatContextCacheMock({
       getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(20),
-      getManagedEntitiesDiscoverySnapshot: jest
-        .fn()
-        .mockResolvedValue(
-          Array.from({ length: 50 }, (_, index) => ({
-            chatId: `chat-${index + 1}`,
-            title: `Чат ${index + 1}`,
-            lastEventTime: 100 - index,
-            entityType: 'chat',
-            link: null,
-          })),
-        ),
-      getManagedEntitiesLastSyncedAt: jest
-        .fn()
-        .mockResolvedValue('2026-04-01T16:00:00.000Z'),
+      getManagedEntitiesDiscoverySnapshot: jest.fn().mockResolvedValue(
+        Array.from({ length: 50 }, (_, index) => ({
+          chatId: `chat-${index + 1}`,
+          title: `Чат ${index + 1}`,
+          lastEventTime: 100 - index,
+          entityType: 'chat',
+          link: null,
+        })),
+      ),
+      getManagedEntitiesLastSyncedAt: jest.fn().mockResolvedValue('2026-04-01T16:00:00.000Z'),
     });
     const service = new AdminService(
       createPrismaMock() as never,
@@ -7990,7 +8023,9 @@ describe('AdminService.listChats', () => {
       resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
-      buildEntryBotStartUrlSync: jest.fn().mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildEntryBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
@@ -8117,11 +8152,13 @@ describe('AdminService.listChats', () => {
       }),
     };
     const chatContextCache = createChatContextCacheMock({
-      getManagedEntityBotProfile: jest.fn().mockImplementation(async (botId: string) =>
-        botId === 'id613002203036_bot'
-          ? { avatarUrl: 'https://cdn.max.ru/u/613002203036/avatar.jpg' }
-          : null,
-      ),
+      getManagedEntityBotProfile: jest
+        .fn()
+        .mockImplementation(async (botId: string) =>
+          botId === 'id613002203036_bot'
+            ? { avatarUrl: 'https://cdn.max.ru/u/613002203036/avatar.jpg' }
+            : null,
+        ),
     });
     const maxBotRegistry = {
       getAllBots: jest.fn().mockReturnValue([
@@ -8190,14 +8227,12 @@ describe('AdminService.listChats', () => {
         permissionsSummary: null,
       },
     ]);
-    expect(maxClient.getOwnProfile).toHaveBeenCalledWith(
-      {
-        botId: 'id613002203036_4_bot',
-        trafficClass: 'interactive',
-        timeoutMs: 2500,
-        sourceTag: 'settings_bot_profile',
-      },
-    );
+    expect(maxClient.getOwnProfile).toHaveBeenCalledWith({
+      botId: 'id613002203036_4_bot',
+      trafficClass: 'interactive',
+      timeoutMs: 2500,
+      sourceTag: 'settings_bot_profile',
+    });
     expect(chatContextCache.setManagedEntityBotProfile).toHaveBeenCalledWith(
       'id613002203036_4_bot',
       {
@@ -8230,26 +8265,24 @@ describe('AdminService settings screen endpoints', () => {
 
     const getSettingsSpy = jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
     const getRulesSpy = jest.spyOn(service, 'getRules').mockResolvedValue(rules);
-    const getChatHeaderSpy = jest
-      .spyOn(service, 'getChatHeader')
-      .mockResolvedValue(
-        createManagedEntityHeaderFixture({
-          id: 'chat-1',
-          title: 'Команда MAX',
-          entityType: 'chat',
-          participantsCount: 128,
-        }),
-      );
+    const getChatHeaderSpy = jest.spyOn(service, 'getChatHeader').mockResolvedValue(
+      createManagedEntityHeaderFixture({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'chat',
+        participantsCount: 128,
+      }),
+    );
     const getDomainAllowlistDetailsSpy = jest
       .spyOn(service, 'getDomainAllowlistDetails')
       .mockResolvedValue([
-      {
-        domain: 'https://example.com',
-        normalizedValue: 'https://example.com',
-        matchType: 'EXACT',
-        removeAfterAt: null,
-      },
-    ]);
+        {
+          domain: 'https://example.com',
+          normalizedValue: 'https://example.com',
+          matchType: 'EXACT',
+          removeAfterAt: null,
+        },
+      ]);
     const listManagedBroadcastsSpy = jest
       .spyOn(service, 'listManagedBroadcasts')
       .mockResolvedValue([]);

@@ -207,6 +207,10 @@ type ManagedEntitiesRefreshPresentation = {
   lastSyncedAt: string | null;
 };
 
+type ManagedEntitiesRefreshJobOutcome = {
+  continueAfterMs: number;
+} | null;
+
 type ManagedEntitiesManualRefreshBlockReason = 'in_progress' | 'recent_sync' | 'backoff';
 
 type ManagedEntitiesListOptions = {
@@ -769,6 +773,7 @@ export class AdminService {
       profileUrl:
         this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
         this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
+      launchContext: this.buildMeLaunchContext(user),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
     };
     const contextChatId =
@@ -805,6 +810,7 @@ export class AdminService {
         displayName,
         avatarUrl,
         profileUrl,
+        launchContext: this.buildMeLaunchContext(user),
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
@@ -818,6 +824,22 @@ export class AdminService {
       );
       return fallback;
     }
+  }
+
+  private buildMeLaunchContext(user: AuthUser): Me['launchContext'] {
+    const chatId = this.readTrimmedString(user.chatId);
+    if (!chatId) {
+      return null;
+    }
+
+    return {
+      chatId,
+      chatTitle: this.readTrimmedString(user.chatTitle) ?? null,
+      chatType:
+        user.chatType === 'chat' || user.chatType === 'channel' || user.chatType === 'dialog'
+          ? user.chatType
+          : null,
+    };
   }
 
   async listChats(
@@ -967,7 +989,9 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+      throw new ServiceUnavailableException(
+        'Bot execution planner is not available on this runtime.',
+      );
     }
 
     return managedEntityBotExecutionPlanSchema.parse(
@@ -989,10 +1013,14 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+      throw new ServiceUnavailableException(
+        'Bot execution planner is not available on this runtime.',
+      );
     }
 
-    const request = updateManagedEntityPrimaryBotRequestSchema.parse(body) as UpdateManagedEntityPrimaryBotRequest;
+    const request = updateManagedEntityPrimaryBotRequestSchema.parse(
+      body,
+    ) as UpdateManagedEntityPrimaryBotRequest;
     const plan = await this.maxBotExecutionPlanner.setPrimaryBot({
       chatId,
       entityType,
@@ -1012,7 +1040,9 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+      throw new ServiceUnavailableException(
+        'Bot execution planner is not available on this runtime.',
+      );
     }
 
     const request = updateManagedEntityPartnerAssistRequestSchema.parse(
@@ -1038,7 +1068,9 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     if (!this.maxBotExecutionPlanner) {
-      throw new ServiceUnavailableException('Bot execution planner is not available on this runtime.');
+      throw new ServiceUnavailableException(
+        'Bot execution planner is not available on this runtime.',
+      );
     }
 
     const request = promoteManagedEntityStandbyRequestSchema.parse(body);
@@ -1076,6 +1108,7 @@ export class AdminService {
             fresh.items,
           );
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
+          this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'fresh');
           this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
           return {
             items,
@@ -1101,6 +1134,7 @@ export class AdminService {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
         );
+        this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'cached');
         this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
         return {
           items,
@@ -1118,9 +1152,11 @@ export class AdminService {
         bypassRemoteCache: options.bypassRemoteCache === true,
         resetRefreshCursor: options.resetRefreshCursor === true,
       });
+      const items = await this.attachManagedEntityBotAssignments(discovered.items);
+      this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'remote');
 
       return {
-        items: await this.attachManagedEntityBotAssignments(discovered.items),
+        items,
         refresh: discovered.refresh,
       };
     }
@@ -1163,7 +1199,11 @@ export class AdminService {
 
     if (!existing) {
       if (!(await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType, options))) {
-        const pending = this.runManagedEntitiesRemoteFullRefresh(user, entityType, options)
+        const pending = this.runManagedEntitiesRemoteFullRefreshUntilSettled(
+          user,
+          entityType,
+          options,
+        )
           .catch((error: unknown) => {
             this.logger.warn(
               {
@@ -1186,7 +1226,33 @@ export class AdminService {
     return refreshState;
   }
 
-  async processManagedEntitiesRefreshJob(job: AdminManagedEntitiesRefreshJob): Promise<void> {
+  private async runManagedEntitiesRemoteFullRefreshUntilSettled(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    } = {},
+  ): Promise<void> {
+    let nextOptions = options;
+
+    while (true) {
+      const outcome = await this.runManagedEntitiesRemoteFullRefresh(user, entityType, nextOptions);
+      if (!outcome) {
+        return;
+      }
+
+      nextOptions = {
+        bypassRemoteCache: false,
+        resetRefreshCursor: false,
+      };
+      await this.sleep(Math.max(0, outcome.continueAfterMs));
+    }
+  }
+
+  async processManagedEntitiesRefreshJob(
+    job: AdminManagedEntitiesRefreshJob,
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
     const user: AuthUser = {
       userId: job.userId,
       username: null,
@@ -1194,7 +1260,7 @@ export class AdminService {
       chatTitle: null,
     };
 
-    await this.runManagedEntitiesRemoteFullRefresh(user, job.entityType, {
+    return this.runManagedEntitiesRemoteFullRefresh(user, job.entityType, {
       bypassRemoteCache: job.bypassRemoteCache,
       resetRefreshCursor: job.resetRefreshCursor,
     });
@@ -1286,13 +1352,14 @@ export class AdminService {
       cursor = null;
     }
 
-    const backgroundPauseDecision = await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
-      'schedule',
-    );
+    const backgroundPauseDecision =
+      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('schedule');
     if (backgroundPauseDecision) {
-      const pausedCursor =
-        cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
-      const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
+      const pausedCursor = cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
+      const presentation = await this.loadManagedEntitiesRefreshPresentationData(
+        userId,
+        entityType,
+      );
       return this.createManagedEntitiesRefreshState(
         pausedCursor,
         true,
@@ -1323,7 +1390,10 @@ export class AdminService {
         freshness.ageMs >= 0 &&
         freshness.ageMs < MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS
       ) {
-        const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
+        const presentation = await this.loadManagedEntitiesRefreshPresentationData(
+          userId,
+          entityType,
+        );
         return this.createManagedEntitiesRefreshState(
           MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
           false,
@@ -1342,7 +1412,10 @@ export class AdminService {
     ) {
       const freshness = await this.readManagedEntitiesLastSyncFreshness(userId, entityType);
       if (freshness.fresh) {
-        const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
+        const presentation = await this.loadManagedEntitiesRefreshPresentationData(
+          userId,
+          entityType,
+        );
         return this.createManagedEntitiesRefreshState(
           MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
           false,
@@ -1355,7 +1428,11 @@ export class AdminService {
       }
     }
 
-    if (options.resetRefreshCursor === true || cursor === null || cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE) {
+    if (
+      options.resetRefreshCursor === true ||
+      cursor === null ||
+      cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+    ) {
       cursor = 0;
       await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
         userId,
@@ -1375,9 +1452,13 @@ export class AdminService {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
     } = {},
-  ): Promise<void> {
-    if (await this.isManagedEntitiesBackgroundRefreshPaused('job')) {
-      return;
+  ): Promise<ManagedEntitiesRefreshJobOutcome> {
+    const backgroundPauseDecision =
+      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('job');
+    if (backgroundPauseDecision) {
+      return {
+        continueAfterMs: backgroundPauseDecision.retryAfterMs,
+      };
     }
 
     const result = await this.discoverManagedEntities(user, entityType, {
@@ -1389,12 +1470,20 @@ export class AdminService {
     });
     const refresh = result.refresh;
     if (!refresh || refresh.backoffActive) {
-      return;
+      return null;
     }
 
     if (refresh.complete) {
       await this.repairManagedEntitiesAllowlistAfterFullRefresh(user.userId, entityType);
+      return null;
     }
+
+    return {
+      continueAfterMs: Math.max(
+        0,
+        refresh.nextPollAfterMs ?? MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS,
+      ),
+    };
   }
 
   private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
@@ -1415,20 +1504,18 @@ export class AdminService {
     return merged;
   }
 
-  private createManagedEntitySummary(
-    params: {
-      id: string;
-      title: string;
-      createdAt: string;
-      entityType: ManagedEntityType;
-      link?: string | null;
-      avatarUrl?: string | null;
-      channelOverview?: ChannelOverview | null;
-      primaryBotId?: string | null;
-      assignedBots?: ManagedEntityAssignedBot[];
-      sharedMode?: ChatSummary['sharedMode'];
-    },
-  ): ChatSummary {
+  private createManagedEntitySummary(params: {
+    id: string;
+    title: string;
+    createdAt: string;
+    entityType: ManagedEntityType;
+    link?: string | null;
+    avatarUrl?: string | null;
+    channelOverview?: ChannelOverview | null;
+    primaryBotId?: string | null;
+    assignedBots?: ManagedEntityAssignedBot[];
+    sharedMode?: ChatSummary['sharedMode'];
+  }): ChatSummary {
     const assignedBots = [...(params.assignedBots ?? [])];
     return {
       id: params.id,
@@ -1444,19 +1531,17 @@ export class AdminService {
     };
   }
 
-  private createManagedEntityHeader(
-    params: {
-      id: string;
-      title: string;
-      entityType: ManagedEntityType;
-      link?: string | null;
-      participantsCount?: number | null;
-      avatarUrl?: string | null;
-      primaryBotId?: string | null;
-      assignedBots?: ManagedEntityAssignedBot[];
-      sharedMode?: ManagedEntityHeader['sharedMode'];
-    },
-  ): ManagedEntityHeader {
+  private createManagedEntityHeader(params: {
+    id: string;
+    title: string;
+    entityType: ManagedEntityType;
+    link?: string | null;
+    participantsCount?: number | null;
+    avatarUrl?: string | null;
+    primaryBotId?: string | null;
+    assignedBots?: ManagedEntityAssignedBot[];
+    sharedMode?: ManagedEntityHeader['sharedMode'];
+  }): ManagedEntityHeader {
     const assignedBots = [...(params.assignedBots ?? [])];
     return {
       id: params.id,
@@ -1471,9 +1556,7 @@ export class AdminService {
     };
   }
 
-  private async attachManagedEntityBotAssignments(
-    chats: ChatSummary[],
-  ): Promise<ChatSummary[]> {
+  private async attachManagedEntityBotAssignments(chats: ChatSummary[]): Promise<ChatSummary[]> {
     if (chats.length === 0) {
       return chats;
     }
@@ -1576,9 +1659,7 @@ export class AdminService {
           ] as const;
         })
         .filter(
-          (
-            entry,
-          ): entry is readonly [string, ManagedEntityBotProfileSnapshot] => entry !== null,
+          (entry): entry is readonly [string, ManagedEntityBotProfileSnapshot] => entry !== null,
         ),
     );
     const seenBotIds = new Set<string>();
@@ -1643,9 +1724,7 @@ export class AdminService {
     };
   }
 
-  private normalizeManagedEntityBotCapabilities(
-    value: unknown,
-  ): ManagedEntityBotCapability[] {
+  private normalizeManagedEntityBotCapabilities(value: unknown): ManagedEntityBotCapability[] {
     if (!Array.isArray(value)) {
       return [];
     }
@@ -1819,7 +1898,11 @@ export class AdminService {
 
         const existing = mergedByChatId.get(chat.chatId);
         const mergedBotIds = Array.from(
-          new Set([...(existing?.botIds ?? []), ...(chat.botIds ?? []), ...(chat.botId ? [chat.botId] : [])]),
+          new Set([
+            ...(existing?.botIds ?? []),
+            ...(chat.botIds ?? []),
+            ...(chat.botId ? [chat.botId] : []),
+          ]),
         );
 
         if (!existing) {
@@ -2571,10 +2654,11 @@ export class AdminService {
                   totalCandidates: candidateChats.length,
                   lastSyncedAt:
                     completedAt ??
-                    ((await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                    (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
                       user.userId,
                       entityType,
-                    )) ?? null),
+                    )) ??
+                    null,
                 })
               : this.createManagedEntitiesRefreshState(
                   MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
@@ -2832,7 +2916,7 @@ export class AdminService {
           ? supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
           : options.revalidateCachedChats === true
             ? supportedCandidateChats
-          : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
+            : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
@@ -3000,10 +3084,11 @@ export class AdminService {
                   totalCandidates: supportedCandidateChats.length,
                   lastSyncedAt:
                     completedAt ??
-                    ((await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
+                    (await this.chatContextCache.getManagedEntitiesLastSyncedAt?.(
                       user.userId,
                       entityType,
-                    )) ?? null),
+                    )) ??
+                    null,
                 })
               : await this.readManagedEntitiesRefreshState(user.userId, entityType)
             : null,
@@ -3880,11 +3965,16 @@ export class AdminService {
     let published: { messageId: string; url: string | null };
     const buttonRow = this.buildChatRulesButtonRow(rules);
     try {
-      published = await this.publishMessageWithRetry(chatId, messageText, {
-        textFormat: 'markdown',
-        ...(imagePayload ? { imagePayload } : {}),
-        ...(buttonRow ? { buttons: [buttonRow] } : {}),
-      }, resolvedBotId);
+      published = await this.publishMessageWithRetry(
+        chatId,
+        messageText,
+        {
+          textFormat: 'markdown',
+          ...(imagePayload ? { imagePayload } : {}),
+          ...(buttonRow ? { buttons: [buttonRow] } : {}),
+        },
+        resolvedBotId,
+      );
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
@@ -9045,9 +9135,7 @@ export class AdminService {
     }
 
     if (settings.commercialAdsFilterEnabled) {
-      items.push(
-        'Коммерческую рекламу публикуйте только по согласованию с администраторами.',
-      );
+      items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
     }
 
     if (settings.thematicCodewordEnabled) {
@@ -9827,59 +9915,51 @@ export class AdminService {
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const baseQueriesStartedAtMs = Date.now();
-    const [
-      chat,
-      membershipRows,
-      chatHeader,
-      moderationSummaryRows,
-      affectedUsers,
-      violationRows,
-    ] = await Promise.all([
-      this.prisma.chat.findUnique({
-        where: { id: chatId },
-        select: { id: true, title: true },
-      }),
-      this.prisma.$queryRaw<
-        Array<{ joined_users: unknown; left_users: unknown }>
-      >`
+    const [chat, membershipRows, chatHeader, moderationSummaryRows, affectedUsers, violationRows] =
+      await Promise.all([
+        this.prisma.chat.findUnique({
+          where: { id: chatId },
+          select: { id: true, title: true },
+        }),
+        this.prisma.$queryRaw<Array<{ joined_users: unknown; left_users: unknown }>>`
         WITH membership_events AS (${membershipEventsSql})
         SELECT
           COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
           COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
         FROM membership_events
       `,
-      headerPromise,
-      this.prisma.moderationEvent.groupBy({
-        by: ['action', 'ruleCode'],
-        where: {
-          chatId,
-          createdAt: { gte: from, lte: now },
-          OR: [
-            { action: 'WARN' },
-            { action: 'DELETE_MESSAGE' },
-            { action: 'MUTE' },
-            { action: { in: [SanctionAction.BAN, SanctionAction.KICK] } },
-            {
-              action: SanctionAction.NONE,
-              ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] },
-            },
-          ],
-        },
-        _count: { _all: true },
-      }),
-      this.prisma.moderationEvent.findMany({
-        where: violationsWhere,
-        distinct: ['userId'],
-        select: { userId: true },
-      }),
-      includeModerationPreview
-        ? this.prisma.moderationEvent.findMany({
-            where: violationsWhere,
-            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-            take: LOGS_DASHBOARD_VIOLATIONS_LIMIT + 1,
-          })
-        : Promise.resolve([]),
-    ]);
+        headerPromise,
+        this.prisma.moderationEvent.groupBy({
+          by: ['action', 'ruleCode'],
+          where: {
+            chatId,
+            createdAt: { gte: from, lte: now },
+            OR: [
+              { action: 'WARN' },
+              { action: 'DELETE_MESSAGE' },
+              { action: 'MUTE' },
+              { action: { in: [SanctionAction.BAN, SanctionAction.KICK] } },
+              {
+                action: SanctionAction.NONE,
+                ruleCode: { in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'] },
+              },
+            ],
+          },
+          _count: { _all: true },
+        }),
+        this.prisma.moderationEvent.findMany({
+          where: violationsWhere,
+          distinct: ['userId'],
+          select: { userId: true },
+        }),
+        includeModerationPreview
+          ? this.prisma.moderationEvent.findMany({
+              where: violationsWhere,
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              take: LOGS_DASHBOARD_VIOLATIONS_LIMIT + 1,
+            })
+          : Promise.resolve([]),
+      ]);
     const baseQueriesFinishedAtMs = Date.now();
     const moderationSummary = this.summarizeLogsDashboardModerationCounts(moderationSummaryRows);
     const moderationPreviewRows = violationRows.slice(0, LOGS_DASHBOARD_VIOLATIONS_LIMIT);
@@ -10007,7 +10087,14 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getCachedMembershipActivityFeedPage(chatId, user.userId, from, now, parsed.data, 'chat');
+    return this.getCachedMembershipActivityFeedPage(
+      chatId,
+      user.userId,
+      from,
+      now,
+      parsed.data,
+      'chat',
+    );
   }
 
   async getChatModerationFeed(
@@ -10297,7 +10384,8 @@ export class AdminService {
             resolvedBotId,
           );
           throw new BadRequestException(
-            resolvedMessage || 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
+            resolvedMessage ||
+              'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.',
           );
         }
       }
@@ -11262,14 +11350,10 @@ export class AdminService {
       return;
     }
 
-    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
-      chatId,
-      targetUserId,
-      {
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-        ...(botId ? { botId } : {}),
-      } as never,
-    );
+    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId, {
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+      ...(botId ? { botId } : {}),
+    } as never);
     if (!targetAccess) {
       throw new BadRequestException('Пользователь уже не состоит в этом чате.');
     }
@@ -12454,7 +12538,7 @@ export class AdminService {
   ): Promise<MembershipEventRow[]> {
     const order = options.order === 'asc' ? 'asc' : 'desc';
     const orderDirectionSql = Prisma.raw(order === 'asc' ? 'ASC' : 'DESC');
-    const cursor = order === 'desc' ? options.cursor ?? null : null;
+    const cursor = order === 'desc' ? (options.cursor ?? null) : null;
     const cursorClause = cursor
       ? Prisma.sql`
           AND (
@@ -13759,7 +13843,12 @@ export class AdminService {
 
     return updateChannelDialogMessageResponseSchema.parse({
       ok: true,
-      message: this.mapChannelDialogAuditLog(updated, params.dialogType, params.userId, adminUserIds),
+      message: this.mapChannelDialogAuditLog(
+        updated,
+        params.dialogType,
+        params.userId,
+        adminUserIds,
+      ),
     });
   }
 
@@ -14601,9 +14690,9 @@ export class AdminService {
     suggestion: ChannelSuggestionDeliveryInput,
   ): Promise<{
     delivered: boolean;
-      deliveredToUserId: string | null;
-      deliveredToUserIds: string[];
-      deliveries: ChannelSuggestionAdminDelivery[];
+    deliveredToUserId: string | null;
+    deliveredToUserIds: string[];
+    deliveries: ChannelSuggestionAdminDelivery[];
   }> {
     const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
@@ -15815,7 +15904,8 @@ export class AdminService {
   }
 
   private resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
-    const entryBotId = this.maxBotLinkService?.getEntryBotId() ?? this.maxBotRegistry?.getEntryBot().id;
+    const entryBotId =
+      this.maxBotLinkService?.getEntryBotId() ?? this.maxBotRegistry?.getEntryBot().id;
     if (entryBotId) {
       return entryBotId;
     }
@@ -15848,9 +15938,10 @@ export class AdminService {
     return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
   }
 
-  private buildResolvedBotAssignmentData(
-    resolvedBotId?: string | null,
-  ): { botId?: string; primaryBotId?: string } {
+  private buildResolvedBotAssignmentData(resolvedBotId?: string | null): {
+    botId?: string;
+    primaryBotId?: string;
+  } {
     const normalizedBotId =
       this.maxBotRegistry?.getBotById(resolvedBotId)?.id ??
       (typeof resolvedBotId === 'string' && resolvedBotId.trim().length > 0
@@ -15883,7 +15974,8 @@ export class AdminService {
     const persistedBotId =
       this.maxBotRegistry?.getBotById(persisted?.primaryBotId ?? persisted?.botId ?? null)?.id ??
       this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId);
-    let fallbackBotId = persistedBotId ?? ((await this.resolveBotAssignment(normalizedChatId)) ?? undefined);
+    let fallbackBotId =
+      persistedBotId ?? (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
     const seenBotIds = new Set<string>();
 
     if (persistedBotId) {
@@ -15995,11 +16087,7 @@ export class AdminService {
     chatId: string,
     settings: ChatSettings,
   ): Promise<void> {
-    await this.refreshManagedEntityBotAccessSnapshots(
-      chatId,
-      'chat',
-      'chat settings update',
-    );
+    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'chat settings update');
 
     if (!settings.requiredSubscriptionEnabled) {
       return;
@@ -16014,14 +16102,8 @@ export class AdminService {
     }
   }
 
-  private async refreshExecutionReadinessAfterChannelSettingsUpdate(
-    chatId: string,
-  ): Promise<void> {
-    await this.refreshManagedEntityBotAccessSnapshots(
-      chatId,
-      'channel',
-      'channel settings update',
-    );
+  private async refreshExecutionReadinessAfterChannelSettingsUpdate(chatId: string): Promise<void> {
+    await this.refreshManagedEntityBotAccessSnapshots(chatId, 'channel', 'channel settings update');
   }
 
   private async refreshManagedEntityBotAccessSnapshots(
@@ -16205,28 +16287,28 @@ export class AdminService {
     try {
       const requestOptions =
         options.trafficClass === undefined
-          ? (botId
-              ? ({
-                  botId,
-                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-                } as const)
-              : ({
-                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-                } as const))
-          : (botId
-              ? ({
-                  trafficClass: options.trafficClass,
-                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-                  botId,
-                } as const)
-              : ({
-                  trafficClass: options.trafficClass,
-                  actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                  ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-                } as const));
+          ? botId
+            ? ({
+                botId,
+                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+              } as const)
+            : ({
+                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+              } as const)
+          : botId
+            ? ({
+                trafficClass: options.trafficClass,
+                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+                botId,
+              } as const)
+            : ({
+                trafficClass: options.trafficClass,
+                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+              } as const);
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
       const botContactId = this.resolveBotContactId(botId);
@@ -16719,7 +16801,8 @@ export class AdminService {
       presentation.lastSyncedAt ?? null,
     );
     const totalCandidates =
-      typeof presentation.totalCandidates === 'number' && Number.isFinite(presentation.totalCandidates)
+      typeof presentation.totalCandidates === 'number' &&
+      Number.isFinite(presentation.totalCandidates)
         ? Math.max(0, Math.trunc(presentation.totalCandidates))
         : null;
     const processedCandidates =
@@ -16739,7 +16822,10 @@ export class AdminService {
             ? 100
             : processedCandidates === null
               ? null
-              : Math.max(0, Math.min(100, Math.round((processedCandidates / totalCandidates) * 100)));
+              : Math.max(
+                  0,
+                  Math.min(100, Math.round((processedCandidates / totalCandidates) * 100)),
+                );
 
     return {
       complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
@@ -16876,7 +16962,7 @@ export class AdminService {
   private async readManagedEntitiesRefreshState(
     userId: string,
     entityType: ManagedEntityTypeFilter,
-  options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
+    options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(userId, entityType);
     let cursor = options.cursorOverride;
@@ -16903,7 +16989,12 @@ export class AdminService {
       : undefined;
     const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
 
-    return this.createManagedEntitiesRefreshState(cursor, backoffActive, nextPollAfterMs, presentation);
+    return this.createManagedEntitiesRefreshState(
+      cursor,
+      backoffActive,
+      nextPollAfterMs,
+      presentation,
+    );
   }
 
   private async isManagedEntitiesBackgroundRefreshPaused(
@@ -17062,9 +17153,7 @@ export class AdminService {
     });
 
     const chats = rows.map(
-      (row: {
-        chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
-      }) =>
+      (row: { chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType } }) =>
         this.createManagedEntitySummary({
           id: row.chat.id,
           title: row.chat.title,
@@ -17581,6 +17670,40 @@ export class AdminService {
     });
 
     return chat;
+  }
+
+  private logMissingLaunchContextAfterLightweightPass(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    items: readonly ChatSummary[],
+    source: 'cached' | 'fresh' | 'remote',
+  ): void {
+    const launchChatId = this.readTrimmedString(user.chatId);
+    const launchEntityType = this.resolveCurrentContextManagedEntityType(user);
+    if (!launchChatId || !launchEntityType) {
+      return;
+    }
+    if (entityType !== 'all' && launchEntityType !== entityType) {
+      return;
+    }
+    if (launchEntityType === 'chat' && this.isPrivateDirectChat(launchChatId)) {
+      return;
+    }
+    if (items.some((item) => item.id === launchChatId)) {
+      return;
+    }
+
+    this.logger.log(
+      {
+        userId: user.userId,
+        launchChatId,
+        launchChatTitle: this.readTrimmedString(user.chatTitle) ?? null,
+        launchChatType: user.chatType ?? null,
+        entityType,
+        source,
+      },
+      'Launch context managed entity not found after lightweight pass',
+    );
   }
 
   private resolveCurrentContextManagedEntityType(user: AuthUser): ManagedEntityType | null {
