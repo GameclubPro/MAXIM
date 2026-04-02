@@ -20,7 +20,7 @@ export type SystemModeSnapshot = {
 
 const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
-const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 5_000;
+const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 30_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
