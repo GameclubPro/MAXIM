@@ -401,7 +401,9 @@ const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS = 750;
 const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
+const MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS = 1_500;
 const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 750;
 const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_000;
@@ -700,6 +702,10 @@ export class AdminService {
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesResponseWarmupRuns = new Map<
+    string,
+    Promise<ManagedEntitiesListResult>
+  >();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
@@ -1168,15 +1174,38 @@ export class AdminService {
         };
       }
 
-      const discovered = await this.discoverManagedEntities(user, entityType, {
-        respectCooldown: true,
-        fullScan: false,
-        includeRefreshState: options.includeRefreshState === true,
+      const warmupPromise = this.startManagedEntitiesResponseWarmup(user, entityType, {
         bypassRemoteCache: options.bypassRemoteCache === true,
         resetRefreshCursor: options.resetRefreshCursor === true,
+        includeRefreshState: options.includeRefreshState === true,
       });
-      const items = await this.attachManagedEntityBotAssignments(discovered.items);
+      const discovered = await this.awaitManagedEntitiesResponseValueWithinBudget(
+        warmupPromise,
+        {
+          fallback: {
+            items: [],
+            refresh: null,
+          },
+          budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
+          timeoutMessage:
+            'Detached managed entities discovery warmup from default response after response budget exceeded',
+          failureMessage: 'Managed entities discovery warmup failed during default response',
+          logData: {
+            entityType,
+            source: 'default',
+            userId: user.userId,
+          },
+        },
+      );
+      const discoveredItems = this.mergeManagedEntityGroups(initial, discovered.items);
+      const items =
+        discoveredItems.length > 0
+          ? await this.attachManagedEntityBotAssignments(
+              await this.hydrateManagedEntities(discoveredItems),
+            )
+          : [];
       this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'remote');
+      this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
 
       return {
         items,
@@ -1184,16 +1213,54 @@ export class AdminService {
       };
     }
 
+    const eagerWarmupPromise =
+      options.bypassRemoteCache === true || options.resetRefreshCursor === true
+        ? this.startManagedEntitiesResponseWarmup(user, entityType, {
+            bypassRemoteCache: options.bypassRemoteCache === true,
+            resetRefreshCursor: options.resetRefreshCursor === true,
+            includeRefreshState: false,
+          })
+        : null;
     const refresh = await this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType, {
       bypassRemoteCache: options.bypassRemoteCache === true,
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
     const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+    const responseWarmupPromise =
+      eagerWarmupPromise ??
+      (cached.length === 0
+        ? this.startManagedEntitiesResponseWarmup(user, entityType, {
+            bypassRemoteCache: options.bypassRemoteCache === true,
+            resetRefreshCursor: options.resetRefreshCursor === true,
+            includeRefreshState: false,
+          })
+        : null);
+    const responseWarmup = responseWarmupPromise
+      ? await this.awaitManagedEntitiesResponseValueWithinBudget(responseWarmupPromise, {
+          fallback: {
+            items: [],
+            refresh: null,
+          },
+          budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
+          timeoutMessage:
+            'Detached managed entities discovery warmup from refresh response after response budget exceeded',
+          failureMessage: 'Managed entities discovery warmup failed during refresh response',
+          logData: {
+            entityType,
+            source: 'refresh',
+            userId: user.userId,
+          },
+        })
+      : null;
     const shouldMergeLightweightBootstrap =
       options.bypassRemoteCache === true || options.resetRefreshCursor === true;
+    const responseBaseItems =
+      responseWarmup && responseWarmup.items.length > 0
+        ? this.mergeManagedEntityGroups(responseWarmup.items, cached)
+        : cached;
     const mergedCached = shouldMergeLightweightBootstrap
-      ? await mergeWithLightweightBootstrap(cached)
-      : cached;
+      ? await mergeWithLightweightBootstrap(responseBaseItems)
+      : responseBaseItems;
     const items =
       mergedCached.length > 0
         ? await this.attachManagedEntityBotAssignments(
@@ -1386,7 +1453,7 @@ export class AdminService {
     }
 
     const backgroundPauseDecision =
-      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('schedule');
+      this.peekManagedEntitiesBackgroundRefreshPauseDecision('schedule');
     if (backgroundPauseDecision) {
       const pausedCursor = cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
       const presentation = await this.loadManagedEntitiesRefreshPresentationData(
@@ -1564,12 +1631,29 @@ export class AdminService {
     const currentChatPromise = this.bootstrapCurrentChat(user, entityType);
 
     const [currentChat, recentBotAdded] = await Promise.all([
-      currentChatPromise,
-      this.awaitManagedEntitiesLightweightRecentBootstrapWithinResponseBudget(
-        user.userId,
-        entityType,
-        recentBotAddedPromise,
-      ),
+      this.awaitManagedEntitiesResponseValueWithinBudget(currentChatPromise, {
+        fallback: null,
+        budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS,
+        timeoutMessage:
+          'Detached current chat bootstrap from lightweight managed entities response after response budget exceeded',
+        failureMessage: 'Current chat bootstrap failed during lightweight managed entities response',
+        logData: {
+          entityType,
+          userId: user.userId,
+        },
+      }),
+      this.awaitManagedEntitiesResponseValueWithinBudget(recentBotAddedPromise, {
+        fallback: [],
+        budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
+        timeoutMessage:
+          'Detached recent bot_added bootstrap from lightweight managed entities response after response budget exceeded',
+        failureMessage:
+          'Recent bot_added bootstrap failed during lightweight managed entities response',
+        logData: {
+          entityType,
+          userId: user.userId,
+        },
+      }),
     ]);
 
     return {
@@ -1578,37 +1662,41 @@ export class AdminService {
     };
   }
 
-  private awaitManagedEntitiesLightweightRecentBootstrapWithinResponseBudget(
-    userId: string,
-    entityType: ManagedEntityTypeFilter,
-    recentBotAddedPromise: Promise<ChatSummary[]>,
-  ): Promise<ChatSummary[]> {
-    return new Promise<ChatSummary[]>((resolve) => {
+  private awaitManagedEntitiesResponseValueWithinBudget<T>(
+    promise: Promise<T>,
+    options: {
+      fallback: T;
+      budgetMs: number;
+      timeoutMessage: string;
+      failureMessage: string;
+      logData: Record<string, unknown>;
+    },
+  ): Promise<T> {
+    return new Promise<T>((resolve) => {
       let settled = false;
-      const finish = (items: ChatSummary[]) => {
+      const finish = (value: T) => {
         if (settled) {
           return;
         }
 
         settled = true;
         clearTimeout(timer);
-        resolve(items);
+        resolve(value);
       };
       const timer = setTimeout(() => {
         this.logger.warn(
           {
-            entityType,
-            userId,
-            budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
+            ...options.logData,
+            budgetMs: options.budgetMs,
           },
-          'Detached recent bot_added bootstrap from lightweight managed entities response after response budget exceeded',
+          options.timeoutMessage,
         );
-        finish([]);
-      }, MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS);
+        finish(options.fallback);
+      }, options.budgetMs);
 
-      void recentBotAddedPromise.then(
-        (items) => {
-          finish(items);
+      void promise.then(
+        (value) => {
+          finish(value);
         },
         (error: unknown) => {
           if (settled) {
@@ -1617,16 +1705,53 @@ export class AdminService {
 
           this.logger.warn(
             {
-              entityType,
-              userId,
+              ...options.logData,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Recent bot_added bootstrap failed during lightweight managed entities response',
+            options.failureMessage,
           );
-          finish([]);
+          finish(options.fallback);
         },
       );
     });
+  }
+
+  private buildManagedEntitiesResponseWarmupKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:response-warmup`;
+  }
+
+  private startManagedEntitiesResponseWarmup(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+      includeRefreshState?: boolean;
+    } = {},
+  ): Promise<ManagedEntitiesListResult> {
+    const key = this.buildManagedEntitiesResponseWarmupKey(user.userId, entityType);
+    const existing = this.managedEntitiesResponseWarmupRuns.get(key);
+    if (existing) {
+      return existing;
+    }
+
+    const pending = this.discoverManagedEntities(user, entityType, {
+      respectCooldown: false,
+      fullScan: false,
+      includeRefreshState: options.includeRefreshState === true,
+      bypassRemoteCache: options.bypassRemoteCache === true,
+      resetRefreshCursor: options.resetRefreshCursor === true,
+    }).finally(() => {
+      if (this.managedEntitiesResponseWarmupRuns.get(key) === pending) {
+        this.managedEntitiesResponseWarmupRuns.delete(key);
+      }
+    });
+
+    this.managedEntitiesResponseWarmupRuns.set(key, pending);
+    return pending;
   }
 
   private createManagedEntitySummary(params: {
@@ -17220,6 +17345,38 @@ export class AdminService {
     return (await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(reason)) !== null;
   }
 
+  private peekManagedEntitiesBackgroundRefreshPauseDecision(
+    reason: 'schedule' | 'job',
+  ): { reason: string; retryAfterMs: number } | null {
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = this.backgroundRuntimeGovernorService.peekDecision({
+        component: 'admin-managed-refresh',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      });
+      if (!decision || decision.action === 'run') {
+        return null;
+      }
+
+      return this.logManagedEntitiesBackgroundPauseDecision(reason, decision);
+    }
+
+    const systemModeService = this.systemModeService as
+      | (SystemModeService & {
+          peekCachedSnapshot?: (maxAgeMs?: number) => SystemModeSnapshot | null;
+          getSnapshot?: () => SystemModeSnapshot;
+        })
+      | undefined;
+    const snapshot =
+      systemModeService?.peekCachedSnapshot?.() ??
+      systemModeService?.getSnapshot?.() ??
+      null;
+    if (!snapshot || snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
+      return null;
+    }
+
+    return this.logManagedEntitiesSystemModePauseDecision(reason, snapshot);
+  }
+
   private async resolveManagedEntitiesBackgroundRefreshPauseDecision(
     reason: 'schedule' | 'job',
   ): Promise<{ reason: string; retryAfterMs: number } | null> {
@@ -17232,27 +17389,7 @@ export class AdminService {
         return null;
       }
 
-      const now = Date.now();
-      if (
-        now - this.managedEntitiesDegradePauseLogAtMs >=
-        MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS
-      ) {
-        this.managedEntitiesDegradePauseLogAtMs = now;
-        this.logger.log(
-          {
-            reason,
-            action: decision.action,
-            details: decision.reason,
-            retryAfterMs: decision.retryAfterMs,
-          },
-          'Paused managed entities background refresh because the runtime governor detected pressure',
-        );
-      }
-
-      return {
-        reason: decision.reason,
-        retryAfterMs: decision.retryAfterMs,
-      };
+      return this.logManagedEntitiesBackgroundPauseDecision(reason, decision);
     }
 
     const snapshot = await this.resolveSystemModeSnapshot();
@@ -17260,6 +17397,44 @@ export class AdminService {
       return null;
     }
 
+    return this.logManagedEntitiesSystemModePauseDecision(reason, snapshot);
+  }
+
+  private logManagedEntitiesBackgroundPauseDecision(
+    reason: 'schedule' | 'job',
+    decision: {
+      action: 'run' | 'slow' | 'pause';
+      reason: string;
+      retryAfterMs: number;
+    },
+  ): { reason: string; retryAfterMs: number } {
+    const now = Date.now();
+    if (
+      now - this.managedEntitiesDegradePauseLogAtMs >=
+      MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS
+    ) {
+      this.managedEntitiesDegradePauseLogAtMs = now;
+      this.logger.log(
+        {
+          reason,
+          action: decision.action,
+          details: decision.reason,
+          retryAfterMs: decision.retryAfterMs,
+        },
+        'Paused managed entities background refresh because the runtime governor detected pressure',
+      );
+    }
+
+    return {
+      reason: decision.reason,
+      retryAfterMs: decision.retryAfterMs,
+    };
+  }
+
+  private logManagedEntitiesSystemModePauseDecision(
+    reason: 'schedule' | 'job',
+    snapshot: Pick<SystemModeSnapshot, 'mode' | 'source' | 'reason'>,
+  ): { reason: string; retryAfterMs: number } {
     const now = Date.now();
     if (
       now - this.managedEntitiesDegradePauseLogAtMs >=

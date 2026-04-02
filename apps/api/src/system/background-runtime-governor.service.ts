@@ -126,49 +126,7 @@ export class BackgroundRuntimeGovernorService {
     sourceTag: string;
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const snapshot = await this.getPressureSnapshot();
-    const queueLagSec = snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
-    let decision: BackgroundRuntimeGovernorDecision;
-
-    if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
-      decision = {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
-        reason: snapshot.mode.reason || 'system degrade',
-      };
-    } else if (isSystemModeRecoveryWindow(snapshot.mode)) {
-      decision = {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
-        reason: snapshot.mode.reason || 'recovery window in progress',
-      };
-    } else if (queueLagSec >= this.softQueueLagSec) {
-      decision = {
-        action: 'pause',
-        retryAfterMs: this.pauseRetryAfterMs,
-        reason: `user-facing queue lag ${queueLagSec.toFixed(1)}s`,
-      };
-    } else if (snapshot.backgroundShare >= this.backgroundShareThreshold) {
-      decision = {
-        action: 'slow',
-        retryAfterMs: this.slowRetryAfterMs,
-        reason: `background share ${(snapshot.backgroundShare * 100).toFixed(1)}%`,
-      };
-    } else if (
-      snapshot.workerSkew.totalPressure >= this.workerSkewPressure &&
-      snapshot.workerSkew.share >= this.workerSkewShare
-    ) {
-      decision = {
-        action: 'slow',
-        retryAfterMs: this.slowRetryAfterMs,
-        reason: `default worker skew ${snapshot.workerSkew.groupName ?? 'n/a'} ${snapshot.workerSkew.pressure}/${snapshot.workerSkew.totalPressure}`,
-      };
-    } else {
-      decision = {
-        action: 'run',
-        retryAfterMs: 0,
-        reason: 'background headroom available',
-      };
-    }
+    const decision = this.buildDecisionFromSnapshot(snapshot);
 
     if (decision.action !== 'run') {
       await this.runtimeDiagnosticsService?.recordBackgroundDecision({
@@ -180,6 +138,18 @@ export class BackgroundRuntimeGovernorService {
     }
 
     return decision;
+  }
+
+  peekDecision(_params: {
+    component: string;
+    sourceTag: string;
+  }): BackgroundRuntimeGovernorDecision | null {
+    const snapshot = this.getCachedSnapshot();
+    if (!snapshot) {
+      return null;
+    }
+
+    return this.buildDecisionFromSnapshot(snapshot);
   }
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
@@ -284,6 +254,61 @@ export class BackgroundRuntimeGovernorService {
         totalPressure,
         share: totalPressure > 0 ? primary.pressure / totalPressure : 0,
       },
+    };
+  }
+
+  private buildDecisionFromSnapshot(
+    snapshot: BackgroundPressureSnapshot,
+  ): BackgroundRuntimeGovernorDecision {
+    const queueLagSec = snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
+
+    if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: snapshot.mode.reason || 'system degrade',
+      };
+    }
+
+    if (isSystemModeRecoveryWindow(snapshot.mode)) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: snapshot.mode.reason || 'recovery window in progress',
+      };
+    }
+
+    if (queueLagSec >= this.softQueueLagSec) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: `user-facing queue lag ${queueLagSec.toFixed(1)}s`,
+      };
+    }
+
+    if (snapshot.backgroundShare >= this.backgroundShareThreshold) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `background share ${(snapshot.backgroundShare * 100).toFixed(1)}%`,
+      };
+    }
+
+    if (
+      snapshot.workerSkew.totalPressure >= this.workerSkewPressure &&
+      snapshot.workerSkew.share >= this.workerSkewShare
+    ) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `default worker skew ${snapshot.workerSkew.groupName ?? 'n/a'} ${snapshot.workerSkew.pressure}/${snapshot.workerSkew.totalPressure}`,
+      };
+    }
+
+    return {
+      action: 'run',
+      retryAfterMs: 0,
+      reason: 'background headroom available',
     };
   }
 

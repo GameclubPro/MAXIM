@@ -7387,6 +7387,215 @@ describe('AdminService.listChats', () => {
     }
   });
 
+  it('does not wait for an uncached runtime governor decision before returning a refresh response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-03T10:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+        {
+          chat: {
+            id: 'chat-1',
+            title: 'Кэшированный чат',
+            createdAt: new Date('2026-03-01T10:00:00.000Z'),
+            entityType: 'CHAT',
+          },
+        },
+      ]);
+
+      const managedEntitiesRefreshQueue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const backgroundRuntimeGovernorService = {
+        peekDecision: jest.fn().mockReturnValue(null),
+        decide: jest.fn().mockReturnValue(createDeferred<never>().promise),
+      };
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+          getChatAdminIds: jest.fn(),
+        } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntitiesRefreshQueue as never,
+        undefined,
+        backgroundRuntimeGovernorService as never,
+      );
+
+      const responsePromise = service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          refresh: true,
+        },
+      );
+
+      const outcomePromise = Promise.race([
+        responsePromise.then((value) => ({
+          kind: 'resolved' as const,
+          value,
+        })),
+        new Promise<{ kind: 'timeout' }>((resolve) => {
+          setTimeout(() => {
+            resolve({ kind: 'timeout' });
+          }, 100);
+        }),
+      ]);
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(100);
+
+      await expect(outcomePromise).resolves.toEqual({
+        kind: 'resolved',
+        value: {
+          items: [
+            createChatSummaryFixture({
+              id: 'chat-1',
+              title: 'Кэшированный чат',
+              createdAt: '2026-03-01T10:00:00.000Z',
+              entityType: 'chat',
+            }),
+          ],
+          refresh: {
+            complete: false,
+            cursor: 0,
+            backoffActive: false,
+            nextPollAfterMs: 1500,
+            processedCandidates: null,
+            totalCandidates: null,
+            progressPercent: null,
+            lastSyncedAt: null,
+            manualRefreshBlockedReason: 'in_progress',
+            manualRefreshRetryAfterMs: 1500,
+          },
+        },
+      });
+
+      expect(backgroundRuntimeGovernorService.peekDecision).toHaveBeenCalledWith({
+        component: 'admin-managed-refresh',
+        sourceTag: 'managed_refresh',
+      });
+      expect(backgroundRuntimeGovernorService.decide).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not wait for a slow managed discovery warmup before returning a forced refresh response', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-03T10:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+      const managedEntitiesRefreshQueue = {
+        getJob: jest.fn().mockResolvedValue(null),
+        add: jest.fn().mockResolvedValue(undefined),
+      };
+      const service = new AdminService(
+        prisma as never,
+        {
+          listBotChats: jest.fn(),
+          getChatAdminIds: jest.fn(),
+        } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        managedEntitiesRefreshQueue as never,
+      );
+
+      const warmupDiscovery = createDeferred<{
+        items: ChatSummary[];
+        refresh: null;
+      }>();
+      jest.spyOn(service as any, 'discoverManagedEntities').mockReturnValue(warmupDiscovery.promise);
+      jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(
+        createChatSummaryFixture({
+          id: 'chat-2',
+          title: 'Текущий чат',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      );
+      jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+
+      const responsePromise = service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-2',
+          chatTitle: 'Текущий чат',
+        },
+        {
+          refresh: true,
+          bypassRemoteCache: true,
+          resetRefreshCursor: true,
+        },
+      );
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(1_500);
+
+      await expect(responsePromise).resolves.toEqual({
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-2',
+            title: 'Текущий чат',
+            createdAt: '2026-03-03T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+        refresh: {
+          complete: false,
+          cursor: 0,
+          backoffActive: false,
+          nextPollAfterMs: 1500,
+          processedCandidates: null,
+          totalCandidates: null,
+          progressPercent: null,
+          lastSyncedAt: null,
+          manualRefreshBlockedReason: 'in_progress',
+          manualRefreshRetryAfterMs: 1500,
+        },
+      });
+
+      warmupDiscovery.resolve({
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-3',
+            title: 'Найденный чат',
+            createdAt: '2026-03-02T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+        refresh: null,
+      });
+      await Promise.resolve();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('caps current chat bootstrap admin lookup during the first managed refresh response', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
@@ -8185,24 +8394,26 @@ describe('AdminService.listChats', () => {
       getJob: jest.fn().mockResolvedValue(null),
       add: jest.fn().mockResolvedValue(undefined),
     };
+    const degradedSnapshot = {
+      mode: 'degrade',
+      source: 'auto',
+      reason: 'queue lag 18.0s',
+      updatedAt: new Date().toISOString(),
+      manualMode: null,
+      queueLagSec: 18,
+      action: {
+        windowSec: 60,
+        total: 180,
+        success: 168,
+        failure: 12,
+        critical: 0,
+        errorRate: 0.066,
+        criticalRate: 0,
+      },
+    };
     const systemModeService = {
-      getEffectiveSnapshot: jest.fn().mockResolvedValue({
-        mode: 'degrade',
-        source: 'auto',
-        reason: 'queue lag 18.0s',
-        updatedAt: new Date().toISOString(),
-        manualMode: null,
-        queueLagSec: 18,
-        action: {
-          windowSec: 60,
-          total: 180,
-          success: 168,
-          failure: 12,
-          critical: 0,
-          errorRate: 0.066,
-          criticalRate: 0,
-        },
-      }),
+      peekCachedSnapshot: jest.fn().mockReturnValue(degradedSnapshot),
+      getEffectiveSnapshot: jest.fn().mockResolvedValue(degradedSnapshot),
     };
 
     const service = new AdminService(
@@ -8262,7 +8473,8 @@ describe('AdminService.listChats', () => {
       },
     });
 
-    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(systemModeService.peekCachedSnapshot).toHaveBeenCalled();
+    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
     expect(managedEntitiesRefreshQueue.add).not.toHaveBeenCalled();
     expect(managedEntitiesRefreshQueue.getJob).not.toHaveBeenCalled();
   });
