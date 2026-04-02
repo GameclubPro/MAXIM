@@ -54,10 +54,6 @@ function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): 
   return event.pointerType === 'mouse';
 }
 
-function shouldWarmFromPointerDown(event: ReactPointerEvent<HTMLElement>): boolean {
-  return event.pointerType === 'touch' || event.pointerType === 'pen';
-}
-
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -574,12 +570,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       to={`/chat/${entity.id}/events`}
                       className="button button--ghost"
                       state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                      onPointerDown={(event) => {
-                        if (shouldWarmFromPointerDown(event)) {
-                          prefetchChatEvents(entity.id);
-                        }
-                      }}
                       onClick={() => {
+                        prefetchChatEvents(entity.id);
                         saveLastEntityId('chat', entity.id);
                         saveChatTitle(entity.id, entity.title);
                       }}
