@@ -579,11 +579,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                           prefetchChatEvents(entity.id);
                         }
                       }}
-                      onPointerDown={(event) => {
-                        if (event.pointerType !== 'mouse') {
-                          prefetchChatEvents(entity.id);
-                        }
-                      }}
                     >
                       События
                     </Link>
