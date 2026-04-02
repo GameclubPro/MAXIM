@@ -460,16 +460,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       </Suspense>
 
       {showSystemCard ? (
-        <Suspense
-          fallback={
-            <GlassCard className="system-root-card" elevated>
-              <div className="system-root-card__copy">
-                <h2>Операционный центр</h2>
-                <p>Подготавливаю live-сводку по webhook, очередям и MAX-лимитам.</p>
-              </div>
-            </GlassCard>
-          }
-        >
+        <Suspense fallback={null}>
           <LazySystemEntryCard api={api} />
         </Suspense>
       ) : null}
@@ -524,17 +515,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <StatusState
                 tone="neutral"
                 title="Нет доступных чатов"
-                description="Добавьте бота в чат, выдайте права администратора и откройте mini app из этого чата."
-                action={
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    onClick={() => handleRefresh()}
-                    disabled={isFetching || isRefreshTemporarilyBlocked}
-                  >
-                    {isFetching ? 'Обновляем...' : 'Обновить'}
-                  </button>
-                }
+                description="Загружаем подсказки по подключению."
               />
             </GlassCard>
           }
