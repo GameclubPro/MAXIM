@@ -624,8 +624,9 @@ const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
 const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
 const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
+const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 1_500;
 const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 4;
-const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 500;
+const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 250;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
@@ -2300,6 +2301,7 @@ export class AdminService {
     const bootstrapped: ChatSummary[] = [];
     const seen = new Set<string>();
     let attemptedAdminChecks = 0;
+    const startedAtMs = Date.now();
 
     for (const row of safeRows) {
       const chatId = this.readTrimmedString(row.chat_id);
@@ -2321,6 +2323,21 @@ export class AdminService {
         continue;
       }
 
+      const elapsedMs = Date.now() - startedAtMs;
+      if (elapsedMs >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS) {
+        this.logger.warn(
+          {
+            entityType,
+            userId: normalizedUserId,
+            attemptedAdminChecks,
+            elapsedMs,
+            scannedCandidates: seen.size,
+          },
+          'Stopped recent bot_added bootstrap before completion to keep lightweight chat discovery responsive',
+        );
+        break;
+      }
+
       if (attemptedAdminChecks >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS) {
         this.logger.warn(
           {
@@ -2337,6 +2354,8 @@ export class AdminService {
       attemptedAdminChecks += 1;
       const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
         bypassNegativeCache: true,
+        trafficClass: 'interactive',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
       if (access.status === 'unknown' || access.status === 'throttled') {

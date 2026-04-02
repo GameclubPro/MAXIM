@@ -6599,10 +6599,71 @@ describe('AdminService.listChats', () => {
       1,
       'chat-1',
       expect.objectContaining({
+        trafficClass: 'interactive',
         actionHealthLane: 'background',
-        timeoutMs: 500,
+        sourceTag: 'managed_refresh',
+        timeoutMs: 250,
       }),
     );
+  });
+
+  it('caps lightweight recent bot_added bootstrap by total elapsed time on empty default chat lists', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        chat_id: 'chat-1',
+        chat_title: 'Чат 1',
+        is_channel: 'false',
+      },
+      {
+        chat_id: 'chat-2',
+        chat_title: 'Чат 2',
+        is_channel: 'false',
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+      getChatTitle: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const nowValues = [0, 0, 1_700];
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockImplementation(() => nowValues.shift() ?? 1_700);
+
+    try {
+      jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+      await expect(
+        service.listChats({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([]);
+
+      expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+        'chat-1',
+        expect.objectContaining({
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: 'managed_refresh',
+          timeoutMs: 250,
+        }),
+      );
+    } finally {
+      dateNowSpy.mockRestore();
+    }
   });
 
   it('caps remote delta admin checks on empty default chat lists', async () => {
