@@ -688,23 +688,10 @@ export class ApiClient {
   async getLogsDashboard(
     chatId: string,
     range: LogsDashboardRange = '7d',
-    options: Partial<{
-      includeActivityPreview: boolean;
-      includeModerationPreview: boolean;
-    }> = {},
   ): Promise<LogsDashboardResponse> {
     const validatedRange = logsDashboardRangeSchema.parse(range);
-    const params = new URLSearchParams({
-      range: validatedRange,
-    });
-    if (options.includeActivityPreview === false) {
-      params.set('includeActivityPreview', 'false');
-    }
-    if (options.includeModerationPreview === false) {
-      params.set('includeModerationPreview', 'false');
-    }
     const response = await this.request(
-      `/chats/${chatId}/logs-dashboard?${params.toString()}`,
+      `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
     );
     return logsDashboardResponseSchema.parse(response);
   }
