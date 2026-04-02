@@ -12525,7 +12525,7 @@ describe('ModerationService', () => {
       ]);
     });
 
-    it('enforces required subscription without remote metadata fetch when chat context cache is present', async () => {
+    it('prefers cached required subscription metadata from chat context cache without remote metadata fetch', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const ruleEngine = {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
@@ -12545,7 +12545,16 @@ describe('ModerationService', () => {
           rulesPublishedUrl: null,
           rulesPublishedMessageId: 'mid-rules-1',
         }),
-        getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+        getManagedEntityHeader: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        }),
         setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
         invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
       };
@@ -12582,7 +12591,7 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('обязательные каналы');
+      expect(noticeText).toContain('Новости MAX');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
           textFormat: 'markdown',
@@ -12590,6 +12599,102 @@ describe('ModerationService', () => {
             type: 'reply',
             mid: 'mid-rules-1',
           },
+          buttons: [
+            [
+              {
+                text: 'Новости MAX',
+                url: 'https://max.ru/channels/news-max',
+              },
+            ],
+          ],
+        }),
+      );
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
+    it('refreshes required subscription notice metadata after detecting a violation when chat context cache is missing', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const chatContextCache = {
+        getChatContext: jest.fn().mockResolvedValue({
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['channel-1'],
+            rulesAttachViolationsEnabled: true,
+          }),
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: 'mid-rules-1',
+        }),
+        getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
+      });
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Новости MAX');
+      expect(noticeOptions).toEqual(
+        expect.objectContaining({
+          textFormat: 'markdown',
+          messageLink: {
+            type: 'reply',
+            mid: 'mid-rules-1',
+          },
+          buttons: [
+            [
+              {
+                text: 'Новости MAX',
+                url: 'https://max.ru/channels/news-max',
+              },
+            ],
+          ],
         }),
       );
       expect(ruleEngine.detect).not.toHaveBeenCalled();
