@@ -1780,26 +1780,15 @@ export const logsDashboardRangeSchema = z.enum(['24h', '7d', '30d']);
 export type LogsDashboardRange = z.infer<typeof logsDashboardRangeSchema>;
 
 const booleanQueryFlagSchema = z.preprocess((input) => {
-  if (typeof input === 'boolean') {
+  if (input === true || input === false) {
     return input;
   }
-
-  if (typeof input === 'number') {
-    return input !== 0;
-  }
-
-  if (typeof input !== 'string') {
-    return input;
-  }
-
-  const normalized = input.trim().toLowerCase();
-  if (normalized === '1' || normalized === 'true' || normalized === 'yes') {
+  if (input === '1' || input === 'true') {
     return true;
   }
-  if (normalized === '0' || normalized === 'false' || normalized === 'no') {
+  if (input === '0' || input === 'false') {
     return false;
   }
-
   return input;
 }, z.boolean());
 
