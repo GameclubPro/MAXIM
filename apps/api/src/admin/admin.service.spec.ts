@@ -6886,6 +6886,86 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([]);
   });
 
+  it('reuses the last successful managed chat snapshot when a later allowlist read exceeds the response budget', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-03T10:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      const slowAllowlistRead = createDeferred<
+        Array<{
+          chat: { id: string; title: string; createdAt: Date; entityType: 'CHAT' };
+        }>
+      >();
+      prisma.chatAdminAllowlist.findMany
+        .mockResolvedValueOnce([
+          {
+            chat: {
+              id: 'chat-1',
+              title: 'Команда MAX',
+              createdAt: new Date('2026-03-01T00:00:00.000Z'),
+              entityType: 'CHAT',
+            },
+          },
+        ])
+        .mockImplementationOnce(async () => slowAllowlistRead.promise);
+
+      const maxClient = {
+        listBotChats: jest.fn().mockResolvedValue([]),
+        getChatAdminIds: jest.fn(),
+        getChatTitle: jest.fn(),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+
+      jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+      jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+
+      await expect(
+        service.listChats({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          createdAt: '2026-03-01T00:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ]);
+
+      await jest.advanceTimersByTimeAsync(2_100);
+
+      const responsePromise = service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      });
+
+      await Promise.resolve();
+      await jest.advanceTimersByTimeAsync(300);
+
+      await expect(responsePromise).resolves.toEqual([
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          createdAt: '2026-03-01T00:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('revalidates cached chats with stale negative admin cache on default load', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

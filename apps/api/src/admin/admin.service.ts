@@ -242,6 +242,11 @@ type TimedPromiseCacheEntry<T> = {
   promise: Promise<T>;
 };
 
+type TimedValueCacheEntry<T> = {
+  expiresAtMs: number;
+  value: T;
+};
+
 type ManagedEntityBotAssignmentsRow = {
   id: string;
   botId: string | null;
@@ -404,6 +409,7 @@ const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
+const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
 const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS = 750;
 const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
@@ -709,6 +715,10 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesAllowlistCache = new Map<
     string,
     TimedPromiseCacheEntry<ChatSummary[]>
+  >();
+  private readonly managedEntitiesLastSuccessCache = new Map<
+    string,
+    TimedValueCacheEntry<ChatSummary[]>
   >();
   private readonly managedEntitiesReadPrisma: PrismaClient | null;
   private readonly managedEntitiesResponseWarmupRuns = new Map<
@@ -1787,6 +1797,127 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:allowlist`;
   }
 
+  private buildManagedEntitiesLastSuccessCacheKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:last-success`;
+  }
+
+  private cloneManagedEntitySummary(chat: ChatSummary): ChatSummary {
+    return {
+      ...chat,
+      channelOverview: chat.channelOverview ? { ...chat.channelOverview } : null,
+      assignedBots: Array.isArray(chat.assignedBots)
+        ? chat.assignedBots.map((bot) => ({ ...bot }))
+        : [],
+    };
+  }
+
+  private readManagedEntitiesLastSuccessSnapshotExact(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): ChatSummary[] {
+    const key = this.buildManagedEntitiesLastSuccessCacheKey(userId, entityType);
+    const entry = this.managedEntitiesLastSuccessCache.get(key);
+    if (!entry) {
+      return [];
+    }
+    if (entry.expiresAtMs <= Date.now()) {
+      this.managedEntitiesLastSuccessCache.delete(key);
+      return [];
+    }
+
+    return entry.value.map((chat) => this.cloneManagedEntitySummary(chat));
+  }
+
+  private readManagedEntitiesLastSuccessSnapshot(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): ChatSummary[] {
+    const direct = this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType);
+    if (direct.length > 0 || entityType === 'all') {
+      return direct;
+    }
+
+    return this.readManagedEntitiesLastSuccessSnapshotExact(userId, 'all').filter(
+      (chat) => chat.entityType === entityType,
+    );
+  }
+
+  private rememberManagedEntitiesLastSuccessSnapshot(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    chats: readonly ChatSummary[],
+  ): void {
+    if (chats.length === 0) {
+      return;
+    }
+
+    const key = this.buildManagedEntitiesLastSuccessCacheKey(userId, entityType);
+    this.managedEntitiesLastSuccessCache.set(key, {
+      expiresAtMs: Date.now() + MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS,
+      value: chats.map((chat) => this.cloneManagedEntitySummary(chat)),
+    });
+  }
+
+  private mergeManagedEntitiesLastSuccessSnapshot(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    chats: readonly ChatSummary[],
+  ): void {
+    if (chats.length === 0) {
+      return;
+    }
+
+    const merged = this.mergeManagedEntityGroups(
+      chats.map((chat) => this.cloneManagedEntitySummary(chat)),
+      this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType),
+    );
+    this.rememberManagedEntitiesLastSuccessSnapshot(userId, entityType, merged);
+  }
+
+  private rememberManagedEntitiesLastSuccessChats(
+    userId: string,
+    chats: readonly ChatSummary[],
+  ): void {
+    if (chats.length === 0) {
+      return;
+    }
+
+    this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'all', chats);
+
+    const chatsOnly = chats.filter((chat) => chat.entityType === 'chat');
+    if (chatsOnly.length > 0) {
+      this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'chat', chatsOnly);
+    }
+
+    const channelsOnly = chats.filter((chat) => chat.entityType === 'channel');
+    if (channelsOnly.length > 0) {
+      this.mergeManagedEntitiesLastSuccessSnapshot(userId, 'channel', channelsOnly);
+    }
+  }
+
+  private forgetManagedEntitiesLastSuccessChat(userId: string, chatId: string): void {
+    const prefix = `${userId}:`;
+    for (const [key, entry] of this.managedEntitiesLastSuccessCache.entries()) {
+      if (!key.startsWith(prefix)) {
+        continue;
+      }
+
+      const remaining = entry.value.filter((chat) => chat.id !== chatId);
+      if (remaining.length === 0) {
+        this.managedEntitiesLastSuccessCache.delete(key);
+        continue;
+      }
+
+      this.managedEntitiesLastSuccessCache.set(key, {
+        expiresAtMs: entry.expiresAtMs,
+        value: remaining.map((chat) => this.cloneManagedEntitySummary(chat)),
+      });
+    }
+  }
+
   private invalidateManagedEntitiesAllowlistCache(userId: string): void {
     const prefix = `${userId}:`;
     for (const key of this.managedEntitiesAllowlistCache.keys()) {
@@ -1803,17 +1934,21 @@ export class AdminService implements OnModuleDestroy {
       source: 'default' | 'refresh';
     },
   ): Promise<ChatSummary[]> {
+    const fallbackSnapshot = this.readManagedEntitiesLastSuccessSnapshot(userId, entityType);
     return this.awaitManagedEntitiesResponseValueWithinBudget(
       this.listChatsFromAllowlist(userId, entityType),
       {
-        fallback: [],
+        fallback: fallbackSnapshot,
         budgetMs: MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS,
         timeoutMessage:
-          'Detached managed entities allowlist read from response after response budget exceeded',
+          fallbackSnapshot.length > 0
+            ? 'Used last successful managed entities snapshot after allowlist read exceeded response budget'
+            : 'Detached managed entities allowlist read from response after response budget exceeded',
         failureMessage:
           'Managed entities allowlist read failed during user-facing managed entities response',
         logData: {
           entityType,
+          fallbackItems: fallbackSnapshot.length,
           source: options.source,
           userId,
         },
@@ -2517,7 +2652,7 @@ export class AdminService implements OnModuleDestroy {
         },
       );
 
-      return this.createManagedEntitySummary({
+      const summary = this.createManagedEntitySummary({
         id: persistedChat.id,
         title: persistedChat.title,
         createdAt: persistedChat.createdAt.toISOString(),
@@ -2526,6 +2661,9 @@ export class AdminService implements OnModuleDestroy {
         avatarUrl: params.avatarUrl ?? null,
         primaryBotId: this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
       });
+      this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
+
+      return summary;
     } catch (error: unknown) {
       if (!this.isPrismaKnownError(error, 'P2024')) {
         throw error;
@@ -2556,7 +2694,7 @@ export class AdminService implements OnModuleDestroy {
         'Using transient managed entity summary because the Prisma pool is saturated',
       );
 
-      return this.createManagedEntitySummary({
+      const summary = this.createManagedEntitySummary({
         id: params.chatId,
         title:
           this.resolvePresentableManagedEntityTitle(params.chatId, params.title, null, null) ??
@@ -2568,6 +2706,9 @@ export class AdminService implements OnModuleDestroy {
         avatarUrl: params.avatarUrl ?? null,
         primaryBotId: resolvedBotId,
       });
+      this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
+
+      return summary;
     }
   }
 
@@ -17723,6 +17864,7 @@ export class AdminService implements OnModuleDestroy {
         userId,
       },
     });
+    this.forgetManagedEntitiesLastSuccessChat(userId, chatId);
     this.invalidateManagedEntitiesAllowlistCache(userId);
   }
 
@@ -17831,9 +17973,11 @@ export class AdminService implements OnModuleDestroy {
       });
     } catch (error) {
       if (this.isPrismaKnownError(error, 'P2024')) {
+        const fallbackSnapshot = this.readManagedEntitiesLastSuccessSnapshot(userId, entityType);
         this.logger.warn(
           {
             entityType,
+            fallbackItems: fallbackSnapshot.length,
             userId,
             code:
               error instanceof Prisma.PrismaClientKnownRequestError
@@ -17841,9 +17985,11 @@ export class AdminService implements OnModuleDestroy {
                 : (error as { code?: string } | null)?.code ?? null,
             err: error instanceof Error ? error.message : String(error),
           },
-          'Using empty managed entities allowlist because the Prisma pool is saturated',
+          fallbackSnapshot.length > 0
+            ? 'Using last successful managed entities snapshot because the Prisma pool is saturated'
+            : 'Using empty managed entities allowlist because the Prisma pool is saturated',
         );
-        return [];
+        return fallbackSnapshot;
       }
 
       throw error;
@@ -17891,7 +18037,10 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    return chats.filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType));
+    const supportedChats = chats.filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType));
+    this.rememberManagedEntitiesLastSuccessChats(userId, supportedChats);
+
+    return supportedChats;
   }
 
   private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {
