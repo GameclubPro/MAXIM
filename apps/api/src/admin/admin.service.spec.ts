@@ -6544,6 +6544,52 @@ describe('AdminService.listChats', () => {
     expect(queryCall).not.toContain('admin-1');
   });
 
+  it('caps lightweight recent bot_added admin checks on empty default chat lists', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue(
+      Array.from({ length: 20 }, (_, index) => ({
+        chat_id: `chat-${index + 1}`,
+        chat_title: `Чат ${index + 1}`,
+        is_channel: 'false',
+      })),
+    );
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(8);
+    expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        timeoutMs: 750,
+      }),
+    );
+  });
+
   it('does not bootstrap stale recent bot_added chats when MAX denies current admin access', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);

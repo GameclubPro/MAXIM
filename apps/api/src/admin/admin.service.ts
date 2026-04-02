@@ -617,6 +617,8 @@ const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
 const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
 const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
+const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 8;
+const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 750;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
@@ -2288,6 +2290,7 @@ export class AdminService {
 
     const bootstrapped: ChatSummary[] = [];
     const seen = new Set<string>();
+    let attemptedAdminChecks = 0;
 
     for (const row of safeRows) {
       const chatId = this.readTrimmedString(row.chat_id);
@@ -2309,9 +2312,37 @@ export class AdminService {
         continue;
       }
 
+      if (attemptedAdminChecks >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS) {
+        this.logger.warn(
+          {
+            entityType,
+            userId: normalizedUserId,
+            attemptedAdminChecks,
+            scannedCandidates: seen.size,
+          },
+          'Stopped recent bot_added bootstrap before completion to keep lightweight chat discovery responsive',
+        );
+        break;
+      }
+
+      attemptedAdminChecks += 1;
       const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
         bypassNegativeCache: true,
+        timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
+      if (access.status === 'unknown' || access.status === 'throttled') {
+        this.logger.warn(
+          {
+            chatId,
+            entityType,
+            userId: normalizedUserId,
+            attemptedAdminChecks,
+            accessStatus: access.status,
+          },
+          'Stopped recent bot_added bootstrap after a slow admin access lookup',
+        );
+        break;
+      }
       if (access.status !== 'granted') {
         continue;
       }
@@ -16339,33 +16370,17 @@ export class AdminService {
     options: {
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
+      timeoutMs?: number;
     } = {},
   ): Promise<AdminAccessResolution> {
     try {
-      const requestOptions =
-        options.trafficClass === undefined
-          ? botId
-            ? ({
-                botId,
-                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-              } as const)
-            : ({
-                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-              } as const)
-          : botId
-            ? ({
-                trafficClass: options.trafficClass,
-                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-                botId,
-              } as const)
-            : ({
-                trafficClass: options.trafficClass,
-                actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-                ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
-              } as const);
+      const requestOptions = {
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ...(options.trafficClass ? { trafficClass: options.trafficClass } : {}),
+        ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
+        ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
+        ...(botId ? { botId } : {}),
+      } as const;
       const hasRequestOptions = Object.keys(requestOptions).length > 0;
       const normalizedUserId = userId.trim();
       const botContactId = this.resolveBotContactId(botId);
@@ -16460,6 +16475,7 @@ export class AdminService {
     options: {
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
+      timeoutMs?: number;
     } = {},
   ): Promise<AdminAccessResolution> {
     const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
@@ -16563,6 +16579,7 @@ export class AdminService {
       bypassNegativeCache?: boolean;
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
+      timeoutMs?: number;
     } = {},
   ): Promise<AdminAccessResolution> {
     const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
@@ -16598,6 +16615,7 @@ export class AdminService {
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
       trafficClass: options.trafficClass,
       sourceTag: options.sourceTag,
+      timeoutMs: options.timeoutMs,
     });
     this.adminAccessChecks.set(key, pending);
 
