@@ -382,6 +382,7 @@ const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 5_000;
+const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
 const EVENTS_FEED_PAGE_CACHE_TTL_MS = 5_000;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -9582,9 +9583,11 @@ export class AdminService {
     user: AuthUser,
     query: unknown,
   ): Promise<LogsDashboardResponse> {
+    const startedAtMs = Date.now();
     await this.assertChatAdmin(chatId, user.userId, null, {
       syncPersistedAccess: false,
     });
+    const adminCheckedAtMs = Date.now();
     const parsed = logsDashboardQuerySchema.safeParse(query);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -9599,7 +9602,26 @@ export class AdminService {
     );
     const cached = this.logsDashboardResponseCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
-      return cached.promise;
+      const response = await cached.promise;
+      const finishedAtMs = Date.now();
+      const totalMs = finishedAtMs - startedAtMs;
+      if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: user.userId,
+            totalMs,
+            adminCheckMs: adminCheckedAtMs - startedAtMs,
+            responseMs: finishedAtMs - adminCheckedAtMs,
+            cacheHit: true,
+            range: parsed.data.range,
+            includeActivityPreview: parsed.data.includeActivityPreview,
+            includeModerationPreview: parsed.data.includeModerationPreview,
+          },
+          'Slow logs dashboard request completed',
+        );
+      }
+      return response;
     }
 
     let pending!: Promise<LogsDashboardResponse>;
@@ -9621,7 +9643,27 @@ export class AdminService {
       promise: pending,
     });
 
-    return pending;
+    const response = await pending;
+    const finishedAtMs = Date.now();
+    const totalMs = finishedAtMs - startedAtMs;
+    if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: user.userId,
+          totalMs,
+          adminCheckMs: adminCheckedAtMs - startedAtMs,
+          responseMs: finishedAtMs - adminCheckedAtMs,
+          cacheHit: false,
+          range: parsed.data.range,
+          includeActivityPreview: parsed.data.includeActivityPreview,
+          includeModerationPreview: parsed.data.includeModerationPreview,
+        },
+        'Slow logs dashboard request completed',
+      );
+    }
+
+    return response;
   }
 
   private async buildLogsDashboardResponse(
@@ -9630,6 +9672,7 @@ export class AdminService {
     includeActivityPreview = true,
     includeModerationPreview = true,
   ): Promise<LogsDashboardResponse> {
+    const startedAtMs = Date.now();
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(range, now);
     const membershipEventsSql = this.buildMembershipEventDedupeSourceSql(chatId, from, now, [
@@ -9641,6 +9684,7 @@ export class AdminService {
 
     const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
+    const baseQueriesStartedAtMs = Date.now();
     const [
       chat,
       membershipRows,
@@ -9694,8 +9738,10 @@ export class AdminService {
           })
         : Promise.resolve([]),
     ]);
+    const baseQueriesFinishedAtMs = Date.now();
     const moderationSummary = this.summarizeLogsDashboardModerationCounts(moderationSummaryRows);
     const moderationPreviewRows = violationRows.slice(0, LOGS_DASHBOARD_VIOLATIONS_LIMIT);
+    const moderationProfilesStartedAtMs = Date.now();
     const moderationUserProfiles = includeModerationPreview
       ? await this.resolveUserProfiles(
           chatId,
@@ -9703,10 +9749,12 @@ export class AdminService {
           moderationPreviewRows.map((row) => row.userId),
         )
       : new Map<string, ResolvedUserProfile>();
+    const moderationProfilesFinishedAtMs = Date.now();
 
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
     const leftUsers = this.toSafeInteger(membershipSource.left_users);
+    const activityFeedStartedAtMs = Date.now();
     const activityFeed = includeActivityPreview
       ? await this.getMembershipActivityFeedPage(
           chatId,
@@ -9720,6 +9768,8 @@ export class AdminService {
           'chat',
         )
       : this.buildEmptyMembershipActivityPage();
+    const activityFeedFinishedAtMs = Date.now();
+    const moderationFeedStartedAtMs = Date.now();
     const moderationFeed = includeModerationPreview
       ? moderationFeedPageSchema.parse({
           items: moderationPreviewRows.map((row) =>
@@ -9736,6 +9786,7 @@ export class AdminService {
               : null,
         })
       : this.buildEmptyModerationFeedPage();
+    const moderationFeedFinishedAtMs = Date.now();
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -9772,6 +9823,27 @@ export class AdminService {
       moderationFeed,
       activityFeed,
     };
+
+    const finishedAtMs = Date.now();
+    const totalMs = finishedAtMs - startedAtMs;
+    if (totalMs >= SLOW_LOGS_DASHBOARD_THRESHOLD_MS) {
+      this.logger.warn(
+        {
+          chatId,
+          totalMs,
+          range,
+          includeActivityPreview,
+          includeModerationPreview,
+          baseQueriesMs: baseQueriesFinishedAtMs - baseQueriesStartedAtMs,
+          moderationProfilesMs: moderationProfilesFinishedAtMs - moderationProfilesStartedAtMs,
+          activityFeedMs: activityFeedFinishedAtMs - activityFeedStartedAtMs,
+          moderationFeedAssembleMs: moderationFeedFinishedAtMs - moderationFeedStartedAtMs,
+          moderationPreviewCount: moderationPreviewRows.length,
+          activityPreviewCount: activityFeed.items.length,
+        },
+        'Slow logs dashboard build completed',
+      );
+    }
 
     return logsDashboardResponseSchema.parse(response);
   }

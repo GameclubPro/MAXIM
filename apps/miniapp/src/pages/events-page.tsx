@@ -16,7 +16,6 @@ import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
-import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -783,6 +782,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId, chatTitle]);
 
   const dashboard = dashboardQuery.data ?? null;
+  const isDashboardPending = dashboardQuery.isLoading && !dashboard;
+  const hasBlockingDashboardError = Boolean(dashboardQuery.error) && !dashboard;
+  const membershipSummary = dashboard?.membership ?? {
+    joinedUsers: 0,
+    leftUsers: 0,
+    netUsers: 0,
+  };
+  const violationsSummary = dashboard?.violationsSummary ?? {
+    warn: 0,
+    deleteMessage: 0,
+    mute: 0,
+    ban: 0,
+    unmute: 0,
+    unban: 0,
+    affectedUsers: 0,
+    total: 0,
+  };
   const activityFeed = useMembershipActivityFeed({
     enabled: Boolean(chatId) && section === 'activity',
     range,
@@ -790,7 +806,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
-    enabled: Boolean(chatId) && section === 'moderation',
+    enabled: Boolean(chatId) && section === 'moderation' && !isDashboardPending,
     range,
     filter: eventsFilter,
     initialPage: dashboard?.moderationFeed ?? null,
@@ -825,17 +841,17 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     const options: Array<{ value: EventsFilter; label: string; count: number }> = [
-      { value: 'ALL', label: 'Все', count: dashboard.violationsSummary.total },
-      { value: 'WARN', label: 'Предупр.', count: dashboard.violationsSummary.warn },
+      { value: 'ALL', label: 'Все', count: violationsSummary.total },
+      { value: 'WARN', label: 'Предупр.', count: violationsSummary.warn },
       {
         value: 'DELETE_MESSAGE',
         label: 'Удаления',
-        count: dashboard.violationsSummary.deleteMessage,
+        count: violationsSummary.deleteMessage,
       },
-      { value: 'MUTE', label: 'Муты', count: dashboard.violationsSummary.mute },
-      { value: 'BAN', label: 'Баны', count: dashboard.violationsSummary.ban },
-      { value: 'UNMUTE', label: 'Снятия мута', count: dashboard.violationsSummary.unmute },
-      { value: 'UNBAN', label: 'Разбаны', count: dashboard.violationsSummary.unban },
+      { value: 'MUTE', label: 'Муты', count: violationsSummary.mute },
+      { value: 'BAN', label: 'Баны', count: violationsSummary.ban },
+      { value: 'UNMUTE', label: 'Снятия мута', count: violationsSummary.unmute },
+      { value: 'UNBAN', label: 'Разбаны', count: violationsSummary.unban },
     ];
 
     return options.filter((option) => option.value === 'ALL' || option.count > 0);
@@ -856,7 +872,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     [eventsFilter, filterOptions],
   );
 
-  const hardMeasures = dashboard ? dashboard.violationsSummary.mute + dashboard.violationsSummary.ban : 0;
+  const hardMeasures = violationsSummary.mute + violationsSummary.ban;
 
   if (!chatId) {
     return (
@@ -875,63 +891,28 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (dashboardQuery.isLoading && !dashboard) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={14} />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (dashboardQuery.error && !dashboard) {
-    return (
-      <GlassCard>
-        <StatusState
-          tone="danger"
-          title="Не удалось загрузить статистику"
-          description={(dashboardQuery.error as Error).message}
-          action={
-            <button
-              type="button"
-              className="button button--danger"
-              onClick={() => void dashboardQuery.refetch()}
-            >
-              Повторить
-            </button>
-          }
-        />
-      </GlassCard>
-    );
-  }
-
-  if (!dashboard) {
-    return null;
-  }
-
   const activityBalanceTone =
-    dashboard.membership.netUsers > 0
+    membershipSummary.netUsers > 0
       ? 'success'
-      : dashboard.membership.netUsers < 0
+      : membershipSummary.netUsers < 0
         ? 'danger'
         : 'neutral';
-  const activityMovementsTotal = dashboard.membership.joinedUsers + dashboard.membership.leftUsers;
+  const activityMovementsTotal = membershipSummary.joinedUsers + membershipSummary.leftUsers;
   const joinedShare = activityMovementsTotal
-    ? Math.round((dashboard.membership.joinedUsers / activityMovementsTotal) * 100)
+    ? Math.round((membershipSummary.joinedUsers / activityMovementsTotal) * 100)
     : 50;
   const leftShare = activityMovementsTotal ? 100 - joinedShare : 50;
   const activityBalanceLabel =
-    dashboard.membership.netUsers > 0
+    membershipSummary.netUsers > 0
       ? 'Рост участников'
-      : dashboard.membership.netUsers < 0
+      : membershipSummary.netUsers < 0
         ? 'Отток участников'
         : 'Баланс без изменений';
   const moderationHeroMetric = {
     label: 'События',
-    value: String(dashboard.violationsSummary.total),
+    value: String(violationsSummary.total),
     note:
-      dashboard.violationsSummary.total > 0
+      violationsSummary.total > 0
         ? 'Зафиксировано за период'
         : 'За период нарушений не найдено',
     tone: 'accent' as const,
@@ -939,7 +920,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const moderationSecondaryMetrics = [
     {
       label: 'Люди',
-      value: String(dashboard.violationsSummary.affectedUsers),
+      value: String(violationsSummary.affectedUsers),
       note: 'Участников затронуто',
       tone: 'neutral' as const,
     },
@@ -1074,26 +1055,55 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               />
             </div>
 
-            {section === 'activity' ? (
+            {isDashboardPending ? (
+              <GlassCard className="events-inline-state">
+                <StatusState
+                  tone="neutral"
+                  title="Подтягиваем сводку"
+                  description={
+                    section === 'activity'
+                      ? 'Собираем баланс входов и выходов.'
+                      : 'Открываем журнал и прогреваем ленту.'
+                  }
+                />
+              </GlassCard>
+            ) : hasBlockingDashboardError ? (
+              <GlassCard className="events-inline-state">
+                <StatusState
+                  tone="danger"
+                  title="Не удалось загрузить статистику"
+                  description={(dashboardQuery.error as Error).message}
+                  action={
+                    <button
+                      type="button"
+                      className="button button--danger"
+                      onClick={() => void dashboardQuery.refetch()}
+                    >
+                      Повторить
+                    </button>
+                  }
+                />
+              </GlassCard>
+            ) : section === 'activity' ? (
               <div className="events-dashboard__activity">
                 <article
                   className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
                 >
                   <small>Баланс</small>
-                  <strong>{formatSignedCount(dashboard.membership.netUsers)}</strong>
+                  <strong>{formatSignedCount(membershipSummary.netUsers)}</strong>
                   <span>{activityBalanceLabel}</span>
                 </article>
 
                 <div className="events-dashboard__activity-ledger">
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
                     <small>Вошли</small>
-                    <strong>{dashboard.membership.joinedUsers}</strong>
+                    <strong>{membershipSummary.joinedUsers}</strong>
                     <span>{joinedShare}% всего движения</span>
                   </article>
 
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
                     <small>Вышли</small>
-                    <strong>{dashboard.membership.leftUsers}</strong>
+                    <strong>{membershipSummary.leftUsers}</strong>
                     <span>{leftShare}% всего движения</span>
                   </article>
 
@@ -1133,7 +1143,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             )}
           </section>
 
-          {section === 'moderation' ? (
+          {section === 'moderation' && dashboard ? (
             <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
               {filterOptions.map((option) => {
                 const active = option.value === eventsFilter;
@@ -1157,7 +1167,32 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </div>
       </section>
 
-      {section === 'activity' ? (
+      {section === 'activity' && isDashboardPending ? (
+        <GlassCard className="events-inline-state">
+          <StatusState
+            tone="neutral"
+            title="Загружаем активность"
+            description="Лента входов и выходов появится сразу после сводки."
+          />
+        </GlassCard>
+      ) : section === 'activity' && hasBlockingDashboardError ? (
+        <GlassCard className="events-inline-state">
+          <StatusState
+            tone="warning"
+            title="Лента активности пока недоступна"
+            description="Сначала нужно получить сводку по чату."
+            action={
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => void dashboardQuery.refetch()}
+              >
+                Повторить
+              </button>
+            }
+          />
+        </GlassCard>
+      ) : section === 'activity' ? (
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
@@ -1178,7 +1213,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
       {section === 'moderation' ? (
         <>
-          {dashboardQuery.error ? (
+          {dashboardQuery.error && dashboard ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="warning"
@@ -1197,7 +1232,17 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard.violationsSummary.total === 0 ? (
+          {isDashboardPending ? (
+            <GlassCard className="events-inline-state">
+              <StatusState
+                tone="neutral"
+                title="Готовим журнал"
+                description="Сначала подтягиваем сводку, потом откроем список событий."
+              />
+            </GlassCard>
+          ) : null}
+
+          {dashboard && violationsSummary.total === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -1207,7 +1252,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard.violationsSummary.total > 0 && selectedFilterCount === 0 ? (
+          {dashboard && violationsSummary.total > 0 && selectedFilterCount === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
