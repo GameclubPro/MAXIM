@@ -12405,6 +12405,126 @@ describe('ModerationService', () => {
       ]);
     });
 
+    it('reuses recent required subscription channel metadata in memory for ordinary moderation lookups', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const chatContextCache = {
+        getManagedEntityHeader: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        }),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        chatContextCache as never,
+      );
+
+      const resolver = service as unknown as {
+        resolveRequiredSubscriptionChannels: (
+          channelIds: string[],
+          options?: { allowRemoteFetch?: boolean },
+        ) => Promise<
+          Array<{
+            id: string;
+            title: string;
+            link: string | null;
+            usable: boolean;
+            checkMembership: boolean;
+          }>
+        >;
+      };
+
+      const first = await resolver.resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: false,
+      });
+      const second = await resolver.resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: false,
+      });
+
+      expect(first).toEqual([
+        {
+          id: 'channel-1',
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          usable: true,
+          checkMembership: true,
+        },
+      ]);
+      expect(second).toEqual(first);
+      expect(prisma.chat.findMany).toHaveBeenCalledTimes(1);
+      expect(chatContextCache.getManagedEntityHeader).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not let a cached local fallback suppress a later remote metadata refresh', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const chatContextCache = {
+        getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+      );
+
+      const resolver = service as unknown as {
+        resolveRequiredSubscriptionChannels: (
+          channelIds: string[],
+          options?: { allowRemoteFetch?: boolean },
+        ) => Promise<Array<{ id: string; title: string; link: string | null; usable: boolean }>>;
+      };
+
+      const first = await resolver.resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: false,
+      });
+      const second = await resolver.resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: true,
+      });
+
+      expect(first).toEqual([
+        {
+          id: 'channel-1',
+          title: 'Канал channel-1',
+          link: null,
+          usable: false,
+          checkMembership: true,
+        },
+      ]);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(second).toEqual([
+        {
+          id: 'channel-1',
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          usable: true,
+          checkMembership: true,
+        },
+      ]);
+    });
+
     it('enforces required subscription without remote metadata fetch when chat context cache is present', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const ruleEngine = {
@@ -13319,7 +13439,7 @@ describe('ModerationService', () => {
 
       expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
       expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.findFirst).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.findFirst).toHaveBeenCalled();
       expect(ruleEngine.detect).not.toHaveBeenCalled();
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     });

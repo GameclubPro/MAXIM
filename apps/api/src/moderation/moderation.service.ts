@@ -215,6 +215,7 @@ const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
 const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
+const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
@@ -390,6 +391,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<boolean | null>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
+  private readonly requiredSubscriptionChannelMetadataCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      metadata: RequiredSubscriptionChannelMetadata;
+    }
+  >();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private webhookHotChatSkipLogAtMs = 0;
@@ -889,6 +897,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      this.markWebhookHotPathStage(hotPathProfile, 'admin-check');
       const senderChatAdminCheck = await this.resolveSenderChatAdminCheck(
         chatId,
         chat.adminUserIds,
@@ -917,7 +926,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             !this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown,
         },
       );
-      this.markWebhookHotPathStage(hotPathProfile, 'admin-check');
       if (senderChatAdminCheck.isAdmin) {
         const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
           update,
@@ -954,8 +962,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const activeMute = await this.getActiveMute(chatId, senderId, settings.muteDurationHours);
       this.markWebhookHotPathStage(hotPathProfile, 'active-mute');
+      const activeMute = await this.getActiveMute(chatId, senderId, settings.muteDurationHours);
       if (activeMute) {
         await this.handleActiveMuteMessage({
           chatId,
@@ -1018,6 +1026,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : new Set<string>();
       this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
       const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
+      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
       const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
         chatId,
         userId: senderId,
@@ -1027,7 +1036,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteSpammersEnabled: settings.deleteSpammersEnabled,
         exemptFromEnforcement: isGlobalSpammerExempt,
       });
-      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
       if (globalSpammerTracking.handled) {
         return;
       }
@@ -1049,6 +1057,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      this.markWebhookHotPathStage(hotPathProfile, 'required-subscription');
       const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
         chatId,
         userId: senderId,
@@ -1063,7 +1072,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rulesPublishedUrl,
         rulesPublishedMessageId,
       });
-      this.markWebhookHotPathStage(hotPathProfile, 'required-subscription');
       if (requiredSubscriptionHandled) {
         return;
       }
@@ -4082,43 +4090,57 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     fallbackMuteDurationHours: number,
   ): Promise<ActiveMute | null> {
-    const latestRelevantEvent = await this.prisma.moderationEvent.findFirst({
-      where: {
-        chatId,
-        userId,
-        OR: [
-          { action: SanctionAction.MUTE },
-          { action: SanctionAction.BAN },
-          { ruleCode: 'MANUAL_UNMUTE' },
-          { ruleCode: 'MANUAL_UNBAN' },
-        ],
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      select: {
-        id: true,
-        createdAt: true,
-        metadata: true,
-        action: true,
-        ruleCode: true,
-      },
-    });
+    const [latestSanctionEvent, latestManualLiftEvent] = await Promise.all([
+      this.prisma.moderationEvent.findFirst({
+        where: {
+          chatId,
+          userId,
+          action: {
+            in: [SanctionAction.MUTE, SanctionAction.BAN],
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        select: {
+          id: true,
+          createdAt: true,
+          metadata: true,
+          action: true,
+          ruleCode: true,
+        },
+      }),
+      this.prisma.moderationEvent.findFirst({
+        where: {
+          chatId,
+          userId,
+          ruleCode: {
+            in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        select: {
+          createdAt: true,
+        },
+      }),
+    ]);
 
-    if (!latestRelevantEvent) {
+    if (!latestSanctionEvent) {
       return null;
     }
 
-    const latestAction = latestRelevantEvent.action ?? SanctionAction.BAN;
     if (
-      latestRelevantEvent.ruleCode === 'MANUAL_UNMUTE' ||
-      latestRelevantEvent.ruleCode === 'MANUAL_UNBAN'
+      latestManualLiftEvent &&
+      latestManualLiftEvent.createdAt.getTime() > latestSanctionEvent.createdAt.getTime()
     ) {
       return null;
     }
 
+    const latestAction = latestSanctionEvent.action ?? SanctionAction.BAN;
     const storedDurationHours = this.readStoredMuteDurationHoursFromMetadata(
-      latestRelevantEvent.metadata,
+      latestSanctionEvent.metadata,
     );
     const isTimedMute =
       latestAction === SanctionAction.MUTE ||
@@ -4129,16 +4151,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const durationHours = storedDurationHours ?? fallbackMuteDurationHours;
-    const expiresAt = new Date(
-      latestRelevantEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
-    );
+    const expiresAt = new Date(latestSanctionEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000);
     if (expiresAt.getTime() <= Date.now()) {
       return null;
     }
 
     return {
-      eventId: latestRelevantEvent.id,
-      issuedAt: latestRelevantEvent.createdAt,
+      eventId: latestSanctionEvent.id,
+      issuedAt: latestSanctionEvent.createdAt,
       expiresAt,
       durationHours,
     };
@@ -7101,12 +7121,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } = {},
   ): Promise<RequiredSubscriptionChannelMetadata[]> {
     const allowRemoteFetch = options.allowRemoteFetch === true;
+    const resolvedMetadataById = new Map<string, RequiredSubscriptionChannelMetadata>();
+    const unresolvedChannelIds: string[] = [];
+    for (const channelId of channelIds) {
+      const cachedMetadata = this.readCachedRequiredSubscriptionChannelMetadata(
+        channelId,
+        allowRemoteFetch,
+      );
+      if (cachedMetadata) {
+        resolvedMetadataById.set(channelId, cachedMetadata);
+        continue;
+      }
+
+      unresolvedChannelIds.push(channelId);
+    }
+
     const persistedChats =
-      typeof this.prisma.chat.findMany === 'function'
+      unresolvedChannelIds.length > 0 && typeof this.prisma.chat.findMany === 'function'
         ? await this.prisma.chat.findMany({
             where: {
               id: {
-                in: [...channelIds],
+                in: unresolvedChannelIds,
               },
             },
             select: {
@@ -7117,18 +7152,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           })
         : [];
     const persistedChatsById = new Map(persistedChats.map((chat) => [chat.id, chat] as const));
-
-    return this.mapWithConcurrency(channelIds, 2, async (channelId) => {
+    const resolvedFreshMetadata = await this.mapWithConcurrency(unresolvedChannelIds, 2, async (channelId) => {
       const persistedChat = persistedChatsById.get(channelId) ?? null;
       if (persistedChat?.entityType === ChatEntityType.CHAT) {
         await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
-        return {
+        return this.rememberRequiredSubscriptionChannelMetadata({
           id: channelId,
           title: persistedChat.title?.trim() || `Чат ${channelId}`,
           link: null,
           usable: false,
           checkMembership: false,
-        };
+        });
       }
 
       const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
@@ -7136,23 +7170,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const cachedLink = this.normalizeBotButtonUrl(cached?.link ?? '');
       const fallbackTitle = cachedTitle || persistedChat?.title?.trim() || `Канал ${channelId}`;
       if (this.isUsableRequiredSubscriptionChannelMetadata(channelId, cachedTitle, cachedLink)) {
-        return {
+        return this.rememberRequiredSubscriptionChannelMetadata({
           id: channelId,
           title: cachedTitle,
           link: cachedLink,
           usable: true,
           checkMembership: true,
-        };
+        });
       }
 
       if (!allowRemoteFetch) {
-        return {
+        return this.rememberRequiredSubscriptionChannelMetadata({
           id: channelId,
           title: fallbackTitle,
           link: cachedLink,
           usable: false,
           checkMembership: true,
-        };
+        });
       }
 
       try {
@@ -7167,13 +7201,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const link = this.normalizeBotButtonUrl(snapshot.link ?? '');
         if (snapshot.entityType !== 'channel') {
           await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
-          return {
+          return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
             title,
             link: null,
             usable: false,
             checkMembership: false,
-          };
+          });
         }
         await this.chatContextCache?.setManagedEntityHeader({
           id: channelId,
@@ -7185,13 +7219,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           assignedBots: [],
           sharedMode: 'owned',
         });
-        return {
+        return this.rememberRequiredSubscriptionChannelMetadata({
           id: channelId,
           title,
           link,
           usable: this.isUsableRequiredSubscriptionChannelMetadata(channelId, title, link),
           checkMembership: true,
-        };
+        });
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -7200,15 +7234,57 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to resolve required subscription channel metadata',
         );
-        return {
+        return this.rememberRequiredSubscriptionChannelMetadata({
           id: channelId,
           title: fallbackTitle,
           link: cachedLink,
           usable: false,
           checkMembership: true,
-        };
+        });
       }
     });
+    for (const metadata of resolvedFreshMetadata) {
+      resolvedMetadataById.set(metadata.id, metadata);
+    }
+
+    return channelIds
+      .map((channelId) => resolvedMetadataById.get(channelId))
+      .filter((channel): channel is RequiredSubscriptionChannelMetadata => channel !== undefined);
+  }
+
+  private readCachedRequiredSubscriptionChannelMetadata(
+    channelId: string,
+    allowRemoteFetch: boolean,
+  ): RequiredSubscriptionChannelMetadata | null {
+    const cached = this.requiredSubscriptionChannelMetadataCache.get(channelId);
+    if (!cached) {
+      return null;
+    }
+
+    if (cached.expiresAt <= Date.now()) {
+      this.requiredSubscriptionChannelMetadataCache.delete(channelId);
+      return null;
+    }
+
+    if (
+      allowRemoteFetch &&
+      !cached.metadata.usable &&
+      cached.metadata.checkMembership
+    ) {
+      return null;
+    }
+
+    return cached.metadata;
+  }
+
+  private rememberRequiredSubscriptionChannelMetadata(
+    metadata: RequiredSubscriptionChannelMetadata,
+  ): RequiredSubscriptionChannelMetadata {
+    this.requiredSubscriptionChannelMetadataCache.set(metadata.id, {
+      expiresAt: Date.now() + REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS,
+      metadata,
+    });
+    return metadata;
   }
 
   private readRequiredSubscriptionChannelTitle(channelId: string, value: string): string {

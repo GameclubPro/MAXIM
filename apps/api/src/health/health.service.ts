@@ -52,6 +52,7 @@ const READINESS_CACHE_TTL_MS = 2_000;
 const DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 2_000;
 const DEFAULT_READINESS_BUILD_TIMEOUT_MS = 2_500;
 const DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS = 1_500;
+const DEFAULT_READINESS_FRESH_HEALTHY_DEPENDENCY_MAX_AGE_MS = 10_000;
 const DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS = 30_000;
 const DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS = 5 * 60_000;
 const STALE_READY_SOFT_WARNING_CODE = 'stale-ready-fallback';
@@ -72,6 +73,7 @@ export class HealthService implements OnModuleDestroy {
   private readonly queueSnapshotMaxAgeMs: number;
   private readonly readinessBuildTimeoutMs: number;
   private readonly readinessDependencyTimeoutMs: number;
+  private readonly readinessFreshHealthyDependencyMaxAgeMs: number;
   private readonly readinessStaleFallbackMaxAgeMs: number;
   private readonly readinessDependencyFallbackMaxAgeMs: number;
   private readyCache: ReadinessSnapshot | null = null;
@@ -79,6 +81,11 @@ export class HealthService implements OnModuleDestroy {
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
   private backgroundQueueMetricsRefreshPromise: Promise<void> | null = null;
   private backgroundQueueMetricsRefreshStartedAtMs = 0;
+  private readonly backgroundDependencyRefreshPromises = new Map<
+    DependencyHealthKey,
+    Promise<void>
+  >();
+  private readonly backgroundDependencyRefreshStartedAtMs = new Map<DependencyHealthKey, number>();
   private queueLagBreachStartedAtMs: number | null = null;
   private readonly dependencyHealth = new Map<DependencyHealthKey, DependencyHealthState>();
 
@@ -119,6 +126,16 @@ export class HealthService implements OnModuleDestroy {
       configService.get<number>(
         'READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS',
         DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS,
+      ),
+    );
+    this.readinessFreshHealthyDependencyMaxAgeMs = Math.max(
+      READINESS_CACHE_TTL_MS,
+      Math.min(
+        this.readinessDependencyFallbackMaxAgeMs,
+        configService.get<number>(
+          'READINESS_FRESH_HEALTHY_DEPENDENCY_MAX_AGE_MS',
+          DEFAULT_READINESS_FRESH_HEALTHY_DEPENDENCY_MAX_AGE_MS,
+        ),
       ),
     );
   }
@@ -224,8 +241,8 @@ export class HealthService implements OnModuleDestroy {
 
   private async buildReadySnapshot(): Promise<ReadinessSnapshot> {
     const [database, redis, systemMode, queueMetricsResult] = await Promise.all([
-      this.withTimeout(this.checkDatabase(), this.readinessDependencyTimeoutMs, 'database check'),
-      this.withTimeout(this.checkRedis(), this.readinessDependencyTimeoutMs, 'redis check'),
+      this.resolveDependencyHealth('database', () => this.checkDatabase(), 'database check'),
+      this.resolveDependencyHealth('redis', () => this.checkRedis(), 'redis check'),
       this.withTimeout(
         this.systemModeService.getEffectiveSnapshot(),
         this.readinessDependencyTimeoutMs,
@@ -233,8 +250,6 @@ export class HealthService implements OnModuleDestroy {
       ),
       this.tryGetQueueMetricsSnapshot(),
     ]);
-    this.recordDependencyHealth('database', database);
-    this.recordDependencyHealth('redis', redis);
     const queueMetrics = queueMetricsResult.snapshot;
     const cachedQueueMetrics =
       queueMetrics ??
@@ -598,6 +613,21 @@ export class HealthService implements OnModuleDestroy {
     }
   }
 
+  private async resolveDependencyHealth(
+    dependency: DependencyHealthKey,
+    check: () => Promise<boolean>,
+    label: string,
+  ): Promise<boolean> {
+    if (this.readFreshHealthyDependencyHealth(dependency)) {
+      this.refreshDependencyHealthInBackground(dependency, check, label);
+      return true;
+    }
+
+    const result = await this.withTimeout(check(), this.readinessDependencyTimeoutMs, label);
+    this.recordDependencyHealth(dependency, result);
+    return result;
+  }
+
   private recordDependencyHealth(dependency: DependencyHealthKey, ok: boolean): void {
     this.dependencyHealth.set(dependency, {
       ok,
@@ -617,6 +647,48 @@ export class HealthService implements OnModuleDestroy {
     }
 
     return cached.ok;
+  }
+
+  private readFreshHealthyDependencyHealth(dependency: DependencyHealthKey): boolean {
+    const cached = this.dependencyHealth.get(dependency);
+    if (!cached) {
+      return false;
+    }
+
+    if (!cached.ok) {
+      return false;
+    }
+
+    return Date.now() - cached.checkedAtMs <= this.readinessFreshHealthyDependencyMaxAgeMs;
+  }
+
+  private refreshDependencyHealthInBackground(
+    dependency: DependencyHealthKey,
+    check: () => Promise<boolean>,
+    label: string,
+  ): void {
+    if (this.backgroundDependencyRefreshPromises.has(dependency)) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastStartedAtMs = this.backgroundDependencyRefreshStartedAtMs.get(dependency) ?? 0;
+    if (now - lastStartedAtMs < READINESS_CACHE_TTL_MS) {
+      return;
+    }
+
+    this.backgroundDependencyRefreshStartedAtMs.set(dependency, now);
+    const refreshPromise = this.withTimeout(check(), this.readinessDependencyTimeoutMs, label)
+      .then((result) => {
+        this.recordDependencyHealth(dependency, result);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (this.backgroundDependencyRefreshPromises.get(dependency) === refreshPromise) {
+          this.backgroundDependencyRefreshPromises.delete(dependency);
+        }
+      });
+    this.backgroundDependencyRefreshPromises.set(dependency, refreshPromise);
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
