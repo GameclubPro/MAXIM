@@ -71,7 +71,7 @@ jest.mock('ioredis', () => {
 
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
 
-function createConfigMock(overrides: Partial<Record<string, number | string>> = {}) {
+function createConfigMock(overrides: Partial<Record<string, number | string | boolean>> = {}) {
   return {
     getOrThrow: jest.fn((key: string) => {
       if (key === 'REDIS_URL') {
@@ -80,14 +80,14 @@ function createConfigMock(overrides: Partial<Record<string, number | string>> = 
 
       throw new Error(`Unexpected config key ${key}`);
     }),
-    get: jest.fn((key: string) => {
+    get: jest.fn((key: string, fallback?: unknown) => {
       if (key in overrides) {
         return overrides[key];
       }
       if (key === 'MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS') {
         return 0;
       }
-      return undefined;
+      return fallback;
     }),
   };
 }
@@ -220,6 +220,62 @@ describe('MaxMembershipLookupService', () => {
       ['user-1'],
       expect.objectContaining({
         botId: 'id613002203036_4_bot',
+      }),
+    );
+  });
+
+  it('keeps membership cache isolated per bot scope while leaving chat-level hot state shared', async () => {
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValueOnce(new Map([['user-1', { userId: 'user-1', isAdmin: false }]]))
+        .mockResolvedValueOnce(new Map()),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId: string) => ({ id: botId })),
+      getAllBots: jest.fn(() => [{ id: 'bot-a' }, { id: 'bot-b' }]),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    await expect(
+      service.getMembership('channel-shared', 'user-1', 'moderation_required_subscription', {
+        botId: 'bot-a',
+      }),
+    ).resolves.toBe(true);
+
+    await expect(
+      service.getMembership('channel-shared', 'user-1', 'moderation_required_subscription', {
+        botId: 'bot-b',
+      }),
+    ).resolves.toBe(false);
+
+    await expect(
+      service.getMembership('channel-shared', 'user-1', 'moderation_required_subscription', {
+        botId: 'bot-a',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatMembersAccess).toHaveBeenNthCalledWith(
+      1,
+      'channel-shared',
+      ['user-1'],
+      expect.objectContaining({
+        botId: 'bot-a',
+      }),
+    );
+    expect(maxClient.getChatMembersAccess).toHaveBeenNthCalledWith(
+      2,
+      'channel-shared',
+      ['user-1'],
+      expect.objectContaining({
+        botId: 'bot-b',
       }),
     );
   });

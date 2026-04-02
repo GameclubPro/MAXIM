@@ -173,6 +173,7 @@ import {
   isSystemModeRecoveryWindow,
   type SystemModeSnapshot,
 } from '../system/system-mode.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import {
   ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE,
   type AdminManagedEntitiesRefreshJob,
@@ -723,6 +724,8 @@ export class AdminService {
     @InjectQueue(ADMIN_MANAGED_ENTITIES_REFRESH_QUEUE)
     private readonly adminManagedEntitiesRefreshQueue?: Queue<AdminManagedEntitiesRefreshJob>,
     @Optional() private readonly systemModeService?: SystemModeService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -1283,14 +1286,17 @@ export class AdminService {
       cursor = null;
     }
 
-    if (await this.isManagedEntitiesBackgroundRefreshPaused('schedule')) {
+    const backgroundPauseDecision = await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
+      'schedule',
+    );
+    if (backgroundPauseDecision) {
       const pausedCursor =
         cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
       const presentation = await this.loadManagedEntitiesRefreshPresentationData(userId, entityType);
       return this.createManagedEntitiesRefreshState(
         pausedCursor,
         true,
-        MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
+        backgroundPauseDecision.retryAfterMs,
         presentation,
       );
     }
@@ -16903,13 +16909,54 @@ export class AdminService {
   private async isManagedEntitiesBackgroundRefreshPaused(
     reason: 'schedule' | 'job',
   ): Promise<boolean> {
+    return (await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(reason)) !== null;
+  }
+
+  private async resolveManagedEntitiesBackgroundRefreshPauseDecision(
+    reason: 'schedule' | 'job',
+  ): Promise<{ reason: string; retryAfterMs: number } | null> {
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'admin-managed-refresh',
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      });
+      if (decision.action === 'run') {
+        return null;
+      }
+
+      const now = Date.now();
+      if (
+        now - this.managedEntitiesDegradePauseLogAtMs >=
+        MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS
+      ) {
+        this.managedEntitiesDegradePauseLogAtMs = now;
+        this.logger.log(
+          {
+            reason,
+            action: decision.action,
+            details: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
+          },
+          'Paused managed entities background refresh because the runtime governor detected pressure',
+        );
+      }
+
+      return {
+        reason: decision.reason,
+        retryAfterMs: decision.retryAfterMs,
+      };
+    }
+
     const snapshot = await this.resolveSystemModeSnapshot();
     if (snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
-      return false;
+      return null;
     }
 
     const now = Date.now();
-    if (now - this.managedEntitiesDegradePauseLogAtMs >= MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
+    if (
+      now - this.managedEntitiesDegradePauseLogAtMs >=
+      MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS
+    ) {
       this.managedEntitiesDegradePauseLogAtMs = now;
       this.logger.log(
         {
@@ -16922,7 +16969,10 @@ export class AdminService {
       );
     }
 
-    return true;
+    return {
+      reason: snapshot.reason,
+      retryAfterMs: MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
+    };
   }
 
   private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {

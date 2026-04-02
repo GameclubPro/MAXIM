@@ -3,11 +3,20 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 
 export type ReadinessSnapshot = {
   ok: boolean;
   timestamp: string;
+  burst?: {
+    active: boolean;
+    peakLagSec: number;
+    peakBotId: string | null;
+    startedAt: string | null;
+    lastRecoveredAt: string | null;
+    sampleAgeMs: number;
+  };
   bots: Record<
     string,
     {
@@ -94,6 +103,7 @@ export class HealthService implements OnModuleDestroy {
     private readonly queueMetricsService: QueueMetricsService,
     private readonly systemModeService: SystemModeService,
     configService: ConfigService,
+    private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
@@ -256,6 +266,13 @@ export class HealthService implements OnModuleDestroy {
       this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ??
       null;
     const queueMetricsFallbackDetail = queueMetricsResult.fallbackDetail;
+    if (queueMetrics) {
+      await this.runtimeDiagnosticsService?.recordQueueLagSnapshot({
+        queues: queueMetrics,
+        mode: systemMode,
+      });
+    }
+    const runtimeDiagnostics = await this.runtimeDiagnosticsService?.getDashboardSnapshot();
 
     const effectiveLagSec =
       queueMetrics?.userFacingEffectiveLagSec ?? queueMetrics?.effectiveLagSec ?? systemMode.queueLagSec ?? 0;
@@ -304,6 +321,7 @@ export class HealthService implements OnModuleDestroy {
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
+      ...(runtimeDiagnostics ? { burst: runtimeDiagnostics.burst } : {}),
       bots: this.mapQueueMetricsBots(cachedQueueMetrics),
       systemMode: {
         ...systemMode,

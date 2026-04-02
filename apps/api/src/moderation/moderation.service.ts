@@ -58,6 +58,12 @@ import {
 } from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
 import {
+  BackgroundRuntimeGovernorService,
+} from '../system/background-runtime-governor.service';
+import {
+  RuntimeDiagnosticsService,
+} from '../system/runtime-diagnostics.service';
+import {
   SystemModeService,
   isSystemModeRecoveryWindow,
   type SystemModeSnapshot,
@@ -294,6 +300,8 @@ const DEFAULT_SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS = 1_000;
 const DEFAULT_SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS = 1_000;
 const DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS = 10_000;
 const WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS = 5_000;
+const WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS = 1_500;
+const REQUIRED_SUBSCRIPTION_METADATA_REFRESH_MIN_REMAINING_MS = 2_000;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
@@ -458,6 +466,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
     @Optional() private readonly maxBotContextService?: MaxBotContextService,
     @Optional() private readonly queueMetricsService?: QueueMetricsService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional()
+    private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -654,6 +666,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null) ??
       this.maxBotLinkService?.getDefaultBotId() ??
       null;
+    if (this.readLowerString(update.type) === 'message_created' && update.message?.chatId) {
+      void this.runtimeDiagnosticsService?.recordHotChatMessage({
+        chatId: update.message.chatId,
+        botId: activeBotId,
+      });
+    }
 
     try {
       let hotPathProfile: WebhookHotPathProfile | null = null;
@@ -1017,6 +1035,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (this.shouldSkipHotChatModeration(mode, hotChatBackoffActive)) {
         this.logHotChatModerationSkip(chatId, senderId, mode);
         this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
+        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+          stage: 'hot-chat-skip',
+          outcome: 'skip',
+          failOpen: true,
+        });
         return;
       }
 
@@ -1045,15 +1068,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         !globalSpammerTracking.skipKnownSpammerCheck &&
         !isGlobalSpammerExempt
       ) {
-        const handled = await this.handleKnownSpammerSenderMessage({
-          chatId,
-          userId: senderId,
-          messageId,
-          text,
+        const knownSpammerSkipReason = this.resolveOptionalWebhookStageSkipReason({
+          stage: 'known-spammer-check',
+          hotPathProfile,
+          systemMode: mode,
+          hotChatBackoffActive,
         });
-        this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
-        if (handled) {
-          return;
+        if (knownSpammerSkipReason) {
+          this.recordOptionalWebhookStageSkip({
+            stage: 'known-spammer-check',
+            reason: knownSpammerSkipReason,
+            failOpen: true,
+          });
+        } else {
+          const handled = await this.handleKnownSpammerSenderMessage({
+            chatId,
+            userId: senderId,
+            messageId,
+            text,
+          });
+          this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
+          if (handled) {
+            return;
+          }
         }
       }
 
@@ -1071,12 +1108,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settings,
         rulesPublishedUrl,
         rulesPublishedMessageId,
+        hotPathProfile,
       });
       if (requiredSubscriptionHandled) {
         return;
       }
 
       const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
+      const duplicateStateSkipReason = this.resolveOptionalWebhookStageSkipReason({
+        stage: 'rule-engine.duplicate-state',
+        hotPathProfile,
+        systemMode: mode,
+        hotChatBackoffActive,
+      });
+      if (duplicateStateSkipReason) {
+        this.recordOptionalWebhookStageSkip({
+          stage: 'rule-engine.duplicate-state',
+          reason: duplicateStateSkipReason,
+        });
+      }
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,
@@ -1089,6 +1139,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasVideoAttachment: mediaFlags.hasVideoAttachment,
         hasFileAttachment: mediaFlags.hasFileAttachment,
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
+        skipDuplicateState: Boolean(duplicateStateSkipReason),
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
 
@@ -6669,6 +6720,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     >;
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
+    hotPathProfile?: WebhookHotPathProfile | null;
   }): Promise<boolean> {
     if (!params.settings.requiredSubscriptionEnabled) {
       return false;
@@ -6683,6 +6735,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: params.chatId,
         userId: params.userId,
         reason: pressureSkipReason,
+      });
+      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+        stage: 'required-subscription',
+        outcome: 'skip',
+        failOpen: true,
       });
       return false;
     }
@@ -6738,12 +6795,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
       return !metadata || !metadata.usable;
     });
-    const refreshedMissingChannels =
-      missingChannelIdsNeedingRefresh.length > 0
-        ? await this.resolveRequiredSubscriptionChannels(missingChannelIdsNeedingRefresh, {
+    let refreshedMissingChannels: RequiredSubscriptionChannelMetadata[] = [];
+    if (missingChannelIdsNeedingRefresh.length > 0) {
+      const metadataRefreshSkipReason = this.resolveOptionalWebhookStageSkipReason({
+        stage: 'required-subscription.metadata-refresh',
+        hotPathProfile: params.hotPathProfile,
+        systemMode: params.systemMode,
+        hotChatBackoffActive: params.hotChatBackoffActive,
+        minRemainingMs: REQUIRED_SUBSCRIPTION_METADATA_REFRESH_MIN_REMAINING_MS,
+      });
+      if (metadataRefreshSkipReason) {
+        this.recordOptionalWebhookStageSkip({
+          stage: 'required-subscription.metadata-refresh',
+          reason: metadataRefreshSkipReason,
+          failOpen: false,
+        });
+      } else {
+        refreshedMissingChannels = await this.resolveRequiredSubscriptionChannels(
+          missingChannelIdsNeedingRefresh,
+          {
             allowRemoteFetch: true,
-          })
-        : [];
+          },
+        );
+      }
+    }
     const refreshedMissingChannelsById = new Map(
       refreshedMissingChannels.map((channel) => [channel.id, channel] as const),
     );
@@ -7044,10 +7119,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
   ): Promise<boolean | null> {
     if (this.membershipLookupService) {
+      const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
       return this.membershipLookupService.getMembership(
         channelId,
         userId,
         'moderation_required_subscription',
+        activeBotId ? { botId: activeBotId } : {},
       );
     }
 
@@ -8666,30 +8743,51 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       prefetchRemoteLookupWhenLocalAdminsKnown?: boolean;
     },
   ): Promise<ChatAdminCheckResult> {
+    const startedAtMs = Date.now();
     const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
     if (localIsAdmin) {
-      return { isAdmin: true, source: 'local' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: true, source: 'local' },
+        'admin-check.local',
+        startedAtMs,
+      );
     }
 
     const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
       allowLookup: false,
     });
     if (cachedRemoteAdminAccess === 'granted') {
-      return { isAdmin: true, source: 'remote' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: true, source: 'remote' },
+        'admin-check.remote-cache',
+        startedAtMs,
+      );
     }
     if (cachedRemoteAdminAccess === 'user_denied') {
-      return { isAdmin: false, source: 'remote' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'remote' },
+        'admin-check.remote-cache',
+        startedAtMs,
+      );
     }
 
     const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
     if (options?.allowRemoteLookup === false) {
-      return { isAdmin: false, source: 'local_fallback' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'local_fallback' },
+        'admin-check.local-fallback',
+        startedAtMs,
+      );
     }
     if (options?.skipRemoteLookupWhenLocalAdminsKnown && localAdminsKnown) {
       if (options.prefetchRemoteLookupWhenLocalAdminsKnown) {
         void this.prefetchRemoteChatAdminAccess(chatId, userId);
       }
-      return { isAdmin: false, source: 'local_fallback' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'local_fallback' },
+        'admin-check.local-fallback',
+        startedAtMs,
+      );
     }
 
     if (
@@ -8701,27 +8799,51 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       if (remoteAdminAccess) {
         if (remoteAdminAccess === 'granted') {
-          return { isAdmin: true, source: 'remote' };
+          return this.finalizeAdminCheckResult(
+            { isAdmin: true, source: 'remote' },
+            'admin-check.remote-soft-timeout',
+            startedAtMs,
+          );
         }
-        return { isAdmin: false, source: 'remote' };
+        return this.finalizeAdminCheckResult(
+          { isAdmin: false, source: 'remote' },
+          'admin-check.remote-soft-timeout',
+          startedAtMs,
+        );
       }
 
-      return { isAdmin: false, source: 'local_fallback' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'local_fallback' },
+        'admin-check.soft-timeout-fallback',
+        startedAtMs,
+      );
     }
 
     const remoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId);
     if (remoteAdminAccess) {
       if (remoteAdminAccess === 'granted') {
-        return { isAdmin: true, source: 'remote' };
+        return this.finalizeAdminCheckResult(
+          { isAdmin: true, source: 'remote' },
+          'admin-check.remote',
+          startedAtMs,
+        );
       }
-      return { isAdmin: false, source: 'remote' };
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'remote' },
+        'admin-check.remote',
+        startedAtMs,
+      );
     }
 
     // Fallback for temporary MAX API issues: keep local allowlist behavior.
-    return {
-      isAdmin: localIsAdmin,
-      source: 'local_fallback',
-    };
+    return this.finalizeAdminCheckResult(
+      {
+        isAdmin: localIsAdmin,
+        source: 'local_fallback',
+      },
+      'admin-check.local-fallback',
+      startedAtMs,
+    );
   }
 
   private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
@@ -11481,8 +11603,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
   }> {
+    const startedAtMs = Date.now();
     if (this.chatContextCache) {
       const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
+      this.recordRuntimeStageObservation('chat-context.cache', Date.now() - startedAtMs);
       return {
         settings: cached.settings,
         domainAllowlist: cached.domainAllowlist,
@@ -11537,6 +11661,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!chat.settings) {
       throw new Error(`Chat settings missing for chat ${chatId}`);
     }
+
+    this.recordRuntimeStageObservation('chat-context.db', Date.now() - startedAtMs);
 
     return {
       settings: chat.settings,
@@ -11809,8 +11935,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       await Promise.race([taskPromise, timeoutPromise]);
       const durationMs = Date.now() - startedAtMs;
+      const timeoutContext = getTimeoutContext?.() ?? null;
+      if (timeoutContext) {
+        void this.runtimeDiagnosticsService?.recordHotPathProfile({
+          snapshot: timeoutContext,
+        });
+      }
       if (durationMs >= WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS) {
-        const timeoutContext = getTimeoutContext?.() ?? null;
         this.logger.warn(
           {
             webhookEventId,
@@ -11824,6 +11955,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Slow webhook user-facing hot path completed close to the watchdog deadline',
         );
       }
+    } catch (error: unknown) {
+      if ((error as { code?: unknown })?.code === 'WEBHOOK_USER_FACING_TIMEOUT') {
+        const timeoutContext = getTimeoutContext?.() ?? null;
+        const latestStage =
+          timeoutContext && typeof timeoutContext.latestStage === 'string'
+            ? timeoutContext.latestStage
+            : 'unknown';
+        if (timeoutContext) {
+          void this.runtimeDiagnosticsService?.recordHotPathProfile({
+            snapshot: timeoutContext,
+          });
+        }
+        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+          stage: latestStage,
+          outcome: 'timeout',
+          failOpen: true,
+        });
+      }
+      throw error;
     } finally {
       if (timeout) {
         clearTimeout(timeout);
@@ -11984,6 +12134,90 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return `${baseMessage} [${details.join(', ')}]`;
+  }
+
+  private resolveOptionalWebhookStageSkipReason(params: {
+    stage: string;
+    hotPathProfile?: WebhookHotPathProfile | null;
+    systemMode: SystemModeSnapshot;
+    hotChatBackoffActive?: boolean;
+    minRemainingMs?: number;
+  }): string | null {
+    const snapshot = this.readWebhookHotPathProfileSnapshot(params.hotPathProfile);
+    const elapsedMs =
+      typeof snapshot?.elapsedMs === 'number' && Number.isFinite(snapshot.elapsedMs)
+        ? snapshot.elapsedMs
+        : null;
+    if (elapsedMs === null) {
+      return null;
+    }
+
+    const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs);
+    const pressureActive =
+      params.hotChatBackoffActive === true ||
+      params.systemMode.mode === 'degrade' ||
+      params.systemMode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC / 2;
+    if (!pressureActive) {
+      return null;
+    }
+
+    const minRemainingMs = Math.max(
+      1,
+      Math.ceil(params.minRemainingMs ?? WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS),
+    );
+    if (remainingMs > minRemainingMs) {
+      return null;
+    }
+
+    if (params.hotChatBackoffActive) {
+      return `${params.stage} skipped with ${remainingMs}ms remaining in hot-chat backoff`;
+    }
+    if (params.systemMode.mode === 'degrade') {
+      return `${params.stage} skipped with ${remainingMs}ms remaining during ${params.systemMode.reason || 'degrade'}`;
+    }
+    return `${params.stage} skipped with ${remainingMs}ms remaining at queue lag ${params.systemMode.queueLagSec.toFixed(1)}s`;
+  }
+
+  private recordOptionalWebhookStageSkip(params: {
+    stage: string;
+    reason: string;
+    failOpen?: boolean;
+  }): void {
+    this.logger.warn(
+      {
+        stage: params.stage,
+        reason: params.reason,
+      },
+      'Skipped optional moderation stage because the hot-path budget is almost exhausted',
+    );
+    void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+      stage: params.stage,
+      outcome: 'skip',
+      failOpen: params.failOpen,
+    });
+  }
+
+  private recordRuntimeStageObservation(stage: string, elapsedMs: number): void {
+    if (!stage.trim()) {
+      return;
+    }
+
+    void this.runtimeDiagnosticsService?.recordHotPathProfile({
+      snapshot: {
+        stageDurations: {
+          [stage]: Math.max(0, Math.trunc(elapsedMs)),
+        },
+      },
+    });
+  }
+
+  private finalizeAdminCheckResult(
+    result: ChatAdminCheckResult,
+    stage: string,
+    startedAtMs: number,
+  ): ChatAdminCheckResult {
+    this.recordRuntimeStageObservation(stage, Date.now() - startedAtMs);
+    return result;
   }
 
   private createWebhookHotPathProfile(): WebhookHotPathProfile {
@@ -12674,6 +12908,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<boolean> {
     if (task === 'night-mode-announcements') {
       return false;
+    }
+
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'moderation',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+      });
+      if (decision.action === 'run') {
+        return false;
+      }
+
+      const now = Date.now();
+      if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+        this.channelAutoPostPausedLogAtMs = now;
+        this.logger.log(
+          {
+            task,
+            action: decision.action,
+            reason: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
+          },
+          'Paused moderation background work because the runtime governor detected pressure',
+        );
+      }
+      return true;
     }
 
     const mode = await this.resolveSystemModeSnapshot();

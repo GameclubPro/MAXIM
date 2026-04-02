@@ -1760,6 +1760,114 @@ export type BotOwnershipFoundationSnapshot = z.infer<
   typeof botOwnershipFoundationSnapshotSchema
 >;
 
+export const systemDashboardBurstSchema = z.object({
+  active: z.boolean(),
+  peakLagSec: z.number().min(0),
+  peakBotId: z.string().nullable(),
+  startedAt: z.string().datetime().nullable(),
+  lastRecoveredAt: z.string().datetime().nullable(),
+  sampleAgeMs: z.number().int().min(0),
+});
+export type SystemDashboardBurst = z.infer<typeof systemDashboardBurstSchema>;
+
+export const systemDashboardHotPathStageSchema = z.object({
+  stage: z.string(),
+  count: z.number().int().min(0),
+  slowCount: z.number().int().min(0),
+  timeoutCount: z.number().int().min(0),
+  skipCount: z.number().int().min(0),
+  failOpenCount: z.number().int().min(0),
+  avgElapsedMs: z.number().min(0),
+  maxElapsedMs: z.number().int().min(0),
+  lastObservedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardHotPathStage = z.infer<typeof systemDashboardHotPathStageSchema>;
+
+export const systemDashboardHotPathSchema = z.object({
+  windowSec: z.number().int().positive(),
+  failOpenCount: z.number().int().min(0),
+  stages: z.array(systemDashboardHotPathStageSchema),
+});
+export type SystemDashboardHotPath = z.infer<typeof systemDashboardHotPathSchema>;
+
+export const systemDashboardHotChatSchema = z.object({
+  chatId: z.string(),
+  messageCreatedCount: z.number().int().min(0),
+  botsSeen: z.number().int().min(0),
+  lastSeenAt: z.string().datetime(),
+});
+export type SystemDashboardHotChat = z.infer<typeof systemDashboardHotChatSchema>;
+
+export const systemDashboardHotChatsSchema = z.object({
+  windowSec: z.number().int().positive(),
+  items: z.array(systemDashboardHotChatSchema),
+});
+export type SystemDashboardHotChats = z.infer<typeof systemDashboardHotChatsSchema>;
+
+export const systemDashboardBackgroundBudgetSourceSchema = z.object({
+  sourceTag: z.string(),
+  totalRequests: z.number().int().min(0),
+  avgRps: z.number().min(0),
+  peakRps: z.number().int().min(0),
+});
+export type SystemDashboardBackgroundBudgetSource = z.infer<
+  typeof systemDashboardBackgroundBudgetSourceSchema
+>;
+
+export const systemDashboardBackgroundBudgetPauseReasonSchema = z.object({
+  component: z.string(),
+  sourceTag: z.string(),
+  action: z.enum(['run', 'slow', 'pause']),
+  reason: z.string(),
+  count: z.number().int().min(0),
+  lastObservedAt: z.string().datetime().nullable(),
+});
+export type SystemDashboardBackgroundBudgetPauseReason = z.infer<
+  typeof systemDashboardBackgroundBudgetPauseReasonSchema
+>;
+
+export const systemDashboardBackgroundBudgetSchema = z.object({
+  windowSec: z.number().int().positive(),
+  backgroundShare: z.number().min(0).max(1),
+  topSources: z.array(systemDashboardBackgroundBudgetSourceSchema),
+  pauseReasons: z.array(systemDashboardBackgroundBudgetPauseReasonSchema),
+});
+export type SystemDashboardBackgroundBudget = z.infer<
+  typeof systemDashboardBackgroundBudgetSchema
+>;
+
+export const systemDashboardMembershipLookupSampleSchema = z.object({
+  chatId: z.string(),
+  policyName: z.string(),
+  lastObservedAt: z.string().datetime(),
+  retryAfterMs: z.number().int().min(0).nullable(),
+});
+export type SystemDashboardMembershipLookupSample = z.infer<
+  typeof systemDashboardMembershipLookupSampleSchema
+>;
+
+export const systemDashboardMembershipLookupIssueSampleSchema =
+  systemDashboardMembershipLookupSampleSchema.extend({
+    kind: z.enum(['transient', 'terminal']),
+  });
+export type SystemDashboardMembershipLookupIssueSample = z.infer<
+  typeof systemDashboardMembershipLookupIssueSampleSchema
+>;
+
+export const systemDashboardMembershipLookupSchema = z.object({
+  windowSec: z.number().int().positive(),
+  hotChannels: z.number().int().min(0),
+  backoffActiveChats: z.number().int().min(0),
+  transientIssues: z.number().int().min(0),
+  terminalIssues: z.number().int().min(0),
+  hotChannelsSample: z.array(systemDashboardMembershipLookupSampleSchema),
+  backoffSample: z.array(systemDashboardMembershipLookupSampleSchema),
+  issueSample: z.array(systemDashboardMembershipLookupIssueSampleSchema),
+});
+export type SystemDashboardMembershipLookup = z.infer<
+  typeof systemDashboardMembershipLookupSchema
+>;
+
 export const systemDashboardResponseSchema = z.object({
   summary: systemDashboardSummarySchema,
   alerts: z.array(systemDashboardAlertSchema),
@@ -1767,6 +1875,11 @@ export const systemDashboardResponseSchema = z.object({
   mode: systemModeSnapshotSchema,
   webhookSubscription: webhookSubscriptionSnapshotSchema,
   ownership: botOwnershipFoundationSnapshotSchema,
+  burst: systemDashboardBurstSchema.optional(),
+  hotPath: systemDashboardHotPathSchema.optional(),
+  hotChats: systemDashboardHotChatsSchema.optional(),
+  backgroundBudget: systemDashboardBackgroundBudgetSchema.optional(),
+  membershipLookup: systemDashboardMembershipLookupSchema.optional(),
 });
 export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;
 

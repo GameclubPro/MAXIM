@@ -13,6 +13,9 @@ import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  BackgroundRuntimeGovernorService,
+} from '../system/background-runtime-governor.service';
+import {
   SystemModeService,
   isSystemModeRecoveryWindow,
   type SystemModeSnapshot,
@@ -72,6 +75,8 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     configService: ConfigService,
     @Optional() private readonly systemModeService?: SystemModeService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.startupSyncEnabled = configService.get<boolean>('CHANNEL_STATS_STARTUP_SYNC_ENABLED', false);
@@ -612,6 +617,32 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'channel-stats',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      });
+      if (decision.action === 'run') {
+        return false;
+      }
+
+      const now = Date.now();
+      if (now - this.degradePauseLogAtMs >= CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
+        this.degradePauseLogAtMs = now;
+        this.logger.log(
+          {
+            reason,
+            action: decision.action,
+            details: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
+          },
+          'Paused background channel stats sync because the runtime governor detected pressure',
+        );
+      }
+
+      return true;
+    }
+
     const snapshot = await this.resolveSystemModeSnapshot();
     if (snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
       return false;

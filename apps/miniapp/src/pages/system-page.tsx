@@ -42,6 +42,24 @@ function formatTime(value: string): string {
   });
 }
 
+function formatDateTime(value: string): string {
+  return new Date(value).toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatWindow(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds} c`;
+  }
+
+  const minutes = Math.round(seconds / 60);
+  return `${minutes} мин`;
+}
+
 function summaryTone(status: 'healthy' | 'warning' | 'critical') {
   if (status === 'critical') {
     return 'danger';
@@ -183,6 +201,11 @@ export function SystemPage({ api }: { api: ApiTransport }) {
     { label: 'Actions', queue: dashboard.queues.actions },
     { label: 'Moderation total', queue: dashboard.queues.moderation },
   ];
+  const hotPathStages = dashboard.hotPath?.stages.slice(0, 6) ?? [];
+  const hotChats = dashboard.hotChats?.items.slice(0, 6) ?? [];
+  const backgroundSources = dashboard.backgroundBudget?.topSources.slice(0, 5) ?? [];
+  const backgroundPauses = dashboard.backgroundBudget?.pauseReasons.slice(0, 5) ?? [];
+  const membershipIssues = dashboard.membershipLookup?.issueSample.slice(0, 5) ?? [];
   return (
     <div className="page-stack page-enter">
       <GlassCard className="system-hero" elevated>
@@ -328,6 +351,199 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           />
         )}
       </GlassCard>
+
+      <section className="system-grid" aria-label="Runtime diagnostics">
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Burst и hot path</h2>
+              <p>Короткий срез по burst episodes и стадиям, которые реально съедают tail latency.</p>
+            </div>
+            {dashboard.burst ? (
+              <span className={dashboard.burst.active ? 'chip chip--danger' : 'chip'}>
+                {dashboard.burst.active ? 'Burst active' : 'Burst quiet'}
+              </span>
+            ) : null}
+          </div>
+          {dashboard.burst ? (
+            <div className="system-runtime-grid">
+              <article className="system-runtime-card">
+                <span>Peak lag</span>
+                <strong>{formatLag(dashboard.burst.peakLagSec)}</strong>
+                <small>
+                  {dashboard.burst.startedAt
+                    ? `старт ${formatDateTime(dashboard.burst.startedAt)}`
+                    : 'эпизод ещё не зафиксирован'}
+                </small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Affected bot</span>
+                <strong>{dashboard.burst.peakBotId ?? 'n/a'}</strong>
+                <small>{dashboard.burst.sampleAgeMs} мс age</small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Fail-open</span>
+                <strong>{dashboard.hotPath?.failOpenCount ?? 0}</strong>
+                <small>
+                  окно {dashboard.hotPath ? formatWindow(dashboard.hotPath.windowSec) : 'n/a'}
+                </small>
+              </article>
+            </div>
+          ) : null}
+          {hotPathStages.length > 0 ? (
+            <div className="system-data-list">
+              {hotPathStages.map((stage) => (
+                <article key={stage.stage} className="system-data-list__item">
+                  <div>
+                    <strong>{stage.stage}</strong>
+                    <small>
+                      avg {Math.round(stage.avgElapsedMs)} мс, max {stage.maxElapsedMs} мс
+                    </small>
+                  </div>
+                  <div className="system-data-list__meta">
+                    <span>slow {stage.slowCount}</span>
+                    <span>timeout {stage.timeoutCount}</span>
+                    <span>skip {stage.skipCount}</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="system-panel__hint">Новых hot-path diagnostics пока нет.</p>
+          )}
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Hot chats</h2>
+              <p>Чаты, которые сейчас дают наибольшую плотность `message_created` и shared load.</p>
+            </div>
+            <span className="chip">
+              {dashboard.hotChats ? formatWindow(dashboard.hotChats.windowSec) : 'n/a'}
+            </span>
+          </div>
+          {hotChats.length > 0 ? (
+            <div className="system-data-list">
+              {hotChats.map((chat) => (
+                <article key={chat.chatId} className="system-data-list__item">
+                  <div>
+                    <strong>{chat.chatId}</strong>
+                    <small>last seen {formatDateTime(chat.lastSeenAt)}</small>
+                  </div>
+                  <div className="system-data-list__meta">
+                    <span>{chat.messageCreatedCount} msgs</span>
+                    <span>{chat.botsSeen} bots</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="system-panel__hint">Сейчас выраженных hot chats нет.</p>
+          )}
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Background budget</h2>
+              <p>Фоновые MAX source tags и причины, по которым governor начинает их душить раньше hard degrade.</p>
+            </div>
+            {dashboard.backgroundBudget ? (
+              <span className="chip">
+                bg share {formatPercent(dashboard.backgroundBudget.backgroundShare)}
+              </span>
+            ) : null}
+          </div>
+          {backgroundSources.length > 0 ? (
+            <div className="system-data-list">
+              {backgroundSources.map((source) => (
+                <article key={source.sourceTag} className="system-data-list__item">
+                  <div>
+                    <strong>{source.sourceTag}</strong>
+                    <small>
+                      avg {source.avgRps.toFixed(2)} rps, peak {source.peakRps} rps
+                    </small>
+                  </div>
+                  <div className="system-data-list__meta">
+                    <span>{source.totalRequests} req</span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="system-panel__hint">Нет выраженного background source-share за текущее окно.</p>
+          )}
+          {backgroundPauses.length > 0 ? (
+            <div className="system-chip-list">
+              {backgroundPauses.map((item) => (
+                <span key={`${item.component}-${item.sourceTag}-${item.reason}`} className="chip">
+                  {item.component}: {item.action} x{item.count}
+                </span>
+              ))}
+            </div>
+          ) : null}
+        </GlassCard>
+
+        <GlassCard className="system-panel" elevated>
+          <div className="system-panel__head">
+            <div>
+              <h2>Membership lookup</h2>
+              <p>Сводка по hot channels, backoff и transient/terminal проблемам membership path.</p>
+            </div>
+            {dashboard.membershipLookup ? (
+              <span className="chip">
+                {dashboard.membershipLookup.hotChannels} hot /{' '}
+                {dashboard.membershipLookup.backoffActiveChats} backoff
+              </span>
+            ) : null}
+          </div>
+          {dashboard.membershipLookup ? (
+            <div className="system-runtime-grid">
+              <article className="system-runtime-card">
+                <span>Transient</span>
+                <strong>{dashboard.membershipLookup.transientIssues}</strong>
+                <small>issues in window</small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Terminal</span>
+                <strong>{dashboard.membershipLookup.terminalIssues}</strong>
+                <small>issues in window</small>
+              </article>
+              <article className="system-runtime-card">
+                <span>Window</span>
+                <strong>{formatWindow(dashboard.membershipLookup.windowSec)}</strong>
+                <small>rolling Redis-backed snapshot</small>
+              </article>
+            </div>
+          ) : null}
+          {membershipIssues.length > 0 ? (
+            <div className="system-data-list">
+              {membershipIssues.map((item) => (
+                <article
+                  key={`${item.kind}-${item.chatId}-${item.policyName}`}
+                  className="system-data-list__item"
+                >
+                  <div>
+                    <strong>
+                      {item.policyName} / {item.chatId}
+                    </strong>
+                    <small>{formatDateTime(item.lastObservedAt)}</small>
+                  </div>
+                  <div className="system-data-list__meta">
+                    <span>{item.kind}</span>
+                    <span>
+                      {item.retryAfterMs === null ? 'retry n/a' : `${item.retryAfterMs} мс`}
+                    </span>
+                  </div>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="system-panel__hint">Активных membership issues сейчас не видно.</p>
+          )}
+        </GlassCard>
+      </section>
 
       <GlassCard className="system-panel" elevated>
         <div className="system-panel__head">

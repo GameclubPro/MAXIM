@@ -261,6 +261,179 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('adds runtime diagnostics and background budget fields when the services are available', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoin: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoinShards: {},
+          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultShards: {},
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
+          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          userFacingWebhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          },
+          actionHealth: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          bots: {},
+          webhookDynamicLeases: null,
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          userFacingOldestQueuedEventId: null,
+          userFacingOldestQueuedCreatedAt: null,
+          userFacingOldestQueuedLagSec: 0,
+          userFacingOldestReceivedEventId: null,
+          userFacingOldestReceivedCreatedAt: null,
+          userFacingOldestReceivedLagSec: 0,
+          userFacingEffectiveLagSec: 0,
+          generatedAt: '2026-03-29T12:00:00.000Z',
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+      undefined,
+      {
+        recordQueueLagSnapshot: jest.fn().mockResolvedValue(undefined),
+        getDashboardSnapshot: jest.fn().mockResolvedValue({
+          burst: {
+            active: false,
+            peakLagSec: 0,
+            peakBotId: null,
+            startedAt: null,
+            lastRecoveredAt: '2026-03-29T11:58:00.000Z',
+            sampleAgeMs: 1200,
+          },
+          hotPath: {
+            windowSec: 900,
+            failOpenCount: 2,
+            stages: [
+              {
+                stage: 'required-subscription',
+                count: 10,
+                slowCount: 2,
+                timeoutCount: 1,
+                skipCount: 1,
+                failOpenCount: 2,
+                avgElapsedMs: 1800,
+                maxElapsedMs: 6200,
+                lastObservedAt: '2026-03-29T12:00:00.000Z',
+              },
+            ],
+          },
+          hotChats: {
+            windowSec: 1800,
+            items: [
+              {
+                chatId: 'chat-1',
+                messageCreatedCount: 42,
+                botsSeen: 2,
+                lastSeenAt: '2026-03-29T12:00:00.000Z',
+              },
+            ],
+          },
+          membershipLookup: {
+            windowSec: 900,
+            hotChannels: 1,
+            backoffActiveChats: 1,
+            transientIssues: 1,
+            terminalIssues: 0,
+            hotChannelsSample: [],
+            backoffSample: [],
+            issueSample: [],
+          },
+        }),
+      } as never,
+      {
+        getDashboardBudgetSummary: jest.fn().mockResolvedValue({
+          windowSec: 600,
+          backgroundShare: 0.45,
+          topSources: [
+            {
+              sourceTag: 'managed_refresh',
+              totalRequests: 150,
+              avgRps: 0.25,
+              peakRps: 5,
+            },
+          ],
+          pauseReasons: [
+            {
+              component: 'admin-managed-refresh',
+              sourceTag: 'managed_refresh',
+              action: 'pause',
+              reason: 'recovery window in progress',
+              count: 3,
+              lastObservedAt: '2026-03-29T12:00:00.000Z',
+            },
+          ],
+        }),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      burst: {
+        active: false,
+        sampleAgeMs: 1200,
+      },
+      hotPath: {
+        failOpenCount: 2,
+      },
+      hotChats: {
+        items: [expect.objectContaining({ chatId: 'chat-1', botsSeen: 2 })],
+      },
+      backgroundBudget: {
+        backgroundShare: 0.45,
+      },
+      membershipLookup: {
+        hotChannels: 1,
+      },
+    });
+  });
+
   it('adds a critical alert when webhook subscription coverage is broken', async () => {
     const service = new SystemDashboardService(
       {

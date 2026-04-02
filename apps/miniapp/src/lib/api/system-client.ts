@@ -89,6 +89,226 @@ function parseSystemDashboardAlert(value: unknown): SystemDashboardAlert {
   };
 }
 
+function parseSystemDashboardBurst(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.active !== 'boolean' ||
+    typeof value.peakLagSec !== 'number' ||
+    (value.peakBotId !== null &&
+      value.peakBotId !== undefined &&
+      typeof value.peakBotId !== 'string') ||
+    (value.startedAt !== null &&
+      value.startedAt !== undefined &&
+      typeof value.startedAt !== 'string') ||
+    (value.lastRecoveredAt !== null &&
+      value.lastRecoveredAt !== undefined &&
+      typeof value.lastRecoveredAt !== 'string') ||
+    typeof value.sampleAgeMs !== 'number'
+  ) {
+    throw new Error('Invalid system dashboard burst');
+  }
+
+  return {
+    active: value.active,
+    peakLagSec: value.peakLagSec,
+    peakBotId: typeof value.peakBotId === 'string' ? value.peakBotId : null,
+    startedAt: typeof value.startedAt === 'string' ? value.startedAt : null,
+    lastRecoveredAt: typeof value.lastRecoveredAt === 'string' ? value.lastRecoveredAt : null,
+    sampleAgeMs: value.sampleAgeMs,
+  };
+}
+
+function parseSystemDashboardHotPath(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.windowSec !== 'number' ||
+    typeof value.failOpenCount !== 'number' ||
+    !Array.isArray(value.stages)
+  ) {
+    throw new Error('Invalid system dashboard hot path');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    failOpenCount: value.failOpenCount,
+    stages: value.stages.map((stage) => {
+      if (
+        !isRecord(stage) ||
+        typeof stage.stage !== 'string' ||
+        typeof stage.count !== 'number' ||
+        typeof stage.slowCount !== 'number' ||
+        typeof stage.timeoutCount !== 'number' ||
+        typeof stage.skipCount !== 'number' ||
+        typeof stage.failOpenCount !== 'number' ||
+        typeof stage.avgElapsedMs !== 'number' ||
+        typeof stage.maxElapsedMs !== 'number' ||
+        (stage.lastObservedAt !== null &&
+          stage.lastObservedAt !== undefined &&
+          typeof stage.lastObservedAt !== 'string')
+      ) {
+        throw new Error('Invalid system dashboard hot path stage');
+      }
+
+      return {
+        stage: stage.stage,
+        count: stage.count,
+        slowCount: stage.slowCount,
+        timeoutCount: stage.timeoutCount,
+        skipCount: stage.skipCount,
+        failOpenCount: stage.failOpenCount,
+        avgElapsedMs: stage.avgElapsedMs,
+        maxElapsedMs: stage.maxElapsedMs,
+        lastObservedAt: typeof stage.lastObservedAt === 'string' ? stage.lastObservedAt : null,
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardHotChats(value: unknown) {
+  if (!isRecord(value) || typeof value.windowSec !== 'number' || !Array.isArray(value.items)) {
+    throw new Error('Invalid system dashboard hot chats');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    items: value.items.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.chatId !== 'string' ||
+        typeof item.messageCreatedCount !== 'number' ||
+        typeof item.botsSeen !== 'number' ||
+        typeof item.lastSeenAt !== 'string'
+      ) {
+        throw new Error('Invalid system dashboard hot chat');
+      }
+
+      return {
+        chatId: item.chatId,
+        messageCreatedCount: item.messageCreatedCount,
+        botsSeen: item.botsSeen,
+        lastSeenAt: item.lastSeenAt,
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardBackgroundBudget(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.windowSec !== 'number' ||
+    typeof value.backgroundShare !== 'number' ||
+    !Array.isArray(value.topSources) ||
+    !Array.isArray(value.pauseReasons)
+  ) {
+    throw new Error('Invalid system dashboard background budget');
+  }
+
+  return {
+    windowSec: value.windowSec,
+    backgroundShare: value.backgroundShare,
+    topSources: value.topSources.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.sourceTag !== 'string' ||
+        typeof item.totalRequests !== 'number' ||
+        typeof item.avgRps !== 'number' ||
+        typeof item.peakRps !== 'number'
+      ) {
+        throw new Error('Invalid system dashboard background budget source');
+      }
+
+      return {
+        sourceTag: item.sourceTag,
+        totalRequests: item.totalRequests,
+        avgRps: item.avgRps,
+        peakRps: item.peakRps,
+      };
+    }),
+    pauseReasons: value.pauseReasons.map((item) => {
+      if (
+        !isRecord(item) ||
+        typeof item.component !== 'string' ||
+        typeof item.sourceTag !== 'string' ||
+        (item.action !== 'run' && item.action !== 'slow' && item.action !== 'pause') ||
+        typeof item.reason !== 'string' ||
+        typeof item.count !== 'number' ||
+        (item.lastObservedAt !== null &&
+          item.lastObservedAt !== undefined &&
+          typeof item.lastObservedAt !== 'string')
+      ) {
+        throw new Error('Invalid system dashboard background pause reason');
+      }
+
+      return {
+        component: item.component,
+        sourceTag: item.sourceTag,
+        action: item.action as 'run' | 'slow' | 'pause',
+        reason: item.reason,
+        count: item.count,
+        lastObservedAt: typeof item.lastObservedAt === 'string' ? item.lastObservedAt : null,
+      };
+    }),
+  };
+}
+
+function parseSystemDashboardMembershipLookup(value: unknown) {
+  if (
+    !isRecord(value) ||
+    typeof value.windowSec !== 'number' ||
+    typeof value.hotChannels !== 'number' ||
+    typeof value.backoffActiveChats !== 'number' ||
+    typeof value.transientIssues !== 'number' ||
+    typeof value.terminalIssues !== 'number' ||
+    !Array.isArray(value.hotChannelsSample) ||
+    !Array.isArray(value.backoffSample) ||
+    !Array.isArray(value.issueSample)
+  ) {
+    throw new Error('Invalid system dashboard membership lookup');
+  }
+
+  const parseSample = (item: unknown) => {
+    if (
+      !isRecord(item) ||
+      typeof item.chatId !== 'string' ||
+      typeof item.policyName !== 'string' ||
+      typeof item.lastObservedAt !== 'string' ||
+      (item.retryAfterMs !== null &&
+        item.retryAfterMs !== undefined &&
+        typeof item.retryAfterMs !== 'number')
+    ) {
+      throw new Error('Invalid system dashboard membership sample');
+    }
+
+    return {
+      chatId: item.chatId,
+      policyName: item.policyName,
+      lastObservedAt: item.lastObservedAt,
+      retryAfterMs: typeof item.retryAfterMs === 'number' ? item.retryAfterMs : null,
+    };
+  };
+
+  return {
+    windowSec: value.windowSec,
+    hotChannels: value.hotChannels,
+    backoffActiveChats: value.backoffActiveChats,
+    transientIssues: value.transientIssues,
+    terminalIssues: value.terminalIssues,
+    hotChannelsSample: value.hotChannelsSample.map((item) => parseSample(item)),
+    backoffSample: value.backoffSample.map((item) => parseSample(item)),
+    issueSample: value.issueSample.map((item) => {
+      const parsed = parseSample(item);
+      const kind = isRecord(item) ? item.kind : null;
+      if (kind !== 'transient' && kind !== 'terminal') {
+        throw new Error('Invalid system dashboard membership issue sample');
+      }
+      return {
+        ...parsed,
+        kind: kind as 'transient' | 'terminal',
+      };
+    }),
+  };
+}
+
 function parseQueueCounters(value: unknown) {
   if (
     !isRecord(value) ||
@@ -488,6 +708,15 @@ function parseSystemDashboardResponse(value: unknown): SystemDashboardResponse {
     mode: parseSystemModeSnapshot(value.mode),
     webhookSubscription: parseWebhookSubscriptionSnapshot(value.webhookSubscription),
     ownership: parseBotOwnershipFoundation(value.ownership),
+    ...(value.burst ? { burst: parseSystemDashboardBurst(value.burst) } : {}),
+    ...(value.hotPath ? { hotPath: parseSystemDashboardHotPath(value.hotPath) } : {}),
+    ...(value.hotChats ? { hotChats: parseSystemDashboardHotChats(value.hotChats) } : {}),
+    ...(value.backgroundBudget
+      ? { backgroundBudget: parseSystemDashboardBackgroundBudget(value.backgroundBudget) }
+      : {}),
+    ...(value.membershipLookup
+      ? { membershipLookup: parseSystemDashboardMembershipLookup(value.membershipLookup) }
+      : {}),
   };
 }
 

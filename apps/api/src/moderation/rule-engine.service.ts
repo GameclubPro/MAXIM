@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import {
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeAllowlistDomain,
@@ -8,6 +8,7 @@ import {
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { buildDuplicateStageKey } from './duplicate-state';
 import { isExactProfanityVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
@@ -42,6 +43,7 @@ export type DetectionResult = {
   violations: RuleViolation[];
   duplicateHit?: DuplicateHit;
   duplicateDecision?: DuplicateDecision;
+  duplicateStateSkipped?: boolean;
 };
 
 type RuleEngineDetectProfile = {
@@ -392,7 +394,10 @@ export class RuleEngineService {
   private readonly blockedWordListCache = new Map<string, readonly string[]>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
-  constructor(private readonly redisCounter: RedisCounterService) {}
+  constructor(
+    private readonly redisCounter: RedisCounterService,
+    @Optional() private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+  ) {}
 
   async detect(params: {
     chatId: string;
@@ -406,6 +411,7 @@ export class RuleEngineService {
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
+    skipDuplicateState?: boolean;
   }): Promise<DetectionResult> {
     const {
       chatId,
@@ -419,6 +425,7 @@ export class RuleEngineService {
       hasVideoAttachment,
       hasFileAttachment,
       hasVoiceAttachment,
+      skipDuplicateState,
     } = params;
     const profile = this.createDetectProfile();
     const violations: RuleViolation[] = [];
@@ -588,7 +595,7 @@ export class RuleEngineService {
       this.shouldTrackDuplicate(text, compactText);
     this.markDetectStage(profile, 'duplicate-precheck');
     const duplicateState =
-      duplicateCandidate
+      duplicateCandidate && !skipDuplicateState
         ? await this.detectDuplicateStateWithin({
             chatId,
             userId,
@@ -607,11 +614,13 @@ export class RuleEngineService {
       duplicateCandidate,
       profile,
     });
+    this.recordDetectProfile(profile);
 
     return {
       violations,
       ...(duplicateState?.hit ? { duplicateHit: duplicateState.hit } : {}),
       ...(duplicateState?.decision ? { duplicateDecision: duplicateState.decision } : {}),
+      ...(skipDuplicateState ? { duplicateStateSkipped: true } : {}),
     };
   }
 
@@ -684,6 +693,20 @@ export class RuleEngineService {
         msg: 'Slow rule-engine detect completed close to the hot-path deadline',
       }),
     );
+  }
+
+  private recordDetectProfile(profile: RuleEngineDetectProfile): void {
+    const snapshot = this.readDetectProfileSnapshot(profile);
+    void this.runtimeDiagnosticsService?.recordHotPathProfile({
+      snapshot: {
+        stageDurations: Object.fromEntries(
+          Object.entries(snapshot.stageDurations).map(([stage, elapsedMs]) => [
+            `rule-engine.${stage}`,
+            elapsedMs,
+          ]),
+        ),
+      },
+    });
   }
 
   private async detectDuplicateStateWithin(params: {

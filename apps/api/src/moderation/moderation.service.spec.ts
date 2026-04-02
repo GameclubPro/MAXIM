@@ -13600,6 +13600,96 @@ describe('ModerationService', () => {
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     });
 
+    it('skips known-spammer checks when the hot-path budget is almost exhausted under pressure', async () => {
+      const prisma = {
+        chat: {
+          upsert: jest.fn().mockResolvedValue({
+            id: 'chat-1',
+            title: 'Chat 1',
+            settings: createSettings({ deleteSpammersEnabled: true }),
+            domains: [],
+            admins: [],
+            rules: {
+              publishedUrl: null,
+              publishedMessageId: null,
+            },
+          }),
+        },
+        violation: {
+          create: jest.fn(),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn(),
+        },
+        webhookEvent: {
+          findUnique: jest.fn(),
+          update: jest.fn(),
+        },
+        globalSpammer: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+      };
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const redisCounter = {
+        addToSetWithTtl: jest.fn(),
+        incrementWithTtl: jest.fn(),
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'user-facing queue lag 12.0s',
+          updatedAt: new Date().toISOString(),
+          manualMode: null,
+          queueLagSec: 12,
+          action: {
+            windowSec: 60,
+            total: 20,
+            success: 16,
+            failure: 4,
+            critical: 0,
+            errorRate: 0.2,
+            criticalRate: 0,
+          },
+        }),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        systemModeService as never,
+        undefined,
+        redisCounter as never,
+      );
+      const hotPathProfile = (service as any).createWebhookHotPathProfile();
+      hotPathProfile.startedAtMs = Date.now() - 9_300;
+      hotPathProfile.lastMarkedAtMs = hotPathProfile.startedAtMs;
+
+      await service.handleUpdate(createUpdate(), hotPathProfile);
+
+      expect(redisCounter.addToSetWithTtl).toHaveBeenCalled();
+      expect(prisma.globalSpammer.findUnique).not.toHaveBeenCalled();
+      expect(ruleEngine.detect).toHaveBeenCalledWith(
+        expect.objectContaining({
+          skipDuplicateState: true,
+        }),
+      );
+    });
+
     it('skips ordinary message moderation entirely for a hot chat while the system is under pressure', async () => {
       const prisma = {
         chat: {

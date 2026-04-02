@@ -8,7 +8,9 @@ import type {
   WebhookSubscriptionSnapshot,
 } from '@maxim/contracts';
 import { MaxBotOwnershipFoundationService } from '../max/max-bot-ownership-foundation.service';
+import { BackgroundRuntimeGovernorService } from './background-runtime-governor.service';
 import { QueueMetricsService } from './queue-metrics.service';
+import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemModeService } from './system-mode.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
@@ -36,6 +38,10 @@ export class SystemDashboardService {
     private readonly webhookSubscriptionStatusService?: WebhookSubscriptionStatusService,
     @Optional()
     private readonly ownershipFoundationService?: MaxBotOwnershipFoundationService,
+    @Optional()
+    private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+    @Optional()
+    private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
   }
@@ -52,6 +58,14 @@ export class SystemDashboardService {
       this.systemModeService.getEffectiveSnapshot(),
       webhookSubscriptionPromise,
       ownershipPromise,
+    ]);
+    await this.runtimeDiagnosticsService?.recordQueueLagSnapshot({
+      queues,
+      mode,
+    });
+    const [runtimeDiagnostics, backgroundBudget] = await Promise.all([
+      this.runtimeDiagnosticsService?.getDashboardSnapshot(),
+      this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
@@ -207,6 +221,15 @@ export class SystemDashboardService {
       mode,
       webhookSubscription,
       ownership,
+      ...(runtimeDiagnostics
+        ? {
+            burst: runtimeDiagnostics.burst,
+            hotPath: runtimeDiagnostics.hotPath,
+            hotChats: runtimeDiagnostics.hotChats,
+            membershipLookup: runtimeDiagnostics.membershipLookup,
+          }
+        : {}),
+      ...(backgroundBudget ? { backgroundBudget } : {}),
     };
   }
 
