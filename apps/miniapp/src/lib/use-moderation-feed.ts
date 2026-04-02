@@ -10,7 +10,7 @@ type LoadModerationFeedPage = (query: {
   filter: ModerationFeedFilter;
   limit: number;
   cursor?: string;
-}) => Promise<ModerationFeedPage>;
+}, request?: Pick<RequestInit, 'signal'>) => Promise<ModerationFeedPage>;
 
 type UseModerationFeedOptions = {
   enabled?: boolean;
@@ -41,6 +41,14 @@ function toFeedState(page: ModerationFeedPage): FeedState {
   };
 }
 
+function isAbortError(cause: unknown): boolean {
+  return (
+    (cause instanceof DOMException && cause.name === 'AbortError') ||
+    (cause instanceof Error &&
+      (cause.name === 'AbortError' || cause.message.toLowerCase().includes('abort')))
+  );
+}
+
 export function useModerationFeed({
   enabled = true,
   range,
@@ -53,10 +61,13 @@ export function useModerationFeed({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
   const requestIdRef = useRef(0);
+  const activeControllerRef = useRef<AbortController | null>(null);
   const runLoadPage = useEffectEvent(loadPage);
 
   useEffect(() => {
     requestIdRef.current += 1;
+    activeControllerRef.current?.abort();
+    activeControllerRef.current = null;
 
     if (!enabled) {
       setFeed(EMPTY_FEED);
@@ -73,27 +84,42 @@ export function useModerationFeed({
     }
 
     const requestId = requestIdRef.current;
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     setStatus('reloading');
     setError(null);
     setFeed(EMPTY_FEED);
 
-    void runLoadPage({ range, filter, limit })
+    void runLoadPage({ range, filter, limit }, { signal: controller.signal })
       .then((page) => {
-        if (requestId !== requestIdRef.current) {
+        if (requestId !== requestIdRef.current || controller.signal.aborted) {
           return;
         }
 
         setFeed(toFeedState(page));
         setStatus('idle');
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+        }
       })
       .catch((cause: unknown) => {
-        if (requestId !== requestIdRef.current) {
+        if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
           return;
         }
 
         setError(cause instanceof Error ? cause.message : 'Не удалось загрузить события.');
         setStatus('idle');
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+        }
       });
+
+    return () => {
+      controller.abort();
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
+    };
   }, [enabled, filter, initialPage, limit, range]);
 
   async function loadMore() {
@@ -102,6 +128,9 @@ export function useModerationFeed({
     }
 
     const requestId = requestIdRef.current + 1;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     requestIdRef.current = requestId;
     setStatus('loadingMore');
     setError(null);
@@ -112,8 +141,8 @@ export function useModerationFeed({
         filter,
         limit,
         cursor: feed.nextCursor,
-      });
-      if (requestId !== requestIdRef.current) {
+      }, { signal: controller.signal });
+      if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }
 
@@ -123,13 +152,19 @@ export function useModerationFeed({
         nextCursor: nextPage.nextCursor,
       }));
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
         return;
       }
 
       setError(cause instanceof Error ? cause.message : 'Не удалось догрузить события.');
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     }
   }
 
@@ -149,25 +184,34 @@ export function useModerationFeed({
     }
 
     const requestId = requestIdRef.current + 1;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
 
     try {
-      const page = await runLoadPage({ range, filter, limit });
-      if (requestId !== requestIdRef.current) {
+      const page = await runLoadPage({ range, filter, limit }, { signal: controller.signal });
+      if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }
 
       setFeed(toFeedState(page));
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
         return;
       }
 
       setError(cause instanceof Error ? cause.message : 'Не удалось загрузить события.');
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     }
   }
 

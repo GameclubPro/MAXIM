@@ -10,7 +10,7 @@ type LoadMembershipActivityPage = (query: {
   filter: MembershipActivityFilter;
   limit: number;
   cursor?: string;
-}) => Promise<MembershipActivityPage>;
+}, request?: Pick<RequestInit, 'signal'>) => Promise<MembershipActivityPage>;
 
 type UseMembershipActivityFeedOptions = {
   enabled?: boolean;
@@ -34,6 +34,14 @@ function toFeedState(page: MembershipActivityPage): FeedState {
   };
 }
 
+function isAbortError(cause: unknown): boolean {
+  return (
+    (cause instanceof DOMException && cause.name === 'AbortError') ||
+    (cause instanceof Error &&
+      (cause.name === 'AbortError' || cause.message.toLowerCase().includes('abort')))
+  );
+}
+
 export function useMembershipActivityFeed({
   enabled = true,
   range,
@@ -46,10 +54,13 @@ export function useMembershipActivityFeed({
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
   const requestIdRef = useRef(0);
+  const activeControllerRef = useRef<AbortController | null>(null);
   const runLoadPage = useEffectEvent(loadPage);
 
   useEffect(() => {
     requestIdRef.current += 1;
+    activeControllerRef.current?.abort();
+    activeControllerRef.current = null;
 
     if (!enabled) {
       setFeed(toFeedState(initialPage));
@@ -75,6 +86,9 @@ export function useMembershipActivityFeed({
     }
 
     const requestId = requestIdRef.current + 1;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
@@ -84,23 +98,36 @@ export function useMembershipActivityFeed({
       nextCursor: null,
     });
 
-    void runLoadPage({ range, filter, limit })
+    void runLoadPage({ range, filter, limit }, { signal: controller.signal })
       .then((page) => {
-        if (requestId !== requestIdRef.current) {
+        if (requestId !== requestIdRef.current || controller.signal.aborted) {
           return;
         }
 
         setFeed(toFeedState(page));
         setStatus('idle');
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+        }
       })
       .catch((cause: unknown) => {
-        if (requestId !== requestIdRef.current) {
+        if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
           return;
         }
 
         setError(cause instanceof Error ? cause.message : 'Не удалось загрузить активность.');
         setStatus('idle');
+        if (activeControllerRef.current === controller) {
+          activeControllerRef.current = null;
+        }
       });
+
+    return () => {
+      controller.abort();
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
+    };
   }, [enabled, filter, limit, range]);
 
   async function loadMore() {
@@ -109,6 +136,9 @@ export function useMembershipActivityFeed({
     }
 
     const requestId = requestIdRef.current + 1;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     requestIdRef.current = requestId;
     setStatus('loadingMore');
     setError(null);
@@ -119,8 +149,8 @@ export function useMembershipActivityFeed({
         filter,
         limit,
         cursor: feed.nextCursor,
-      });
-      if (requestId !== requestIdRef.current) {
+      }, { signal: controller.signal });
+      if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }
 
@@ -130,13 +160,19 @@ export function useMembershipActivityFeed({
         nextCursor: nextPage.nextCursor,
       }));
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
         return;
       }
 
       setError(cause instanceof Error ? cause.message : 'Не удалось догрузить активность.');
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     }
   }
 
@@ -155,25 +191,34 @@ export function useMembershipActivityFeed({
     }
 
     const requestId = requestIdRef.current + 1;
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
 
     try {
-      const page = await runLoadPage({ range, filter, limit });
-      if (requestId !== requestIdRef.current) {
+      const page = await runLoadPage({ range, filter, limit }, { signal: controller.signal });
+      if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }
 
       setFeed(toFeedState(page));
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     } catch (cause: unknown) {
-      if (requestId !== requestIdRef.current) {
+      if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
         return;
       }
 
       setError(cause instanceof Error ? cause.message : 'Не удалось загрузить активность.');
       setStatus('idle');
+      if (activeControllerRef.current === controller) {
+        activeControllerRef.current = null;
+      }
     }
   }
 

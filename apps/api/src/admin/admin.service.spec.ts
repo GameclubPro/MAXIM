@@ -2703,6 +2703,121 @@ describe('AdminService.getLogsDashboard', () => {
     expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(2);
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
   });
+
+  it('reuses resolved user profiles between dashboard and moderation feed requests', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
+      .mockResolvedValueOnce([
+        { user_id: 'user-1', sender_name: 'Алексей' },
+        { user_id: 'user-2', sender_name: 'Мария' },
+      ]);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([
+      {
+        action: 'BAN',
+        ruleCode: 'MANUAL_BAN',
+        _count: { _all: 2 },
+      },
+    ]);
+    prisma.moderationEvent.findMany
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-2',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T11:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-2',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T11:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+      ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              displayName: 'Алексей',
+              username: 'aleksey',
+              avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+            },
+          ],
+          [
+            'user-2',
+            {
+              userId: 'user-2',
+              displayName: 'Мария',
+              username: 'maria',
+              avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    await service.getLogsDashboard('chat-1', actor, {
+      range: '24h',
+      includeActivityPreview: false,
+      includeModerationPreview: true,
+    });
+    const moderationFeed = await service.getChatModerationFeed('chat-1', actor, {
+      range: '24h',
+      filter: 'ALL',
+      limit: 50,
+    });
+
+    expect(moderationFeed.items).toHaveLength(2);
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledTimes(1);
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('AdminService.getChatActivityFeed', () => {

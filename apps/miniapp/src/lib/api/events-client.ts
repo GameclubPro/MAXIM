@@ -53,6 +53,7 @@ export async function getChatActivityFeed(
   api: ApiTransport,
   chatId: string,
   query: Partial<MembershipActivityQuery> = {},
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<MembershipActivityPage> {
   const validatedQuery = membershipActivityQuerySchema.parse(query);
   const params = new URLSearchParams({
@@ -65,7 +66,10 @@ export async function getChatActivityFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(`/chats/${chatId}/activity-feed?${params.toString()}`);
+  const response = await api.request(
+    `/chats/${chatId}/activity-feed?${params.toString()}`,
+    request,
+  );
   return membershipActivityPageSchema.parse(response);
 }
 
@@ -73,6 +77,7 @@ export async function getChatModerationFeed(
   api: ApiTransport,
   chatId: string,
   query: Partial<ModerationFeedQuery> = {},
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ModerationFeedPage> {
   const validatedQuery = moderationFeedQuerySchema.parse(query);
   const params = new URLSearchParams({
@@ -85,7 +90,10 @@ export async function getChatModerationFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(`/chats/${chatId}/moderation-feed?${params.toString()}`);
+  const response = await api.request(
+    `/chats/${chatId}/moderation-feed?${params.toString()}`,
+    request,
+  );
   return moderationFeedPageSchema.parse(response);
 }
 

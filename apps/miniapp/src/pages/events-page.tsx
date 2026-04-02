@@ -787,14 +787,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId) && section === 'activity',
     range,
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
-    loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
+    loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
     enabled: Boolean(chatId) && section === 'moderation',
     range,
     filter: eventsFilter,
     initialPage: dashboard?.moderationFeed ?? null,
-    loadPage: (query) => getChatModerationFeed(api, chatId ?? '', query),
+    loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>

@@ -54,6 +54,10 @@ function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): 
   return event.pointerType === 'mouse';
 }
 
+function shouldPrefetchFromTap(event: ReactPointerEvent<HTMLElement>): boolean {
+  return event.pointerType !== 'mouse';
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -563,6 +567,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                           prefetchChatSettings(entity.id);
                         }
                       }}
+                      onPointerDown={(event) => {
+                        if (shouldPrefetchFromTap(event)) {
+                          prefetchChatSettings(entity.id);
+                        }
+                      }}
                     >
                       Настройки
                     </Link>
@@ -576,6 +585,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       }}
                       onPointerEnter={(event) => {
                         if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChatEvents(entity.id);
+                        }
+                      }}
+                      onPointerDown={(event) => {
+                        if (shouldPrefetchFromTap(event)) {
                           prefetchChatEvents(entity.id);
                         }
                       }}
@@ -602,6 +616,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                           prefetchChannelSettings(entity.id);
                         }
                       }}
+                      onPointerDown={(event) => {
+                        if (shouldPrefetchFromTap(event)) {
+                          prefetchChannelSettings(entity.id);
+                        }
+                      }}
                     >
                       Настройки
                     </Link>
@@ -615,6 +634,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       }}
                       onPointerEnter={(event) => {
                         if (shouldPrefetchFromPointerEvent(event)) {
+                          prefetchChannelStats(entity.id);
+                        }
+                      }}
+                      onPointerDown={(event) => {
+                        if (shouldPrefetchFromTap(event)) {
                           prefetchChannelStats(entity.id);
                         }
                       }}

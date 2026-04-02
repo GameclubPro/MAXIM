@@ -383,6 +383,7 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 5_000;
 const EVENTS_FEED_PAGE_CACHE_TTL_MS = 5_000;
+const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
@@ -694,6 +695,10 @@ export class AdminService {
   private readonly membershipActivityFeedPageCache = new Map<
     string,
     TimedPromiseCacheEntry<MembershipActivityPage>
+  >();
+  private readonly resolvedUserProfileCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ResolvedUserProfile>
   >();
 
   constructor(
@@ -12569,6 +12574,83 @@ export class AdminService {
       return new Map();
     }
 
+    const profiles = new Map<string, ResolvedUserProfile>();
+    const pendingByUserId = new Map<string, Promise<ResolvedUserProfile>>();
+    const nowMs = Date.now();
+    const missingUserIds: string[] = [];
+
+    for (const userId of normalizedUserIds) {
+      const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
+      const cached = this.resolvedUserProfileCache.get(cacheKey);
+      if (cached && cached.expiresAtMs > nowMs) {
+        pendingByUserId.set(userId, cached.promise);
+        continue;
+      }
+
+      this.resolvedUserProfileCache.delete(cacheKey);
+      missingUserIds.push(userId);
+    }
+
+    if (missingUserIds.length > 0) {
+      let batchPromise!: Promise<Map<string, ResolvedUserProfile>>;
+      batchPromise = this.loadResolvedUserProfiles(chatId, entityType, missingUserIds).catch(
+        (error: unknown) => {
+          for (const userId of missingUserIds) {
+            const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
+            const current = this.resolvedUserProfileCache.get(cacheKey);
+            if (current?.promise === pendingByUserId.get(userId)) {
+              this.resolvedUserProfileCache.delete(cacheKey);
+            }
+          }
+          throw error;
+        },
+      );
+
+      for (const userId of missingUserIds) {
+        const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
+        const pendingProfile = batchPromise.then(
+          (batch) =>
+            batch.get(userId) ?? {
+              displayName: null,
+              avatarUrl: null,
+              profileUrl: null,
+              profileHandoffUrl: this.buildProfileMentionHandoffUrl(
+                chatId,
+                entityType,
+                userId,
+                null,
+              ),
+            },
+        );
+        this.resolvedUserProfileCache.set(cacheKey, {
+          expiresAtMs: nowMs + RESOLVED_USER_PROFILE_CACHE_TTL_MS,
+          promise: pendingProfile,
+        });
+        pendingByUserId.set(userId, pendingProfile);
+      }
+    }
+
+    for (const userId of normalizedUserIds) {
+      const pendingProfile = pendingByUserId.get(userId);
+      if (!pendingProfile) {
+        continue;
+      }
+      profiles.set(userId, await pendingProfile);
+    }
+
+    return profiles;
+  }
+
+  private async loadResolvedUserProfiles(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userIds: readonly string[],
+  ): Promise<Map<string, ResolvedUserProfile>> {
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
+
     const displayNames = await this.resolveUserDisplayNames(chatId, normalizedUserIds);
     let chatMemberProfiles = new Map<
       string,
@@ -12606,9 +12688,10 @@ export class AdminService {
     for (const userId of normalizedUserIds) {
       const profile = chatMemberProfiles.get(userId);
       const username = this.readTrimmedString(profile?.username);
+      const displayName =
+        displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null;
       profiles.set(userId, {
-        displayName:
-          displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
+        displayName,
         avatarUrl: this.readTrimmedString(profile?.avatarUrl) ?? null,
         profileUrl:
           this.normalizeMaxProfileUrl(this.readTrimmedString(profile?.profileUrl) ?? null) ??
@@ -12617,7 +12700,7 @@ export class AdminService {
           chatId,
           entityType,
           userId,
-          displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
+          displayName,
         ),
       });
     }
@@ -17432,6 +17515,14 @@ export class AdminService {
       String(query.limit),
       query.cursor ?? '',
     ].join(':');
+  }
+
+  private buildResolvedUserProfileCacheKey(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userId: string,
+  ): string {
+    return [chatId, entityType, userId].join(':');
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {
