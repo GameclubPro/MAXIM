@@ -891,6 +891,7 @@ describe('ManagedGiveawayService', () => {
           ],
         ],
       }),
+      { botId: 'id613002203036_4_bot' },
     );
   });
 

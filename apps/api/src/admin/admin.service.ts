@@ -3828,6 +3828,7 @@ export class AdminService {
     if (!messageText) {
       throw new BadRequestException('Сначала заполните текст правил.');
     }
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     let imagePayload: Record<string, unknown> | undefined;
     if (rules.imageBase64.trim()) {
@@ -3842,11 +3843,18 @@ export class AdminService {
       }
 
       try {
-        imagePayload = await this.maxClient.uploadImage(
-          imageBuffer,
-          this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
-          imageMimeType,
-        );
+        imagePayload = resolvedBotId
+          ? await this.maxClient.uploadImage(
+              imageBuffer,
+              this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
+              imageMimeType,
+              { botId: resolvedBotId },
+            )
+          : await this.maxClient.uploadImage(
+              imageBuffer,
+              this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
+              imageMimeType,
+            );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -3869,7 +3877,7 @@ export class AdminService {
         textFormat: 'markdown',
         ...(imagePayload ? { imagePayload } : {}),
         ...(buttonRow ? { buttons: [buttonRow] } : {}),
-      });
+      }, resolvedBotId);
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
@@ -4223,6 +4231,7 @@ export class AdminService {
         engagementPublishedAt: true,
       },
     });
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
     const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
@@ -4259,9 +4268,21 @@ export class AdminService {
 
     if (messageId) {
       try {
-        await this.maxClient.editMessageInlineKeyboard(chatId, messageId, parsed.data.text, {
-          buttons,
-        } satisfies Pick<MaxSendMessageOptions, 'buttons'>);
+        if (resolvedBotId) {
+          await this.maxClient.editMessageInlineKeyboard(
+            chatId,
+            messageId,
+            parsed.data.text,
+            {
+              buttons,
+            } satisfies Pick<MaxSendMessageOptions, 'buttons'>,
+            { botId: resolvedBotId },
+          );
+        } else {
+          await this.maxClient.editMessageInlineKeyboard(chatId, messageId, parsed.data.text, {
+            buttons,
+          } satisfies Pick<MaxSendMessageOptions, 'buttons'>);
+        }
         updatedExisting = true;
       } catch (error: unknown) {
         if (!this.shouldRecreateChannelEngagementMessage(error)) {
@@ -4278,13 +4299,18 @@ export class AdminService {
 
     if (!messageId) {
       try {
-        const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
-          chatId,
-          parsed.data.text,
-          {
-            buttons,
-          } satisfies MaxSendMessageOptions,
-        );
+        const published = resolvedBotId
+          ? await this.maxClient.sendMessageImmediateWithResolvedLink(
+              chatId,
+              parsed.data.text,
+              {
+                buttons,
+              } satisfies MaxSendMessageOptions,
+              { botId: resolvedBotId },
+            )
+          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, parsed.data.text, {
+              buttons,
+            } satisfies MaxSendMessageOptions);
         messageId = published.messageId;
       } catch (error: unknown) {
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
@@ -6686,17 +6712,44 @@ export class AdminService {
       throw new BadRequestException('Все циклы должны укладываться в 31 день от текущего момента.');
     }
 
-    const imagePayload = await this.uploadManagedBroadcastImage(
-      request.payload,
-      entityType,
-      sourceChatId,
-      user.userId,
-    );
+    const resolvedBotIdsByChatId = new Map<string, string | undefined>();
+    const imagePayloadByBotId = new Map<string, Record<string, unknown> | undefined>();
+    const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
+      if (!resolvedBotIdsByChatId.has(chatId)) {
+        resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
+      }
+      return resolvedBotIdsByChatId.get(chatId);
+    };
+    const resolveImagePayload = async (
+      botId: string | undefined,
+    ): Promise<Record<string, unknown> | undefined> => {
+      if (!request.payload.imageEnabled) {
+        return undefined;
+      }
+
+      const cacheKey = botId ?? '__default__';
+      if (!imagePayloadByBotId.has(cacheKey)) {
+        imagePayloadByBotId.set(
+          cacheKey,
+          await this.uploadManagedBroadcastImage(
+            request.payload,
+            entityType,
+            sourceChatId,
+            user.userId,
+            botId,
+          ),
+        );
+      }
+
+      return imagePayloadByBotId.get(cacheKey);
+    };
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
     let firstSendError: unknown = null;
 
     for (const chatId of request.targetChatIds) {
+      const resolvedBotId = await resolveTargetBotId(chatId);
+      const imagePayload = await resolveImagePayload(resolvedBotId);
       let chatFailed = false;
       for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
         const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
@@ -6713,13 +6766,22 @@ export class AdminService {
               chatId,
               message.messageText,
               message.messageOptions,
+              resolvedBotId,
             );
           } else {
             await this.maxClient.sendMessage(
               chatId,
               message.messageText,
               message.messageOptions,
-              occurrenceDelayMs > 0 ? { delayMs: occurrenceDelayMs } : { immediate: true },
+              occurrenceDelayMs > 0
+                ? {
+                    delayMs: occurrenceDelayMs,
+                    ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+                  }
+                : {
+                    immediate: true,
+                    ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+                  },
             );
           }
         } catch (error: unknown) {
@@ -7070,12 +7132,37 @@ export class AdminService {
         return this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null);
       }
 
-      const imagePayload = await this.uploadManagedBroadcastImage(
-        request.payload,
-        row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
-        row.sourceChatId,
-        row.actorUserId,
-      );
+      const resolvedBotIdsByChatId = new Map<string, string | undefined>();
+      const imagePayloadByBotId = new Map<string, Record<string, unknown> | undefined>();
+      const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
+        if (!resolvedBotIdsByChatId.has(chatId)) {
+          resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
+        }
+        return resolvedBotIdsByChatId.get(chatId);
+      };
+      const resolveImagePayload = async (
+        botId: string | undefined,
+      ): Promise<Record<string, unknown> | undefined> => {
+        if (!request.payload.imageEnabled) {
+          return undefined;
+        }
+
+        const cacheKey = botId ?? '__default__';
+        if (!imagePayloadByBotId.has(cacheKey)) {
+          imagePayloadByBotId.set(
+            cacheKey,
+            await this.uploadManagedBroadcastImage(
+              request.payload,
+              row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+              row.sourceChatId,
+              row.actorUserId,
+              botId,
+            ),
+          );
+        }
+
+        return imagePayloadByBotId.get(cacheKey);
+      };
 
       for (const delivery of initialDeliveries) {
         if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.PENDING) {
@@ -7099,6 +7186,8 @@ export class AdminService {
 
         let sentMessageId: string;
         try {
+          const resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
+          const imagePayload = await resolveImagePayload(resolvedBotId);
           const message = await this.buildManagedBroadcastMessage(
             delivery.targetChatId,
             row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
@@ -7110,6 +7199,7 @@ export class AdminService {
             delivery.targetChatId,
             message.messageText,
             message.messageOptions,
+            resolvedBotId,
           );
         } catch (error: unknown) {
           if (!firstSendError) {
@@ -7282,6 +7372,7 @@ export class AdminService {
     entityType: ManagedEntityType,
     sourceChatId: string,
     actorUserId: string,
+    botId?: string,
   ): Promise<Record<string, unknown> | undefined> {
     if (!payload.imageEnabled) {
       return undefined;
@@ -7297,11 +7388,18 @@ export class AdminService {
     }
 
     try {
-      return await this.maxClient.uploadImage(
-        imageBuffer,
-        this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
-        imageMimeType,
-      );
+      return botId
+        ? await this.maxClient.uploadImage(
+            imageBuffer,
+            this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+            imageMimeType,
+            { botId },
+          )
+        : await this.maxClient.uploadImage(
+            imageBuffer,
+            this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+            imageMimeType,
+          );
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -8242,6 +8340,7 @@ export class AdminService {
           'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
         >
       | undefined,
+    botId?: string,
   ): Promise<string> {
     let lastError: unknown = null;
     const attempts =
@@ -8252,7 +8351,9 @@ export class AdminService {
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        const published = await this.maxClient.sendMessageImmediateWithId(chatId, text, options);
+        const published = botId
+          ? await this.maxClient.sendMessageImmediateWithId(chatId, text, options, { botId })
+          : await this.maxClient.sendMessageImmediateWithId(chatId, text, options);
         return published.messageId;
       } catch (error: unknown) {
         lastError = error;
@@ -8279,13 +8380,19 @@ export class AdminService {
           'button' | 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
         >
       | undefined,
+    botId?: string,
   ): Promise<void> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
+        await this.maxClient.sendMessage(
+          chatId,
+          text,
+          options,
+          botId ? { immediate: true, botId } : { immediate: true },
+        );
         return;
       } catch (error: unknown) {
         lastError = error;
@@ -8657,13 +8764,18 @@ export class AdminService {
     options:
       | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined,
+    botId?: string,
   ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
-        return await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options);
+        return botId
+          ? await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options, {
+              botId,
+            })
+          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options);
       } catch (error: unknown) {
         lastError = error;
         if (
@@ -9298,12 +9410,22 @@ export class AdminService {
       zeroResults.optionResults,
       'ACTIVE',
     );
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     let published: { messageId: string; url: string | null };
     try {
-      published = await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, {
-        buttons,
-      });
+      published = resolvedBotId
+        ? await this.maxClient.sendMessageImmediateWithResolvedLink(
+            chatId,
+            messageText,
+            {
+              buttons,
+            },
+            { botId: resolvedBotId },
+          )
+        : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, {
+            buttons,
+          });
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать опрос.');
@@ -9375,9 +9497,20 @@ export class AdminService {
       summary.optionResults,
       'CLOSED',
     );
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     try {
-      await this.maxClient.editMessageInlineKeyboard(chatId, publishedMessageId, messageText);
+      if (resolvedBotId) {
+        await this.maxClient.editMessageInlineKeyboard(
+          chatId,
+          publishedMessageId,
+          messageText,
+          undefined,
+          { botId: resolvedBotId },
+        );
+      } else {
+        await this.maxClient.editMessageInlineKeyboard(chatId, publishedMessageId, messageText);
+      }
     } catch (error: unknown) {
       if (!this.isMaxMessageMissingError(error)) {
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
@@ -15847,6 +15980,24 @@ export class AdminService {
       (await this.resolveAssistBotAssignment(chatId, 'access_prewarm')) ??
       (await this.resolveBotAssignment(chatId))
     );
+  }
+
+  private async resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return undefined;
+    }
+
+    const resolvedBotId = await this.resolveBotAssignment(normalizedChatId);
+    if (resolvedBotId) {
+      return resolvedBotId;
+    }
+
+    const persisted = await this.prisma.chat.findUnique({
+      where: { id: normalizedChatId },
+      select: { primaryBotId: true, botId: true },
+    });
+    return this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId) ?? undefined;
   }
 
   private async resolveAssistBotAssignment(

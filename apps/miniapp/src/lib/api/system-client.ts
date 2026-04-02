@@ -183,6 +183,7 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
     typeof anomalies.legacyBotUnknown !== 'number' ||
     typeof anomalies.activeMembershipBotUnknown !== 'number' ||
     typeof anomalies.primaryWithoutActiveMembership !== 'number' ||
+    typeof anomalies.primaryWithoutAdminAccess !== 'number' ||
     typeof anomalies.sharedChats !== 'number' ||
     typeof repair.enabled !== 'boolean' ||
     typeof repair.activeOnThisRole !== 'boolean' ||
@@ -226,6 +227,7 @@ function parseBotOwnershipFoundation(value: unknown): BotOwnershipFoundationSnap
       legacyBotUnknown: anomalies.legacyBotUnknown,
       activeMembershipBotUnknown: anomalies.activeMembershipBotUnknown,
       primaryWithoutActiveMembership: anomalies.primaryWithoutActiveMembership,
+      primaryWithoutAdminAccess: anomalies.primaryWithoutAdminAccess,
       sharedChats: anomalies.sharedChats,
     },
     repair: {

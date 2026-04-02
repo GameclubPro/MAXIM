@@ -2,7 +2,7 @@ import type {
   ChannelAutoPostButtonsMode,
   ChannelSettings,
 } from '@maxim/contracts';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   startTransition,
   useEffect,
@@ -12,6 +12,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { BotExecutionPanel } from '../components/bot-execution-panel';
 import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
@@ -28,9 +29,12 @@ import { SettingsSectionToggle } from '../components/ui/settings-section-toggle'
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
-  getChannelSettingsScreen,
+  getChannelBotExecutionPlan,
   getChannelBroadcastHandoffState,
+  getChannelSettingsScreen,
   handoffChannelBroadcast,
+  updateChannelPartnerAssist,
+  updateChannelPrimaryBot,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -419,6 +423,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const location = useLocation();
   const navigate = useNavigate();
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
+  const queryClient = useQueryClient();
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
@@ -464,6 +469,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastPlannerState, setBroadcastPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const [pendingPrimaryBotId, setPendingPrimaryBotId] = useState<string | null>(null);
+  const [pendingAssistBotId, setPendingAssistBotId] = useState<string | null>(null);
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
@@ -513,7 +520,90 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     refetch: settingsScreenQuery.refetch,
   };
   const channelHeader = settingsScreenQuery.data?.header ?? null;
+  const shouldShowBotExecutionDiagnostics =
+    (channelHeader?.assignedBots?.length ?? 0) > 1 || !channelHeader?.primaryBotId;
+  const botExecutionPlanQueryKey = ['channel-bot-execution-plan', chatId] as const;
+  const botExecutionPlanQuery = useQuery({
+    queryKey: botExecutionPlanQueryKey,
+    queryFn: ({ signal }) => getChannelBotExecutionPlan(api, chatId, { signal }),
+    enabled: Boolean(chatId) && shouldShowBotExecutionDiagnostics,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
+
+  const refreshBotExecutionPlanMutation = useMutation({
+    mutationFn: () => getChannelBotExecutionPlan(api, chatId, { refresh: true }),
+    onSuccess: (plan) => {
+      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
+      pushToast({
+        tone: 'success',
+        title: 'Права ботов обновлены',
+        description: 'Состояние owner и standby подтянуто заново.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить права',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+  const updatePrimaryBotMutation = useMutation({
+    mutationFn: (botId: string) => updateChannelPrimaryBot(api, chatId, botId),
+    onMutate: (botId) => {
+      setPendingPrimaryBotId(botId);
+    },
+    onSuccess: (plan) => {
+      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
+      pushToast({
+        tone: 'success',
+        title: 'Owner обновлён',
+        description: 'Новая маршрутизация сохранена.',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сменить owner',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+    onSettled: () => {
+      setPendingPrimaryBotId(null);
+    },
+  });
+  const updatePartnerAssistMutation = useMutation({
+    mutationFn: (payload: { botId: string; enabled: boolean }) =>
+      updateChannelPartnerAssist(api, chatId, payload),
+    onMutate: ({ botId }) => {
+      setPendingAssistBotId(botId);
+    },
+    onSuccess: (plan, variables) => {
+      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
+      pushToast({
+        tone: 'success',
+        title: variables.enabled ? 'Assist включён' : 'Assist выключен',
+        description: 'Настройка partner-бота сохранена.',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить assist',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+    onSettled: () => {
+      setPendingAssistBotId(null);
+    },
+  });
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -1170,6 +1260,47 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         }
       />
 
+      {shouldShowBotExecutionDiagnostics ? (
+        <GlassCard className="channel-settings-card channel-settings-card--wide" elevated>
+          {botExecutionPlanQuery.data ? (
+            <BotExecutionPanel
+              plan={botExecutionPlanQuery.data}
+              isRefreshing={
+                botExecutionPlanQuery.isFetching || refreshBotExecutionPlanMutation.isPending
+              }
+              pendingPrimaryBotId={pendingPrimaryBotId}
+              pendingAssistBotId={pendingAssistBotId}
+              onRefresh={() => {
+                void refreshBotExecutionPlanMutation.mutateAsync();
+              }}
+              onMakePrimary={(botId) => {
+                updatePrimaryBotMutation.mutate(botId);
+              }}
+              onToggleAssist={(botId, enabled) => {
+                updatePartnerAssistMutation.mutate({ botId, enabled });
+              }}
+            />
+          ) : botExecutionPlanQuery.isLoading ? (
+            <SkeletonCard lines={6} />
+          ) : botExecutionPlanQuery.error ? (
+            <StatusState
+              tone="warning"
+              title="Диагностика ботов недоступна"
+              description={normalizeApiError(botExecutionPlanQuery.error)}
+              action={
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => void refreshBotExecutionPlanMutation.mutateAsync()}
+                >
+                  Обновить права
+                </button>
+              }
+            />
+          ) : null}
+        </GlassCard>
+      ) : null}
+
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
@@ -1210,6 +1341,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                 {draft.commentsEnabled ? (
                   <div className="channel-settings-stack">
+                    <label className="field">
+                      <span>Текст-подсказка в диалоге комментариев</span>
+                      <textarea
+                        rows={3}
+                        value={draft.commentsMessageText}
+                        onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
+                        placeholder="Напишите, о чём участник должен оставить комментарий."
+                      />
+                    </label>
+
                     <ChannelSettingsToggleCard
                       title="Модерация"
                       description="Проверка комментариев."
@@ -1328,6 +1469,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
                       placeholder="Опишите, что пользователь должен прислать боту после нажатия кнопки."
                     />
+                  </label>
+
+                  <label className="field">
+                    <span>Текст поста с кнопками</span>
+                    <textarea
+                      rows={3}
+                      value={draft.engagementMessageText}
+                      onChange={(event) =>
+                        patchDraft('engagementMessageText', event.target.value)
+                      }
+                      placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+                    />
+                    <span className="field__hint">
+                      Используется, когда бот публикует CTA-пост с кнопками обсуждения и
+                      предложки.
+                    </span>
                   </label>
 
                   <label className="field">

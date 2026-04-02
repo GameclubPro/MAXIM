@@ -17,6 +17,7 @@ import {
   domainAllowlistEntrySchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
+  managedEntityBotExecutionPlanSchema,
   managedEntitiesListResponseSchema,
   managedGiveawayDetailsSchema,
   managedGiveawayParticipantStateSchema,
@@ -35,6 +36,8 @@ import {
   toggleChannelDialogReactionResponseSchema,
   updateChannelDialogMessageRequestSchema,
   updateChannelDialogMessageResponseSchema,
+  updateManagedEntityPartnerAssistRequestSchema,
+  updateManagedEntityPrimaryBotRequestSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChannelDialogMessage,
@@ -51,6 +54,7 @@ import {
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
+  type ManagedEntityBotExecutionPlan,
   type ManagedEntitiesListResponse,
   type ManagedGiveawayDetails,
   type ManagedGiveawayParticipantState,
@@ -101,6 +105,10 @@ type PreviewState = {
   channelPoll: ManagedPoll;
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
+  chatPrimaryBotId: string | null;
+  channelPrimaryBotId: string | null;
+  chatPartnerAssistEnabled: boolean;
+  channelPartnerAssistEnabled: boolean;
 };
 
 type PreviewDialogBucket = {
@@ -122,31 +130,51 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
-function buildPreviewAssignedBots(): ChatSummary['assignedBots'] {
+function buildPreviewAssignedBots(options: {
+  primaryBotId?: string | null;
+  assistEnabled?: boolean;
+} = {}): ChatSummary['assignedBots'] {
+  const primaryBotId = options.primaryBotId ?? PREVIEW_PRIMARY_BOT_ID;
+  const assistEnabled = options.assistEnabled === true;
+
   return [
     {
       botId: PREVIEW_PRIMARY_BOT_ID,
       label: PREVIEW_PRIMARY_BOT_LABEL,
-      role: 'primary',
+      role: primaryBotId === PREVIEW_PRIMARY_BOT_ID ? 'primary' : 'standby',
       membershipStatus: 'active',
       lifecycleState: 'active',
       speechPersona: 'neutral',
       characterName: 'Чат-бот',
       avatarUrl: buildPreviewAvatarDataUrl('MAXIM', '#22b6b7', '#1484a0'),
       capabilities: [],
-      permissionsSummary: null,
+      permissionsSummary: {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: primaryBotId === PREVIEW_PRIMARY_BOT_ID,
+        permissions: primaryBotId === PREVIEW_PRIMARY_BOT_ID ? ['all'] : ['read', 'write'],
+      },
     },
     {
       botId: PREVIEW_STANDBY_BOT_ID,
       label: PREVIEW_STANDBY_BOT_LABEL,
-      role: 'standby',
+      role: primaryBotId === PREVIEW_STANDBY_BOT_ID ? 'primary' : 'standby',
       membershipStatus: 'active',
       lifecycleState: 'active',
       speechPersona: 'female',
       characterName: 'Майор Максимова',
       avatarUrl: buildPreviewAvatarDataUrl('Майор Максимова', '#ff89b8', '#de5a82'),
-      capabilities: [],
-      permissionsSummary: null,
+      capabilities:
+        assistEnabled && primaryBotId !== PREVIEW_STANDBY_BOT_ID
+          ? ['access_prewarm', 'membership_prewarm']
+          : [],
+      permissionsSummary: {
+        checkedAt: new Date().toISOString(),
+        isAdmin: true,
+        isOwner: primaryBotId === PREVIEW_STANDBY_BOT_ID,
+        permissions:
+          primaryBotId === PREVIEW_STANDBY_BOT_ID ? ['all'] : ['read', 'write', 'manage'],
+      },
     },
   ];
 }
@@ -196,6 +224,45 @@ function buildPreviewSystemMode(state: PreviewState): SystemModeSnapshot {
     queueLagSec: manualMode === 'degrade' ? 11.4 : 0,
     action,
   };
+}
+
+function buildPreviewSharedMode(assistEnabled: boolean): 'shared-assist' | 'shared-standby' {
+  return assistEnabled ? 'shared-assist' : 'shared-standby';
+}
+
+function buildPreviewBotExecutionPlan(
+  state: PreviewState,
+  entityType: 'chat' | 'channel',
+  chatId: string,
+): ManagedEntityBotExecutionPlan {
+  const primaryBotId =
+    entityType === 'chat' ? state.chatPrimaryBotId : state.channelPrimaryBotId;
+  const assistEnabled =
+    entityType === 'chat' ? state.chatPartnerAssistEnabled : state.channelPartnerAssistEnabled;
+  const assignedBots = buildPreviewAssignedBots({ primaryBotId, assistEnabled });
+  const partnerBotId = assignedBots.find((bot) => bot.role !== 'primary')?.botId ?? null;
+
+  return managedEntityBotExecutionPlanSchema.parse({
+    chatId,
+    entityType,
+    primaryBotId,
+    speakerBotId: primaryBotId,
+    workerBotId: primaryBotId,
+    linkBotId: primaryBotId,
+    partnerBotId,
+    sharedMode: buildPreviewSharedMode(assistEnabled),
+    userFacingPolicy: 'owner-only',
+    reasons: [
+      'Preview transport uses owner-only routing for user-facing actions.',
+      assistEnabled
+        ? 'Partner bot is enabled only for safe assist lanes.'
+        : 'Partner bot stays in standby until assist is enabled.',
+    ],
+    warnings: assistEnabled
+      ? []
+      : ['Assist lanes are disabled in preview. Owner bot handles all user-facing work.'],
+    assignedBots,
+  });
 }
 
 function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardResponse {
@@ -470,6 +537,7 @@ function buildPreviewSystemDashboard(state: PreviewState): SystemDashboardRespon
         legacyBotUnknown: 1,
         activeMembershipBotUnknown: 0,
         primaryWithoutActiveMembership: 0,
+        primaryWithoutAdminAccess: 0,
         sharedChats: 0,
       },
       repair: {
@@ -1871,10 +1939,18 @@ function createInitialState(): PreviewState {
         70.3, 88.4, 112.6, 138.8, 166.2, 199.1, 240.5, 296.2, 352.7, 490.4,
       ],
     ),
+    chatPrimaryBotId: PREVIEW_PRIMARY_BOT_ID,
+    channelPrimaryBotId: PREVIEW_PRIMARY_BOT_ID,
+    chatPartnerAssistEnabled: false,
+    channelPartnerAssistEnabled: false,
   };
 }
 
 function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSettingsScreenResponse {
+  const assignedBots = buildPreviewAssignedBots({
+    primaryBotId: state.chatPrimaryBotId,
+    assistEnabled: state.chatPartnerAssistEnabled,
+  });
   return chatSettingsScreenResponseSchema.parse({
     settings: state.chatSettings,
     rules: state.chatRules,
@@ -1885,9 +1961,9 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
       avatarUrl: resolveChatAvatarUrl(chatId, state),
-      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
-      assignedBots: buildPreviewAssignedBots(),
-      sharedMode: 'shared-standby',
+      primaryBotId: state.chatPrimaryBotId,
+      assignedBots,
+      sharedMode: buildPreviewSharedMode(state.chatPartnerAssistEnabled),
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
@@ -1911,6 +1987,10 @@ function buildChannelSettingsScreen(
   state: PreviewState,
   channelId: string,
 ): ChannelSettingsScreenResponse {
+  const assignedBots = buildPreviewAssignedBots({
+    primaryBotId: state.channelPrimaryBotId,
+    assistEnabled: state.channelPartnerAssistEnabled,
+  });
   return channelSettingsScreenResponseSchema.parse({
     settings: state.channelSettings,
     header: {
@@ -1920,9 +2000,9 @@ function buildChannelSettingsScreen(
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
       avatarUrl: resolveChannelAvatarUrl(channelId, state),
-      primaryBotId: PREVIEW_PRIMARY_BOT_ID,
-      assignedBots: buildPreviewAssignedBots(),
-      sharedMode: 'shared-standby',
+      primaryBotId: state.channelPrimaryBotId,
+      assignedBots,
+      sharedMode: buildPreviewSharedMode(state.channelPartnerAssistEnabled),
     },
     managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
@@ -2430,6 +2510,23 @@ async function handleChatRequest(
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
     return cloneJson(buildChatSettingsScreen(state, chatId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'plan' && method === 'GET') {
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'chat', chatId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'primary' && method === 'POST') {
+    const payload = updateManagedEntityPrimaryBotRequestSchema.parse(parseJsonBody(init));
+    state.chatPrimaryBotId = payload.botId;
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'chat', chatId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'partner-assist' && method === 'POST') {
+    const payload = updateManagedEntityPartnerAssistRequestSchema.parse(parseJsonBody(init));
+    state.chatPartnerAssistEnabled =
+      payload.enabled && payload.botId.trim() === PREVIEW_STANDBY_BOT_ID;
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'chat', chatId));
   }
 
   if (
@@ -2999,6 +3096,23 @@ async function handleChannelRequest(
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
     return cloneJson(buildChannelSettingsScreen(state, channelId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'plan' && method === 'GET') {
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'channel', channelId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'primary' && method === 'POST') {
+    const payload = updateManagedEntityPrimaryBotRequestSchema.parse(parseJsonBody(init));
+    state.channelPrimaryBotId = payload.botId;
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'channel', channelId));
+  }
+
+  if (tail[0] === 'bots' && tail[1] === 'partner-assist' && method === 'POST') {
+    const payload = updateManagedEntityPartnerAssistRequestSchema.parse(parseJsonBody(init));
+    state.channelPartnerAssistEnabled =
+      payload.enabled && payload.botId.trim() === PREVIEW_STANDBY_BOT_ID;
+    return cloneJson(buildPreviewBotExecutionPlan(state, 'channel', channelId));
   }
 
   if (tail[0] === 'dialog' && tail[1]) {

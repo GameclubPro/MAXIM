@@ -1033,24 +1033,27 @@ export class MaxClientService implements OnModuleDestroy {
     data: Buffer,
     fileName = 'broadcast-image.jpg',
     mimeType = 'image/jpeg',
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    return this.uploadBinary('image', data, fileName, mimeType);
+    return this.uploadBinary('image', data, fileName, mimeType, requestOptions);
   }
 
   async uploadVideo(
     data: Buffer,
     fileName = 'video.mp4',
     mimeType = 'video/mp4',
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    return this.uploadBinary('video', data, fileName, mimeType);
+    return this.uploadBinary('video', data, fileName, mimeType, requestOptions);
   }
 
   async uploadFile(
     data: Buffer,
     fileName = 'asset.bin',
     mimeType = 'application/octet-stream',
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
-    return this.uploadBinary('file', data, fileName, mimeType);
+    return this.uploadBinary('file', data, fileName, mimeType, requestOptions);
   }
 
   private async uploadBinary(
@@ -1058,6 +1061,7 @@ export class MaxClientService implements OnModuleDestroy {
     data: Buffer,
     fileName: string,
     mimeType: string,
+    requestOptions: MaxApiRequestOptions = {},
   ): Promise<Record<string, unknown>> {
     const uploadMeta = await this.executeMutation(
       null,
@@ -1067,7 +1071,10 @@ export class MaxClientService implements OnModuleDestroy {
             type: uploadType,
           },
         }),
-      'critical',
+      {
+        trafficClass: 'critical',
+        ...(requestOptions.botId ? { botId: requestOptions.botId } : {}),
+      },
     );
     const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
     const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
