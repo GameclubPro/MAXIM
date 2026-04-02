@@ -34,7 +34,7 @@ import {
 type ManagedTab = 'chat' | 'channel';
 type ManagedEntitiesReloadRequest = {
   nonce: number;
-  behavior: 'default' | 'recovery';
+  behavior: 'default' | 'manual' | 'recovery';
 };
 
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
@@ -260,7 +260,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     tab: ManagedTab = activeTab,
     behavior: ManagedEntitiesReloadRequest['behavior'] = 'default',
   ) {
-    if (behavior === 'default' && (isManualRefreshBlocked || isFetching)) {
+    if (isFetching) {
+      return;
+    }
+    if (behavior !== 'recovery' && isManualRefreshBlocked) {
       return;
     }
 
@@ -394,7 +397,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   <button
                     type="button"
                     className="button button--ghost chats-search-card__refresh"
-                    onClick={() => handleRefresh()}
+                    onClick={() => handleRefresh(activeTab, 'manual')}
                     disabled={isFetching || isManualRefreshBlocked}
                     aria-label="Обновить"
                   >
@@ -485,7 +488,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 className="button button--danger"
-                onClick={() => handleRefresh()}
+                onClick={() => handleRefresh(activeTab, 'manual')}
               >
                 Повторить
               </button>
@@ -523,7 +526,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <LazyChatOnboardingSection
             isFetching={isFetching}
             isRefreshBlocked={isRefreshTemporarilyBlocked}
-            onRefresh={() => handleRefresh()}
+            onRefresh={() => handleRefresh(activeTab, 'manual')}
           />
         </Suspense>
       ) : null}
@@ -538,7 +541,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 className="button button--accent"
-                onClick={() => handleRefresh()}
+                onClick={() => handleRefresh(activeTab, 'manual')}
                 disabled={isFetching || isRefreshTemporarilyBlocked}
               >
                 {isFetching ? 'Обновляем...' : 'Обновить'}

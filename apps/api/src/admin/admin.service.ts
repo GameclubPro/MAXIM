@@ -1088,6 +1088,28 @@ export class AdminService {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
+    let lightweightBootstrapPromise:
+      | Promise<{
+          currentChat: ChatSummary | null;
+          recentBotAdded: ChatSummary[];
+        }>
+      | null = null;
+    const mergeWithLightweightBootstrap = async (
+      items: readonly ChatSummary[],
+    ): Promise<ChatSummary[]> => {
+      if (lightweightBootstrapPromise === null) {
+        lightweightBootstrapPromise = this.loadManagedEntitiesLightweightBootstrap(
+          user,
+          entityType,
+        );
+      }
+
+      return this.mergeManagedEntitiesWithLightweightBootstrap(
+        items,
+        await lightweightBootstrapPromise,
+      );
+    };
+
     if (options.refresh !== true) {
       if (options.fresh === true) {
         try {
@@ -1100,13 +1122,7 @@ export class AdminService {
             resetRefreshCursor: options.resetRefreshCursor === true,
             throwOnFailure: true,
           });
-          const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
-          const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-          const mergedFresh = this.mergeManagedEntityGroups(
-            bootstrapped ? [bootstrapped] : [],
-            recentBotAdded,
-            fresh.items,
-          );
+          const mergedFresh = await mergeWithLightweightBootstrap(fresh.items);
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
           this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'fresh');
           this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
@@ -1119,17 +1135,11 @@ export class AdminService {
         }
       }
 
-      const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
       const cached = await this.revalidateCachedManagedEntities(
         user,
         await this.listChatsFromAllowlist(user.userId, entityType),
       );
-      const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-      const initial = this.mergeManagedEntityGroups(
-        bootstrapped ? [bootstrapped] : [],
-        recentBotAdded,
-        cached,
-      );
+      const initial = await mergeWithLightweightBootstrap(cached);
       if (initial.length > 0) {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
@@ -1166,10 +1176,20 @@ export class AdminService {
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
     const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+    const shouldMergeLightweightBootstrap =
+      options.bypassRemoteCache === true || options.resetRefreshCursor === true;
+    const mergedCached = shouldMergeLightweightBootstrap
+      ? await mergeWithLightweightBootstrap(cached)
+      : cached;
     const items =
-      cached.length > 0
-        ? await this.attachManagedEntityBotAssignments(await this.hydrateManagedEntities(cached))
+      mergedCached.length > 0
+        ? await this.attachManagedEntityBotAssignments(
+            await this.hydrateManagedEntities(mergedCached),
+          )
         : [];
+    if (shouldMergeLightweightBootstrap) {
+      this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'refresh');
+    }
     this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
     return {
       items,
@@ -1502,6 +1522,36 @@ export class AdminService {
     }
 
     return merged;
+  }
+
+  private mergeManagedEntitiesWithLightweightBootstrap(
+    items: readonly ChatSummary[],
+    bootstrap: {
+      currentChat: ChatSummary | null;
+      recentBotAdded: ChatSummary[];
+    },
+  ): ChatSummary[] {
+    return this.mergeManagedEntityGroups(
+      bootstrap.currentChat ? [bootstrap.currentChat] : [],
+      bootstrap.recentBotAdded,
+      [...items],
+    );
+  }
+
+  private async loadManagedEntitiesLightweightBootstrap(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<{
+    currentChat: ChatSummary | null;
+    recentBotAdded: ChatSummary[];
+  }> {
+    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
+    const currentChat = await this.bootstrapCurrentChat(user, entityType);
+
+    return {
+      currentChat,
+      recentBotAdded,
+    };
   }
 
   private createManagedEntitySummary(params: {
@@ -2227,7 +2277,6 @@ export class AdminService {
         NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
       FROM webhook_events
       WHERE normalized_payload->>'type' = 'bot_added'
-        AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
       ORDER BY created_at DESC
       LIMIT ${RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT}
     `;
@@ -17676,7 +17725,7 @@ export class AdminService {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
     items: readonly ChatSummary[],
-    source: 'cached' | 'fresh' | 'remote',
+    source: 'cached' | 'fresh' | 'remote' | 'refresh',
   ): void {
     const launchChatId = this.readTrimmedString(user.chatId);
     const launchEntityType = this.resolveCurrentContextManagedEntityType(user);

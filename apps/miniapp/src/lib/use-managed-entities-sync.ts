@@ -26,7 +26,7 @@ const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
 
 type ManagedEntityKind = 'chat' | 'channel';
 type ManagedEntitiesSyncPhase = 'idle' | 'loading' | 'syncing' | 'complete' | 'backoff' | 'error';
-type ManagedEntitiesReloadBehavior = 'default' | 'recovery';
+type ManagedEntitiesReloadBehavior = 'default' | 'manual' | 'recovery';
 type ManagedEntitiesRefreshRequestOptions = {
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
@@ -479,7 +479,8 @@ export function useManagedEntitiesSync({
 
     let cancelled = false;
     const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
-    const forceRefreshUsesBypassRemoteCache = forceRefreshSession && reloadBehavior === 'recovery';
+    const forceRefreshUsesBypassRemoteCache =
+      forceRefreshSession && (reloadBehavior === 'manual' || reloadBehavior === 'recovery');
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
     const shouldStartWithBackgroundRefresh =
