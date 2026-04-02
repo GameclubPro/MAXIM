@@ -1934,6 +1934,10 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     options: MaxApiRequestOptions = {},
   ): Promise<unknown[]> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
     const members: unknown[] = [];
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;
@@ -1946,6 +1950,7 @@ export class MaxClientService implements OnModuleDestroy {
             params: {
               ...(marker !== null ? { marker } : {}),
             },
+            ...(timeoutMs ? { timeout: timeoutMs } : {}),
           }),
         options,
       );

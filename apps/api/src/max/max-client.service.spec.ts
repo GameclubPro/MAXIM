@@ -1598,6 +1598,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('passes timeout override to chat admin lookups', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                role: 'admin',
+                is_admin: true,
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.getChatAdminIds('chat-1', {
+      trafficClass: 'critical',
+      timeoutMs: 1_234,
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members/admins',
+        timeout: 1_234,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns null when requested chat member is absent', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
