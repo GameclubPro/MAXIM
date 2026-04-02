@@ -1489,18 +1489,6 @@
   gap: 10px;
 }
 
-.launch-context-card__badge {
-  color: #07558f;
-  border-color: rgba(8, 119, 206, 0.22);
-  background: rgba(230, 244, 255, 0.9);
-}
-
-.launch-context-card__meta {
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: #086cc6;
-}
-
 .launch-context-card__body {
   display: grid;
   gap: 14px;
@@ -1510,10 +1498,6 @@
   display: flex;
   align-items: flex-start;
   gap: 12px;
-}
-
-.launch-context-card__avatar {
-  flex: 0 0 auto;
 }
 
 .launch-context-card__copy {
@@ -4355,29 +4339,6 @@
     linear-gradient(150deg, rgba(255, 255, 255, 0.9), rgba(227, 242, 255, 0.68));
 }
 
-.chats-onboarding__hero::before {
-  content: '';
-  position: absolute;
-  width: 200px;
-  height: 200px;
-  right: -70px;
-  top: -90px;
-  border-radius: 999px;
-  background: radial-gradient(circle, rgba(11, 132, 255, 0.2), transparent 70%);
-  pointer-events: none;
-}
-
-.chats-onboarding__hero-top {
-  display: flex;
-  justify-content: flex-start;
-}
-
-.chats-onboarding__badge {
-  color: #07558f;
-  border-color: rgba(8, 119, 206, 0.25);
-  background: rgba(230, 244, 255, 0.88);
-}
-
 .chats-onboarding__hero-text {
   display: grid;
   gap: 6px;
@@ -4389,25 +4350,16 @@
 
 .chats-onboarding__hero-text p {
   line-height: 1.5;
-  font-size: 0.92rem;
 }
 
 .onboarding-step-card {
   display: grid;
   gap: var(--space-3);
-  border-color: rgba(255, 255, 255, 0.82);
-  background:
-    linear-gradient(165deg, rgba(255, 255, 255, 0.92), rgba(232, 245, 255, 0.6)),
-    rgba(255, 255, 255, 0.74);
 }
 
 .onboarding-step-card__content {
   display: grid;
   gap: 10px;
-}
-
-.onboarding-step-card__content h2 {
-  font-size: 1rem;
 }
 
 .onboarding-step-card__content ul {
@@ -4425,7 +4377,6 @@
 .onboarding-step-card__media {
   margin: 0;
   display: grid;
-  gap: 8px;
 }
 
 .onboarding-step-card__media img {
@@ -4434,10 +4385,6 @@
   object-fit: cover;
   object-position: top;
   border-radius: 20px;
-  box-shadow:
-    0 18px 36px rgba(20, 47, 73, 0.16),
-    inset 0 1px 0 rgba(255, 255, 255, 0.5);
-  border: 1px solid rgba(255, 255, 255, 0.74);
 }
 
 .onboarding-step-card__media figcaption {

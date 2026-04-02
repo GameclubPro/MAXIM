@@ -9,15 +9,12 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import type { ManagedEntitiesRefreshState, Me } from '@maxim/contracts';
-import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
-import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
+import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
-import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
@@ -52,43 +49,22 @@ const LazySystemEntryCard = lazy(async () => {
   return { default: module.SystemEntryCard };
 });
 
+const LazyChatOnboardingSection = lazy(async () => {
+  const module = await import('../components/chat-onboarding-section');
+  return { default: module.ChatOnboardingSection };
+});
+
+const LazyLaunchContextSection = lazy(async () => {
+  const module = await import('../components/launch-context-section');
+  return { default: module.LaunchContextSection };
+});
+
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
 }
 
 function shouldPrefetchFromPointerEvent(event: ReactPointerEvent<HTMLElement>): boolean {
   return event.pointerType === 'mouse';
-}
-
-function resolveLaunchContextTab(
-  launchContext: Me['launchContext'] | null | undefined,
-): ManagedTab | null {
-  if (launchContext?.chatType === 'chat') {
-    return 'chat';
-  }
-  if (launchContext?.chatType === 'channel') {
-    return 'channel';
-  }
-
-  return null;
-}
-
-function buildLaunchContextPrimaryRoute(
-  launchContext: NonNullable<Me['launchContext']>,
-  tab: ManagedTab,
-): string {
-  return tab === 'chat'
-    ? `/chat/${launchContext.chatId}/settings`
-    : `/channel/${launchContext.chatId}/settings`;
-}
-
-function buildLaunchContextSecondaryRoute(
-  launchContext: NonNullable<Me['launchContext']>,
-  tab: ManagedTab,
-): string {
-  return tab === 'chat'
-    ? `/chat/${launchContext.chatId}/events`
-    : `/channel/${launchContext.chatId}/stats`;
 }
 
 function formatRefreshProgress(refreshState: ManagedEntitiesRefreshState | null): string | null {
@@ -134,23 +110,21 @@ function buildRefreshStatusLabel(options: {
     return 'Проверяем список на сервере.';
   }
   if (isRefreshing) {
-    return progress
-      ? `Синхронизация в фоне: ${progress}.`
-      : 'Синхронизируем список и права администратора.';
+    return progress ? `Фоновый синк: ${progress}.` : 'Фоновый синк списка.';
   }
   if (refreshState?.backoffActive) {
     return 'MAX временно ограничил синк. Продолжим автоматически.';
   }
   if (refreshState?.manualRefreshBlockedReason === 'recent_sync') {
     const syncedAt = formatRefreshTime(refreshState.lastSyncedAt);
-    return syncedAt ? `Недавно синхронизировано в ${syncedAt}.` : 'Недавно синхронизировано.';
+    return syncedAt ? `Синхронизировано в ${syncedAt}.` : 'Недавно синхронизировано.';
   }
   if (refreshState?.complete) {
     const syncedAt = formatRefreshTime(refreshState.lastSyncedAt);
-    return syncedAt ? `Последняя синхронизация в ${syncedAt}.` : 'Список синхронизирован.';
+    return syncedAt ? `Обновлено в ${syncedAt}.` : 'Список синхронизирован.';
   }
 
-  return progress ? `Продолжаем фоновый синк: ${progress}.` : null;
+  return progress ? `Синк: ${progress}.` : null;
 }
 
 function buildPendingSyncDescription(options: {
@@ -162,20 +136,21 @@ function buildPendingSyncDescription(options: {
   const progress = formatRefreshProgress(options.refreshState);
 
   if (!options.hasLoadedFromServer) {
-    return `Сначала проверяем ${entityPlural} на сервере и подтягиваем текущий контекст запуска.`;
+    return `Проверяем ${entityPlural} на сервере и подтягиваем контекст запуска.`;
   }
   if (progress) {
-    return `Проверяем права администратора в MAX и продолжаем фоновый sync. Обработано ${progress}.`;
+    return `Сверяем права администратора в MAX. Прогресс: ${progress}.`;
   }
 
-  return 'Обновляем локальный каталог и проверяем текущие права администратора в MAX.';
+  return 'Обновляем локальный список и сверяем права администратора в MAX.';
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [me, setMe] = useState<Me | null>(null);
+  const [canAccessSystem, setCanAccessSystem] = useState(false);
+  const [launchContextTabHint, setLaunchContextTabHint] = useState<ManagedTab | null>(null);
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -184,17 +159,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   });
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
-  const launchContextRecoveryKeyRef = useRef<string | null>(null);
-  const launchContextTab = resolveLaunchContextTab(me?.launchContext ?? null);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
-    launchContextTab ?? readLastEntityType(),
+    launchContextTabHint ?? readLastEntityType(),
   ) as ManagedTab;
   const activeEntitiesKey = getEntitiesKey(activeTab);
   const chatsState = useManagedEntitiesSync({
     api,
     entityType: 'chat',
-    enabled: activeTab === 'chat' || launchContextTab === 'chat',
+    enabled: activeTab === 'chat' || launchContextTabHint === 'chat',
     reloadNonce: refreshRequestByTab.chat.nonce,
     reloadBehavior: refreshRequestByTab.chat.behavior,
     resumeOnVisibilityReturn: true,
@@ -205,7 +178,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const channelsState = useManagedEntitiesSync({
     api,
     entityType: 'channel',
-    enabled: activeTab === 'channel' || launchContextTab === 'channel',
+    enabled: activeTab === 'channel' || launchContextTabHint === 'channel',
     reloadNonce: refreshRequestByTab.channel.nonce,
     reloadBehavior: refreshRequestByTab.channel.behavior,
     resumeOnVisibilityReturn: true,
@@ -344,29 +317,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeEntitiesState.isLoading, activeEntitiesState.isRefreshing]);
 
   useEffect(() => {
-    const controller = new AbortController();
-
-    void getMe(api, { signal: controller.signal })
-      .then((nextMe) => {
-        setMe(nextMe);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setMe((current) =>
-            current
-              ? {
-                  ...current,
-                  canAccessSystem: false,
-                }
-              : null,
-          );
-        }
-      });
-
-    return () => controller.abort();
-  }, [api]);
-
-  useEffect(() => {
     const allEntities = [...(chatsState.data ?? []), ...(channelsState.data ?? [])];
     if (allEntities.length === 0) {
       return;
@@ -378,105 +328,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     saveLastEntityType(activeTab);
   }, [activeTab]);
-
-  const canAccessSystem = me?.canAccessSystem === true;
-  const launchContext = me?.launchContext ?? null;
-  const launchContextEntitiesState =
-    launchContextTab === 'chat'
-      ? chatsState
-      : launchContextTab === 'channel'
-        ? channelsState
-        : null;
-  const launchContextEntity =
-    launchContext && launchContextEntitiesState?.data
-      ? (launchContextEntitiesState.data.find((entity) => entity.id === launchContext.chatId) ??
-        null)
-      : null;
-  const launchContextRecoveryKey =
-    launchContext && launchContextTab ? `${launchContextTab}:${launchContext.chatId}` : null;
-  const launchContextPrimaryRoute =
-    launchContext && launchContextTab
-      ? buildLaunchContextPrimaryRoute(launchContext, launchContextTab)
-      : null;
-  const launchContextSecondaryRoute =
-    launchContext && launchContextTab
-      ? buildLaunchContextSecondaryRoute(launchContext, launchContextTab)
-      : null;
-  const launchContextTitle =
-    launchContextEntity?.title ??
-    launchContext?.chatTitle ??
-    (launchContextTab === 'channel' ? 'Текущий канал' : 'Текущий чат');
-  const launchContextProgress = formatRefreshProgress(
-    launchContextEntitiesState?.refreshState ?? null,
-  );
-  const launchContextRetryAfterSec =
-    typeof launchContextEntitiesState?.refreshState?.manualRefreshRetryAfterMs === 'number' &&
-    launchContextEntitiesState.refreshState.manualRefreshRetryAfterMs > 0
-      ? Math.max(
-          1,
-          Math.ceil(launchContextEntitiesState.refreshState.manualRefreshRetryAfterMs / 1_000),
-        )
-      : null;
-  const launchContextIsChecking =
-    launchContext !== null &&
-    launchContextEntity === null &&
-    Boolean(
-      launchContextEntitiesState &&
-      (!launchContextEntitiesState.hasLoadedFromServer ||
-        launchContextEntitiesState.isRefreshing ||
-        (!launchContextEntitiesState.isSyncComplete &&
-          !launchContextEntitiesState.isBackoffActive)),
-    );
-  const launchContextDescription =
-    launchContext === null || launchContextTab === null || launchContextEntitiesState === null
-      ? null
-      : launchContextEntity
-        ? launchContextTab === 'chat'
-          ? 'Этот чат уже доступен в mini app. Можно сразу перейти в настройки или события.'
-          : 'Этот канал уже доступен в mini app. Можно сразу перейти в настройки или статистику.'
-        : !launchContextEntitiesState.hasLoadedFromServer
-          ? `Проверяем ${launchContextTab === 'chat' ? 'чат' : 'канал'} на сервере и подтягиваем свежие права администратора.`
-          : launchContextEntitiesState.isBackoffActive
-            ? `MAX временно ограничил проверку. Повторим автоматически${launchContextRetryAfterSec ? ` через ${launchContextRetryAfterSec} с` : ''}.`
-            : launchContextEntitiesState.error
-              ? `Не удалось подтвердить доступ к ${launchContextTab === 'chat' ? 'чату' : 'каналу'} в этой сессии.`
-              : launchContextProgress
-                ? `Этот ${launchContextTab === 'chat' ? 'чат' : 'канал'} пока не появился в общем списке. Продолжаем синк: ${launchContextProgress}.`
-                : `Этот ${launchContextTab === 'chat' ? 'чат' : 'канал'} открыт из MAX, но пока не прошёл полную проверку. Обычно это значит, что бот ещё не админ или MAX не отдал свежий список.`;
-
-  useEffect(() => {
-    if (
-      !launchContext ||
-      !launchContextTab ||
-      !launchContextEntitiesState ||
-      !launchContextRecoveryKey ||
-      launchContextEntity ||
-      launchContextEntitiesState.error ||
-      launchContextEntitiesState.isBackoffActive ||
-      !launchContextEntitiesState.hasLoadedFromServer
-    ) {
-      return;
-    }
-    if (launchContextRecoveryKeyRef.current === launchContextRecoveryKey) {
-      return;
-    }
-
-    launchContextRecoveryKeyRef.current = launchContextRecoveryKey;
-    console.warn(
-      'Launch context entity missing after lightweight pass, starting recovery refresh',
-      {
-        chatId: launchContext.chatId,
-        chatType: launchContext.chatType,
-      },
-    );
-    queueRefresh(launchContextTab, 'recovery');
-  }, [
-    launchContext,
-    launchContextEntitiesState,
-    launchContextEntity,
-    launchContextRecoveryKey,
-    launchContextTab,
-  ]);
 
   function prefetchChatSettings(chatId: string) {
     preloadSettingsPage();
@@ -530,15 +381,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const showSystemCard = canAccessSystem;
-  const showLaunchContextCard = Boolean(
-    launchContext && launchContextTab && launchContextPrimaryRoute && launchContextDescription,
-  );
-  const launchContextBadge =
-    launchContextTab === 'channel'
-      ? 'Текущий канал'
-      : launchContextTab === 'chat'
-        ? 'Текущий чат'
-        : '';
 
   return (
     <div className="page-stack page-enter">
@@ -606,88 +448,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {showLaunchContextCard && launchContext && launchContextPrimaryRoute ? (
-        <GlassCard className="launch-context-card" elevated>
-          <div className="launch-context-card__head">
-            <span className="chip launch-context-card__badge">{launchContextBadge}</span>
-            {launchContextIsChecking ? (
-              <span className="launch-context-card__meta">Проверка идёт</span>
-            ) : null}
-          </div>
-          <div className="launch-context-card__body">
-            <div className="launch-context-card__identity">
-              <EntityAvatar
-                title={launchContextTitle}
-                entityType={launchContextTab ?? 'chat'}
-                avatarUrl={launchContextEntity?.avatarUrl ?? null}
-                className="launch-context-card__avatar"
-              />
-              <div className="launch-context-card__copy">
-                <h2>{launchContextTitle}</h2>
-                <p>{launchContextDescription}</p>
-              </div>
-            </div>
-
-            <div className="launch-context-card__actions">
-              <Link
-                to={launchContextPrimaryRoute}
-                className="button button--accent"
-                state={
-                  launchContextTab === 'channel'
-                    ? {
-                        chatTitle: launchContextTitle,
-                        chatLink: launchContextEntity?.link ?? '',
-                        avatarUrl: launchContextEntity?.avatarUrl ?? null,
-                      }
-                    : {
-                        chatTitle: launchContextTitle,
-                        avatarUrl: launchContextEntity?.avatarUrl ?? null,
-                      }
-                }
-                onClick={() => {
-                  if (!launchContextTab) {
-                    return;
-                  }
-                  saveLastEntityId(launchContextTab, launchContext.chatId);
-                  saveChatTitle(launchContext.chatId, launchContextTitle);
-                }}
-              >
-                {launchContextTab === 'channel'
-                  ? 'Открыть настройки канала'
-                  : 'Открыть настройки чата'}
-              </Link>
-              {launchContextEntity && launchContextSecondaryRoute ? (
-                <Link
-                  to={launchContextSecondaryRoute}
-                  className="button button--ghost"
-                  state={{
-                    chatTitle: launchContextTitle,
-                    avatarUrl: launchContextEntity.avatarUrl ?? null,
-                  }}
-                  onClick={() => {
-                    if (!launchContextTab) {
-                      return;
-                    }
-                    saveLastEntityId(launchContextTab, launchContext.chatId);
-                    saveChatTitle(launchContext.chatId, launchContextTitle);
-                  }}
-                >
-                  {launchContextTab === 'channel' ? 'Статистика' : 'События'}
-                </Link>
-              ) : (
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  onClick={() => handleRefresh(launchContextTab ?? activeTab, 'recovery')}
-                  disabled={launchContextEntitiesState?.isBackoffActive === true}
-                >
-                  {launchContextIsChecking ? 'Проверяем...' : 'Проверить снова'}
-                </button>
-              )}
-            </div>
-          </div>
-        </GlassCard>
-      ) : null}
+      <Suspense fallback={null}>
+        <LazyLaunchContextSection
+          api={api}
+          chatsState={chatsState}
+          channelsState={channelsState}
+          onLaunchContextTabChange={setLaunchContextTabHint}
+          onQueueRefresh={queueRefresh}
+          onSystemAccessChange={setCanAccessSystem}
+        />
+      </Suspense>
 
       {showSystemCard ? (
         <Suspense
@@ -748,79 +518,33 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {isNoEntitiesForTab && activeTab === 'chat' ? (
-        <section
-          className="chats-onboarding"
-          aria-label="Как подключить бота в MAX к групповому чату"
+        <Suspense
+          fallback={
+            <GlassCard>
+              <StatusState
+                tone="neutral"
+                title="Нет доступных чатов"
+                description="Добавьте бота в чат, выдайте права администратора и откройте mini app из этого чата."
+                action={
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    onClick={() => handleRefresh()}
+                    disabled={isFetching || isRefreshTemporarilyBlocked}
+                  >
+                    {isFetching ? 'Обновляем...' : 'Обновить'}
+                  </button>
+                }
+              />
+            </GlassCard>
+          }
         >
-          <GlassCard className="chats-onboarding__hero" elevated>
-            <div className="chats-onboarding__hero-top">
-              <span className="chip chats-onboarding__badge">2 шага • 1 минута</span>
-            </div>
-            <div className="chats-onboarding__hero-text">
-              <h1>Нет доступных чатов</h1>
-              <p>
-                Чтобы увидеть чат в приложении, добавьте чат-бота в чат и выдайте ему права
-                администратора. После этого откройте mini app из нужного чата, а список подтянется
-                после серверной проверки.
-              </p>
-            </div>
-          </GlassCard>
-
-          <GlassCard
-            className="onboarding-step-card stagger-in"
-            style={{ animationDelay: '40ms' }}
-            elevated
-          >
-            <div className="onboarding-step-card__content">
-              <h2>1. Добавьте бота в чат</h2>
-              <ul>
-                <li>Откройте нужный групповой чат в MAX.</li>
-                <li>Нажмите название чата → «Добавить участников».</li>
-                <li>Найдите бота и добавьте его в чат.</li>
-              </ul>
-            </div>
-            <figure className="onboarding-step-card__media">
-              <img
-                src={addBotToChatImage}
-                alt="Добавление бота в участники группового чата в MAX."
-                loading="lazy"
-              />
-              <figcaption>Экран добавления участников в MAX.</figcaption>
-            </figure>
-          </GlassCard>
-
-          <GlassCard
-            className="onboarding-step-card stagger-in"
-            style={{ animationDelay: '80ms' }}
-            elevated
-          >
-            <div className="onboarding-step-card__content">
-              <h2>2. Назначьте бота администратором</h2>
-              <ul>
-                <li>Откройте профиль чата → «Права администратора».</li>
-                <li>Выберите бота и включите нужные права.</li>
-                <li>Минимально для модерации: «Читать сообщения» и «Удалять сообщения».</li>
-              </ul>
-            </div>
-            <figure className="onboarding-step-card__media">
-              <img
-                src={grantBotAdminRightsImage}
-                alt="Назначение бота администратором в настройках прав чата MAX."
-                loading="lazy"
-              />
-              <figcaption>Экран прав администратора для бота.</figcaption>
-            </figure>
-          </GlassCard>
-
-          <button
-            type="button"
-            className="button button--accent onboarding-refresh"
-            onClick={() => handleRefresh()}
-            disabled={isFetching || isRefreshTemporarilyBlocked}
-          >
-            {isFetching ? 'Обновляем...' : 'Я добавил бота, обновить'}
-          </button>
-        </section>
+          <LazyChatOnboardingSection
+            isFetching={isFetching}
+            isRefreshBlocked={isRefreshTemporarilyBlocked}
+            onRefresh={() => handleRefresh()}
+          />
+        </Suspense>
       ) : null}
 
       {isNoEntitiesForTab && activeTab === 'channel' ? (
