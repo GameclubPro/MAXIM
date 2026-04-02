@@ -4074,6 +4074,86 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(result.message).toBe('Пользователь забанен.');
   });
 
+  it('uses the resolved chat bot for manual ban fanout in multi-bot chats', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }])
+      .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
+
+    const maxClient = {
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1-user',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockImplementation(async (...args: unknown[]) =>
+        args[0] === 'chat-2' ? 'bot-2' : 'bot-1',
+      );
+
+    await service.applyManualSystemBan(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'group_command',
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3', {
+      botId: 'bot-1',
+    });
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3', {
+      botId: 'bot-2',
+    });
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-3', {
+      trafficClass: 'background',
+      botId: 'bot-2',
+    });
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', {
+      immediate: true,
+      botId: 'bot-1',
+    });
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-2', 'user-3', {
+      immediate: true,
+      botId: 'bot-2',
+    });
+  });
+
   it('queues manual mute fanout for group commands when background queue is available', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);

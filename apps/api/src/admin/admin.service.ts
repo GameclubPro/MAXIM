@@ -10593,8 +10593,10 @@ export class AdminService {
         await this.sleepIfNeeded(this.manualFanoutLookupSpacingMs);
       }
 
+      const resolvedBotId = await this.resolveManualActionBotAssignment(chat.id);
+
       try {
-        await this.assertBotCanManageMembers(chat.id, 'BAN');
+        await this.assertBotCanManageMembers(chat.id, 'BAN', resolvedBotId);
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -10611,6 +10613,7 @@ export class AdminService {
 
       const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId, {
         trafficClass: 'background',
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
       if (targetState !== 'present') {
         result.skippedChatIds.push(chat.id);
@@ -10618,7 +10621,13 @@ export class AdminService {
       }
 
       try {
-        await this.maxClient.cancelScheduledUnban(chat.id, targetUserId);
+        if (resolvedBotId) {
+          await this.maxClient.cancelScheduledUnban(chat.id, targetUserId, {
+            botId: resolvedBotId,
+          });
+        } else {
+          await this.maxClient.cancelScheduledUnban(chat.id, targetUserId);
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -10632,11 +10641,17 @@ export class AdminService {
 
       try {
         await this.sleepIfNeeded(this.manualFanoutActionSpacingMs);
-        const executionMode = await this.resolveManualBanExecutionMode(chat.id);
+        const executionMode = await this.resolveManualBanExecutionMode(chat.id, resolvedBotId);
         if (executionMode === 'MAX_REMOVE_ONLY') {
-          await this.maxClient.kickMember(chat.id, targetUserId, { immediate: true });
+          await this.maxClient.kickMember(chat.id, targetUserId, {
+            immediate: true,
+            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          });
         } else {
-          await this.maxClient.banMember(chat.id, targetUserId, { immediate: true });
+          await this.maxClient.banMember(chat.id, targetUserId, {
+            immediate: true,
+            ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+          });
         }
       } catch (error: unknown) {
         this.logger.warn(
@@ -10697,13 +10712,19 @@ export class AdminService {
   private async resolveManualFanoutTargetState(
     chatId: string,
     targetUserId: string,
-    requestOptions: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
+    requestOptions: {
+      trafficClass?: 'critical' | 'interactive' | 'background';
+      botId?: string;
+    } = {},
   ): Promise<'present' | 'absent' | 'protected'> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
       getChatMemberAccess?: (
         chatId: string,
         userId: string,
-        options?: { trafficClass?: 'critical' | 'interactive' | 'background' },
+        options?: {
+          trafficClass?: 'critical' | 'interactive' | 'background';
+          botId?: string;
+        },
       ) => Promise<MaxChatMemberAccess | null>;
     };
     if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
