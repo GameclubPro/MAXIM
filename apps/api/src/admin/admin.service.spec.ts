@@ -6597,6 +6597,60 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
+  it('keeps listChats alive when deny-path allowlist pruning hits a saturated Prisma pool', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.chatAdminAllowlist.deleteMany.mockRejectedValueOnce({ code: 'P2024' });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        chat_id: 'chat-2',
+        chat_title: 'Новый чат',
+        is_channel: 'false',
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'Method is available only for chat administrator',
+          },
+        },
+      }),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
+
+    await flushAsyncTasks();
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-2',
+        userId: 'admin-1',
+      },
+    });
+  });
+
   it('revalidates cached chats with stale negative admin cache on default load', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -8117,6 +8171,48 @@ describe('AdminService.listChats', () => {
 
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
+  it('keeps recent bot-added bootstrap alive when unsupported-chat pruning hits a saturated Prisma pool', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        chat_id: '152517912',
+        chat_title: 'Личка с ботом',
+        is_channel: 'false',
+      },
+    ]);
+    prisma.chatAdminAllowlist.deleteMany.mockRejectedValueOnce({ code: 'P2024' });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([]);
+
+    await flushAsyncTasks();
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '152517912',
+        userId: 'admin-1',
+      },
+    });
   });
 
   it('does not call live MAX hydration for cached default managed lists', async () => {

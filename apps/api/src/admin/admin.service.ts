@@ -689,6 +689,8 @@ export class AdminService {
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
+  private readonly pendingPersistedChatAccessPrunes = new Set<string>();
+  private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
   private readonly logsDashboardResponseCache = new Map<
     string,
@@ -2299,7 +2301,11 @@ export class AdminService {
         continue;
       }
       if (this.isUnsupportedManagedChat(chatId, hintedEntityType)) {
-        await this.prunePersistedChatAccess(chatId, normalizedUserId);
+        this.schedulePersistedChatAccessPrune(
+          chatId,
+          normalizedUserId,
+          'bootstrap_recent_bot_added',
+        );
         continue;
       }
 
@@ -16458,7 +16464,22 @@ export class AdminService {
   ): Promise<AdminAccessResolution> {
     const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
     if (candidateBotIds.length === 0) {
-      return this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+      const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
+      if (resolution.status === 'granted') {
+        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+        return resolution;
+      }
+
+      if (resolution.status === 'denied') {
+        await this.chatContextCache.setAdminAccess?.(
+          chatId,
+          userId,
+          resolution.reason === 'user_not_admin' ? 'user_denied' : 'bot_denied',
+        );
+        this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
+      }
+
+      return resolution;
     }
 
     let sawUserDenied = false;
@@ -16494,7 +16515,7 @@ export class AdminService {
 
     if (sawUserDenied) {
       await this.chatContextCache.setAdminAccess?.(chatId, userId, 'user_denied');
-      await this.prunePersistedChatAccess(chatId, userId);
+      this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
       return {
         status: 'denied',
         source: 'remote',
@@ -16504,7 +16525,7 @@ export class AdminService {
 
     if (sawBotDenied) {
       await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-      await this.prunePersistedChatAccess(chatId, userId);
+      this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
       return {
         status: 'denied',
         source: 'remote',
@@ -16527,7 +16548,7 @@ export class AdminService {
     }
 
     await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
-    await this.prunePersistedChatAccess(chatId, userId);
+    this.schedulePersistedChatAccessPrune(chatId, userId, 'remote_admin_access');
     return {
       status: 'denied',
       source: 'remote',
@@ -17178,6 +17199,58 @@ export class AdminService {
         userId,
       },
     });
+  }
+
+  private schedulePersistedChatAccessPrune(
+    chatId: string,
+    userId: string,
+    source: 'bootstrap_recent_bot_added' | 'remote_admin_access',
+  ): void {
+    const normalizedChatId = this.readTrimmedString(chatId);
+    const normalizedUserId = this.readTrimmedString(userId);
+    if (!normalizedChatId || !normalizedUserId) {
+      return;
+    }
+
+    const key = `${normalizedChatId}:${normalizedUserId}`;
+    if (this.pendingPersistedChatAccessPrunes.has(key)) {
+      return;
+    }
+
+    this.pendingPersistedChatAccessPrunes.add(key);
+    this.persistedChatAccessPruneChain = this.persistedChatAccessPruneChain
+      .catch(() => undefined)
+      .then(async () => {
+        try {
+          await this.prunePersistedChatAccess(normalizedChatId, normalizedUserId);
+        } catch (error) {
+          this.logger.warn(
+            {
+              chatId: normalizedChatId,
+              userId: normalizedUserId,
+              source,
+              code:
+                error instanceof Prisma.PrismaClientKnownRequestError
+                  ? error.code
+                  : (error as { code?: string } | null)?.code ?? null,
+              err: error,
+            },
+            this.isPrismaKnownError(error, 'P2024')
+              ? 'Skipped persisted chat access prune because the Prisma pool is saturated'
+              : 'Failed to prune persisted chat access',
+          );
+        } finally {
+          this.pendingPersistedChatAccessPrunes.delete(key);
+        }
+      });
+  }
+
+  private isPrismaKnownError(error: unknown, code: string): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === code;
+    }
+
+    return (error as { code?: string } | null)?.code === code;
   }
 
   private async listChatsFromAllowlist(
