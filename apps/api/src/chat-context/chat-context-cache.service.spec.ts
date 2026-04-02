@@ -396,6 +396,56 @@ describe('ChatContextCacheService', () => {
     await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe('bot_denied');
   });
 
+  it('patches cached chat admins without reloading chat context from prisma', async () => {
+    const chatId = 'chat-1';
+    const settings = buildSettings(chatId);
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: chatId,
+          title: 'Chat title',
+          settings,
+          domains: [{ domain: 'example.com' }],
+          admins: [{ userId: 'user-1' }],
+          rules: null,
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        }),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+      set: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValue(null);
+
+    await service.getChatContext(chatId, 'Chat title');
+    await service.rememberChatAdminUser(chatId, 'user-2');
+
+    await expect(service.getChatContext(chatId)).resolves.toEqual(
+      expect.objectContaining({
+        adminUserIds: ['user-1', 'user-2'],
+      }),
+    );
+    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.cacheKey(chatId),
+      expect.stringContaining('\"user-2\"'),
+      'EX',
+      60,
+    );
+  });
+
   it('stores and invalidates managed entity header cache entries', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

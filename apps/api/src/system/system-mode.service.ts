@@ -20,6 +20,7 @@ export type SystemModeSnapshot = {
 
 const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
+const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 5_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
@@ -189,8 +190,16 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
 
   async getEffectiveSnapshot(): Promise<SystemModeSnapshot> {
     if (this.enabled) {
+      const cachedSnapshot = this.getCachedSharedSnapshot(SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS);
+      if (cachedSnapshot) {
+        return cachedSnapshot;
+      }
+
       await this.actionHealthService.refreshSnapshots(60);
-      return this.buildSnapshot(this.getUserFacingActionSnapshot());
+      const snapshot = this.buildSnapshot(this.getUserFacingActionSnapshot());
+      this.sharedSnapshotCache = snapshot;
+      this.sharedSnapshotCacheAtMs = Date.now();
+      return snapshot;
     }
 
     const cachedSnapshot = this.getCachedSharedSnapshot();
@@ -224,10 +233,12 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     this.updatedAt = new Date();
   }
 
-  private getCachedSharedSnapshot(): SystemModeSnapshot | null {
+  private getCachedSharedSnapshot(
+    maxAgeMs = SYSTEM_MODE_SHARED_CACHE_TTL_MS,
+  ): SystemModeSnapshot | null {
     if (
       this.sharedSnapshotCache &&
-      Date.now() - this.sharedSnapshotCacheAtMs <= SYSTEM_MODE_SHARED_CACHE_TTL_MS
+      Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs
     ) {
       return this.sharedSnapshotCache;
     }

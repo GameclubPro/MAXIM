@@ -224,6 +224,50 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async rememberChatAdminUser(chatId: string, userId: string): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    const normalizedUserId = userId.trim();
+    if (!normalizedChatId || !normalizedUserId) {
+      return;
+    }
+
+    const localCached = this.readLocalChatContext(normalizedChatId);
+    if (localCached) {
+      const nextValue = this.appendChatAdminUser(localCached, normalizedUserId);
+      if (nextValue !== localCached) {
+        this.writeLocalChatContext(normalizedChatId, nextValue);
+        this.writeChatContextToRedis(normalizedChatId, nextValue);
+      }
+      return;
+    }
+
+    const cached = await this.readRedisStringWithin(
+      ChatContextCacheService.cacheKey(normalizedChatId),
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
+    );
+    if (!cached) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(cached) as ChatContext;
+      const nextValue = this.appendChatAdminUser(parsed, normalizedUserId);
+      if (nextValue !== parsed) {
+        this.writeLocalChatContext(normalizedChatId, nextValue);
+        this.writeChatContextToRedis(normalizedChatId, nextValue);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: normalizedChatId,
+          userId: normalizedUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to patch chat admin user into cached chat context',
+      );
+    }
+  }
+
   private resolveAdminAccessTtlSec(state: ChatAdminAccessState): number {
     return state === 'granted'
       ? ChatContextCacheService.ADMIN_ACCESS_GRANTED_TTL_SEC
@@ -747,6 +791,18 @@ export class ChatContextCacheService implements OnModuleDestroy {
       value,
       expiresAtMs: Date.now() + this.localChatContextTtlMs,
     });
+  }
+
+  private appendChatAdminUser(context: ChatContext, userId: string): ChatContext {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId || context.adminUserIds.includes(normalizedUserId)) {
+      return context;
+    }
+
+    return {
+      ...context,
+      adminUserIds: [...context.adminUserIds, normalizedUserId],
+    };
   }
 
   private writeChatContextToRedis(chatId: string, value: ChatContext): void {

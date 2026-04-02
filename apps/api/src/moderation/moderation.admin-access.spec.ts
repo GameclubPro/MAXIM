@@ -275,4 +275,47 @@ describe('ModerationService chat admin access lookups', () => {
 
     expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
   });
+
+  it('patches cached chat context after persisting a remotely confirmed admin grant', async () => {
+    const chatContextCache = {
+      rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = {
+      chatAdminAllowlist: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      chatContextCache as never,
+      undefined,
+      { get: jest.fn() } as never,
+    );
+
+    await (
+      service as unknown as {
+        persistRemoteAdminGrant: (chatId: string, userId: string) => Promise<void>;
+      }
+    ).persistRemoteAdminGrant('chat-1', 'user-1');
+
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_userId: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        userId: 'user-1',
+      },
+      update: {},
+    });
+    expect(chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
+  });
 });

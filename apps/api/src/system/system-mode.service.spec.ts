@@ -91,6 +91,47 @@ describe('SystemModeService', () => {
     await service.onModuleDestroy();
   });
 
+  it('reuses a fresh ingress snapshot without forcing another action refresh', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({ effectiveLagSec: 0 }),
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 10,
+        success: 10,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+
+    const service = new SystemModeService(
+      createConfigMock() as never,
+      queueMetricsService as never,
+      actionHealthService as never,
+    );
+
+    await service.setManualMode('degrade');
+    actionHealthService.refreshSnapshots.mockClear();
+
+    const snapshot = await service.getEffectiveSnapshot();
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        mode: 'degrade',
+        source: 'manual',
+      }),
+    );
+    expect(actionHealthService.refreshSnapshots).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('loads the shared snapshot for non-http roles', async () => {
     process.env.APP_ROLE = 'moderation';
 

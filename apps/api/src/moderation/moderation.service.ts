@@ -9093,7 +9093,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         update: {},
       });
-      await this.chatContextCache?.invalidate?.(chatId);
+      if (typeof this.chatContextCache?.rememberChatAdminUser === 'function') {
+        await this.chatContextCache.rememberChatAdminUser(chatId, userId);
+      } else {
+        await this.chatContextCache?.invalidate?.(chatId);
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
