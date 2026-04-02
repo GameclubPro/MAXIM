@@ -3633,6 +3633,7 @@ export class AdminService {
       },
     });
     await this.chatContextCache.invalidate(chatId);
+    await this.refreshExecutionReadinessAfterChatSettingsUpdate(chatId, normalizedSettings);
 
     return normalizedSettings;
   }
@@ -4205,6 +4206,8 @@ export class AdminService {
         },
       },
     });
+    await this.chatContextCache.invalidate(chatId);
+    await this.refreshExecutionReadinessAfterChannelSettingsUpdate(chatId);
 
     return normalizedSettings;
   }
@@ -15980,6 +15983,66 @@ export class AdminService {
       (await this.resolveAssistBotAssignment(chatId, 'access_prewarm')) ??
       (await this.resolveBotAssignment(chatId))
     );
+  }
+
+  private async refreshExecutionReadinessAfterChatSettingsUpdate(
+    chatId: string,
+    settings: ChatSettings,
+  ): Promise<void> {
+    await this.refreshManagedEntityBotAccessSnapshots(
+      chatId,
+      'chat',
+      'chat settings update',
+    );
+
+    if (!settings.requiredSubscriptionEnabled) {
+      return;
+    }
+
+    for (const channelId of settings.requiredSubscriptionChannelIds) {
+      await this.refreshManagedEntityBotAccessSnapshots(
+        channelId,
+        'channel',
+        'required subscription settings update',
+      );
+    }
+  }
+
+  private async refreshExecutionReadinessAfterChannelSettingsUpdate(
+    chatId: string,
+  ): Promise<void> {
+    await this.refreshManagedEntityBotAccessSnapshots(
+      chatId,
+      'channel',
+      'channel settings update',
+    );
+  }
+
+  private async refreshManagedEntityBotAccessSnapshots(
+    chatId: string,
+    entityType: ManagedEntityType,
+    reason: string,
+  ): Promise<void> {
+    if (!this.maxBotExecutionPlanner) {
+      return;
+    }
+
+    try {
+      await this.maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots({
+        chatId,
+        entityType,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          entityType,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh bot access snapshots after settings update',
+      );
+    }
   }
 
   private async resolveDeliveryBotAssignment(chatId: string): Promise<string | undefined> {

@@ -1769,6 +1769,62 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('refreshes bot access snapshots for the chat and required subscription channels after settings update', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 125,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+    const maxBotExecutionPlanner = {
+      refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotExecutionPlanner as never,
+    );
+
+    await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+    });
+
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenNthCalledWith(1, {
+      chatId: 'chat-1',
+      entityType: 'chat',
+    });
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenNthCalledWith(2, {
+      chatId: 'channel-1',
+      entityType: 'channel',
+    });
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+  });
+
   it('resolves an external required subscription channel by public link when the bot is admin there', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
@@ -9211,6 +9267,53 @@ describe('AdminService.updateChannelSettings', () => {
         },
       }),
     );
+  });
+
+  it('invalidates channel context cache and refreshes bot access snapshots after channel settings update', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = createChatContextCacheMock();
+    const maxBotExecutionPlanner = {
+      refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotExecutionPlanner as never,
+    );
+
+    await service.updateChannelSettings(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        commentsEnabled: true,
+      },
+    );
+
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('channel-1');
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      entityType: 'channel',
+    });
   });
 });
 

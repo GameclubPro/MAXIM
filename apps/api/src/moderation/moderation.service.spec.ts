@@ -1292,6 +1292,57 @@ describe('ModerationService', () => {
     });
   });
 
+  it('persists hot-path timeout stage details in webhook errorMessage for production diagnostics', async () => {
+    const update = {
+      ...createUpdate(),
+      message: {
+        ...createUpdate().message,
+        chatId: '-chat-42',
+      },
+    };
+    const prisma = {
+      webhookEvent: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'event-timeout-1',
+          botId: 'id613002203036_bot',
+          normalizedPayload: update,
+        }),
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+    );
+    const timeoutError = (service as any).createWebhookHotPathTimeoutError({
+      webhookEventId: 'event-timeout-1',
+      update,
+      activeBotId: 'id613002203036_bot',
+      timeoutMs: 10_000,
+      timeoutContext: {
+        latestStage: 'required-subscription',
+        elapsedMs: 10_079,
+      },
+    });
+    jest.spyOn(service, 'handleUpdate').mockRejectedValue(timeoutError);
+
+    await expect(service.processWebhookEvent('event-timeout-1')).rejects.toThrow(
+      'Webhook user-facing hot path timed out after 10000ms for message_created',
+    );
+
+    expect(prisma.webhookEvent.update).toHaveBeenCalledWith({
+      where: { id: 'event-timeout-1' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        errorMessage:
+          'Webhook user-facing hot path timed out after 10000ms for message_created [latestStage=required-subscription, elapsedMs=10079, chatId=-chat-42, activeBotId=id613002203036_bot]',
+        nextEnqueueAt: null,
+      }),
+    });
+  });
+
   it('fails open for stuck user-facing message_created events instead of re-enqueueing them forever', async () => {
     const update = {
       ...createUpdate(),

@@ -3563,7 +3563,7 @@ export class PrivateControlService {
             pendingMassAction: session.pendingMassAction?.kind ?? null,
           };
           session.pendingMassAction = null;
-          const view = await this.renderBroadcastScreen(context, session, 'Рассылка запускается.');
+          const view = this.renderBroadcastLaunchingView(session);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification: 'Запускаю рассылку',
@@ -4333,10 +4333,10 @@ export class PrivateControlService {
           pendingInput: session.pendingInput?.kind ?? null,
           pendingMassAction: session.pendingMassAction?.kind ?? null,
         };
-        const view = await this.renderBroadcastScreen(context, session, 'Рассылка запускается.');
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Запускаю рассылку',
+          const view = this.renderBroadcastLaunchingView(session);
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Запускаю рассылку',
         });
         void this.finishConfirmedBroadcastPublish({
           privateChatId: context.chatId,
@@ -7306,6 +7306,36 @@ export class PrivateControlService {
         ...(imagePayload ? { imagePayload } : {}),
         ...(textPayload.textFormat ? { textFormat: textPayload.textFormat } : {}),
       },
+    };
+  }
+
+  private renderBroadcastLaunchingView(
+    session: Pick<PrivateSession, 'selectedChatId' | 'selectedEntityType'>,
+  ): PrivateView {
+    const entityType = session.selectedEntityType === 'channel' ? 'channel' : 'chat';
+    const entityLabel = entityType === 'channel' ? 'Канал' : 'Чат';
+    const selectedChatId = session.selectedChatId?.trim() ?? '';
+    const plannerUrl = selectedChatId
+      ? this.buildBroadcastSettingsMiniappUrl(selectedChatId, entityType)
+      : null;
+    const plannerRoute = selectedChatId
+      ? this.buildBroadcastSettingsMiniappRoute(selectedChatId, entityType)
+      : null;
+    const rows: MaxMessageButton[][] = [];
+
+    if (selectedChatId && plannerUrl && plannerRoute) {
+      rows.push([this.buildMiniappLaunchButton('📱 В приложение', plannerRoute, plannerUrl)]);
+    }
+
+    const lines = ['Рассылка запускается.'];
+    if (selectedChatId) {
+      lines.push(`${entityLabel}: ${selectedChatId}`);
+    }
+    lines.push('Итоговый статус придёт следующим сообщением.');
+
+    return {
+      text: lines.join('\n\n'),
+      options: rows.length > 0 ? { buttons: rows } : undefined,
     };
   }
 

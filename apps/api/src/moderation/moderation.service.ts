@@ -693,7 +693,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         where: { id: webhookEvent.id },
         data: {
           status: WebhookStatus.FAILED,
-          errorMessage: error instanceof Error ? error.message : 'Unknown error',
+          errorMessage: this.formatWebhookProcessingErrorMessage(error),
           nextEnqueueAt: terminalProcessingError ? null : new Date(Date.now() + 15_000),
           ...(recoveredRawPayload
             ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
@@ -11915,12 +11915,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       webhookEventId?: string;
       chatId?: string | null;
       activeBotId?: string | null;
+      webhookHotPathContext?: Record<string, unknown> | null;
     };
     error.code = 'WEBHOOK_USER_FACING_TIMEOUT';
     error.webhookHotPathTimeout = true;
     error.webhookEventId = params.webhookEventId;
     error.chatId = this.extractWebhookHotPathChatId(params.update);
     error.activeBotId = params.activeBotId;
+    error.webhookHotPathContext = params.timeoutContext ?? null;
     this.rememberWebhookHotTimeoutChat(error.chatId);
     this.logger.warn(
       {
@@ -11934,6 +11936,54 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       'Webhook user-facing hot path timed out; failing this event open to keep the shard responsive',
     );
     return error;
+  }
+
+  private formatWebhookProcessingErrorMessage(error: unknown): string {
+    const baseMessage = error instanceof Error ? error.message : 'Unknown error';
+    if (!(error instanceof Error)) {
+      return baseMessage;
+    }
+
+    const timeoutError = error as Error & {
+      code?: string;
+      chatId?: string | null;
+      activeBotId?: string | null;
+      webhookHotPathContext?: Record<string, unknown> | null;
+    };
+    if (timeoutError.code !== 'WEBHOOK_USER_FACING_TIMEOUT' || !timeoutError.webhookHotPathContext) {
+      return baseMessage;
+    }
+
+    const details: string[] = [];
+    const latestStage = this.readString(timeoutError.webhookHotPathContext.latestStage);
+    if (latestStage) {
+      details.push(`latestStage=${latestStage}`);
+    }
+
+    const elapsedMs = timeoutError.webhookHotPathContext.elapsedMs;
+    if (typeof elapsedMs === 'number' && Number.isFinite(elapsedMs) && elapsedMs >= 0) {
+      details.push(`elapsedMs=${Math.trunc(elapsedMs)}`);
+    }
+
+    const chatId =
+      this.readString(timeoutError.chatId) ??
+      this.readString(timeoutError.webhookHotPathContext.chatId);
+    if (chatId) {
+      details.push(`chatId=${chatId}`);
+    }
+
+    const activeBotId =
+      this.readString(timeoutError.activeBotId) ??
+      this.readString(timeoutError.webhookHotPathContext.activeBotId);
+    if (activeBotId) {
+      details.push(`activeBotId=${activeBotId}`);
+    }
+
+    if (details.length === 0) {
+      return baseMessage;
+    }
+
+    return `${baseMessage} [${details.join(', ')}]`;
   }
 
   private createWebhookHotPathProfile(): WebhookHotPathProfile {
