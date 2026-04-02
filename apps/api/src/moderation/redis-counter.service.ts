@@ -3,6 +3,33 @@ import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
+const INCREMENT_WITH_TTL_SCRIPT = `
+local count = redis.call('INCR', KEYS[1])
+if count == 1 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return count
+`;
+
+const INCREMENT_BY_WITH_TTL_SCRIPT = `
+local count = redis.call('INCRBY', KEYS[1], ARGV[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return count
+`;
+
+const ADD_TO_SET_WITH_TTL_SCRIPT = `
+local added = redis.call('SADD', KEYS[1], ARGV[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+local size = redis.call('SCARD', KEYS[1])
+return {added, size}
+`;
+
 @Injectable()
 export class RedisCounterService {
   private readonly redis: Redis;
@@ -12,11 +39,9 @@ export class RedisCounterService {
   }
 
   async incrementWithTtl(key: string, ttlSeconds: number): Promise<number> {
-    const count = await this.redis.incr(key);
-    if (count === 1) {
-      await this.redis.expire(key, ttlSeconds);
-    }
-    return count;
+    return Number(
+      await this.redis.eval(INCREMENT_WITH_TTL_SCRIPT, 1, key, String(Math.trunc(ttlSeconds))),
+    );
   }
 
   async incrementByWithTtl(key: string, amount: number, ttlSeconds: number): Promise<number> {
@@ -25,12 +50,15 @@ export class RedisCounterService {
       return 0;
     }
 
-    const count = await this.redis.incrby(key, normalizedAmount);
-    const ttl = await this.redis.ttl(key);
-    if (ttl < 0) {
-      await this.redis.expire(key, ttlSeconds);
-    }
-    return count;
+    return Number(
+      await this.redis.eval(
+        INCREMENT_BY_WITH_TTL_SCRIPT,
+        1,
+        key,
+        String(normalizedAmount),
+        String(Math.trunc(ttlSeconds)),
+      ),
+    );
   }
 
   async addToSetWithTtl(
@@ -38,13 +66,15 @@ export class RedisCounterService {
     member: string,
     ttlSeconds: number,
   ): Promise<{ added: boolean; size: number }> {
-    const addedCount = await this.redis.sadd(key, member);
-    const ttl = await this.redis.ttl(key);
-    if (ttl < 0) {
-      await this.redis.expire(key, ttlSeconds);
-    }
-
-    const size = await this.redis.scard(key);
+    const result = (await this.redis.eval(
+      ADD_TO_SET_WITH_TTL_SCRIPT,
+      1,
+      key,
+      member,
+      String(Math.trunc(ttlSeconds)),
+    )) as [number | string, number | string];
+    const addedCount = Number(result?.[0] ?? 0);
+    const size = Number(result?.[1] ?? 0);
     return {
       added: addedCount > 0,
       size,

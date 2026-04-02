@@ -9000,8 +9000,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    for (const variant of this.buildUserIdVariants(userId)) {
-      const cached = await this.chatContextCache.getAdminAccess(chatId, variant);
+    const variants = [...this.buildUserIdVariants(userId)];
+    const cachedStates = await Promise.all(
+      variants.map((variant) => this.chatContextCache!.getAdminAccess(chatId, variant)),
+    );
+
+    for (const cached of cachedStates) {
       if (cached === 'granted' || cached === 'user_denied') {
         this.chatAdminAccessCache.set(this.buildChatAdminAccessLookupKey(chatId, userId), {
           expiresAt: nowMs + CHAT_ADMIN_CACHE_TTL_MS,

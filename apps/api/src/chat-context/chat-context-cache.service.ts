@@ -32,8 +32,11 @@ type LocalChatContextCacheEntry = {
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
   private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 30_000;
+  private static readonly CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS = 150;
+  private static readonly CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS = 150;
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
+  private static readonly ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS = 100;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
@@ -146,7 +149,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
     }
 
     const key = ChatContextCacheService.cacheKey(chatId);
-    const cached = await this.redis.get(key);
+    const cached = await this.readRedisStringWithin(
+      key,
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
+    );
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
@@ -184,7 +190,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   async getAdminAccess(chatId: string, userId: string): Promise<ChatAdminAccessState | null> {
-    const raw = await this.redis.get(ChatContextCacheService.adminAccessKey(chatId, userId));
+    const raw = await this.readRedisStringWithin(
+      ChatContextCacheService.adminAccessKey(chatId, userId),
+      ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
+    );
     if (raw === null) {
       return null;
     }
@@ -629,13 +638,8 @@ export class ChatContextCacheService implements OnModuleDestroy {
       rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
 
-    await this.redis.set(
-      ChatContextCacheService.cacheKey(chatId),
-      JSON.stringify(value),
-      'EX',
-      ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
-    );
     this.writeLocalChatContext(chatId, value);
+    this.writeChatContextToRedis(chatId, value);
     return value;
   }
 
@@ -696,5 +700,52 @@ export class ChatContextCacheService implements OnModuleDestroy {
       value,
       expiresAtMs: Date.now() + this.localChatContextTtlMs,
     });
+  }
+
+  private writeChatContextToRedis(chatId: string, value: ChatContext): void {
+    void this.runRedisWriteWithin(
+      this.redis.set(
+        ChatContextCacheService.cacheKey(chatId),
+        JSON.stringify(value),
+        'EX',
+        ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
+      ),
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_WRITE_TIMEOUT_MS,
+    );
+  }
+
+  private async readRedisStringWithin(key: string, maxWaitMs: number): Promise<string | null> {
+    const readPromise = this.redis.get(key).catch(() => null);
+    return this.runRedisReadWithin(readPromise, maxWaitMs);
+  }
+
+  private async runRedisReadWithin<T>(
+    operation: Promise<T>,
+    maxWaitMs: number,
+  ): Promise<T | null> {
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<null>((resolve) => {
+      timeout = setTimeout(() => resolve(null), Math.max(1, Math.trunc(maxWaitMs)));
+      timeout.unref();
+    });
+
+    try {
+      return await Promise.race([operation, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private async runRedisWriteWithin(
+    operation: Promise<unknown>,
+    maxWaitMs: number,
+  ): Promise<void> {
+    const result = await this.runRedisReadWithin(
+      operation.then(() => true).catch(() => false),
+      maxWaitMs,
+    );
+    void result;
   }
 }
