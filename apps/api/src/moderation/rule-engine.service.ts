@@ -113,6 +113,8 @@ type BlockedWordDetection = {
   blockedWord: string;
 };
 
+const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
+
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
 // should come from the exact lexicon so names/surnames with the same prefix do not match.
 const PROFANITY_CORE_TOKEN_PATTERNS = [
@@ -387,7 +389,7 @@ const MIXED_CHAR_MAP: Record<string, string> = {
 @Injectable()
 export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
-  private readonly blockedWordListCache = new WeakMap<readonly string[], readonly string[]>();
+  private readonly blockedWordListCache = new Map<string, readonly string[]>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
   constructor(private readonly redisCounter: RedisCounterService) {}
@@ -1628,11 +1630,14 @@ export class RuleEngineService {
     }
 
     const compactText = normalizedText.replace(/[^\p{L}\p{N}]+/gu, '');
-    if (!blockedWordList.some((blockedWord) => compactText.includes(blockedWord))) {
+    const candidateBlockedWords = blockedWordList.filter((blockedWord) =>
+      compactText.includes(blockedWord),
+    );
+    if (candidateBlockedWords.length === 0) {
       return null;
     }
 
-    for (const blockedWord of blockedWordList) {
+    for (const blockedWord of candidateBlockedWords) {
       if (this.getMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
         return {
           blockedWord,
@@ -1654,7 +1659,8 @@ export class RuleEngineService {
   }
 
   private resolveMessageLimitsBlockedWordList(blockedWords: readonly string[]): readonly string[] {
-    const cached = this.blockedWordListCache.get(blockedWords);
+    const cacheKey = this.buildBlockedWordListCacheKey(blockedWords);
+    const cached = this.blockedWordListCache.get(cacheKey);
     if (cached) {
       return cached;
     }
@@ -1666,8 +1672,18 @@ export class RuleEngineService {
           .filter((item): item is string => Boolean(item)),
       ),
     ];
-    this.blockedWordListCache.set(blockedWords, resolved);
+    this.blockedWordListCache.set(cacheKey, resolved);
+    if (this.blockedWordListCache.size > BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES) {
+      const oldestKey = this.blockedWordListCache.keys().next().value;
+      if (typeof oldestKey === 'string') {
+        this.blockedWordListCache.delete(oldestKey);
+      }
+    }
     return resolved;
+  }
+
+  private buildBlockedWordListCacheKey(blockedWords: readonly string[]): string {
+    return blockedWords.join('\u001f');
   }
 
   private getMessageLimitsBlockedWordPattern(value: string): RegExp {

@@ -167,23 +167,19 @@ describe('ChatContextCacheService', () => {
     jest.clearAllMocks();
   });
 
-  it('handles chat create race (P2002) and still returns chat context', async () => {
+  it('loads chat context with a single upsert and caches the result', async () => {
     const chatId = 'chat-1';
     const settings = buildSettings(chatId);
     const prisma = {
       chat: {
-        create: jest.fn().mockRejectedValue({ code: 'P2002' }),
-        update: jest.fn().mockResolvedValue(undefined),
-        findUnique: jest.fn().mockResolvedValue({
+        upsert: jest.fn().mockResolvedValue({
           id: chatId,
           title: 'Chat title',
           settings,
           domains: [{ domain: 'example.com' }],
           admins: [{ userId: 'user-1' }],
+          rules: null,
         }),
-      },
-      chatSettings: {
-        createMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const config = {
@@ -203,11 +199,28 @@ describe('ChatContextCacheService', () => {
 
     const context = await service.getChatContext(chatId, 'Chat title');
 
-    expect(prisma.chatSettings.createMany).toHaveBeenCalledWith({
-      data: [{ chatId }],
-      skipDuplicates: true,
+    expect(prisma.chat.upsert).toHaveBeenCalledWith({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        botId: '777000_bot',
+        primaryBotId: '777000_bot',
+        title: 'Chat title',
+        settings: {
+          create: {},
+        },
+      },
+      update: {
+        title: 'Chat title',
+        settings: {
+          upsert: {
+            create: {},
+            update: {},
+          },
+        },
+      },
+      include: expect.any(Object),
     });
-    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(context).toEqual({
       chatId,
       title: 'Chat title',
@@ -223,18 +236,13 @@ describe('ChatContextCacheService', () => {
   it('deduplicates concurrent cold chat context loads', async () => {
     const chatId = 'chat-1';
     const settings = buildSettings(chatId);
-    let resolveFindUnique!: (value: unknown) => void;
-    const findUniquePromise = new Promise((resolve) => {
-      resolveFindUnique = resolve;
+    let resolveUpsert!: (value: unknown) => void;
+    const upsertPromise = new Promise((resolve) => {
+      resolveUpsert = resolve;
     });
     const prisma = {
       chat: {
-        create: jest.fn().mockResolvedValue({ id: chatId }),
-        update: jest.fn().mockResolvedValue(undefined),
-        findUnique: jest.fn().mockReturnValue(findUniquePromise),
-      },
-      chatSettings: {
-        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+        upsert: jest.fn().mockReturnValue(upsertPromise),
       },
     };
     const config = {
@@ -255,12 +263,13 @@ describe('ChatContextCacheService', () => {
     const firstLoad = service.getChatContext(chatId, 'Chat title');
     const secondLoad = service.getChatContext(chatId, 'Chat title');
 
-    resolveFindUnique({
+    resolveUpsert({
       id: chatId,
       title: 'Chat title',
       settings,
       domains: [{ domain: 'example.com' }],
       admins: [{ userId: 'user-1' }],
+      rules: null,
     });
 
     await expect(firstLoad).resolves.toEqual({
@@ -281,8 +290,7 @@ describe('ChatContextCacheService', () => {
       rulesPublishedUrl: null,
       rulesPublishedMessageId: null,
     });
-    expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
-    expect(prisma.chatSettings.createMany).toHaveBeenCalledTimes(1);
+    expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
     expect(redisInstance.set).toHaveBeenCalledTimes(1);
   });
 

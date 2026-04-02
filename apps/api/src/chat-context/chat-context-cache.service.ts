@@ -1,7 +1,7 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
-import { Prisma, type ChatSettings } from '@prisma/client';
+import type { ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import type { MaxBotChat } from '../max/max-client.service';
@@ -31,7 +31,7 @@ type LocalChatContextCacheEntry = {
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
-  private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 5_000;
+  private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 30_000;
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
@@ -568,10 +568,27 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const title = chatTitle?.trim();
-    await this.ensureChatInitialized(chatId, title);
-
-    const chat = await this.prisma.chat.findUnique({
+    const defaultBotId = this.maxBotLinkService.getContextOrDefaultBotId();
+    const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
+      create: {
+        id: chatId,
+        botId: defaultBotId,
+        primaryBotId: defaultBotId,
+        title: title || `Chat ${chatId}`,
+        settings: {
+          create: {},
+        },
+      },
+      update: {
+        ...(title ? { title } : {}),
+        settings: {
+          upsert: {
+            create: {},
+            update: {},
+          },
+        },
+      },
       include: {
         settings: true,
         rules: {
@@ -595,10 +612,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
         },
       },
     });
-
-    if (!chat) {
-      throw new Error(`Chat missing after initialization for chat ${chatId}`);
-    }
 
     if (!chat.settings) {
       throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
@@ -626,43 +639,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return value;
   }
 
-  private async ensureChatInitialized(chatId: string, title: string | undefined) {
-    const resolvedTitle = title || `Chat ${chatId}`;
-
-    try {
-      await this.prisma.chat.create({
-        data: {
-          id: chatId,
-          botId: this.maxBotLinkService.getContextOrDefaultBotId(),
-          primaryBotId: this.maxBotLinkService.getContextOrDefaultBotId(),
-          title: resolvedTitle,
-        },
-      });
-    } catch (error: unknown) {
-      if (!this.isPrismaError(error, 'P2002')) {
-        throw error;
-      }
-    }
-
-    if (title) {
-      try {
-        await this.prisma.chat.update({
-          where: { id: chatId },
-          data: { title },
-        });
-      } catch (error: unknown) {
-        if (!this.isPrismaError(error, 'P2025')) {
-          throw error;
-        }
-      }
-    }
-
-    await this.prisma.chatSettings.createMany({
-      data: [{ chatId }],
-      skipDuplicates: true,
-    });
-  }
-
   private async updateTitle(chatId: string, title: string) {
     try {
       await this.prisma.chat.update({
@@ -676,14 +652,6 @@ export class ChatContextCacheService implements OnModuleDestroy {
         'Failed to refresh chat title from cache hit',
       );
     }
-  }
-
-  private isPrismaError(error: unknown, code: string): boolean {
-    if (error instanceof Prisma.PrismaClientKnownRequestError) {
-      return error.code === code;
-    }
-
-    return (error as { code?: string } | null)?.code === code;
   }
 
   private isManagedEntitiesDiscoverySnapshot(

@@ -842,6 +842,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const settings = this.applyDegradeSettings(chat.settings, degradeMode);
       const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
       const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
+      const forceSynchronousRemoteAdminLookup =
+        this.shouldForceSynchronousRemoteAdminLookup(update);
       const rulesPublishedUrl = chat.rulesPublishedUrl;
       const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
@@ -896,13 +898,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             degradeMode ||
             manualGroupCloseActiveNow ||
             nightModeActiveNow ||
-            !this.shouldForceSynchronousRemoteAdminLookup(update),
+            !forceSynchronousRemoteAdminLookup,
           remoteLookupSoftTimeoutMs:
             !hotChatBackoffActive &&
             !degradeMode &&
             !manualGroupCloseActiveNow &&
             !nightModeActiveNow &&
-            !this.shouldForceSynchronousRemoteAdminLookup(update)
+            !forceSynchronousRemoteAdminLookup
               ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
               : undefined,
           prefetchRemoteLookupWhenLocalAdminsKnown:
@@ -5674,23 +5676,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
-        await this.upsertGlobalSpammerEntry({
-          userId,
-          sourceChatId: chatId,
-          reason: 'HIGH_FANOUT_6_CHATS_2M',
-          evidence: {
-            uniqueChats: uniqueChatsState.size,
-            windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-          },
-        });
+        this.runGlobalSpammerSideEffect(
+          { chatId, userId, action: 'upsert-detected' },
+          async () =>
+            this.upsertGlobalSpammerEntry({
+              userId,
+              sourceChatId: chatId,
+              reason: 'HIGH_FANOUT_6_CHATS_2M',
+              evidence: {
+                uniqueChats: uniqueChatsState.size,
+                windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+              },
+            }),
+        );
         if (deleteSpammersEnabled && !exemptFromEnforcement) {
-          await this.deleteAndKickDetectedGlobalSpammer({
-            chatId,
-            userId,
-            messageId,
-            text,
-            reason: 'Detected in 6 unique chats within 2 minutes',
-          });
+          this.runGlobalSpammerSideEffect(
+            { chatId, userId, messageId, action: 'delete-and-kick-detected' },
+            async () =>
+              this.deleteAndKickDetectedGlobalSpammer({
+                chatId,
+                userId,
+                messageId,
+                text,
+                reason: 'Detected in 6 unique chats within 2 minutes',
+              }),
+          );
           return {
             handled: true,
             skipKnownSpammerCheck: true,
@@ -5712,25 +5722,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
       );
       if (deleteSpammersEnabled) {
-        await this.sendGlobalSpammerFanoutWarning({
-          chatId,
-          userLabel,
-          warningCount,
-        });
+        this.runGlobalSpammerSideEffect(
+          { chatId, userId, action: 'send-warning' },
+          async () =>
+            this.sendGlobalSpammerFanoutWarning({
+              chatId,
+              userLabel,
+              warningCount,
+            }),
+        );
       }
 
       if (warningCount >= GLOBAL_SPAMMER_WARN_THRESHOLD) {
-        await this.upsertGlobalSpammerEntry({
-          userId,
-          sourceChatId: chatId,
-          reason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
-          evidence: {
-            uniqueChats: uniqueChatsState.size,
-            windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-            warningCount,
-            warningThreshold: GLOBAL_SPAMMER_WARN_THRESHOLD,
-          },
-        });
+        this.runGlobalSpammerSideEffect(
+          { chatId, userId, action: 'upsert-warning-threshold' },
+          async () =>
+            this.upsertGlobalSpammerEntry({
+              userId,
+              sourceChatId: chatId,
+              reason: 'HIGH_FANOUT_5_CHATS_WARN_THRESHOLD',
+              evidence: {
+                uniqueChats: uniqueChatsState.size,
+                windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+                warningCount,
+                warningThreshold: GLOBAL_SPAMMER_WARN_THRESHOLD,
+              },
+            }),
+        );
       }
 
       return {
@@ -5748,6 +5766,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       return baseResult;
     }
+  }
+
+  private runGlobalSpammerSideEffect(
+    context: Record<string, unknown>,
+    operation: () => Promise<void>,
+  ): void {
+    void operation().catch((error: unknown) => {
+      this.logger.warn(
+        {
+          ...context,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Global spammer background side effect failed',
+      );
+    });
   }
 
   private async sendGlobalSpammerFanoutWarning(params: {
@@ -8819,55 +8852,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...(resolvedBotId ? { botId: resolvedBotId } : {}),
     };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
-    const botContactId = this.resolveBotContactId(resolvedBotId);
 
     if (typeof maxClientWithAccess.getChatMembersAccess === 'function') {
-      const lookupIds =
-        botContactId && !normalizedUserIds.includes(botContactId)
-          ? [...normalizedUserIds, botContactId]
-          : normalizedUserIds;
       const accessByUserId = await this.executeRemoteChatAdminLookupWithGuard(
         () =>
           maxClientWithAccess.getChatMembersAccess!.call(
             this.maxClient,
             chatId,
-            lookupIds,
+            normalizedUserIds,
             requestOptions,
           ),
         {
           chatId,
-          userIds: lookupIds,
+          userIds: normalizedUserIds,
           botId: resolvedBotId,
         },
       );
-      const botAccess =
-        (botContactId ? (accessByUserId.get(botContactId) ?? null) : null) ??
-        (typeof maxClientWithAccess.getCurrentChatMemberAccess === 'function'
-          ? await this.executeRemoteChatAdminLookupWithGuard(
-              () =>
-                maxClientWithAccess.getCurrentChatMemberAccess!.call(
-                  this.maxClient,
-                  chatId,
-                  requestOptions,
-                ),
-              {
-                chatId,
-                userIds: botContactId ? [botContactId] : [],
-                botId: resolvedBotId,
-              },
-            )
-          : null);
       for (const normalizedUserId of normalizedUserIds) {
-        const userAccess =
-          accessByUserId.get(normalizedUserId) ??
-          (botContactId === normalizedUserId ? botAccess : null);
+        const userAccess = accessByUserId.get(normalizedUserId) ?? null;
         const hasUserAccess = userAccess?.isAdmin === true || userAccess?.isOwner === true;
         const accessState: RemoteChatAdminAccessState = hasUserAccess ? 'granted' : 'user_denied';
-
-        if (botAccess && !botAccess.isAdmin && !botAccess.isOwner) {
-          results.set(normalizedUserId, accessState);
-          continue;
-        }
 
         results.set(normalizedUserId, accessState);
       }

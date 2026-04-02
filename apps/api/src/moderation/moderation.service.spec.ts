@@ -7967,12 +7967,7 @@ describe('ModerationService', () => {
           ],
         ]),
       ),
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-1',
-        isAdmin: true,
-        isOwner: false,
-        permissions: [],
-      }),
+      getCurrentChatMemberAccess: jest.fn(),
     };
     const chatContextCache = {
       getAdminAccess: jest.fn().mockResolvedValue(null),
@@ -8004,7 +7999,7 @@ describe('ModerationService', () => {
         ignoreFailureMetricStatuses: [403, 404],
       }),
     );
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
   it('routes remote chat admin lookups through the chat-bound bot when one is assigned', async () => {
@@ -8041,7 +8036,7 @@ describe('ModerationService', () => {
     };
     const maxBotLinkService = {
       resolveBotId: jest.fn().mockResolvedValue('id613002203036_4_bot'),
-      resolveContactIdSync: jest.fn().mockReturnValue('214634783'),
+      resolveContactIdSync: jest.fn(),
     };
     const service = new ModerationService(
       prisma as never,
@@ -8065,7 +8060,7 @@ describe('ModerationService', () => {
     expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'chat-1' });
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       'chat-1',
-      ['user-1', '214634783'],
+      ['user-1'],
       expect.objectContaining({
         trafficClass: 'interactive',
         actionHealthLane: 'background',

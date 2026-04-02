@@ -1152,6 +1152,40 @@ describe('RuleEngineService', () => {
     expect(buildPatternSpy).toHaveBeenCalledTimes(0);
   });
 
+  it('reuses normalized blocked-word lists across cloned settings payloads', () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const normalizeTokenSpy = jest.spyOn(service as any, 'normalizeMessageLimitsBlockedWordToken');
+
+    const first = (service as any).resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
+    const second = (service as any).resolveMessageLimitsBlockedWordList(['крипта', 'казино']);
+
+    expect(second).toBe(first);
+    expect(normalizeTokenSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('compiles regexes only for blocked words that survive the compact-text prefilter', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const buildPatternSpy = jest.spyOn(service as any, 'buildMessageLimitsBlockedWordPattern');
+
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Обход через к@3и-н0 тоже должен ловиться.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['крипта', 'казино', 'ставки'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+    expect(buildPatternSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('does not normalize malformed configured blocked words into a different token', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
