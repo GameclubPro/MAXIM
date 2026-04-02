@@ -49,7 +49,6 @@ import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
-import { BotExecutionPanel } from '../components/bot-execution-panel';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -67,15 +66,12 @@ import {
   addDomain,
   applySettingsSectionToAll,
   cancelManagedBroadcast,
-  getChatBotExecutionPlan,
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
   handoffBroadcast,
   handoffRules,
   publishRules,
-  updateChatPartnerAssist,
-  updateChatPrimaryBot,
   removeDomain,
   resolveRequiredSubscriptionChannel,
   resetPublishedRules,
@@ -132,6 +128,10 @@ type DeleteDelayStepperProps = {
 };
 
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
+const LazyBotExecutionDiagnosticsCard = lazy(async () => {
+  const module = await import('../components/bot-execution-diagnostics-card');
+  return { default: module.BotExecutionDiagnosticsCard };
+});
 const LazyMessageLimitsBlockedWordPresets = lazy(
   () => import('../components/message-limits-blocked-word-presets'),
 );
@@ -2065,8 +2065,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
-  const [pendingPrimaryBotId, setPendingPrimaryBotId] = useState<string | null>(null);
-  const [pendingAssistBotId, setPendingAssistBotId] = useState<string | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
@@ -2219,14 +2217,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   };
   const shouldShowBotExecutionDiagnostics =
     (chatHeaderQuery.data?.assignedBots?.length ?? 0) > 1 || !chatHeaderQuery.data?.primaryBotId;
-  const botExecutionPlanQueryKey = ['chat-bot-execution-plan', chatId ?? null] as const;
-  const botExecutionPlanQuery = useQuery({
-    queryKey: botExecutionPlanQueryKey,
-    queryFn: ({ signal }) => getChatBotExecutionPlan(api, chatId ?? '', { signal }),
-    enabled: Boolean(chatId) && shouldShowBotExecutionDiagnostics,
-    staleTime: 15_000,
-    refetchOnWindowFocus: false,
-  });
   const headerAssignedBots = useMemo(
     () => resolveHeaderAssignedBots(chatHeaderQuery.data ?? null),
     [chatHeaderQuery.data],
@@ -2252,78 +2242,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       })),
     [botLoadQuery.data, headerAssignedBots],
   );
-  const refreshBotExecutionPlanMutation = useMutation({
-    mutationFn: () => getChatBotExecutionPlan(api, chatId ?? '', { refresh: true }),
-    onSuccess: (plan) => {
-      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
-      pushToast({
-        tone: 'success',
-        title: 'Права ботов обновлены',
-        description: 'Состояние owner и standby подтянуто заново.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось обновить права',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-  const updatePrimaryBotMutation = useMutation({
-    mutationFn: (botId: string) => updateChatPrimaryBot(api, chatId ?? '', botId),
-    onMutate: (botId) => {
-      setPendingPrimaryBotId(botId);
-    },
-    onSuccess: (plan) => {
-      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
-      pushToast({
-        tone: 'success',
-        title: 'Owner обновлён',
-        description: 'Новая маршрутизация сохранена.',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось сменить owner',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-    onSettled: () => {
-      setPendingPrimaryBotId(null);
-    },
-  });
-  const updatePartnerAssistMutation = useMutation({
-    mutationFn: (payload: { botId: string; enabled: boolean }) =>
-      updateChatPartnerAssist(api, chatId ?? '', payload),
-    onMutate: ({ botId }) => {
-      setPendingAssistBotId(botId);
-    },
-    onSuccess: (plan, variables) => {
-      queryClient.setQueryData(botExecutionPlanQueryKey, plan);
-      pushToast({
-        tone: 'success',
-        title: variables.enabled ? 'Assist включён' : 'Assist выключен',
-        description: 'Настройка partner-бота сохранена.',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось обновить assist',
-        description: formatApiError(error),
-      });
-      maxNotify('error');
-    },
-    onSettled: () => {
-      setPendingAssistBotId(null);
-    },
-  });
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
     isLoading: settingsScreenQuery.isLoading,
@@ -5045,44 +4963,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           {shouldShowBotExecutionDiagnostics ? (
-            <GlassCard className="settings-section stagger-in">
-              {botExecutionPlanQuery.data ? (
-                <BotExecutionPanel
-                  plan={botExecutionPlanQuery.data}
-                  isRefreshing={
-                    botExecutionPlanQuery.isFetching || refreshBotExecutionPlanMutation.isPending
-                  }
-                  pendingPrimaryBotId={pendingPrimaryBotId}
-                  pendingAssistBotId={pendingAssistBotId}
-                  onRefresh={() => {
-                    void refreshBotExecutionPlanMutation.mutateAsync();
-                  }}
-                  onMakePrimary={(botId) => {
-                    updatePrimaryBotMutation.mutate(botId);
-                  }}
-                  onToggleAssist={(botId, enabled) => {
-                    updatePartnerAssistMutation.mutate({ botId, enabled });
-                  }}
-                />
-              ) : botExecutionPlanQuery.isLoading ? (
-                <SkeletonCard lines={6} />
-              ) : botExecutionPlanQuery.error ? (
-                <StatusState
-                  tone="warning"
-                  title="Диагностика ботов недоступна"
-                  description={formatApiError(botExecutionPlanQuery.error)}
-                  action={
-                    <button
-                      type="button"
-                      className="button button--ghost"
-                      onClick={() => void refreshBotExecutionPlanMutation.mutateAsync()}
-                    >
-                      Обновить права
-                    </button>
-                  }
-                />
-              ) : null}
-            </GlassCard>
+            <Suspense fallback={<GlassCard className="settings-section stagger-in"><SkeletonCard lines={6} /></GlassCard>}>
+              <LazyBotExecutionDiagnosticsCard
+                api={api}
+                chatId={chatId ?? ''}
+                entityType="chat"
+                shouldShow={shouldShowBotExecutionDiagnostics}
+                className="settings-section stagger-in"
+              />
+            </Suspense>
           ) : null}
 
           <SettingsDrilldownPanel
