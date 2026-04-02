@@ -109,6 +109,7 @@ import {
   ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
+  PrismaClient,
   SanctionAction,
   type ManagedBroadcast as PersistedManagedBroadcast,
   type ManagedBroadcastDelivery as PersistedManagedBroadcastDelivery,
@@ -122,6 +123,7 @@ import {
   ForbiddenException,
   Injectable,
   Logger,
+  OnModuleDestroy,
   Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -685,7 +687,7 @@ type ProfileMentionStartPayload = {
 };
 
 @Injectable()
-export class AdminService {
+export class AdminService implements OnModuleDestroy {
   private readonly logger = new Logger(AdminService.name);
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
@@ -708,6 +710,7 @@ export class AdminService {
     string,
     TimedPromiseCacheEntry<ChatSummary[]>
   >();
+  private readonly managedEntitiesReadPrisma: PrismaClient | null;
   private readonly managedEntitiesResponseWarmupRuns = new Map<
     string,
     Promise<ManagedEntitiesListResult>
@@ -781,6 +784,50 @@ export class AdminService {
       configService.get<number>('MANUAL_FANOUT_ACTION_SPACING_MS'),
       process.env.NODE_ENV === 'test' ? 0 : 120,
     );
+    this.managedEntitiesReadPrisma = this.createManagedEntitiesReadPrisma(
+      configService.get<string>('DATABASE_URL'),
+    );
+  }
+
+  async onModuleDestroy(): Promise<void> {
+    await this.managedEntitiesReadPrisma?.$disconnect();
+  }
+
+  private createManagedEntitiesReadPrisma(databaseUrl?: string | null): PrismaClient | null {
+    const dedicatedUrl = this.buildManagedEntitiesReadDatabaseUrl(databaseUrl);
+    if (!dedicatedUrl) {
+      return null;
+    }
+
+    return new PrismaClient({
+      datasources: {
+        db: {
+          url: dedicatedUrl,
+        },
+      },
+    });
+  }
+
+  private buildManagedEntitiesReadDatabaseUrl(databaseUrl?: string | null): string | null {
+    const normalized = databaseUrl?.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const url = new URL(normalized);
+      url.searchParams.set('connection_limit', '2');
+      url.searchParams.set('pool_timeout', '2');
+      return url.toString();
+    } catch {
+      return null;
+    }
+  }
+
+  private getManagedEntitiesReadPrisma():
+    | PrismaClient
+    | Pick<PrismaService, 'chatAdminAllowlist' | '$queryRaw' | 'chat'> {
+    return this.managedEntitiesReadPrisma ?? this.prisma;
   }
 
   async getMe(
@@ -2319,7 +2366,8 @@ export class AdminService {
     }
 
     const lookbackFrom = new Date(Date.now() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
-    const rows = await this.prisma.$queryRaw<
+    const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
+    const rows = await managedEntitiesReadPrisma.$queryRaw<
       Array<{
         chat_id: string | null;
         chat_title: string | null;
@@ -2629,7 +2677,8 @@ export class AdminService {
       return [];
     }
 
-    const rows = await this.prisma.$queryRaw<
+    const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
+    const rows = await managedEntitiesReadPrisma.$queryRaw<
       Array<{
         chat_id: string | null;
         chat_title: string | null;
@@ -2724,7 +2773,7 @@ export class AdminService {
         continue;
       }
 
-      const existing = await this.prisma.chat.findUnique({
+      const existing = await managedEntitiesReadPrisma.chat.findUnique({
         where: { id: chatId },
         select: {
           title: true,
@@ -17769,8 +17818,9 @@ export class AdminService {
     let rows: Array<{
       chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
     }> = [];
+    const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
     try {
-      rows = await this.prisma.chatAdminAllowlist.findMany({
+      rows = await managedEntitiesReadPrisma.chatAdminAllowlist.findMany({
         where: whereClause,
         include: { chat: true },
         orderBy: {
