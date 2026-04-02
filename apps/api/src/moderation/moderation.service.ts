@@ -300,6 +300,7 @@ const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
 const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
+const GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS = GLOBAL_SPAMMER_REDIS_TTL_SEC * 1_000;
 const GLOBAL_SPAMMER_WARN_MIN_CHATS = 5;
 const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 6;
 const GLOBAL_SPAMMER_WARN_THRESHOLD = 2;
@@ -389,6 +390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<boolean | null>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
+  private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private webhookHotChatSkipLogAtMs = 0;
   private requiredSubscriptionPressureSkipLogAtMs = 0;
@@ -5663,6 +5665,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       deleteSpammersEnabled,
       exemptFromEnforcement,
     } = params;
+    if (this.hasRecentLocalGlobalSpammerChatObservation(chatId, userId)) {
+      return baseResult;
+    }
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -5670,6 +5675,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         GLOBAL_SPAMMER_REDIS_TTL_SEC,
       );
+      this.markLocalGlobalSpammerChatObservation(chatId, userId);
 
       if (!uniqueChatsState.added) {
         return baseResult;
@@ -6061,6 +6067,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildGlobalSpammerWarnRedisKey(userId: string): string {
     return `global-spammer:warn:v1:${userId}`;
+  }
+
+  private buildLocalGlobalSpammerChatObservationKey(chatId: string, userId: string): string {
+    return `${userId}:${chatId}`;
+  }
+
+  private hasRecentLocalGlobalSpammerChatObservation(chatId: string, userId: string): boolean {
+    const cacheKey = this.buildLocalGlobalSpammerChatObservationKey(chatId, userId);
+    const expiresAtMs = this.globalSpammerLocalChatObservations.get(cacheKey) ?? 0;
+    if (expiresAtMs <= Date.now()) {
+      this.globalSpammerLocalChatObservations.delete(cacheKey);
+      return false;
+    }
+
+    return true;
+  }
+
+  private markLocalGlobalSpammerChatObservation(chatId: string, userId: string): void {
+    this.globalSpammerLocalChatObservations.set(
+      this.buildLocalGlobalSpammerChatObservationKey(chatId, userId),
+      Date.now() + GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS,
+    );
   }
 
   private buildGreetingJoinBurstRedisKey(chatId: string): string {

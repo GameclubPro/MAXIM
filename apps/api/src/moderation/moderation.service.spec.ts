@@ -2392,6 +2392,101 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not re-track global spammer state for repeated messages from the same user in the same chat window', async () => {
+    const nowIso = new Date().toISOString();
+    const createSpamUpdate = (messageId: string, text: string): MaxUpdate => ({
+      updateId: `upd-chat-1-${messageId}`,
+      type: 'message_created',
+      message: {
+        messageId,
+        chatId: 'chat-1',
+        senderId: 'user-spam-1',
+        senderName: 'Спамер',
+        text,
+        createdAt: nowIso,
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'user-spam-1',
+            type: 'user',
+          },
+          body: {
+            text,
+          },
+        },
+      },
+    });
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat chat-1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest.fn().mockResolvedValue({ added: true, size: 1 }),
+      incrementWithTtl: jest.fn().mockResolvedValue(1),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createSpamUpdate('msg-1', 'Первое сообщение'));
+    await service.handleUpdate(createSpamUpdate('msg-2', 'Второе сообщение'));
+
+    expect(redisCounter.addToSetWithTtl).toHaveBeenCalledTimes(1);
+    expect(redisCounter.addToSetWithTtl).toHaveBeenCalledWith(
+      'global-spammer:any:v1:user-spam-1',
+      'chat-1',
+      125,
+    );
+  });
+
   it('adds user to global spammer registry on sixth unique chat without warning or kick when toggle is disabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
