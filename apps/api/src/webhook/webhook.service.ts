@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { WebhookStatus, type Prisma } from '@prisma/client';
+import { ChatEntityType, WebhookStatus, type Prisma } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -150,11 +150,13 @@ export class WebhookService {
       return null;
     }
 
+    const entityType = this.readWebhookChatEntityType(update);
     try {
       if (this.isBotRemovalUpdate(update)) {
         return await this.maxBotLinkService.markChatBotRemoved({
           chatId,
           title: update.message?.chatTitle ?? null,
+          entityType,
           botId: update.botId,
         });
       }
@@ -162,6 +164,7 @@ export class WebhookService {
       const boundBotId = await this.maxBotLinkService.bindChatToBot({
         chatId,
         title: update.message?.chatTitle ?? null,
+        entityType,
         botId: update.botId,
       });
       return await this.maybeFailOverExecutionOwner({
@@ -221,6 +224,7 @@ export class WebhookService {
     const reassignedBotId = await this.maxBotLinkService.bindChatToBot({
       chatId: params.chatId,
       title: params.update.message?.chatTitle ?? null,
+      entityType: this.readWebhookChatEntityType(params.update),
       botId: incomingBotId,
       allowReassign: true,
     });
@@ -422,6 +426,17 @@ export class WebhookService {
         executionOwnerBotId?: string;
       }
     ).executionOwnerBotId = botId;
+  }
+
+  private readWebhookChatEntityType(update: MaxUpdate): ChatEntityType | null {
+    const entityType = update.message?.entityType;
+    if (entityType === 'channel') {
+      return ChatEntityType.CHANNEL;
+    }
+    if (entityType === 'chat') {
+      return ChatEntityType.CHAT;
+    }
+    return null;
   }
 
   private async handleDuplicateError(

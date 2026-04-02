@@ -401,6 +401,7 @@ export class SystemDashboardService {
         legacyBotUnknown: 0,
         activeMembershipBotUnknown: 0,
         primaryWithoutActiveMembership: 0,
+        primaryWithoutAdminAccess: 0,
         sharedChats: 0,
       },
       repair: {
@@ -458,7 +459,8 @@ export class SystemDashboardService {
       ownership.anomalies.primaryBotUnknown +
       ownership.anomalies.legacyBotUnknown +
       ownership.anomalies.activeMembershipBotUnknown +
-      ownership.anomalies.primaryWithoutActiveMembership;
+      ownership.anomalies.primaryWithoutActiveMembership +
+      ownership.anomalies.primaryWithoutAdminAccess;
     const totalGaps = ownership.entities.total.withoutPrimary;
 
     if (totalGaps === 0 && unresolvedKnownIssues === 0) {

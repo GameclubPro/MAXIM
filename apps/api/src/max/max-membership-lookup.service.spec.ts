@@ -188,6 +188,42 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('uses member-access bot resolution before falling back to the generic chat binding', async () => {
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['user-1', { userId: 'user-1', isAdmin: false }]])),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForMemberAccess: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveBotId: jest.fn(),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.getMembership('channel-lookup', 'user-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxBotLinkService.resolveBotIdForMemberAccess).toHaveBeenCalledWith({
+      chatId: 'channel-lookup',
+    });
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'channel-lookup',
+      ['user-1'],
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+      }),
+    );
+  });
+
   it('does not let a stalled redis membership read block the fallback MAX lookup', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:11:00.000Z'));
 

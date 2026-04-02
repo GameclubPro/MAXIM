@@ -1728,6 +1728,7 @@ export const botOwnershipAnomaliesSchema = z.object({
   legacyBotUnknown: z.number().int().min(0),
   activeMembershipBotUnknown: z.number().int().min(0),
   primaryWithoutActiveMembership: z.number().int().min(0),
+  primaryWithoutAdminAccess: z.number().int().min(0),
   sharedChats: z.number().int().min(0),
 });
 export type BotOwnershipAnomalies = z.infer<typeof botOwnershipAnomaliesSchema>;
@@ -2582,6 +2583,7 @@ export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
   chatId: z.string(),
   chatTitle: z.string().optional(),
+  entityType: z.enum(['chat', 'channel']).optional(),
   senderId: z.string(),
   senderName: z.string().optional(),
   text: z.string().default(''),

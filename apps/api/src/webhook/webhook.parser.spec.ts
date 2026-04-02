@@ -645,6 +645,10 @@ describe('WebhookParser', () => {
       update_id: 'upd-bot-removed-1',
       update_type: 'bot_removed',
       chat_id: -123456789,
+      chat: {
+        chat_id: -123456789,
+        chat_type: 'channel',
+      },
       user: {
         user_id: 890,
         first_name: 'Bot',
@@ -656,8 +660,28 @@ describe('WebhookParser', () => {
     expect(parsed.type).toBe('bot_removed');
     expect(parsed.message?.messageId).toBe('bot_removed:upd-bot-removed-1');
     expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.entityType).toBe('channel');
     expect(parsed.message?.senderId).toBe('890');
     expect(parsed.message?.senderName).toBe('Bot Removed');
+  });
+
+  it('extracts normalized chat entity type from recipient chat_type', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-entity-1',
+        chat_id: '-100500',
+        sender_id: 'user-entity-1',
+        text: 'hello',
+        created_at: '2026-03-31T05:00:00.000Z',
+        recipient: {
+          chat_type: 'channel',
+          title: 'Новости',
+        },
+      },
+    });
+
+    expect(parsed.message?.entityType).toBe('channel');
   });
 
   it('builds normalized message for bot_started update without message payload', () => {

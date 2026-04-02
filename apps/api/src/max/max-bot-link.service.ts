@@ -22,6 +22,11 @@ type ChatBotBindingCacheEntry = {
   expiresAtMs: number;
 };
 
+type MembershipAccessSnapshot = {
+  isAdmin: boolean;
+  isOwner: boolean;
+};
+
 export type ChatBotExecutionBinding = {
   chatId: string;
   activeBotId: string | null;
@@ -348,13 +353,23 @@ export class MaxBotLinkService {
         botMemberships: {
           select: {
             botId: true,
+            role: true,
             status: true,
           },
         },
       },
     });
+    const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        Boolean(this.botRegistry.getBotById(membership.botId)),
+    );
     const primaryBotId =
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ??
+      activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
+        ?.botId ??
+      activeKnownMemberships[0]?.botId ??
+      null;
     const activeMembership =
       activeBotId && chat?.botMemberships
         ? chat.botMemberships.find((membership) => membership.botId === activeBotId) ?? null
@@ -362,10 +377,7 @@ export class MaxBotLinkService {
     const activeMembershipStatus = activeMembership?.status ?? null;
     const assignedBotIds = Array.from(
       new Set(
-        (chat?.botMemberships ?? [])
-          .filter((membership) => membership.status === ChatBotMembershipStatus.ACTIVE)
-          .map((membership) => membership.botId)
-          .filter((botId) => this.botRegistry.getBotById(botId)),
+        activeKnownMemberships.map((membership) => membership.botId),
       ),
     );
     const shouldHandleGroupUpdate =
@@ -381,6 +393,77 @@ export class MaxBotLinkService {
       assignedBotIds,
       shouldHandleGroupUpdate,
     };
+  }
+
+  async resolveBotIdForMemberAccess(params: { chatId: string }): Promise<string | null> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        primaryBotId: true,
+        botId: true,
+        botMemberships: {
+          select: {
+            botId: true,
+            role: true,
+            status: true,
+            permissionsSnapshot: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    const primaryBotId =
+      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+    const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE &&
+        Boolean(this.botRegistry.getBotById(membership.botId)),
+    );
+    const adminCapableMembership =
+      activeKnownMemberships.find((membership) => {
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return (
+          membership.botId === primaryBotId &&
+          snapshot !== null &&
+          (snapshot.isAdmin || snapshot.isOwner)
+        );
+      }) ??
+      activeKnownMemberships.find((membership) => {
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+      }) ??
+      null;
+    if (adminCapableMembership) {
+      return adminCapableMembership.botId;
+    }
+
+    const primaryActiveMembership =
+      primaryBotId !== null
+        ? activeKnownMemberships.find((membership) => membership.botId === primaryBotId) ?? null
+        : null;
+    if (
+      primaryActiveMembership &&
+      !this.membershipExplicitlyLacksAccess(primaryActiveMembership.permissionsSnapshot)
+    ) {
+      return primaryActiveMembership.botId;
+    }
+
+    const alternateMembership =
+      activeKnownMemberships.find(
+        (membership) =>
+          membership.botId !== primaryBotId &&
+          !this.membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+      ) ?? null;
+    if (alternateMembership) {
+      return alternateMembership.botId;
+    }
+
+    return primaryBotId ?? activeKnownMemberships[0]?.botId ?? null;
   }
 
   async resolveBotIdForCapability(params: {
@@ -613,9 +696,26 @@ export class MaxBotLinkService {
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
           .filter((item): item is ManagedEntityBotCapability =>
             supported.has(item as ManagedEntityBotCapability),
-          ),
+        ),
       ),
     );
+  }
+
+  private normalizeMembershipAccessSnapshot(value: unknown): MembershipAccessSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    return {
+      isAdmin: row.isAdmin === true,
+      isOwner: row.isOwner === true,
+    };
+  }
+
+  private membershipExplicitlyLacksAccess(value: unknown): boolean {
+    const snapshot = this.normalizeMembershipAccessSnapshot(value);
+    return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
   }
 
   private async promoteActiveChatBotMembership(

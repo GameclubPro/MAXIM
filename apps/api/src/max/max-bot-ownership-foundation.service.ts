@@ -43,6 +43,12 @@ type MembershipRecord = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  permissionsSnapshot: unknown | null;
+};
+
+type MembershipAccessSnapshot = {
+  isAdmin: boolean;
+  isOwner: boolean;
 };
 
 @Injectable()
@@ -207,6 +213,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           role: true,
           status: true,
+          permissionsSnapshot: true,
         },
         orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
       }),
@@ -396,6 +403,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           botId: true,
           role: true,
           status: true,
+          permissionsSnapshot: true,
         },
       }),
     ]);
@@ -460,6 +468,14 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
       if (chat.primaryBotId && primaryKnown && !activeKnownMemberships.some((m) => m.botId === primaryKnown)) {
         anomalies.primaryWithoutActiveMembership += 1;
+      }
+
+      const primaryActiveMembership =
+        primaryKnown !== null
+          ? activeKnownMemberships.find((membership) => membership.botId === primaryKnown) ?? null
+          : null;
+      if (this.membershipExplicitlyLacksAccess(primaryActiveMembership?.permissionsSnapshot ?? null)) {
+        anomalies.primaryWithoutAdminAccess += 1;
       }
 
       if (hasActiveUnknownMembership) {
@@ -641,8 +657,26 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       legacyBotUnknown: 0,
       activeMembershipBotUnknown: 0,
       primaryWithoutActiveMembership: 0,
+      primaryWithoutAdminAccess: 0,
       sharedChats: 0,
     };
+  }
+
+  private normalizeMembershipAccessSnapshot(value: unknown): MembershipAccessSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    return {
+      isAdmin: row.isAdmin === true,
+      isOwner: row.isOwner === true,
+    };
+  }
+
+  private membershipExplicitlyLacksAccess(value: unknown): boolean {
+    const snapshot = this.normalizeMembershipAccessSnapshot(value);
+    return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
   }
 }
 

@@ -513,6 +513,7 @@ describe('SystemDashboardService', () => {
             legacyBotUnknown: 0,
             activeMembershipBotUnknown: 0,
             primaryWithoutActiveMembership: 0,
+            primaryWithoutAdminAccess: 0,
             sharedChats: 0,
           },
           repair: {

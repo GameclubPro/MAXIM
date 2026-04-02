@@ -6734,10 +6734,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     await this.maxClient.deleteMessage(params.chatId, params.messageId);
 
-    const refreshedMissingChannels = await this.resolveRequiredSubscriptionChannels(
-      membership.missingChannelIds,
-      { allowRemoteFetch: true },
-    );
+    const missingChannelIdsNeedingRefresh = membership.missingChannelIds.filter((channelId) => {
+      const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
+      return !metadata || !metadata.usable;
+    });
+    const refreshedMissingChannels =
+      missingChannelIdsNeedingRefresh.length > 0
+        ? await this.resolveRequiredSubscriptionChannels(missingChannelIdsNeedingRefresh, {
+            allowRemoteFetch: true,
+          })
+        : [];
     const refreshedMissingChannelsById = new Map(
       refreshedMissingChannels.map((channel) => [channel.id, channel] as const),
     );

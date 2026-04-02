@@ -25,6 +25,7 @@ export class WebhookParser {
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
     const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
     const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
+    const chatEntityType = this.extractChatEntityType(message, payload, membershipPayload);
     const resolvedMessageId =
       messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
     const resolvedChatId = chatId || membershipChatId;
@@ -44,6 +45,7 @@ export class WebhookParser {
             messageId: resolvedMessageId,
             chatId: resolvedChatId,
             ...(chatTitle ? { chatTitle } : {}),
+            ...(chatEntityType ? { entityType: chatEntityType } : {}),
             senderId: resolvedSenderId,
             ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
             text: messageText,
@@ -240,6 +242,36 @@ export class WebhookParser {
     );
     const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
     return fullName.length > 0 ? fullName : undefined;
+  }
+
+  private extractChatEntityType(
+    message: Record<string, unknown> | undefined,
+    payload: Record<string, unknown>,
+    membershipPayload: Record<string, unknown> | null,
+  ): 'chat' | 'channel' | undefined {
+    const candidates = [
+      message,
+      this.asRecord(message?.chat),
+      this.asRecord(message?.recipient),
+      this.asRecord(message?.conversation),
+      membershipPayload,
+      this.asRecord(membershipPayload?.chat),
+      this.asRecord(payload.chat),
+      payload,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const entityType = this.normalizeChatEntityType(candidate);
+      if (entityType) {
+        return entityType;
+      }
+    }
+
+    return undefined;
   }
 
   private extractMembershipCollectionUserIds(
@@ -1163,6 +1195,37 @@ export class WebhookParser {
 
   private readEntityType(row: Record<string, unknown>): string | undefined {
     return this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+  }
+
+  private normalizeChatEntityType(
+    row: Record<string, unknown>,
+  ): 'chat' | 'channel' | undefined {
+    const rawType = this.readLowerString(
+      row.chat_type ??
+        row.chatType ??
+        row.type ??
+        row.kind ??
+        row.entity_type ??
+        row.entityType,
+    );
+    if (rawType === 'channel') {
+      return 'channel';
+    }
+    if (
+      rawType === 'chat' ||
+      rawType === 'group' ||
+      rawType === 'supergroup' ||
+      rawType === 'dialog'
+    ) {
+      return 'chat';
+    }
+
+    const link = this.readString(row.link ?? row.url ?? row.invite_link ?? row.inviteLink);
+    if (link && link.toLowerCase().includes('/channel/')) {
+      return 'channel';
+    }
+
+    return undefined;
   }
 
   private shouldSkipSupplementalEntity(entityType: string | undefined): boolean {

@@ -39,6 +39,7 @@ type MembershipRow = {
   botId: string;
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
+  permissionsSnapshot?: unknown | null;
 };
 
 function createPrismaMock(params: {
@@ -70,11 +71,12 @@ function createPrismaMock(params: {
     chatBotMembership: {
       findMany: jest.fn(async () =>
         memberships.map((membership) => ({
-          chatId: membership.chatId,
-          botId: membership.botId,
-          role: membership.role,
-          status: membership.status,
-        })),
+            chatId: membership.chatId,
+            botId: membership.botId,
+            role: membership.role,
+            status: membership.status,
+            permissionsSnapshot: membership.permissionsSnapshot ?? null,
+          })),
       ),
       upsert: jest.fn(
         async ({
@@ -100,6 +102,7 @@ function createPrismaMock(params: {
             botId: create.botId,
             role: create.role,
             status: create.status,
+            permissionsSnapshot: create.permissionsSnapshot ?? null,
           });
           return memberships[memberships.length - 1]!;
         },
@@ -297,6 +300,59 @@ describe('MaxBotOwnershipFoundationService', () => {
     });
     expect(snapshot.repair.lastAppliedChanges).toBeGreaterThan(0);
     expect(snapshot.repair.lastSuccessAt).not.toBeNull();
+
+    await service.onModuleDestroy();
+  });
+
+  it('flags primary bots whose latest permissions snapshot no longer has admin access', async () => {
+    process.env.APP_ROLE = 'admin';
+
+    const prisma = createPrismaMock({
+      chats: [
+        {
+          id: 'chat-no-access',
+          entityType: ChatEntityType.CHAT,
+          botId: 'id613002203036_bot',
+          primaryBotId: 'id613002203036_bot',
+        },
+      ],
+      memberships: [
+        {
+          chatId: 'chat-no-access',
+          botId: 'id613002203036_bot',
+          role: ChatBotMembershipRole.PRIMARY,
+          status: ChatBotMembershipStatus.ACTIVE,
+          permissionsSnapshot: {
+            checkedAt: '2026-03-31T00:00:00.000Z',
+            isAdmin: false,
+            isOwner: false,
+            permissions: [],
+          },
+        },
+      ],
+    });
+
+    const service = new MaxBotOwnershipFoundationService(
+      createConfigMock() as never,
+      prisma as never,
+      {
+        getAllBots: jest.fn().mockReturnValue([{ id: 'id613002203036_bot', state: 'active' }]),
+        getAdminVisibleBots: jest
+          .fn()
+          .mockReturnValue([{ id: 'id613002203036_bot', state: 'active' }]),
+      } as never,
+      {
+        rememberChatBotBinding: jest.fn(),
+      } as never,
+    );
+
+    await service.onModuleInit();
+    const snapshot = await service.getSnapshot(0);
+
+    expect(snapshot.anomalies).toMatchObject({
+      primaryWithoutAdminAccess: 1,
+      primaryWithoutActiveMembership: 0,
+    });
 
     await service.onModuleDestroy();
   });

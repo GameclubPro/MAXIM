@@ -19,6 +19,7 @@ type MutableMembership = {
   role: ChatBotMembershipRole;
   status: ChatBotMembershipStatus;
   capabilities?: unknown;
+  permissionsSnapshot?: unknown;
   createdAt: Date;
   updatedAt: Date;
   lastSeenAt: Date | null;
@@ -47,6 +48,7 @@ function createServiceFixture() {
               role: membership.role,
               status: membership.status,
               capabilities: membership.capabilities ?? [],
+              permissionsSnapshot: membership.permissionsSnapshot ?? null,
             })),
         };
       }),
@@ -126,6 +128,7 @@ function createServiceFixture() {
             role: create.role,
             status: create.status,
             capabilities: (create as MutableMembership).capabilities ?? [],
+            permissionsSnapshot: (create as MutableMembership).permissionsSnapshot ?? null,
             createdAt: now(),
             updatedAt: now(),
             lastSeenAt: create.lastSeenAt ?? null,
@@ -347,6 +350,110 @@ describe('MaxBotLinkService', () => {
         shouldHandleGroupUpdate: false,
       }),
     );
+  });
+
+  it('derives a deterministic owner from active memberships when chat primary is missing', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-2', {
+      id: 'chat-2',
+      title: 'Shared chat without primary',
+      botId: null,
+      primaryBotId: null,
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-2',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T11:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T11:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T11:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T11:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-2',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        createdAt: new Date('2026-03-30T11:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T11:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T11:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T11:00:01.000Z'),
+      },
+    );
+
+    const ownerBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-2',
+      activeBotId: 'id613002203036_bot',
+    });
+    const standbyBinding = await fixture.service.getChatExecutionBinding({
+      chatId: 'chat-2',
+      activeBotId: 'id613002203036_4_bot',
+    });
+
+    expect(ownerBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        shouldHandleGroupUpdate: true,
+      }),
+    );
+    expect(standbyBinding).toEqual(
+      expect.objectContaining({
+        primaryBotId: 'id613002203036_bot',
+        assignedBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+        shouldHandleGroupUpdate: false,
+      }),
+    );
+  });
+
+  it('prefers a standby bot with confirmed admin access for member-access lookups', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-1', {
+      id: 'channel-1',
+      title: 'Shared channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'channel-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'channel-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForMemberAccess({ chatId: 'channel-1' }),
+    ).resolves.toBe('id613002203036_4_bot');
   });
 
   it('builds entry mini app links through the canonical entry bot', () => {

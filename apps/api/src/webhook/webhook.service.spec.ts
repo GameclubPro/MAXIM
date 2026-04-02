@@ -230,6 +230,7 @@ describe('WebhookService', () => {
             messageId: 'bot_removed:u-bot-removed-1',
             chatId: '-100123',
             chatTitle: 'Shared chat',
+            entityType: 'channel',
             senderId: 'id613002203036_4_bot',
             text: '',
             createdAt: new Date('2026-03-30T12:00:00.000Z').toISOString(),
@@ -242,6 +243,7 @@ describe('WebhookService', () => {
     expect(maxBotLinkService.markChatBotRemoved).toHaveBeenCalledWith({
       chatId: '-100123',
       title: 'Shared chat',
+      entityType: 'CHANNEL',
       botId: 'id613002203036_4_bot',
     });
     expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalledWith(
@@ -411,5 +413,49 @@ describe('WebhookService', () => {
         }),
       }),
     );
+  });
+
+  it('propagates webhook entity type into chat binding updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-entity-type-1',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-entity-type-1',
+            chatId: '-100125',
+            chatTitle: 'Новости района',
+            entityType: 'channel',
+            senderId: 'user-3',
+            text: 'hello',
+            createdAt: new Date('2026-03-31T20:00:02.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith({
+      chatId: '-100125',
+      title: 'Новости района',
+      entityType: 'CHANNEL',
+      botId: 'id613002203036_bot',
+    });
   });
 });
