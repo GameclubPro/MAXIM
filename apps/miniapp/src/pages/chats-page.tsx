@@ -252,14 +252,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           'logs-dashboard',
           chatId,
           DEFAULT_DASHBOARD_RANGE,
-          'no-activity',
-          'moderation',
+          false,
+          true,
         ],
         queryFn: () =>
           api.request(
             `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(
               DEFAULT_DASHBOARD_RANGE,
-            )}&includeActivityPreview=false&includeModerationPreview=true`,
+            )}&includeActivityPreview=false`,
           ),
       })
       .catch(() => undefined);
