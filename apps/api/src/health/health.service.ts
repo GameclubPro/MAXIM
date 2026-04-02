@@ -53,8 +53,15 @@ const DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 2_000;
 const DEFAULT_READINESS_BUILD_TIMEOUT_MS = 2_500;
 const DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS = 1_500;
 const DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS = 30_000;
+const DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS = 5 * 60_000;
 const STALE_READY_SOFT_WARNING_CODE = 'stale-ready-fallback';
 const READINESS_UNAVAILABLE_REASON = 'readiness snapshot unavailable';
+
+type DependencyHealthKey = 'database' | 'redis';
+type DependencyHealthState = {
+  ok: boolean;
+  checkedAtMs: number;
+};
 
 @Injectable()
 export class HealthService implements OnModuleDestroy {
@@ -66,10 +73,12 @@ export class HealthService implements OnModuleDestroy {
   private readonly readinessBuildTimeoutMs: number;
   private readonly readinessDependencyTimeoutMs: number;
   private readonly readinessStaleFallbackMaxAgeMs: number;
+  private readonly readinessDependencyFallbackMaxAgeMs: number;
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
   private queueLagBreachStartedAtMs: number | null = null;
+  private readonly dependencyHealth = new Map<DependencyHealthKey, DependencyHealthState>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -102,6 +111,13 @@ export class HealthService implements OnModuleDestroy {
     this.readinessStaleFallbackMaxAgeMs = configService.get<number>(
       'READINESS_STALE_FALLBACK_MAX_AGE_MS',
       DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS,
+    );
+    this.readinessDependencyFallbackMaxAgeMs = Math.max(
+      this.readinessStaleFallbackMaxAgeMs,
+      configService.get<number>(
+        'READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS',
+        DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS,
+      ),
     );
   }
 
@@ -215,6 +231,8 @@ export class HealthService implements OnModuleDestroy {
       ),
       this.tryGetQueueMetricsSnapshot(),
     ]);
+    this.recordDependencyHealth('database', database);
+    this.recordDependencyHealth('redis', redis);
     const queueMetrics = queueMetricsResult.snapshot;
     const cachedQueueMetrics =
       queueMetrics ??
@@ -404,8 +422,8 @@ export class HealthService implements OnModuleDestroy {
     }
 
     const [database, redis] = await Promise.all([
-      this.safeDependencyFallbackCheck(() => this.checkDatabase(), 'database check'),
-      this.safeDependencyFallbackCheck(() => this.checkRedis(), 'redis check'),
+      this.safeDependencyFallbackCheck('database', () => this.checkDatabase(), 'database check'),
+      this.safeDependencyFallbackCheck('redis', () => this.checkRedis(), 'redis check'),
     ]);
 
     const effectiveLagSec = systemMode.queueLagSec ?? 0;
@@ -519,14 +537,38 @@ export class HealthService implements OnModuleDestroy {
   }
 
   private async safeDependencyFallbackCheck(
+    dependency: DependencyHealthKey,
     check: () => Promise<boolean>,
     label: string,
   ): Promise<boolean> {
     try {
-      return await this.withTimeout(check(), this.readinessDependencyTimeoutMs, label);
+      const result = await this.withTimeout(check(), this.readinessDependencyTimeoutMs, label);
+      this.recordDependencyHealth(dependency, result);
+      return result;
     } catch {
-      return false;
+      return this.readCachedDependencyHealth(dependency) ?? false;
     }
+  }
+
+  private recordDependencyHealth(dependency: DependencyHealthKey, ok: boolean): void {
+    this.dependencyHealth.set(dependency, {
+      ok,
+      checkedAtMs: Date.now(),
+    });
+  }
+
+  private readCachedDependencyHealth(dependency: DependencyHealthKey): boolean | null {
+    const cached = this.dependencyHealth.get(dependency);
+    if (!cached) {
+      return null;
+    }
+
+    if (Date.now() - cached.checkedAtMs > this.readinessDependencyFallbackMaxAgeMs) {
+      this.dependencyHealth.delete(dependency);
+      return null;
+    }
+
+    return cached.ok;
   }
 
   private withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {

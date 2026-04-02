@@ -535,6 +535,126 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('reuses recent dependency health during best-effort fallback when fresh probes stall', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-03-31T09:08:00.000Z'));
+
+    const queueMetricsSnapshot = {
+      moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+      webhookEvents: {
+        received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      actionHealth: {
+        windowSec: 60,
+        total: 4,
+        success: 4,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+      oldestQueuedEventId: null,
+      oldestQueuedCreatedAt: null,
+      oldestQueuedLagSec: 0,
+      oldestReceivedEventId: null,
+      oldestReceivedCreatedAt: null,
+      oldestReceivedLagSec: 0,
+      effectiveLagSec: 0,
+      generatedAt: '2026-03-31T09:08:00.000Z',
+      bots: {},
+      userFacingWebhookEvents: {
+        received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+      },
+      userFacingOldestQueuedEventId: null,
+      userFacingOldestQueuedCreatedAt: null,
+      userFacingOldestQueuedLagSec: 0,
+      userFacingOldestReceivedEventId: null,
+      userFacingOldestReceivedCreatedAt: null,
+      userFacingOldestReceivedLagSec: 0,
+      userFacingEffectiveLagSec: 0,
+    };
+    const systemModeSnapshot = {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'system healthy',
+      updatedAt: '2026-03-31T09:08:00.000Z',
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 4,
+        success: 4,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+    const prisma = {
+      $queryRawUnsafe: jest
+        .fn()
+        .mockResolvedValueOnce([{ '?column?': 1 }])
+        .mockImplementationOnce(() => new Promise(() => undefined))
+        .mockImplementationOnce(() => new Promise(() => undefined)),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce(queueMetricsSnapshot)
+        .mockImplementationOnce(() => new Promise(() => undefined)),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest
+        .fn()
+        .mockResolvedValueOnce(systemModeSnapshot)
+        .mockImplementationOnce(() => new Promise(() => undefined)),
+      peekCachedSnapshot: jest.fn().mockReturnValue(systemModeSnapshot),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+    );
+
+    const first = await service.ready();
+    expect(first.ok).toBe(true);
+
+    await jest.advanceTimersByTimeAsync(30_001);
+
+    const secondPromise = service.ready();
+    await jest.advanceTimersByTimeAsync(120);
+    const second = await secondPromise;
+
+    expect(second.ok).toBe(true);
+    expect(second.checks.database).toBe(true);
+    expect(second.checks.redis).toBe(true);
+    expect(second.checks.queueLag).toEqual(
+      expect.objectContaining({
+        ok: true,
+        rawOk: true,
+        softWarning: true,
+        softWarningCode: 'stale-ready-fallback',
+        sampleGeneratedAt: '2026-03-31T09:08:00.000Z',
+      }),
+    );
+    expect(second.checks.queueLag.softWarningDetail).toContain(
+      'live readiness evaluation did not finish in 50ms',
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns a degraded fallback snapshot when readiness data is unavailable on cold start', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:05:00.000Z'));

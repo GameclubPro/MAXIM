@@ -41,8 +41,9 @@ export class WebhookService {
   }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
-    await this.invalidateMembershipCacheFromWebhook(update);
+    const membershipInvalidationPromise = this.invalidateMembershipCacheFromWebhook(update);
     const executionOwnerBotId = await this.syncChatBotBindingFromWebhook(update);
+    await membershipInvalidationPromise;
     this.attachExecutionOwnerBotId(update, executionOwnerBotId);
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;

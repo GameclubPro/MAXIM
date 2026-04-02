@@ -286,6 +286,56 @@ describe('ChatContextCacheService', () => {
     expect(redisInstance.set).toHaveBeenCalledTimes(1);
   });
 
+  it('serves repeated chat context reads from the local cache before hitting redis again', async () => {
+    const chatId = 'chat-1';
+    const settings = buildSettings(chatId);
+    const cachedSettings = JSON.parse(JSON.stringify(settings)) as ChatSettings;
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValue(
+      JSON.stringify({
+        chatId,
+        title: 'Chat title',
+        settings: cachedSettings,
+        domainAllowlist: ['example.com'],
+        adminUserIds: ['user-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    await expect(service.getChatContext(chatId, 'Chat title')).resolves.toEqual({
+      chatId,
+      title: 'Chat title',
+      settings: cachedSettings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+    await expect(service.getChatContext(chatId, 'Chat title')).resolves.toEqual({
+      chatId,
+      title: 'Chat title',
+      settings: cachedSettings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+
+    expect(redisInstance.get).toHaveBeenCalledTimes(1);
+  });
+
   it('stores admin access decisions in redis with ttl', async () => {
     const config = {
       getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),

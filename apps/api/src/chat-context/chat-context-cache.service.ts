@@ -23,18 +23,25 @@ type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
 type ManagedEntityBotProfileSnapshot = {
   avatarUrl: string | null;
 };
+type LocalChatContextCacheEntry = {
+  value: ChatContext;
+  expiresAtMs: number;
+};
 
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
+  private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 5_000;
   private static readonly ADMIN_ACCESS_GRANTED_TTL_SEC = 5 * 60;
   private static readonly ADMIN_ACCESS_DENIED_TTL_SEC = 60;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
+  private readonly localChatContextTtlMs: number;
   private readonly managedEntityHeaderTtlSec: number;
   private readonly managedEntityBotProfileTtlSec: number;
+  private readonly localChatContextCache = new Map<string, LocalChatContextCacheEntry>();
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
 
   constructor(
@@ -43,6 +50,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
     private readonly maxBotLinkService: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.localChatContextTtlMs = this.readPositiveInt(
+      (configService as { get?: (key: string) => unknown }).get?.('CHAT_CONTEXT_LOCAL_CACHE_TTL_MS'),
+      ChatContextCacheService.LOCAL_CHAT_CONTEXT_TTL_MS,
+    );
     this.managedEntityHeaderTtlSec = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
         'MANAGED_ENTITY_HEADER_CACHE_SEC',
@@ -125,13 +136,23 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
+    const normalizedTitle = chatTitle?.trim() || null;
+    const localCached = this.readLocalChatContext(chatId);
+    if (localCached) {
+      if (normalizedTitle && localCached.title !== normalizedTitle) {
+        void this.updateTitle(chatId, normalizedTitle);
+      }
+      return localCached;
+    }
+
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
     if (cached) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
-        if (chatTitle && chatTitle.trim() && parsed.title !== chatTitle.trim()) {
-          void this.updateTitle(chatId, chatTitle.trim());
+        this.writeLocalChatContext(chatId, parsed);
+        if (normalizedTitle && parsed.title !== normalizedTitle) {
+          void this.updateTitle(chatId, normalizedTitle);
         }
         return parsed;
       } catch (error: unknown) {
@@ -158,6 +179,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   async invalidate(chatId: string) {
+    this.localChatContextCache.delete(chatId);
     await this.redis.del(ChatContextCacheService.cacheKey(chatId));
   }
 
@@ -600,6 +622,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       'EX',
       ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
     );
+    this.writeLocalChatContext(chatId, value);
     return value;
   }
 
@@ -684,5 +707,26 @@ export class ChatContextCacheService implements OnModuleDestroy {
         );
       })
     );
+  }
+
+  private readLocalChatContext(chatId: string): ChatContext | null {
+    const cached = this.localChatContextCache.get(chatId);
+    if (!cached) {
+      return null;
+    }
+
+    if (cached.expiresAtMs <= Date.now()) {
+      this.localChatContextCache.delete(chatId);
+      return null;
+    }
+
+    return cached.value;
+  }
+
+  private writeLocalChatContext(chatId: string, value: ChatContext): void {
+    this.localChatContextCache.set(chatId, {
+      value,
+      expiresAtMs: Date.now() + this.localChatContextTtlMs,
+    });
   }
 }
