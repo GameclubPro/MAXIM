@@ -396,9 +396,16 @@ const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 220;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
+const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 10;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
+const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 750;
+const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_000;
+const MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS = 2_500;
+const MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS = 4_000;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
@@ -1551,8 +1558,10 @@ export class AdminService {
     currentChat: ChatSummary | null;
     recentBotAdded: ChatSummary[];
   }> {
-    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
-    const currentChat = await this.bootstrapCurrentChat(user, entityType);
+    const [recentBotAdded, currentChat] = await Promise.all([
+      this.bootstrapRecentBotAddedEntities(user, entityType),
+      this.bootstrapCurrentChat(user, entityType),
+    ]);
 
     return {
       currentChat,
@@ -2614,6 +2623,7 @@ export class AdminService {
             bypassNegativeCache: true,
             trafficClass: options.fullScan ? 'background' : 'interactive',
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+            timeoutMs: MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS,
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -2764,7 +2774,11 @@ export class AdminService {
             : null,
       };
     } catch (error: unknown) {
-      if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
+      if (
+        this.isManagedEntitiesRefreshThrottledError(error) ||
+        this.isMaxApiThrottleError(error) ||
+        this.isMaxApiTimeoutError(error)
+      ) {
         const rootError =
           error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
         const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
@@ -2799,7 +2813,8 @@ export class AdminService {
             ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType, {
                 backoffActiveOverride:
                   this.isManagedEntitiesRefreshThrottledError(error) ||
-                  this.isMaxApiThrottleError(error),
+                  this.isMaxApiThrottleError(error) ||
+                  this.isMaxApiTimeoutError(error),
               })
             : null,
       };
@@ -2895,6 +2910,12 @@ export class AdminService {
       const adminCheckSpacingMs = options.fullScan
         ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
         : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;
+      const adminCheckTimeoutMs = options.fullScan
+        ? MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS
+        : MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS;
+      const snapshotTimeoutMs = options.fullScan
+        ? MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS
+        : MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS;
       const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
       const cachedIds = new Set(cachedChats.map((chat) => chat.id));
       const cachedById = new Map(cachedChats.map((chat) => [chat.id, chat]));
@@ -2934,6 +2955,7 @@ export class AdminService {
           supportedCandidateChats = await this.loadManagedEntitiesDiscoverySnapshot(entityType, {
             trafficClass: discoveryTrafficClass,
             bypassCache: options.bypassRemoteCache === true,
+            timeoutMs: snapshotTimeoutMs,
           });
           storedCursor = 0;
           await this.chatContextCache.setManagedEntitiesDiscoverySnapshot?.(
@@ -2947,6 +2969,7 @@ export class AdminService {
         supportedCandidateChats = await this.loadManagedEntitiesDiscoverySnapshot(entityType, {
           trafficClass: discoveryTrafficClass,
           bypassCache: options.bypassRemoteCache === true,
+          timeoutMs: snapshotTimeoutMs,
         });
       }
 
@@ -3004,7 +3027,7 @@ export class AdminService {
           ? supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
           : options.revalidateCachedChats === true
             ? supportedCandidateChats
-            : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
+            : uncachedCandidates.slice(0, MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
@@ -3023,6 +3046,7 @@ export class AdminService {
             bypassNegativeCache: true,
             trafficClass: discoveryTrafficClass,
             sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+            timeoutMs: adminCheckTimeoutMs,
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -3182,7 +3206,11 @@ export class AdminService {
             : null,
       };
     } catch (error: unknown) {
-      if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
+      if (
+        this.isManagedEntitiesRefreshThrottledError(error) ||
+        this.isMaxApiThrottleError(error) ||
+        this.isMaxApiTimeoutError(error)
+      ) {
         const rootError =
           error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
         const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
@@ -3217,7 +3245,8 @@ export class AdminService {
             ? await this.readManagedEntitiesRefreshState(user.userId, entityType, {
                 backoffActiveOverride:
                   this.isManagedEntitiesRefreshThrottledError(error) ||
-                  this.isMaxApiThrottleError(error),
+                  this.isMaxApiThrottleError(error) ||
+                  this.isMaxApiTimeoutError(error),
               })
             : null,
       };
@@ -3229,6 +3258,7 @@ export class AdminService {
     options: {
       trafficClass: 'critical' | 'interactive' | 'background';
       bypassCache?: boolean;
+      timeoutMs?: number;
     },
   ): Promise<ManagedEntitiesDiscoverySnapshot> {
     if (typeof this.maxClient.listBotChats !== 'function') {
@@ -3242,6 +3272,7 @@ export class AdminService {
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         ...(options.bypassCache === true ? { bypassCache: true } : {}),
+        ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
       });
       const candidateChats =
         entityType === 'all'
@@ -3260,6 +3291,7 @@ export class AdminService {
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           ...(options.bypassCache === true ? { bypassCache: true } : {}),
+          ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
           botId: bot.id,
         });
 
@@ -16606,7 +16638,7 @@ export class AdminService {
       };
     }
 
-    const key = `${chatId}:${userId}`;
+    const key = this.buildAdminAccessCheckKey(chatId, userId, options);
     const inFlight = this.adminAccessChecks.get(key);
     if (inFlight) {
       return this.withAllowlistFallback(chatId, userId, inFlight);
@@ -16624,6 +16656,23 @@ export class AdminService {
     } finally {
       this.adminAccessChecks.delete(key);
     }
+  }
+
+  private buildAdminAccessCheckKey(
+    chatId: string,
+    userId: string,
+    options: {
+      trafficClass?: 'critical' | 'interactive' | 'background';
+      timeoutMs?: number;
+    },
+  ): string {
+    const trafficClass = options.trafficClass ?? 'interactive';
+    const timeoutKey =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : 'default';
+
+    return [chatId, userId, trafficClass, timeoutKey].join(':');
   }
 
   private async withAllowlistFallback(
@@ -17792,6 +17841,9 @@ export class AdminService {
 
     const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId, {
       bypassNegativeCache: true,
+      trafficClass: 'interactive',
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      timeoutMs: MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS,
     });
     if (access.status !== 'granted') {
       return null;

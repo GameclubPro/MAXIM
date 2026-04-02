@@ -779,6 +779,21 @@ async function flushAsyncTasks() {
   await Promise.resolve();
 }
 
+function createDeferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+
+  return {
+    promise,
+    resolve,
+    reject,
+  };
+}
+
 function createLocalManagedEntityRow(options: {
   chatId: string;
   title: string;
@@ -6590,6 +6605,63 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('caps remote delta admin checks on empty default chat lists', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue(
+        Array.from({ length: 20 }, (_, index) => ({
+          chatId: `chat-${index + 1}`,
+          title: `Чат ${index + 1}`,
+          link: null,
+          entityType: 'chat',
+          lastEventTime: 200 - index,
+          avatarUrl: null,
+        })),
+      ),
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledWith({
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      sourceTag: 'managed_refresh',
+      timeoutMs: 2500,
+    });
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(10);
+    expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 750,
+      }),
+    );
+  });
+
   it('does not bootstrap stale recent bot_added chats when MAX denies current admin access', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
@@ -7142,6 +7214,82 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('caps current chat bootstrap admin lookup during the first managed refresh response', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+    );
+    const accessSpy = jest
+      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
+      .mockResolvedValue({
+        status: 'unknown',
+        error: new Error('timeout'),
+      });
+
+    await expect(
+      service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-launch',
+          chatTitle: 'Лонч-чат',
+          chatType: 'chat',
+        },
+        {
+          refresh: true,
+          resetRefreshCursor: true,
+        },
+      ),
+    ).resolves.toEqual({
+      items: [],
+      refresh: {
+        complete: false,
+        cursor: 0,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
+      },
+    });
+
+    expect(accessSpy).toHaveBeenCalledWith(
+      'chat-launch',
+      'admin-1',
+      expect.objectContaining({
+        bypassNegativeCache: true,
+        trafficClass: 'interactive',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 1000,
+      }),
+    );
+  });
+
   it('returns cached chats immediately while managed refresh continues in the background', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -7689,13 +7837,65 @@ describe('AdminService.listChats', () => {
       actionHealthLane: 'background',
       bypassCache: true,
       sourceTag: 'managed_refresh',
+      timeoutMs: 2500,
     });
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-fresh', {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
+      timeoutMs: 750,
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-stale', expect.anything());
+  });
+
+  it('does not reuse an untimed admin access lookup for a timed managed refresh check', async () => {
+    const prisma = createPrismaMock();
+    const firstLookup = createDeferred<string[]>();
+    const secondLookup = createDeferred<string[]>();
+    const maxClient = {
+      getChatAdminIds: jest
+        .fn()
+        .mockImplementationOnce(() => firstLookup.promise)
+        .mockImplementationOnce(() => secondLookup.promise),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const first = (service as any).resolveUserAndBotAdminAccess('chat-1', 'admin-1');
+    await flushAsyncTasks();
+
+    const second = (service as any).resolveUserAndBotAdminAccess('chat-1', 'admin-1', {
+      trafficClass: 'interactive',
+      timeoutMs: 1000,
+    });
+    await flushAsyncTasks();
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(1, 'chat-1', {
+      actionHealthLane: 'background',
+    });
+    expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(2, 'chat-1', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      timeoutMs: 1000,
+    });
+
+    secondLookup.resolve(['admin-1']);
+    firstLookup.resolve(['admin-1']);
+
+    await expect(second).resolves.toEqual({
+      status: 'granted',
+      source: 'remote',
+    });
+    await expect(first).resolves.toEqual({
+      status: 'granted',
+      source: 'remote',
+    });
   });
 
   it('queues a durable managed entities refresh when refresh is requested and a queue is available', async () => {
@@ -8166,6 +8366,7 @@ describe('AdminService.listChats', () => {
       trafficClass: 'interactive',
       actionHealthLane: 'background',
       sourceTag: 'managed_refresh',
+      timeoutMs: 750,
     });
   });
 
