@@ -716,8 +716,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       'logs-dashboard',
       chatId,
       range,
-      includeActivityPreview ? 'activity' : 'no-activity',
-      includeModerationPreview ? 'moderation' : 'no-moderation',
+      includeActivityPreview,
+      includeModerationPreview,
     ],
     queryFn: ({ signal }) =>
       getLogsDashboard(
