@@ -657,13 +657,22 @@ function wireManagedBroadcastOccurrenceStore(
 
 function extractSqlText(arg: unknown): string {
   if (Array.isArray(arg)) {
-    return arg.map((part) => String(part)).join(' ');
+    return arg.map((part) => extractSqlText(part)).join(' ');
   }
 
   if (arg && typeof arg === 'object' && 'strings' in arg) {
-    const strings = (arg as { strings?: unknown }).strings;
+    const sqlArg = arg as { strings?: unknown; values?: unknown };
+    const strings = sqlArg.strings;
+    const values = sqlArg.values;
+    const parts: string[] = [];
     if (Array.isArray(strings)) {
-      return strings.map((part) => String(part)).join(' ');
+      parts.push(strings.map((part) => String(part)).join(' '));
+    }
+    if (Array.isArray(values)) {
+      parts.push(values.map((part) => extractSqlText(part)).join(' '));
+    }
+    if (parts.length > 0) {
+      return parts.filter(Boolean).join(' ');
     }
   }
 
@@ -2525,12 +2534,37 @@ describe('AdminService.getLogsDashboard', () => {
       nextCursor: null,
     });
 
+    const dedupeSqlText = extractSqlText(
+      (
+        service as unknown as {
+          buildMembershipEventDedupeSourceSql: (
+            chatId: string,
+            from: Date,
+            to: Date,
+            eventTypes: readonly string[],
+          ) => unknown;
+        }
+      ).buildMembershipEventDedupeSourceSql(
+        'chat-1',
+        new Date('2026-02-23T12:00:00.000Z'),
+        new Date('2026-03-02T12:00:00.000Z'),
+        ['user_added', 'user_removed'],
+      ),
+    );
+    expect(dedupeSqlText).toContain('SELECT DISTINCT ON (');
+    expect(dedupeSqlText).toContain("normalized_payload->'message'->>'senderId'");
+    expect(dedupeSqlText).toContain("normalized_payload->'message'->>'createdAt'");
+    expect(dedupeSqlText).toContain('ORDER BY');
+    expect(dedupeSqlText).toContain('created_at DESC');
+
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(membershipSqlText).toContain('WITH membership_events AS (');
     expect(membershipSqlText).toContain('user_added');
     expect(membershipSqlText).toContain('user_removed');
     expect(membershipSqlText).not.toContain('bot_added');
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]?.[0]);
-    expect(activitySqlText).toContain('ORDER BY created_at DESC, id DESC');
+    expect(activitySqlText).toContain('WITH membership_events AS (');
+    expect(activitySqlText).toContain('ORDER BY created_at');
 
     expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
@@ -2745,7 +2779,8 @@ describe('AdminService.getChatActivityFeed', () => {
     });
 
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(activitySqlText).toContain('ORDER BY created_at DESC, id DESC');
+    expect(activitySqlText).toContain('WITH membership_events AS (');
+    expect(activitySqlText).toContain('ORDER BY created_at');
   });
 });
 
@@ -8509,6 +8544,9 @@ describe('AdminService.getChannelStats', () => {
     expect(statsSqlText).toContain("payload->>'threadId'");
     expect(statsSqlText).toContain("payload->>'delivered' = 'true'");
     expect(statsSqlText).toContain("payload->>'delivered' = 'false'");
+    const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[1]?.[0]);
+    expect(membershipSqlText).toContain('WITH membership_events AS (');
+    expect(membershipSqlText).toContain('ORDER BY created_at');
   });
 
   it.each([

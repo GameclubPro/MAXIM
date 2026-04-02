@@ -361,6 +361,14 @@ type ManagedBroadcastDeliverySnapshot = {
   canRetry: boolean;
 };
 
+type MembershipEventRow = {
+  id: string;
+  created_at: Date | string;
+  event_type: string | null;
+  user_id: string | null;
+  sender_name: string | null;
+};
+
 const RULES_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
@@ -3230,22 +3238,9 @@ export class AdminService {
         where: { chatId },
         select: { id: true },
       }),
-      this.prisma.$queryRaw<
-        Array<{
-          created_at: Date | string;
-          event_type: string | null;
-        }>
-      >`
-        SELECT
-          created_at,
-          normalized_payload->>'type' AS event_type
-        FROM webhook_events
-        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-          AND normalized_payload->>'type' IN ('user_added', 'user_removed')
-          AND created_at >= ${from}
-          AND created_at <= ${now}
-        ORDER BY created_at ASC
-      `,
+      this.getMembershipEventRows(chatId, from, now, ['user_added', 'user_removed'], {
+        order: 'asc',
+      }),
     ]);
 
     const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
@@ -9597,6 +9592,10 @@ export class AdminService {
   ): Promise<LogsDashboardResponse> {
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(range, now);
+    const membershipEventsSql = this.buildMembershipEventDedupeSourceSql(chatId, from, now, [
+      'user_added',
+      'user_removed',
+    ]);
     const headerPromise =
       this.chatContextCache.getManagedEntityHeader?.(chatId, 'chat') ?? Promise.resolve(null);
 
@@ -9617,14 +9616,11 @@ export class AdminService {
       this.prisma.$queryRaw<
         Array<{ joined_users: unknown; left_users: unknown }>
       >`
+        WITH membership_events AS (${membershipEventsSql})
         SELECT
-          COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_added') AS joined_users,
-          COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_removed') AS left_users
-        FROM webhook_events
-        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-          AND normalized_payload->>'type' IN ('user_added', 'user_removed')
-          AND created_at >= ${from}
-          AND created_at <= ${now}
+          COUNT(*) FILTER (WHERE event_type = 'user_added') AS joined_users,
+          COUNT(*) FILTER (WHERE event_type = 'user_removed') AS left_users
+        FROM membership_events
       `,
       headerPromise,
       this.prisma.moderationEvent.groupBy({
@@ -11960,39 +11956,11 @@ export class AdminService {
         : query.filter === 'left'
           ? ['user_removed']
           : ['user_added', 'user_removed'];
-    const cursorClause = cursor
-      ? Prisma.sql`
-          AND (
-            created_at < ${new Date(cursor.createdAt)}
-            OR (created_at = ${new Date(cursor.createdAt)} AND id < ${cursor.id})
-          )
-        `
-      : Prisma.empty;
-
-    const rows = await this.prisma.$queryRaw<
-      Array<{
-        id: string;
-        created_at: Date | string;
-        event_type: string | null;
-        user_id: string | null;
-        sender_name: string | null;
-      }>
-    >`
-      SELECT
-        id,
-        created_at,
-        normalized_payload->>'type' AS event_type,
-        NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') AS user_id,
-        NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name
-      FROM webhook_events
-      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-        AND normalized_payload->>'type' IN (${Prisma.join(eventTypes)})
-        AND created_at >= ${from}
-        AND created_at <= ${to}
-        ${cursorClause}
-      ORDER BY created_at DESC, id DESC
-      LIMIT ${limit + 1}
-    `;
+    const rows = await this.getMembershipEventRows(chatId, from, to, eventTypes, {
+      cursor,
+      limit: limit + 1,
+      order: 'desc',
+    });
 
     const pageRows = rows.slice(0, limit);
     const userProfiles = await this.resolveUserProfiles(
@@ -12057,6 +12025,105 @@ export class AdminService {
             })
           : null,
     });
+  }
+
+  private buildMembershipEventDedupeSourceSql(
+    chatId: string,
+    from: Date,
+    to: Date,
+    eventTypes: readonly string[],
+  ): Prisma.Sql {
+    return Prisma.sql`
+      SELECT DISTINCT ON (
+        normalized_payload->>'type',
+        normalized_payload->'message'->>'chatId',
+        COALESCE(
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), ''),
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), ''),
+          CONCAT('row:', id)
+        ),
+        COALESCE(
+          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
+          CONCAT('row:', id)
+        )
+      )
+        id,
+        COALESCE(
+          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
+          TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+        ) AS created_at,
+        normalized_payload->>'type' AS event_type,
+        NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') AS user_id,
+        NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name
+      FROM webhook_events
+      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+        AND normalized_payload->>'type' IN (${Prisma.join(eventTypes)})
+        AND created_at >= ${from}
+        AND created_at <= ${to}
+      ORDER BY
+        normalized_payload->>'type',
+        normalized_payload->'message'->>'chatId',
+        COALESCE(
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), ''),
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), ''),
+          CONCAT('row:', id)
+        ),
+        COALESCE(
+          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
+          CONCAT('row:', id)
+        ),
+        created_at DESC,
+        id DESC
+    `;
+  }
+
+  private async getMembershipEventRows(
+    chatId: string,
+    from: Date,
+    to: Date,
+    eventTypes: readonly string[],
+    options: {
+      cursor?: { createdAt: string; id: string } | null;
+      limit?: number;
+      order?: 'asc' | 'desc';
+    } = {},
+  ): Promise<MembershipEventRow[]> {
+    const order = options.order === 'asc' ? 'asc' : 'desc';
+    const orderDirectionSql = Prisma.raw(order === 'asc' ? 'ASC' : 'DESC');
+    const cursor = order === 'desc' ? options.cursor ?? null : null;
+    const cursorClause = cursor
+      ? Prisma.sql`
+          AND (
+            created_at < ${cursor.createdAt}
+            OR (created_at = ${cursor.createdAt} AND id < ${cursor.id})
+          )
+        `
+      : Prisma.empty;
+    const limitClause =
+      typeof options.limit === 'number' && Number.isFinite(options.limit)
+        ? Prisma.sql`LIMIT ${Math.max(1, Math.trunc(options.limit))}`
+        : Prisma.empty;
+    const membershipEventsSql = this.buildMembershipEventDedupeSourceSql(
+      chatId,
+      from,
+      to,
+      eventTypes,
+    );
+
+    return this.prisma.$queryRaw<MembershipEventRow[]>`
+      WITH membership_events AS (${membershipEventsSql})
+      SELECT
+        id,
+        created_at,
+        event_type,
+        user_id,
+        sender_name
+      FROM membership_events
+      WHERE 1 = 1
+        ${cursorClause}
+      ORDER BY created_at ${orderDirectionSql}, id ${orderDirectionSql}
+      ${limitClause}
+    `;
   }
 
   private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
