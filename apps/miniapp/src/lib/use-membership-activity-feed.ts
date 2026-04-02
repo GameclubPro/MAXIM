@@ -13,6 +13,7 @@ type LoadMembershipActivityPage = (query: {
 }) => Promise<MembershipActivityPage>;
 
 type UseMembershipActivityFeedOptions = {
+  enabled?: boolean;
   range: MembershipActivityRange;
   initialPage: MembershipActivityPage;
   loadPage: LoadMembershipActivityPage;
@@ -34,6 +35,7 @@ function toFeedState(page: MembershipActivityPage): FeedState {
 }
 
 export function useMembershipActivityFeed({
+  enabled = true,
   range,
   initialPage,
   loadPage,
@@ -49,14 +51,25 @@ export function useMembershipActivityFeed({
   useEffect(() => {
     requestIdRef.current += 1;
 
+    if (!enabled) {
+      setFeed(toFeedState(initialPage));
+      setError(null);
+      setStatus('idle');
+      return;
+    }
+
     if (filter === 'all') {
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
     }
-  }, [filter, initialPage, range]);
+  }, [enabled, filter, initialPage, range]);
 
   useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
     if (filter === 'all') {
       return;
     }
@@ -88,10 +101,10 @@ export function useMembershipActivityFeed({
         setError(cause instanceof Error ? cause.message : 'Не удалось загрузить активность.');
         setStatus('idle');
       });
-  }, [filter, limit, range]);
+  }, [enabled, filter, limit, range]);
 
   async function loadMore() {
-    if (status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
+    if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
       return;
     }
 
@@ -128,6 +141,13 @@ export function useMembershipActivityFeed({
   }
 
   async function retry() {
+    if (!enabled) {
+      setFeed(toFeedState(initialPage));
+      setError(null);
+      setStatus('idle');
+      return;
+    }
+
     if (filter === 'all') {
       setFeed(toFeedState(initialPage));
       setError(null);

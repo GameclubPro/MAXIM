@@ -1932,6 +1932,10 @@ function buildLogsDashboard(
   state: PreviewState,
   chatId: string,
   range: LogsDashboardRange,
+  options: {
+    includeActivityPreview?: boolean;
+    includeModerationPreview?: boolean;
+  } = {},
 ): LogsDashboardResponse {
   const now = new Date();
   const violations = state.chatViolations.filter((item) =>
@@ -1970,6 +1974,30 @@ function buildLogsDashboard(
     },
   );
   const { from, to } = resolveRangeWindow(range, now);
+  const includeActivityPreview = options.includeActivityPreview !== false;
+  const includeModerationPreview = options.includeModerationPreview !== false;
+  const moderationFeed = includeModerationPreview
+    ? buildModerationFeedPage(
+        state.chatViolations,
+        {
+          range,
+          filter: 'ALL',
+          limit: 50,
+        },
+        now,
+      )
+    : {
+        items: [],
+        hasMore: false,
+        nextCursor: null,
+      };
+  const activityFeed = includeActivityPreview
+    ? buildActivityPage(state.chatActivity, { range, limit: 50 }, now)
+    : {
+        items: [],
+        hasMore: false,
+        nextCursor: null,
+      };
 
   return logsDashboardResponseSchema.parse({
     chat: {
@@ -1997,8 +2025,9 @@ function buildLogsDashboard(
       affectedUsers: summary.users.size,
       total: violations.length,
     },
-    violations,
-    activityFeed: buildActivityPage(state.chatActivity, { range, limit: 50 }, now),
+    violations: moderationFeed.items,
+    moderationFeed,
+    activityFeed,
   });
 }
 
@@ -2900,7 +2929,12 @@ async function handleChatRequest(
 
   if (tail[0] === 'logs-dashboard' && method === 'GET') {
     const range = (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d';
-    return cloneJson(buildLogsDashboard(state, chatId, range));
+    return cloneJson(
+      buildLogsDashboard(state, chatId, range, {
+        includeActivityPreview: url.searchParams.get('includeActivityPreview') !== 'false',
+        includeModerationPreview: url.searchParams.get('includeModerationPreview') !== 'false',
+      }),
+    );
   }
 
   if (tail[0] === 'moderation-feed' && method === 'GET') {

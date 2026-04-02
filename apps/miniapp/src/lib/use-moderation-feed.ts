@@ -17,6 +17,7 @@ type UseModerationFeedOptions = {
   range: LogsDashboardRange;
   filter: ModerationFeedFilter;
   loadPage: LoadModerationFeedPage;
+  initialPage?: ModerationFeedPage | null;
   limit?: number;
 };
 
@@ -45,6 +46,7 @@ export function useModerationFeed({
   range,
   filter,
   loadPage,
+  initialPage = null,
   limit = 50,
 }: UseModerationFeedOptions) {
   const [feed, setFeed] = useState<FeedState>(EMPTY_FEED);
@@ -58,6 +60,13 @@ export function useModerationFeed({
 
     if (!enabled) {
       setFeed(EMPTY_FEED);
+      setError(null);
+      setStatus('idle');
+      return;
+    }
+
+    if (filter === 'ALL' && initialPage) {
+      setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
       return;
@@ -85,7 +94,7 @@ export function useModerationFeed({
         setError(cause instanceof Error ? cause.message : 'Не удалось загрузить события.');
         setStatus('idle');
       });
-  }, [enabled, filter, limit, range]);
+  }, [enabled, filter, initialPage, limit, range]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -127,6 +136,13 @@ export function useModerationFeed({
   async function retry() {
     if (!enabled) {
       setFeed(EMPTY_FEED);
+      setError(null);
+      setStatus('idle');
+      return;
+    }
+
+    if (filter === 'ALL' && initialPage) {
+      setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
       return;

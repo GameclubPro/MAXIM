@@ -379,9 +379,10 @@ const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
-const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
+const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 5_000;
+const EVENTS_FEED_PAGE_CACHE_TTL_MS = 5_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
@@ -685,6 +686,14 @@ export class AdminService {
   private readonly logsDashboardResponseCache = new Map<
     string,
     TimedPromiseCacheEntry<LogsDashboardResponse>
+  >();
+  private readonly moderationFeedPageCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ModerationFeedPage>
+  >();
+  private readonly membershipActivityFeedPageCache = new Map<
+    string,
+    TimedPromiseCacheEntry<MembershipActivityPage>
   >();
 
   constructor(
@@ -3408,7 +3417,14 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveChannelStatsFrom(parsed.data.range, now);
-    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'channel');
+    return this.getCachedMembershipActivityFeedPage(
+      chatId,
+      user.userId,
+      from,
+      now,
+      parsed.data,
+      'channel',
+    );
   }
 
   async getSettings(
@@ -9561,22 +9577,31 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const cacheKey = this.buildLogsDashboardResponseCacheKey(chatId, user.userId, parsed.data.range);
+    const cacheKey = this.buildLogsDashboardResponseCacheKey(
+      chatId,
+      user.userId,
+      parsed.data.range,
+      parsed.data.includeActivityPreview,
+      parsed.data.includeModerationPreview,
+    );
     const cached = this.logsDashboardResponseCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
       return cached.promise;
     }
 
     let pending!: Promise<LogsDashboardResponse>;
-    pending = this.buildLogsDashboardResponse(chatId, parsed.data.range).catch(
-      (error: unknown) => {
-        const current = this.logsDashboardResponseCache.get(cacheKey);
-        if (current?.promise === pending) {
-          this.logsDashboardResponseCache.delete(cacheKey);
-        }
-        throw error;
-      },
-    );
+    pending = this.buildLogsDashboardResponse(
+      chatId,
+      parsed.data.range,
+      parsed.data.includeActivityPreview,
+      parsed.data.includeModerationPreview,
+    ).catch((error: unknown) => {
+      const current = this.logsDashboardResponseCache.get(cacheKey);
+      if (current?.promise === pending) {
+        this.logsDashboardResponseCache.delete(cacheKey);
+      }
+      throw error;
+    });
 
     this.logsDashboardResponseCache.set(cacheKey, {
       expiresAtMs: Date.now() + LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS,
@@ -9589,6 +9614,8 @@ export class AdminService {
   private async buildLogsDashboardResponse(
     chatId: string,
     range: LogsDashboardRange,
+    includeActivityPreview = true,
+    includeModerationPreview = true,
   ): Promise<LogsDashboardResponse> {
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(range, now);
@@ -9646,33 +9673,56 @@ export class AdminService {
         distinct: ['userId'],
         select: { userId: true },
       }),
-      this.prisma.moderationEvent.findMany({
-        where: violationsWhere,
-        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-        take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
-      }),
+      includeModerationPreview
+        ? this.prisma.moderationEvent.findMany({
+            where: violationsWhere,
+            orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+            take: LOGS_DASHBOARD_VIOLATIONS_LIMIT + 1,
+          })
+        : Promise.resolve([]),
     ]);
-    const userProfiles = await this.resolveUserProfiles(
-      chatId,
-      'chat',
-      violationRows.map((row) => row.userId),
-    );
     const moderationSummary = this.summarizeLogsDashboardModerationCounts(moderationSummaryRows);
+    const moderationPreviewRows = violationRows.slice(0, LOGS_DASHBOARD_VIOLATIONS_LIMIT);
+    const moderationUserProfiles = includeModerationPreview
+      ? await this.resolveUserProfiles(
+          chatId,
+          'chat',
+          moderationPreviewRows.map((row) => row.userId),
+        )
+      : new Map<string, ResolvedUserProfile>();
 
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
     const leftUsers = this.toSafeInteger(membershipSource.left_users);
-    const activityFeed = await this.getMembershipActivityFeedPage(
-      chatId,
-      from,
-      now,
-      {
-        range,
-        filter: 'all',
-        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-      },
-      'chat',
-    );
+    const activityFeed = includeActivityPreview
+      ? await this.getMembershipActivityFeedPage(
+          chatId,
+          from,
+          now,
+          {
+            range,
+            filter: 'all',
+            limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+          },
+          'chat',
+        )
+      : this.buildEmptyMembershipActivityPage();
+    const moderationFeed = includeModerationPreview
+      ? moderationFeedPageSchema.parse({
+          items: moderationPreviewRows.map((row) =>
+            this.mapModerationViolationRow(row as ModerationViolationRow, moderationUserProfiles),
+          ),
+          hasMore: violationRows.length > LOGS_DASHBOARD_VIOLATIONS_LIMIT,
+          nextCursor:
+            violationRows.length > LOGS_DASHBOARD_VIOLATIONS_LIMIT &&
+            moderationPreviewRows[moderationPreviewRows.length - 1]
+              ? this.encodeModerationFeedCursor({
+                  createdAt: moderationPreviewRows[moderationPreviewRows.length - 1]!.createdAt,
+                  id: moderationPreviewRows[moderationPreviewRows.length - 1]!.id,
+                })
+              : null,
+        })
+      : this.buildEmptyModerationFeedPage();
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -9705,9 +9755,8 @@ export class AdminService {
           moderationSummary.unmute +
           moderationSummary.unban,
       },
-      violations: violationRows.map((row) =>
-        this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
-      ),
+      violations: moderationFeed.items,
+      moderationFeed,
       activityFeed,
     };
 
@@ -9731,7 +9780,7 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'chat');
+    return this.getCachedMembershipActivityFeedPage(chatId, user.userId, from, now, parsed.data, 'chat');
   }
 
   async getChatModerationFeed(
@@ -9751,7 +9800,7 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getModerationFeedPage(chatId, from, now, parsed.data, 'chat');
+    return this.getCachedModerationFeedPage(chatId, user.userId, from, now, parsed.data, 'chat');
   }
 
   async applyManualModerationAction(
@@ -11311,6 +11360,7 @@ export class AdminService {
       }),
     ]);
     this.invalidateLogsDashboardResponseCache(chatId);
+    this.invalidateModerationFeedPageCache(chatId);
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
@@ -11933,6 +11983,39 @@ export class AdminService {
     });
   }
 
+  private async getCachedModerationFeedPage(
+    chatId: string,
+    userId: string,
+    from: Date,
+    to: Date,
+    query: ModerationFeedQuery,
+    entityType: ManagedEntityType,
+  ): Promise<ModerationFeedPage> {
+    const cacheKey = this.buildModerationFeedPageCacheKey(chatId, userId, entityType, query);
+    const cached = this.moderationFeedPageCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
+
+    let pending!: Promise<ModerationFeedPage>;
+    pending = this.getModerationFeedPage(chatId, from, to, query, entityType).catch(
+      (error: unknown) => {
+        const current = this.moderationFeedPageCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.moderationFeedPageCache.delete(cacheKey);
+        }
+        throw error;
+      },
+    );
+
+    this.moderationFeedPageCache.set(cacheKey, {
+      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
+      promise: pending,
+    });
+
+    return pending;
+  }
+
   private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {
     return this.resolveLogsDashboardFrom(range, to);
   }
@@ -12024,6 +12107,60 @@ export class AdminService {
               id: lastItem.id,
             })
           : null,
+    });
+  }
+
+  private async getCachedMembershipActivityFeedPage(
+    chatId: string,
+    userId: string,
+    from: Date,
+    to: Date,
+    query: MembershipActivityQuery,
+    entityType: ManagedEntityType,
+  ): Promise<MembershipActivityPage> {
+    const cacheKey = this.buildMembershipActivityFeedPageCacheKey(
+      chatId,
+      userId,
+      entityType,
+      query,
+    );
+    const cached = this.membershipActivityFeedPageCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
+
+    let pending!: Promise<MembershipActivityPage>;
+    pending = this.getMembershipActivityFeedPage(chatId, from, to, query, entityType).catch(
+      (error: unknown) => {
+        const current = this.membershipActivityFeedPageCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.membershipActivityFeedPageCache.delete(cacheKey);
+        }
+        throw error;
+      },
+    );
+
+    this.membershipActivityFeedPageCache.set(cacheKey, {
+      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
+      promise: pending,
+    });
+
+    return pending;
+  }
+
+  private buildEmptyModerationFeedPage(): ModerationFeedPage {
+    return moderationFeedPageSchema.parse({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+  }
+
+  private buildEmptyMembershipActivityPage(): MembershipActivityPage {
+    return membershipActivityPageSchema.parse({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
     });
   }
 
@@ -17255,8 +17392,46 @@ export class AdminService {
     chatId: string,
     userId: string,
     range: LogsDashboardRange,
+    includeActivityPreview: boolean,
+    includeModerationPreview: boolean,
   ): string {
-    return `${chatId}:${userId}:${range}`;
+    return `${chatId}:${userId}:${range}:activity=${includeActivityPreview ? 1 : 0}:moderation=${
+      includeModerationPreview ? 1 : 0
+    }`;
+  }
+
+  private buildModerationFeedPageCacheKey(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    query: ModerationFeedQuery,
+  ): string {
+    return [
+      chatId,
+      userId,
+      entityType,
+      query.range,
+      query.filter,
+      String(query.limit),
+      query.cursor ?? '',
+    ].join(':');
+  }
+
+  private buildMembershipActivityFeedPageCacheKey(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    query: MembershipActivityQuery,
+  ): string {
+    return [
+      chatId,
+      userId,
+      entityType,
+      query.range,
+      query.filter,
+      String(query.limit),
+      query.cursor ?? '',
+    ].join(':');
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {
@@ -17264,6 +17439,15 @@ export class AdminService {
     for (const key of this.logsDashboardResponseCache.keys()) {
       if (key.startsWith(prefix)) {
         this.logsDashboardResponseCache.delete(key);
+      }
+    }
+  }
+
+  private invalidateModerationFeedPageCache(chatId: string): void {
+    const prefix = `${chatId}:`;
+    for (const key of this.moderationFeedPageCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.moderationFeedPageCache.delete(key);
       }
     }
   }

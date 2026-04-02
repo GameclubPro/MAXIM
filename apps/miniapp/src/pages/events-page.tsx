@@ -702,6 +702,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
+  const includeActivityPreview = section === 'activity';
+  const includeModerationPreview = section === 'moderation';
 
   useEffect(() => {
     if (chatId) {
@@ -710,8 +712,24 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   const dashboardQuery = useQuery({
-    queryKey: ['logs-dashboard', chatId, range],
-    queryFn: ({ signal }) => getLogsDashboard(api, chatId ?? '', range, { signal }),
+    queryKey: [
+      'logs-dashboard',
+      chatId,
+      range,
+      includeActivityPreview ? 'activity' : 'no-activity',
+      includeModerationPreview ? 'moderation' : 'no-moderation',
+    ],
+    queryFn: ({ signal }) =>
+      getLogsDashboard(
+        api,
+        chatId ?? '',
+        range,
+        {
+          includeActivityPreview,
+          includeModerationPreview,
+        },
+        { signal },
+      ),
     enabled: Boolean(chatId),
     refetchInterval: () => (document.hidden ? false : 10_000),
     refetchOnWindowFocus: true,
@@ -766,14 +784,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const dashboard = dashboardQuery.data ?? null;
   const activityFeed = useMembershipActivityFeed({
+    enabled: Boolean(chatId) && section === 'activity',
     range,
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
   });
   const moderationFeed = useModerationFeed({
-    enabled: Boolean(chatId),
+    enabled: Boolean(chatId) && section === 'moderation',
     range,
     filter: eventsFilter,
+    initialPage: dashboard?.moderationFeed ?? null,
     loadPage: (query) => getChatModerationFeed(api, chatId ?? '', query),
   });
   const profileHandoffMutation = useMutation({

@@ -19,7 +19,7 @@ import {
   managedEntityHeaderSchema,
   managedBroadcastDetailsSchema,
   managedBroadcastSummarySchema,
-  logsDashboardRangeSchema,
+  logsDashboardQuerySchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
@@ -688,10 +688,23 @@ export class ApiClient {
   async getLogsDashboard(
     chatId: string,
     range: LogsDashboardRange = '7d',
+    options: Partial<{
+      includeActivityPreview: boolean;
+      includeModerationPreview: boolean;
+    }> = {},
   ): Promise<LogsDashboardResponse> {
-    const validatedRange = logsDashboardRangeSchema.parse(range);
+    const validatedQuery = logsDashboardQuerySchema.parse({
+      range,
+      includeActivityPreview: options.includeActivityPreview,
+      includeModerationPreview: options.includeModerationPreview,
+    });
+    const params = new URLSearchParams({
+      range: validatedQuery.range,
+      includeActivityPreview: String(validatedQuery.includeActivityPreview),
+      includeModerationPreview: String(validatedQuery.includeModerationPreview),
+    });
     const response = await this.request(
-      `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
+      `/chats/${chatId}/logs-dashboard?${params.toString()}`,
     );
     return logsDashboardResponseSchema.parse(response);
   }

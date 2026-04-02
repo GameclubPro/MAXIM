@@ -2507,6 +2507,11 @@ describe('AdminService.getLogsDashboard', () => {
       expect.stringContaining('https://max.ru/777000_bot?start=pm'),
     );
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
+    expect(result.moderationFeed).toEqual({
+      items: result.violations,
+      hasMore: false,
+      nextCursor: null,
+    });
     expect(result.activityFeed).toEqual({
       items: [
         {
@@ -2618,6 +2623,51 @@ describe('AdminService.getLogsDashboard', () => {
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+  });
+
+  it('skips non-requested preview feeds to keep dashboard responses lighter', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ joined_users: '1', left_users: '0' }]);
+    prisma.moderationEvent.groupBy.mockResolvedValueOnce([]);
+    prisma.moderationEvent.findMany.mockResolvedValueOnce([]);
+
+    const service = new AdminService(
+      prisma as never,
+      { getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']) } as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getLogsDashboard(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        range: '24h',
+        includeActivityPreview: false,
+        includeModerationPreview: false,
+      },
+    );
+
+    expect(result.violations).toEqual([]);
+    expect(result.moderationFeed).toEqual({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(result.activityFeed).toEqual({
+      items: [],
+      hasMore: false,
+      nextCursor: null,
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.findMany).toHaveBeenCalledTimes(1);
   });
 
   it('reuses a short-lived cached dashboard response for identical requests', async () => {

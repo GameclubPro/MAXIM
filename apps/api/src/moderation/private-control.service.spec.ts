@@ -735,9 +735,26 @@ function createHarness(
       .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     getEvents: jest.fn().mockResolvedValue([]),
     getLogsDashboard: jest.fn().mockResolvedValue({
-      membership: { joinedUsers: 0, leftUsers: 0 },
-      violationsSummary: { warn: 0, deleteMessage: 0, kick: 0, ban: 0, total: 0 },
+      chat: { id: 'chat-1', title: 'Команда MAX', avatarUrl: null },
+      period: {
+        range: '7d',
+        from: new Date('2026-03-01T00:00:00.000Z').toISOString(),
+        to: new Date('2026-03-08T00:00:00.000Z').toISOString(),
+      },
+      membership: { joinedUsers: 0, leftUsers: 0, netUsers: 0 },
+      violationsSummary: {
+        warn: 0,
+        deleteMessage: 0,
+        mute: 0,
+        ban: 0,
+        unmute: 0,
+        unban: 0,
+        affectedUsers: 0,
+        total: 0,
+      },
       violations: [],
+      moderationFeed: { items: [], hasMore: false, nextCursor: null },
+      activityFeed: { items: [], hasMore: false, nextCursor: null },
     }),
     applyManualModerationAction: jest.fn().mockResolvedValue({ success: true, message: 'Готово' }),
     applyManualSystemBan: jest.fn().mockResolvedValue({

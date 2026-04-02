@@ -1779,8 +1779,34 @@ export const dateRangeQuerySchema = z.object({
 export const logsDashboardRangeSchema = z.enum(['24h', '7d', '30d']);
 export type LogsDashboardRange = z.infer<typeof logsDashboardRangeSchema>;
 
+const booleanQueryFlagSchema = z.preprocess((input) => {
+  if (typeof input === 'boolean') {
+    return input;
+  }
+
+  if (typeof input === 'number') {
+    return input !== 0;
+  }
+
+  if (typeof input !== 'string') {
+    return input;
+  }
+
+  const normalized = input.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes') {
+    return true;
+  }
+  if (normalized === '0' || normalized === 'false' || normalized === 'no') {
+    return false;
+  }
+
+  return input;
+}, z.boolean());
+
 export const logsDashboardQuerySchema = z.object({
   range: logsDashboardRangeSchema.default('7d'),
+  includeActivityPreview: booleanQueryFlagSchema.default(true),
+  includeModerationPreview: booleanQueryFlagSchema.default(true),
 });
 export type LogsDashboardQuery = z.infer<typeof logsDashboardQuerySchema>;
 
@@ -1978,6 +2004,7 @@ export const logsDashboardResponseSchema = z.object({
     total: z.number().int().min(0),
   }),
   violations: z.array(logsDashboardViolationSchema),
+  moderationFeed: moderationFeedPageSchema,
   activityFeed: membershipActivityPageSchema,
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;

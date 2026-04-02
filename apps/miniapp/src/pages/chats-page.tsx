@@ -248,10 +248,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadEventsPage();
     void queryClient
       .prefetchQuery({
-        queryKey: ['logs-dashboard', chatId, DEFAULT_DASHBOARD_RANGE],
+        queryKey: [
+          'logs-dashboard',
+          chatId,
+          DEFAULT_DASHBOARD_RANGE,
+          'no-activity',
+          'moderation',
+        ],
         queryFn: () =>
           api.request(
-            `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(DEFAULT_DASHBOARD_RANGE)}`,
+            `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(
+              DEFAULT_DASHBOARD_RANGE,
+            )}&includeActivityPreview=false&includeModerationPreview=true`,
           ),
       })
       .catch(() => undefined);

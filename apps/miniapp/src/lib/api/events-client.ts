@@ -1,5 +1,5 @@
 import {
-  logsDashboardRangeSchema,
+  logsDashboardQuerySchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
@@ -26,11 +26,24 @@ export async function getLogsDashboard(
   api: ApiTransport,
   chatId: string,
   range: LogsDashboardRange = '7d',
+  options: Partial<{
+    includeActivityPreview: boolean;
+    includeModerationPreview: boolean;
+  }> = {},
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<LogsDashboardResponse> {
-  const validatedRange = logsDashboardRangeSchema.parse(range);
+  const validatedQuery = logsDashboardQuerySchema.parse({
+    range,
+    includeActivityPreview: options.includeActivityPreview,
+    includeModerationPreview: options.includeModerationPreview,
+  });
+  const params = new URLSearchParams({
+    range: validatedQuery.range,
+    includeActivityPreview: String(validatedQuery.includeActivityPreview),
+    includeModerationPreview: String(validatedQuery.includeModerationPreview),
+  });
   const response = await api.request(
-    `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
+    `/chats/${chatId}/logs-dashboard?${params.toString()}`,
     request,
   );
   return logsDashboardResponseSchema.parse(response);
