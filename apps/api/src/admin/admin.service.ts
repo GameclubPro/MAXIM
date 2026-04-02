@@ -2409,6 +2409,120 @@ export class AdminService {
     return snapshot;
   }
 
+  private async loadManagedEntitiesDeltaPrioritySnapshot(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    const currentContextCandidates = this.buildCurrentContextDiscoveryCandidates(user, entityType);
+    let localCandidates: ManagedEntitiesDiscoverySnapshot = [];
+
+    try {
+      localCandidates = await this.loadManagedEntitiesLocalDiscoverySnapshot(user, entityType, {
+        limit: MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId: user.userId,
+          code:
+            error instanceof Prisma.PrismaClientKnownRequestError
+              ? error.code
+              : (error as { code?: string } | null)?.code ?? null,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        this.isPrismaKnownError(error, 'P2024')
+          ? 'Skipped managed entities local priority snapshot because the Prisma pool is saturated'
+          : 'Failed to load managed entities local priority snapshot',
+      );
+    }
+
+    return this.mergeManagedEntitiesDiscoverySnapshots(currentContextCandidates, localCandidates);
+  }
+
+  private async persistManagedEntityAccessBestEffort(params: {
+    chatId: string;
+    userId: string;
+    title: string | null;
+    entityType: ManagedEntityType;
+    link?: string | null;
+    avatarUrl?: string | null;
+    createdAtFallback?: string | null;
+    preferredBotId?: string | null;
+    observedBotIds?: readonly string[] | null;
+    source:
+      | 'remote_discovery'
+      | 'local_discovery'
+      | 'current_chat_bootstrap'
+      | 'recent_bot_added_bootstrap';
+  }): Promise<ChatSummary> {
+    try {
+      const persistedChat = await this.upsertUserChatAccess(
+        params.chatId,
+        params.userId,
+        params.title,
+        params.entityType,
+        {
+          updateEntityType: true,
+          preferredBotId: params.preferredBotId ?? null,
+          observedBotIds: params.observedBotIds ?? [],
+        },
+      );
+
+      return this.createManagedEntitySummary({
+        id: persistedChat.id,
+        title: persistedChat.title,
+        createdAt: persistedChat.createdAt.toISOString(),
+        entityType: this.fromPrismaEntityType(persistedChat.entityType),
+        link: params.link ?? null,
+        avatarUrl: params.avatarUrl ?? null,
+        primaryBotId: this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
+      });
+    } catch (error: unknown) {
+      if (!this.isPrismaKnownError(error, 'P2024')) {
+        throw error;
+      }
+
+      const resolvedBotId =
+        this.maxBotRegistry?.getBotById(params.preferredBotId)?.id ??
+        (params.observedBotIds ?? [])
+          .map((botId) => this.maxBotRegistry?.getBotById(botId)?.id ?? null)
+          .find((botId): botId is string => Boolean(botId)) ??
+        null;
+      if (resolvedBotId) {
+        this.maxBotLinkService?.rememberChatBotBinding(params.chatId, resolvedBotId);
+      }
+
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          entityType: params.entityType,
+          userId: params.userId,
+          source: params.source,
+          code:
+            error instanceof Prisma.PrismaClientKnownRequestError
+              ? error.code
+              : (error as { code?: string } | null)?.code ?? null,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Using transient managed entity summary because the Prisma pool is saturated',
+      );
+
+      return this.createManagedEntitySummary({
+        id: params.chatId,
+        title:
+          this.resolvePresentableManagedEntityTitle(params.chatId, params.title, null, null) ??
+          params.chatId,
+        createdAt:
+          this.readTrimmedString(params.createdAtFallback) ?? new Date().toISOString(),
+        entityType: params.entityType,
+        link: params.link ?? null,
+        avatarUrl: params.avatarUrl ?? null,
+        primaryBotId: resolvedBotId,
+      });
+    }
+  }
+
   private normalizeManagedEntityTypeHint(value: unknown): ManagedEntityType | null {
     const normalized = this.readLowerString(value);
     if (normalized === 'channel') {
@@ -2629,19 +2743,12 @@ export class AdminService {
       if (!resolvedTitle) {
         continue;
       }
-      const persistedChat = await this.upsertUserChatAccess(
+      const chat = await this.persistManagedEntityAccessBestEffort({
         chatId,
-        normalizedUserId,
-        resolvedTitle,
-        hintedEntityType,
-        { updateEntityType: true },
-      );
-
-      const chat = this.createManagedEntitySummary({
-        id: persistedChat.id,
-        title: persistedChat.title,
-        createdAt: persistedChat.createdAt.toISOString(),
-        entityType: this.fromPrismaEntityType(persistedChat.entityType),
+        userId: normalizedUserId,
+        title: resolvedTitle,
+        entityType: hintedEntityType,
+        source: 'recent_bot_added_bootstrap',
       });
 
       bootstrapped.push(chat);
@@ -2889,25 +2996,16 @@ export class AdminService {
             };
           }
 
-          const persistedChat = await this.upsertUserChatAccess(
-            candidate.chatId,
-            user.userId,
-            candidate.title,
-            candidate.entityType,
-            {
-              updateEntityType: true,
-              preferredBotId: candidate.botId ?? null,
-              observedBotIds: candidate.botIds ?? [],
-            },
-          );
-
-          const chat = this.createManagedEntitySummary({
-            id: persistedChat.id,
-            title: persistedChat.title,
-            createdAt: persistedChat.createdAt.toISOString(),
-            entityType: this.fromPrismaEntityType(persistedChat.entityType),
+          const chat = await this.persistManagedEntityAccessBestEffort({
+            chatId: candidate.chatId,
+            userId: user.userId,
+            title: candidate.title,
+            entityType: candidate.entityType,
             link: candidate.link,
             avatarUrl: candidate.avatarUrl?.trim() ?? null,
+            preferredBotId: candidate.botId ?? null,
+            observedBotIds: candidate.botIds ?? [],
+            source: 'local_discovery',
           });
 
           return {
@@ -3225,6 +3323,16 @@ export class AdminService {
           bypassCache: options.bypassRemoteCache === true,
           timeoutMs: snapshotTimeoutMs,
         });
+        const priorityCandidates = await this.loadManagedEntitiesDeltaPrioritySnapshot(
+          user,
+          entityType,
+        );
+        if (priorityCandidates.length > 0) {
+          supportedCandidateChats = this.mergeManagedEntitiesDiscoverySnapshots(
+            priorityCandidates,
+            supportedCandidateChats,
+          );
+        }
       }
 
       const remoteIndexByChatId = new Map(
@@ -3320,25 +3428,17 @@ export class AdminService {
             cachedById.delete(remoteChat.chatId);
           }
 
-          const persistedChat = await this.upsertUserChatAccess(
-            remoteChat.chatId,
-            user.userId,
-            remoteChat.title,
-            remoteChat.entityType,
-            {
-              updateEntityType: true,
-              preferredBotId: remoteChat.botId ?? null,
-              observedBotIds: remoteChat.botIds ?? [],
-            },
-          );
-
-          const chat = this.createManagedEntitySummary({
-            id: persistedChat.id,
-            title: persistedChat.title,
-            createdAt: persistedChat.createdAt.toISOString(),
-            entityType: this.fromPrismaEntityType(persistedChat.entityType),
+          const chat = await this.persistManagedEntityAccessBestEffort({
+            chatId: remoteChat.chatId,
+            userId: user.userId,
+            title: remoteChat.title,
+            entityType: remoteChat.entityType,
             link: remoteChat.link,
             avatarUrl: remoteChat.avatarUrl?.trim() ?? null,
+            createdAtFallback: cachedChat?.createdAt ?? null,
+            preferredBotId: remoteChat.botId ?? null,
+            observedBotIds: remoteChat.botIds ?? [],
+            source: 'remote_discovery',
           });
 
           return {
@@ -17037,6 +17137,10 @@ export class AdminService {
   }
 
   private isMaxApiTimeoutError(error: unknown): boolean {
+    if (this.isPrismaKnownError(error, 'P2024')) {
+      return false;
+    }
+
     const maybeCode = (error as { code?: unknown }).code;
     if (typeof maybeCode === 'string' && maybeCode.trim().toUpperCase() === 'ECONNABORTED') {
       return true;
@@ -18134,10 +18238,30 @@ export class AdminService {
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
-    const resolvedBotId =
-      this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ??
-      observedBotIds[0] ??
-      (await this.resolveBotAssignment(chatId));
+    let resolvedBotId: string | null | undefined =
+      this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ?? observedBotIds[0] ?? null;
+    if (!resolvedBotId) {
+      try {
+        resolvedBotId = (await this.resolveBotAssignment(chatId)) ?? undefined;
+      } catch (error: unknown) {
+        if (!this.isPrismaKnownError(error, 'P2024')) {
+          throw error;
+        }
+
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            code:
+              error instanceof Prisma.PrismaClientKnownRequestError
+                ? error.code
+                : (error as { code?: string } | null)?.code ?? null,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Skipped bot assignment lookup while persisting managed entity access because the Prisma pool is saturated',
+        );
+      }
+    }
     const persistedChat = await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
@@ -18175,13 +18299,30 @@ export class AdminService {
     this.invalidateManagedEntitiesAllowlistCache(userId);
 
     if (this.maxBotLinkService) {
-      await this.maxBotLinkService.bindDiscoveredChatBots({
-        chatId,
-        primaryBotId: resolvedBotId,
-        botIds: resolvedBotId ? [resolvedBotId, ...observedBotIds] : observedBotIds,
-        title: normalizedTitle ?? fallbackTitle,
-        entityType: entityType ? this.toPrismaEntityType(entityType) : null,
-      });
+      try {
+        await this.maxBotLinkService.bindDiscoveredChatBots({
+          chatId,
+          primaryBotId: resolvedBotId,
+          botIds: resolvedBotId ? [resolvedBotId, ...observedBotIds] : observedBotIds,
+          title: normalizedTitle ?? fallbackTitle,
+          entityType: entityType ? this.toPrismaEntityType(entityType) : null,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            code:
+              error instanceof Prisma.PrismaClientKnownRequestError
+                ? error.code
+                : (error as { code?: string } | null)?.code ?? null,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          this.isPrismaKnownError(error, 'P2024')
+            ? 'Skipped discovered chat bot binding because the Prisma pool is saturated'
+            : 'Failed to bind discovered chat bots after persisting managed entity access',
+        );
+      }
     }
 
     if (normalizedTitle || updateEntityType) {
@@ -18220,18 +18361,13 @@ export class AdminService {
       return null;
     }
 
-    const persistedChat = await this.upsertUserChatAccess(
-      user.chatId,
-      user.userId,
-      user.chatTitle ?? null,
-      currentContextEntityType,
-    );
-
-    const chat = this.createManagedEntitySummary({
-      id: user.chatId,
-      title: persistedChat.title,
-      createdAt: persistedChat.createdAt.toISOString(),
-      entityType: this.fromPrismaEntityType(persistedChat.entityType),
+    const chat = await this.persistManagedEntityAccessBestEffort({
+      chatId: user.chatId,
+      userId: user.userId,
+      title: user.chatTitle ?? null,
+      entityType: currentContextEntityType,
+      preferredBotId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? null,
+      source: 'current_chat_bootstrap',
     });
 
     return chat;

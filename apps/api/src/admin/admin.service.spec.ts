@@ -6545,6 +6545,10 @@ describe('AdminService.listChats', () => {
     );
 
     jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+      items: [],
+      refresh: null,
+    });
 
     await expect(
       service.listChats({
@@ -6584,6 +6588,10 @@ describe('AdminService.listChats', () => {
     );
 
     jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+      items: [],
+      refresh: null,
+    });
 
     await expect(
       service.listChats({
@@ -8336,6 +8344,152 @@ describe('AdminService.listChats', () => {
       timeoutMs: 750,
     });
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalledWith('chat-stale', expect.anything());
+  });
+
+  it('prioritizes local user-specific candidates during fresh managed chat discovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([
+      createLocalManagedEntityRow({
+        chatId: 'chat-target',
+        title: 'Локальный приоритет',
+        entityType: 'chat',
+        createdAt: '2026-03-03T10:00:00.000Z',
+      }),
+    ]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+
+    const remoteChats = Array.from({ length: 12 }, (_, index) => ({
+      chatId: `chat-${index + 1}`,
+      title: `Удалённый чат ${index + 1}`,
+      link: null,
+      entityType: 'chat' as const,
+      lastEventTime: 100 - index,
+      avatarUrl: null,
+    }));
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue(remoteChats),
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-target') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { fresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-target',
+        title: 'Локальный приоритет',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-target', {
+      trafficClass: 'interactive',
+      actionHealthLane: 'background',
+      sourceTag: 'managed_refresh',
+      timeoutMs: 750,
+    });
+  });
+
+  it('returns transient fresh chats without backoff when persistence hits a saturated Prisma pool', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      prisma.$queryRaw.mockResolvedValue([]);
+      const chatContextCache = createChatContextCacheMock();
+      const maxClient = {
+        listBotChats: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-fresh',
+            title: 'Живой чат',
+            link: null,
+            entityType: 'chat',
+            lastEventTime: 1,
+            avatarUrl: null,
+          },
+        ]),
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+      );
+
+      jest
+        .spyOn(service as any, 'upsertUserChatAccess')
+        .mockRejectedValueOnce({ code: 'P2024', message: 'pool timeout' });
+
+      await expect(
+        service.listChats(
+          {
+            userId: 'admin-1',
+            username: null,
+            displayName: null,
+            chatTitle: null,
+          },
+          { fresh: true },
+        ),
+      ).resolves.toEqual([
+        {
+          id: 'chat-fresh',
+          title: 'Живой чат',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'chat',
+          link: null,
+          channelOverview: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        },
+      ]);
+
+      expect(chatContextCache.activateManagedEntitiesRefreshBackoff).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('does not reuse an untimed admin access lookup for a timed managed refresh check', async () => {
