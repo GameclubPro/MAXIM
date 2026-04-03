@@ -125,10 +125,12 @@ export class BackgroundRuntimeGovernorService {
     component: string;
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
+    allowQueueLagSlowPathBelowSec?: number;
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const snapshot = await this.getPressureSnapshot();
     const decision = this.buildDecisionFromSnapshot(snapshot, {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+      allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
     });
 
     if (decision.action !== 'run') {
@@ -147,6 +149,7 @@ export class BackgroundRuntimeGovernorService {
     component: string;
     sourceTag: string;
     allowRecoveryWindowRun?: boolean;
+    allowQueueLagSlowPathBelowSec?: number;
   }): BackgroundRuntimeGovernorDecision | null {
     const snapshot = this.getCachedSnapshot();
     if (!snapshot) {
@@ -155,6 +158,7 @@ export class BackgroundRuntimeGovernorService {
 
     return this.buildDecisionFromSnapshot(snapshot, {
       allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+      allowQueueLagSlowPathBelowSec: params.allowQueueLagSlowPathBelowSec,
     });
   }
 
@@ -267,11 +271,17 @@ export class BackgroundRuntimeGovernorService {
     snapshot: BackgroundPressureSnapshot,
     options: {
       allowRecoveryWindowRun?: boolean;
+      allowQueueLagSlowPathBelowSec?: number;
     } = {},
   ): BackgroundRuntimeGovernorDecision {
     const queueLagSec = snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
     const allowRecoveryWindowRun =
       options.allowRecoveryWindowRun === true && queueLagSec < this.softQueueLagSec;
+    const allowQueueLagSlowPath =
+      typeof options.allowQueueLagSlowPathBelowSec === 'number' &&
+      Number.isFinite(options.allowQueueLagSlowPathBelowSec) &&
+      queueLagSec >= this.softQueueLagSec &&
+      queueLagSec < options.allowQueueLagSlowPathBelowSec;
 
     if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
       return {
@@ -290,6 +300,14 @@ export class BackgroundRuntimeGovernorService {
     }
 
     if (queueLagSec >= this.softQueueLagSec) {
+      if (allowQueueLagSlowPath) {
+        return {
+          action: 'slow',
+          retryAfterMs: this.pauseRetryAfterMs,
+          reason: `user-facing queue lag ${queueLagSec.toFixed(1)}s`,
+        };
+      }
+
       return {
         action: 'pause',
         retryAfterMs: this.pauseRetryAfterMs,

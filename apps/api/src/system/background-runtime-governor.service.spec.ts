@@ -125,6 +125,65 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
+  it('downgrades soft queue-lag pauses to slow when an explicit slow-path ceiling is provided', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 12.7,
+          effectiveLagSec: 12.7,
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 10,
+            trafficClasses: {
+              critical: { totalRequests: 1 },
+              interactive: { totalRequests: 3 },
+              background: { totalRequests: 6 },
+            },
+          },
+          sources: {},
+        }),
+      } as never,
+      createConfigMock(),
+      {
+        recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
+
+    await expect(
+      service.decide({
+        component: 'admin-managed-refresh',
+        sourceTag: 'managed_refresh',
+        allowQueueLagSlowPathBelowSec: 30,
+      }),
+    ).resolves.toMatchObject({
+      action: 'slow',
+      reason: 'user-facing queue lag 12.7s',
+    });
+  });
+
   it('slows background work when background source share grows too large', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {

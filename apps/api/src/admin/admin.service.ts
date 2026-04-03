@@ -433,6 +433,7 @@ const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 1_500;
 const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 3_000;
 const MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS = 15_000;
+const MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC = 30;
 const MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 8;
@@ -1534,9 +1535,10 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const backgroundPauseDecision =
-      this.peekManagedEntitiesBackgroundRefreshPauseDecision('schedule', {
-        allowRecoveryWindowRun: this.shouldAllowManagedEntitiesRecoveryWindowRun(options),
-      });
+      this.peekManagedEntitiesBackgroundRefreshPauseDecision(
+        'schedule',
+        this.buildManagedEntitiesBackgroundGovernorOptions(options),
+      );
     if (backgroundPauseDecision) {
       const pausedCursor = cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
       const presentation = await this.loadManagedEntitiesRefreshPresentationData(
@@ -1640,9 +1642,10 @@ export class AdminService implements OnModuleDestroy {
     } = {},
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
     const backgroundPauseDecision =
-      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('job', {
-        allowRecoveryWindowRun: this.shouldAllowManagedEntitiesRecoveryWindowRun(options),
-      });
+      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
+        'job',
+        this.buildManagedEntitiesBackgroundGovernorOptions(options),
+      );
     if (backgroundPauseDecision) {
       return {
         continueAfterMs: backgroundPauseDecision.retryAfterMs,
@@ -17773,6 +17776,7 @@ export class AdminService implements OnModuleDestroy {
     reason: 'schedule' | 'job',
     options: {
       allowRecoveryWindowRun?: boolean;
+      allowQueueLagSlowPathBelowSec?: number;
     } = {},
   ): { reason: string; retryAfterMs: number } | null {
     if (this.backgroundRuntimeGovernorService) {
@@ -17780,6 +17784,7 @@ export class AdminService implements OnModuleDestroy {
         component: 'admin-managed-refresh',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
+        allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
       if (!decision || decision.action !== 'pause') {
         return null;
@@ -17809,6 +17814,7 @@ export class AdminService implements OnModuleDestroy {
     reason: 'schedule' | 'job',
     options: {
       allowRecoveryWindowRun?: boolean;
+      allowQueueLagSlowPathBelowSec?: number;
     } = {},
   ): Promise<{ reason: string; retryAfterMs: number } | null> {
     if (this.backgroundRuntimeGovernorService) {
@@ -17816,6 +17822,7 @@ export class AdminService implements OnModuleDestroy {
         component: 'admin-managed-refresh',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
+        allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
       if (decision.action !== 'pause') {
         return null;
@@ -17900,6 +17907,23 @@ export class AdminService implements OnModuleDestroy {
       options.resetRefreshCursor === true ||
       options.bypassRemoteCache === true
     );
+  }
+
+  private buildManagedEntitiesBackgroundGovernorOptions(options: {
+    bypassRemoteCache?: boolean;
+    resetRefreshCursor?: boolean;
+    allowRecoveryWindowRun?: boolean;
+  }): {
+    allowRecoveryWindowRun: boolean;
+    allowQueueLagSlowPathBelowSec?: number;
+  } {
+    const allowUserTriggeredBypass = this.shouldAllowManagedEntitiesRecoveryWindowRun(options);
+    return {
+      allowRecoveryWindowRun: allowUserTriggeredBypass,
+      allowQueueLagSlowPathBelowSec: allowUserTriggeredBypass
+        ? MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC
+        : undefined,
+    };
   }
 
   private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {

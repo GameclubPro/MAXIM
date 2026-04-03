@@ -7859,6 +7859,7 @@ describe('AdminService.listChats', () => {
         component: 'admin-managed-refresh',
         sourceTag: 'managed_refresh',
         allowRecoveryWindowRun: false,
+        allowQueueLagSlowPathBelowSec: undefined,
       });
       expect(backgroundRuntimeGovernorService.decide).not.toHaveBeenCalled();
     } finally {
@@ -7959,6 +7960,7 @@ describe('AdminService.listChats', () => {
       component: 'admin-managed-refresh',
       sourceTag: 'managed_refresh',
       allowRecoveryWindowRun: true,
+      allowQueueLagSlowPathBelowSec: 30,
     });
     expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
       'refresh-managed-entities',
