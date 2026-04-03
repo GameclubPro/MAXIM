@@ -25,7 +25,6 @@ import {
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
-  type ManagedEntityAssignedBot,
   type ManagedBroadcastDetails,
   type ManagedEntityHeader,
 } from '@maxim/contracts';
@@ -128,10 +127,6 @@ type DeleteDelayStepperProps = {
 };
 
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
-const LazyBotExecutionDiagnosticsCard = lazy(async () => {
-  const module = await import('../components/bot-execution-diagnostics-card');
-  return { default: module.BotExecutionDiagnosticsCard };
-});
 const LazyMessageLimitsBlockedWordPresets = lazy(
   () => import('../components/message-limits-blocked-word-presets'),
 );
@@ -888,13 +883,6 @@ type BotSpeechPreviewContext = {
   characterName: string;
 };
 
-type ReadinessBotSnapshot = {
-  queueLagSec: number;
-  queuedEvents: number;
-  failedEvents: number;
-  actionErrorRate: number;
-};
-
 const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
   persona: 'neutral',
   characterName: 'Чат-бот',
@@ -902,113 +890,6 @@ const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function resolveHeaderAssignedBots(
-  header: Pick<ManagedEntityHeader, 'primaryBotId' | 'assignedBots'> | null | undefined,
-): ManagedEntityAssignedBot[] {
-  if (!header?.assignedBots?.length) {
-    return [];
-  }
-
-  return [...header.assignedBots]
-    .sort((left, right) => {
-      const leftPrimary = left.botId === header.primaryBotId ? 1 : 0;
-      const rightPrimary = right.botId === header.primaryBotId ? 1 : 0;
-      if (leftPrimary !== rightPrimary) {
-        return rightPrimary - leftPrimary;
-      }
-
-      if (left.role !== right.role) {
-        return left.role === 'primary' ? -1 : 1;
-      }
-
-      return left.label.localeCompare(right.label, 'ru-RU');
-    })
-    .slice(0, 2);
-}
-
-function parseReadinessBotSnapshots(value: unknown): Record<string, ReadinessBotSnapshot> {
-  if (!isRecord(value) || !isRecord(value.bots)) {
-    throw new Error('Invalid readiness snapshot');
-  }
-
-  return Object.fromEntries(
-    Object.entries(value.bots)
-      .map(([botId, snapshot]) => {
-        if (!isRecord(snapshot) || !isRecord(snapshot.action)) {
-          return null;
-        }
-
-        if (
-          typeof snapshot.queueLagSec !== 'number' ||
-          typeof snapshot.queuedEvents !== 'number' ||
-          typeof snapshot.failedEvents !== 'number' ||
-          typeof snapshot.action.errorRate !== 'number'
-        ) {
-          return null;
-        }
-
-        return [
-          botId,
-          {
-            queueLagSec: snapshot.queueLagSec,
-            queuedEvents: snapshot.queuedEvents,
-            failedEvents: snapshot.failedEvents,
-            actionErrorRate: snapshot.action.errorRate,
-          },
-        ] satisfies [string, ReadinessBotSnapshot];
-      })
-      .filter((entry): entry is [string, ReadinessBotSnapshot] => entry !== null),
-  );
-}
-
-async function getReadinessBotSnapshots(): Promise<Record<string, ReadinessBotSnapshot>> {
-  const response = await fetch('/api/health/ready', {
-    headers: {
-      Accept: 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Health ready request failed: ${response.status}`);
-  }
-
-  const payload = (await response.json()) as unknown;
-  return parseReadinessBotSnapshots(payload);
-}
-
-function resolveHeaderBotLoadLevel(
-  snapshot: ReadinessBotSnapshot | undefined,
-): {
-  value: number;
-  tone: 'cool' | 'warm' | 'hot';
-} {
-  if (!snapshot) {
-    return {
-      value: 0.18,
-      tone: 'cool',
-    };
-  }
-
-  const lagScore = Math.min(1, snapshot.queueLagSec / 10);
-  const queueScore = Math.min(1, snapshot.queuedEvents / 6);
-  const failedScore = Math.min(1, snapshot.failedEvents / 2);
-  const errorScore = Math.min(1, snapshot.actionErrorRate / 0.2);
-  const value = Math.max(
-    0.14,
-    Math.min(1, lagScore * 0.58 + queueScore * 0.22 + failedScore * 0.1 + errorScore * 0.1),
-  );
-
-  if (value >= 0.72) {
-    return { value, tone: 'hot' };
-  }
-
-  if (value >= 0.4) {
-    return { value, tone: 'warm' };
-  }
-
-  return { value, tone: 'cool' };
 }
 
 function resolveBotSpeechPreviewContext(
@@ -2215,32 +2096,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatHeaderQuery = {
     data: settingsScreenQuery.data?.header,
   };
-  const shouldShowBotExecutionDiagnostics =
-    (chatHeaderQuery.data?.assignedBots?.length ?? 0) > 1 || !chatHeaderQuery.data?.primaryBotId;
-  const headerAssignedBots = useMemo(
-    () => resolveHeaderAssignedBots(chatHeaderQuery.data ?? null),
-    [chatHeaderQuery.data],
-  );
-  const botLoadQuery = useQuery({
-    queryKey: ['settings-header-bot-load', headerAssignedBots.map((bot) => bot.botId).join(':')],
-    queryFn: getReadinessBotSnapshots,
-    enabled: headerAssignedBots.length > 0,
-    staleTime: 10_000,
-    refetchInterval: 20_000,
-    refetchOnWindowFocus: false,
-    retry: 0,
-  });
   const botSpeechPreviewContext = useMemo(
     () => resolveBotSpeechPreviewContext(chatHeaderQuery.data ?? null),
     [chatHeaderQuery.data],
-  );
-  const headerBotLoadItems = useMemo(
-    () =>
-      headerAssignedBots.map((bot) => ({
-        bot,
-        load: resolveHeaderBotLoadLevel(botLoadQuery.data?.[bot.botId]),
-      })),
-    [botLoadQuery.data, headerAssignedBots],
   );
   const domainsQuery = {
     data: settingsScreenQuery.data?.domains,
@@ -4920,59 +4778,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ) : null
             }
           />
-
-          {headerBotLoadItems.length > 0 ? (
-            <div className="settings-bot-load-strip stagger-in" aria-label="Состояние ботов">
-              <div className="settings-bot-load">
-                {headerBotLoadItems.map(({ bot, load }) => {
-                  const botTitle = bot.characterName?.trim() || bot.label;
-                  return (
-                    <div
-                      key={bot.botId}
-                      className={cn(
-                        'settings-bot-load__item',
-                        bot.speechPersona === 'female'
-                          ? 'settings-bot-load__item--female'
-                          : 'settings-bot-load__item--male',
-                        load.tone === 'warm'
-                          ? 'settings-bot-load__item--warm'
-                          : load.tone === 'hot'
-                            ? 'settings-bot-load__item--hot'
-                            : 'settings-bot-load__item--cool',
-                      )}
-                      title={botTitle}
-                      aria-label={botTitle}
-                    >
-                      <EntityAvatar
-                        title={botTitle}
-                        entityType="chat"
-                        avatarUrl={bot.avatarUrl ?? null}
-                        className="settings-bot-load__avatar"
-                      />
-                      <span className="settings-bot-load__meter" aria-hidden="true">
-                        <span
-                          className="settings-bot-load__meter-fill"
-                          style={{ width: `${Math.round(load.value * 100)}%` }}
-                        />
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          ) : null}
-
-          {shouldShowBotExecutionDiagnostics ? (
-            <Suspense fallback={<GlassCard className="settings-section stagger-in"><SkeletonCard lines={6} /></GlassCard>}>
-              <LazyBotExecutionDiagnosticsCard
-                api={api}
-                chatId={chatId ?? ''}
-                entityType="chat"
-                shouldShow={shouldShowBotExecutionDiagnostics}
-                className="settings-section stagger-in"
-              />
-            </Suspense>
-          ) : null}
 
           <SettingsDrilldownPanel
             id="settings-bot-speech-style"

@@ -4,8 +4,6 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
-  Suspense,
-  lazy,
   startTransition,
   useEffect,
   useMemo,
@@ -101,10 +99,6 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   isDaySheetOpen: false,
   isConfirmed: false,
 };
-const LazyBotExecutionDiagnosticsCard = lazy(async () => {
-  const module = await import('../components/bot-execution-diagnostics-card');
-  return { default: module.BotExecutionDiagnosticsCard };
-});
 
 function toLocalTimeInputValue(value: Date): string {
   const hours = String(value.getHours()).padStart(2, '0');
@@ -519,8 +513,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     refetch: settingsScreenQuery.refetch,
   };
   const channelHeader = settingsScreenQuery.data?.header ?? null;
-  const shouldShowBotExecutionDiagnostics =
-    (channelHeader?.assignedBots?.length ?? 0) > 1 || !channelHeader?.primaryBotId;
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
 
   useEffect(() => {
@@ -1177,25 +1169,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           ) : null
         }
       />
-
-      {shouldShowBotExecutionDiagnostics ? (
-        <Suspense
-          fallback={
-            <GlassCard className="channel-settings-card channel-settings-card--wide" elevated>
-              <SkeletonCard lines={6} />
-            </GlassCard>
-          }
-        >
-          <LazyBotExecutionDiagnosticsCard
-            api={api}
-            chatId={chatId}
-            entityType="channel"
-            shouldShow={shouldShowBotExecutionDiagnostics}
-            className="channel-settings-card channel-settings-card--wide"
-            elevated
-          />
-        </Suspense>
-      ) : null}
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
