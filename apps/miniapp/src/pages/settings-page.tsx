@@ -107,6 +107,7 @@ import {
   applyNightModeEnabledChange,
   mergeNightSectionSettings,
 } from './settings-page-state';
+import { buildRequiredSubscriptionChannelCollections } from './settings-required-subscription-state';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 type ManagedBroadcastListItem = ChatSettingsScreenResponse['managedBroadcasts'][number];
@@ -974,9 +975,7 @@ async function getReadinessBotSnapshots(): Promise<Record<string, ReadinessBotSn
   return parseReadinessBotSnapshots(payload);
 }
 
-function resolveHeaderBotLoadLevel(
-  snapshot: ReadinessBotSnapshot | undefined,
-): {
+function resolveHeaderBotLoadLevel(snapshot: ReadinessBotSnapshot | undefined): {
   value: number;
   tone: 'cool' | 'warm' | 'hot';
 } {
@@ -2063,6 +2062,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
+  const [
+    requiredSubscriptionChannelsRefreshRequest,
+    setRequiredSubscriptionChannelsRefreshRequest,
+  ] = useState<{
+    nonce: number;
+    behavior: 'default' | 'manual' | 'recovery';
+  }>({
+    nonce: 0,
+    behavior: 'default',
+  });
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
@@ -2150,6 +2159,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingWorkspaceView('compose');
     setDuplicateWindowInputValue('');
     setPendingSpeechStyle(null);
+    setRequiredSubscriptionChannelsRefreshRequest({
+      nonce: 0,
+      behavior: 'default',
+    });
   }, [chatId]);
 
   const settingsScreenQuery = useQuery({
@@ -2179,8 +2192,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     api,
     entityType: 'channel',
     enabled: shouldLoadRequiredSubscriptionChannels,
+    reloadNonce: requiredSubscriptionChannelsRefreshRequest.nonce,
+    reloadBehavior: requiredSubscriptionChannelsRefreshRequest.behavior,
     resumeOnVisibilityReturn: true,
-    skipInitialSyncIfCached: true,
+    backgroundRefreshOnFirstLoad: true,
+    persistLocalCache: true,
+    localCacheScope: 'home',
   });
   const channelsQuery = {
     data: channelsList.data,
@@ -2241,64 +2258,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isLoading: settingsScreenQuery.isLoading,
     error: settingsScreenQuery.error,
   };
-  const availableRequiredSubscriptionChannels = useMemo(
+  const requiredSubscriptionChannelCollections = useMemo(
     () =>
-      (channelsQuery.data ?? []).filter(
-        (channel) => channel.entityType === 'channel' && Boolean(channel.link?.trim()),
-      ),
-    [channelsQuery.data],
+      buildRequiredSubscriptionChannelCollections({
+        managedChannels: channelsQuery.data,
+        resolvedChannels: resolvedRequiredSubscriptionChannels,
+        selectedChannelIds: draft?.requiredSubscriptionChannelIds ?? [],
+      }),
+    [
+      channelsQuery.data,
+      draft?.requiredSubscriptionChannelIds,
+      resolvedRequiredSubscriptionChannels,
+    ],
   );
-  const availableRequiredSubscriptionChannelById = useMemo(() => {
-    const map = new Map<string, ManagedEntityHeader>();
-    for (const channel of availableRequiredSubscriptionChannels) {
-      map.set(channel.id, {
-        id: channel.id,
-        title: channel.title,
-        entityType: 'channel',
-        link: channel.link?.trim() ?? null,
-        participantsCount: null,
-        primaryBotId: channel.primaryBotId ?? null,
-        assignedBots: channel.assignedBots ?? [],
-        sharedMode: channel.sharedMode ?? 'owned',
-      });
-    }
-    for (const channel of resolvedRequiredSubscriptionChannels) {
-      map.set(channel.id, channel);
-    }
-    return map;
-  }, [availableRequiredSubscriptionChannels, resolvedRequiredSubscriptionChannels]);
-  const selectedRequiredSubscriptionChannels = useMemo(() => {
-    const selectedIds = draft?.requiredSubscriptionChannelIds ?? [];
-    return selectedIds
-      .map((channelId) => {
-        const channel = availableRequiredSubscriptionChannelById.get(channelId);
-        return channel
-          ? {
-              id: channel.id,
-              title: channel.title,
-              link: channel.link?.trim() ?? '',
-            }
-          : null;
-      })
-      .filter(
-        (
-          channel,
-        ): channel is {
-          id: string;
-          title: string;
-          link: string;
-        } => channel !== null,
-      );
-  }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
-  const staleRequiredSubscriptionChannelIds = useMemo(() => {
-    return (draft?.requiredSubscriptionChannelIds ?? []).filter(
-      (channelId) => !availableRequiredSubscriptionChannelById.has(channelId),
-    );
-  }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
-  const availableRequiredSubscriptionChannelChoices = useMemo(() => {
-    const selectedIds = new Set(draft?.requiredSubscriptionChannelIds ?? []);
-    return availableRequiredSubscriptionChannels.filter((channel) => !selectedIds.has(channel.id));
-  }, [availableRequiredSubscriptionChannels, draft?.requiredSubscriptionChannelIds]);
+  const selectedRequiredSubscriptionChannels =
+    requiredSubscriptionChannelCollections.selectedChannels;
+  const selectedUnavailableRequiredSubscriptionChannels =
+    requiredSubscriptionChannelCollections.selectedUnavailableChannels;
+  const unavailableManagedRequiredSubscriptionChannels =
+    requiredSubscriptionChannelCollections.unavailableManagedChannels;
+  const availableRequiredSubscriptionChannelChoices =
+    requiredSubscriptionChannelCollections.availableChoices;
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -3059,6 +3039,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError('requiredSubscriptionChannelIds');
   }
 
+  function refreshRequiredSubscriptionChannels() {
+    setRequiredSubscriptionChannelsRefreshRequest((current) => ({
+      nonce: current.nonce + 1,
+      behavior: 'manual',
+    }));
+  }
+
   function handleResolveRequiredSubscriptionExternalChannel() {
     const normalizedValue = requiredSubscriptionExternalChannelValue.trim();
     if (!chatId) {
@@ -3188,7 +3175,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       if (
         parsed.data.requiredSubscriptionEnabled &&
-        staleRequiredSubscriptionChannelIds.length > 0
+        selectedUnavailableRequiredSubscriptionChannels.length > 0
       ) {
         nextErrors.requiredSubscriptionChannelIds =
           'Удалите недоступные каналы без рабочей ссылки и выберите каналы заново.';
@@ -4432,7 +4419,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? `${nightWindowLabel} • ${nightTimezoneLabel}`
       : 'Выключено';
   const requiredSubscriptionSelectedCount = draft?.requiredSubscriptionChannelIds.length ?? 0;
-  const requiredSubscriptionStaleCount = staleRequiredSubscriptionChannelIds.length;
+  const requiredSubscriptionStaleCount = selectedUnavailableRequiredSubscriptionChannels.length;
+  const requiredSubscriptionUnavailableCount =
+    unavailableManagedRequiredSubscriptionChannels.length;
   const requiredSubscriptionStagesEnabledCount = [
     draft?.requiredSubscriptionBotMessageEnabled,
     draft?.requiredSubscriptionWarnEnabled,
@@ -4442,11 +4431,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const areChannelsSyncing =
     shouldLoadRequiredSubscriptionChannels &&
     (channelsQuery.phase === 'loading' || channelsQuery.phase === 'syncing');
+  const requiredSubscriptionPickerEmptyState =
+    requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+      ? 'Достигнут лимит выбранных каналов.'
+      : requiredSubscriptionUnavailableCount > 0
+        ? 'Нет каналов с рабочей ссылкой. Каналы без ссылки показаны ниже.'
+        : 'Нет доступных каналов с рабочей ссылкой для добавления.';
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? areChannelsSyncing
       ? 'Синхронизируем каналы...'
       : requiredSubscriptionStaleCount > 0
-        ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
+        ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
         : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
     : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
@@ -9996,7 +9991,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               'settings-native-toggle__hint--danger',
                             )}
                           >
-                            Есть недоступные каналы. Удалите их.
+                            Есть недоступные каналы. Исправьте ссылку или удалите их.
                           </p>
                         ) : null}
 
@@ -10029,37 +10024,65 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         ) : null}
 
-                        {staleRequiredSubscriptionChannelIds.length > 0 ? (
+                        {selectedUnavailableRequiredSubscriptionChannels.length > 0 ? (
                           <div className="managed-giveaway__prize-editor-list">
-                            {staleRequiredSubscriptionChannelIds.map((channelId, index) => (
-                              <div
-                                key={`required-subscription-stale-${channelId}`}
-                                className="managed-giveaway__prize-editor-row"
-                              >
-                                <span className="managed-giveaway__prize-position">
-                                  {selectedRequiredSubscriptionChannels.length + index + 1}
-                                </span>
-                                <span
-                                  className="managed-giveaway__selected-channel"
-                                  title={channelId}
+                            {selectedUnavailableRequiredSubscriptionChannels.map(
+                              (channel, index) => (
+                                <div
+                                  key={`required-subscription-stale-${channel.id}`}
+                                  className="managed-giveaway__prize-editor-row"
                                 >
-                                  Канал недоступен для проверки · {channelId}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="managed-giveaway__prize-remove"
-                                  onClick={() => removeRequiredSubscriptionChannel(channelId)}
-                                  aria-label={`Удалить недоступный канал ${channelId}`}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
+                                  <span className="managed-giveaway__prize-position">
+                                    {selectedRequiredSubscriptionChannels.length + index + 1}
+                                  </span>
+                                  <span
+                                    className={cn(
+                                      'managed-giveaway__selected-channel',
+                                      'managed-giveaway__selected-channel--multiline',
+                                      'managed-giveaway__selected-channel--warning',
+                                    )}
+                                    title={channel.description}
+                                  >
+                                    <strong className="managed-giveaway__selected-channel-label">
+                                      {channel.title}
+                                    </strong>
+                                    <small className="managed-giveaway__selected-channel-detail">
+                                      {channel.description}
+                                    </small>
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className="managed-giveaway__prize-remove"
+                                    onClick={() => removeRequiredSubscriptionChannel(channel.id)}
+                                    aria-label={`Удалить недоступный канал ${channel.title}`}
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              ),
+                            )}
                           </div>
                         ) : null}
 
                         {requiredSubscriptionChannelsError ? (
                           <small className="field__hint">{requiredSubscriptionChannelsError}</small>
+                        ) : null}
+
+                        <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                          <button
+                            type="button"
+                            className="button button--ghost managed-giveaway__channel-action"
+                            disabled={channelsQuery.isLoading || channelsQuery.isSyncing}
+                            onClick={refreshRequiredSubscriptionChannels}
+                          >
+                            {channelsQuery.isSyncing ? 'Обновляем список...' : 'Обновить список'}
+                          </button>
+                        </div>
+
+                        {channelsQuery.isBackoffActive ? (
+                          <small className="field__hint">
+                            MAX временно ограничил обновление. Повторите позже.
+                          </small>
                         ) : null}
 
                         <div className="managed-giveaway__channel-picker">
@@ -10076,12 +10099,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           !channelsQuery.isSyncing &&
                           !channelsQuery.error &&
                           availableRequiredSubscriptionChannelChoices.length === 0 ? (
-                            <span>
-                              {requiredSubscriptionSelectedCount >=
-                              REQUIRED_SUBSCRIPTION_MAX_CHANNELS
-                                ? 'Достигнут лимит выбранных каналов.'
-                                : 'Нет доступных каналов с рабочей ссылкой для добавления.'}
-                            </span>
+                            <span>{requiredSubscriptionPickerEmptyState}</span>
                           ) : null}
                           {!channelsQuery.isLoading && !channelsQuery.error
                             ? availableRequiredSubscriptionChannelChoices.map((channel) => (
@@ -10100,6 +10118,42 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ))
                             : null}
                         </div>
+
+                        {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
+                          <>
+                            <small className="field__hint">
+                              Каналы без публичной ссылки нельзя выбрать для проверки.
+                            </small>
+                            <div className="managed-giveaway__prize-editor-list">
+                              {unavailableManagedRequiredSubscriptionChannels.map(
+                                (channel, index) => (
+                                  <div
+                                    key={`required-subscription-unavailable-${channel.id}`}
+                                    className="managed-giveaway__prize-editor-row"
+                                  >
+                                    <span className="managed-giveaway__prize-position">
+                                      {index + 1}
+                                    </span>
+                                    <span
+                                      className={cn(
+                                        'managed-giveaway__selected-channel',
+                                        'managed-giveaway__selected-channel--multiline',
+                                      )}
+                                      title={channel.description}
+                                    >
+                                      <strong className="managed-giveaway__selected-channel-label">
+                                        {channel.title}
+                                      </strong>
+                                      <small className="managed-giveaway__selected-channel-detail">
+                                        {channel.description}
+                                      </small>
+                                    </span>
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          </>
+                        ) : null}
 
                         <div className="managed-giveaway__editor-grid">
                           <label

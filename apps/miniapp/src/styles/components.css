@@ -9404,6 +9404,35 @@
   white-space: nowrap;
 }
 
+.managed-giveaway__selected-channel--multiline {
+  min-height: 58px;
+  display: grid;
+  align-items: flex-start;
+  gap: 2px;
+  padding-block: 10px;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: initial;
+}
+
+.managed-giveaway__selected-channel--warning {
+  border-color: rgba(196, 122, 33, 0.2);
+  background: rgba(255, 248, 238, 0.92);
+}
+
+.managed-giveaway__selected-channel-label {
+  color: var(--text-primary);
+  font-size: 0.78rem;
+  font-weight: 780;
+  line-height: 1.28;
+}
+
+.managed-giveaway__selected-channel-detail {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
 .managed-giveaway__channel-list {
   display: grid;
   gap: 8px;
