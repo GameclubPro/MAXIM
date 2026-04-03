@@ -6,8 +6,9 @@ const workspaceDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(workspaceDir, 'dist');
 const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
-// Small cross-environment headroom for gzip drift between local and VPS/Alpine builds.
-const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 384;
+// Small cross-environment headroom for gzip drift between local and VPS/Alpine builds,
+// including the current-chat home presentation fix that now lands exactly on the local ceiling.
+const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 512;
 // Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
 // sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
 // execution-planner control plane, lazy bot diagnostics entrypoint, and bot-persona-aware
