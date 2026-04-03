@@ -12,9 +12,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 768;
 // Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
 // sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
-// execution-planner control plane, lazy bot diagnostics entrypoint, and bot-persona-aware
-// settings previews.
-const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 6912;
+// execution-planner control plane, lazy bot diagnostics entrypoint, bot-persona-aware
+// settings previews, and managed-chat apply-to-all availability guards in settings.
+const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 7168;
 // Small headroom for MAX-native comment surfaces, messenger-style wallpaper,
 // shared multi-bot execution planner UI, and cross-environment gzip drift.
 const STARTUP_CSS_BUDGET_GZIP = Math.round(35 * 1024) + 2816;

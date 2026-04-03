@@ -4467,7 +4467,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatsCount = chatsList.data?.length ?? 0;
   const canApplyToAllChats =
     chatsCount > 1 && (chatsList.isSyncComplete || chatsList.isBackoffActive);
-  const canApplyMailingToAllChats = true;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -9398,15 +9397,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <div className="broadcast-stage-card__body">
                                 <div
-                                  className={cn(
-                                    'mailing-target-card',
-                                    !canApplyMailingToAllChats && 'is-single-chat',
-                                  )}
+                                  className="mailing-target-card"
                                 >
                                   <div className="mailing-target-card__row">
-                                    <span className="mailing-target-card__title">
-                                      {canApplyMailingToAllChats ? 'Все чаты' : 'Только этот чат'}
-                                    </span>
+                                    <span className="mailing-target-card__title">Все чаты</span>
 
                                     <label
                                       className="settings-native-switch"
@@ -9418,7 +9412,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         onChange={(event) =>
                                           setMailingApplyToAllChats(event.target.checked)
                                         }
-                                        disabled={!canApplyMailingToAllChats || isMailingBusy}
+                                        disabled={isMailingBusy}
                                       />
                                       <span className="toggle-switch" aria-hidden>
                                         <span className="toggle-switch__thumb" />
