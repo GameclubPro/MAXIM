@@ -4,6 +4,7 @@ import { ChatEntityType, WebhookStatus, type Prisma } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
+import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -36,6 +37,8 @@ export class WebhookService {
     private readonly maxBotLinkService: MaxBotLinkService,
     @Optional() private readonly membershipLookupService?: MaxMembershipLookupService,
     @Optional() private readonly maxClient?: MaxClientService,
+    @Optional()
+    private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
   }
@@ -153,12 +156,14 @@ export class WebhookService {
     const entityType = this.readWebhookChatEntityType(update);
     try {
       if (this.isBotRemovalUpdate(update)) {
-        return await this.maxBotLinkService.markChatBotRemoved({
+        const nextOwnerBotId = await this.maxBotLinkService.markChatBotRemoved({
           chatId,
           title: update.message?.chatTitle ?? null,
           entityType,
           botId: update.botId,
         });
+        this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+        return nextOwnerBotId;
       }
 
       const boundBotId = await this.maxBotLinkService.bindChatToBot({
@@ -167,12 +172,14 @@ export class WebhookService {
         entityType,
         botId: update.botId,
       });
-      return await this.maybeFailOverExecutionOwner({
+      const executionOwnerBotId = await this.maybeFailOverExecutionOwner({
         update,
         chatId,
         incomingBotId: update.botId ?? null,
         currentOwnerBotId: boundBotId,
       });
+      this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+      return executionOwnerBotId;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -414,6 +421,40 @@ export class WebhookService {
 
   private isBotRemovalUpdate(update: MaxUpdate): boolean {
     return update.type.trim().toLowerCase() === 'bot_removed';
+  }
+
+  private scheduleChatAdminRosterSyncFromWebhook(update: MaxUpdate, chatId: string): void {
+    if (!this.maxChatAdminRosterSyncService) {
+      return;
+    }
+
+    const normalizedType = update.type.trim().toLowerCase();
+    if (
+      normalizedType !== 'bot_added' &&
+      normalizedType !== 'bot_removed' &&
+      normalizedType !== 'chat_title_changed'
+    ) {
+      return;
+    }
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId,
+        botIds: update.botId ? [update.botId] : [],
+        title: update.message?.chatTitle ?? null,
+        entityType: update.message?.entityType ?? null,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId,
+            updateId: update.updateId,
+            type: normalizedType,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to enqueue chat admin roster sync from webhook',
+        );
+      });
   }
 
   private attachExecutionOwnerBotId(update: MaxUpdate, botId: string | null): void {

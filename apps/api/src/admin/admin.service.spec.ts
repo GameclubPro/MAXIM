@@ -9332,6 +9332,57 @@ describe('AdminService.listChats', () => {
     expect(discoverSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('allows a user-triggered managed refresh job to ignore a soft queue-lag pause below the slow-path ceiling', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        decide: jest.fn().mockResolvedValue({
+          action: 'pause',
+          reason: 'user-facing queue lag 19.5s',
+          retryAfterMs: 60_000,
+        }),
+      } as never,
+    );
+
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
+      items: [],
+      refresh: {
+        complete: false,
+        cursor: 20,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+      },
+    });
+
+    await expect(
+      service.processManagedEntitiesRefreshJob({
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: true,
+        resetRefreshCursor: true,
+      }),
+    ).resolves.toEqual({
+      continueAfterMs: 1500,
+    });
+
+    expect(discoverSpy).toHaveBeenCalledTimes(1);
+  });
+
   it('uses background traffic for local full-scan admin checks', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([

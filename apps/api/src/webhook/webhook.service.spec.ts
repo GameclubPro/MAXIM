@@ -5,11 +5,15 @@ describe('WebhookService', () => {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
     markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
   };
+  const maxChatAdminRosterSyncService = {
+    scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+  };
 
   beforeEach(() => {
     jest.clearAllMocks();
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
     maxBotLinkService.markChatBotRemoved.mockResolvedValue(undefined);
+    maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockResolvedValue(true);
   });
 
   it('stores new webhook event in RECEIVED state', async () => {
@@ -456,6 +460,53 @@ describe('WebhookService', () => {
       title: 'Новости района',
       entityType: 'CHANNEL',
       botId: 'id613002203036_bot',
+    });
+  });
+
+  it('enqueues chat admin roster sync for bot membership churn updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-1',
+          type: 'bot_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_added:u-bot-added-1',
+            chatId: '-100126',
+            chatTitle: 'Новый чат',
+            entityType: 'channel',
+            senderId: 'id613002203036_bot',
+            text: '',
+            createdAt: new Date('2026-04-03T12:00:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: '-100126',
+      botIds: ['id613002203036_bot'],
+      title: 'Новый чат',
+      entityType: 'channel',
     });
   });
 });

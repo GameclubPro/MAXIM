@@ -1,9 +1,13 @@
 import { BullModule } from '@nestjs/bullmq';
 import { HttpModule } from '@nestjs/axios';
 import { Module } from '@nestjs/common';
+import { ChatContextModule } from '../chat-context/chat-context.module';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { MaxActionProcessor } from './max-action.processor';
+import { MaxChatAdminRosterSyncProcessor } from './max-chat-admin-roster-sync.processor';
+import { MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE } from './max-chat-admin-roster-sync.queue';
+import { MaxChatAdminRosterSyncService } from './max-chat-admin-roster-sync.service';
 import { MaxBotExecutionPlannerService } from './max-bot-execution-planner.service';
 import { MaxClientService } from './max-client.service';
 import { MaxMembershipLookupService } from './max-membership-lookup.service';
@@ -11,10 +15,12 @@ import { MaxWebhookSubscriptionReconcilerService } from './max-webhook-subscript
 
 const maxProviders = [
   MaxClientService,
+  MaxChatAdminRosterSyncService,
   MaxBotExecutionPlannerService,
   MaxMembershipLookupService,
   MaxWebhookSubscriptionReconcilerService,
   ...(roleRunsAction(getAppRole()) ? [MaxActionProcessor] : []),
+  ...(roleRunsAction(getAppRole()) ? [MaxChatAdminRosterSyncProcessor] : []),
 ];
 
 @Module({
@@ -24,11 +30,14 @@ const maxProviders = [
       maxRedirects: 0,
     }),
     SystemModule,
+    ChatContextModule,
     BullModule.registerQueue({ name: 'moderation-actions' }),
+    BullModule.registerQueue({ name: MAX_CHAT_ADMIN_ROSTER_SYNC_QUEUE }),
   ],
   providers: maxProviders,
   exports: [
     MaxClientService,
+    MaxChatAdminRosterSyncService,
     MaxBotExecutionPlannerService,
     MaxMembershipLookupService,
     MaxWebhookSubscriptionReconcilerService,

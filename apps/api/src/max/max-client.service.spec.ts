@@ -1633,6 +1633,35 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('paginates chat admin lookups until MAX stops returning a marker', async () => {
+    const request = jest.fn();
+    for (let index = 0; index < 21; index += 1) {
+      request.mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: `user-${index + 1}`,
+                role: 'admin',
+                is_admin: true,
+              },
+            ],
+            marker: index < 20 ? index + 1 : null,
+          },
+        }),
+      );
+    }
+    const service = createService({ request });
+
+    await expect(service.getChatAdminIds('chat-1')).resolves.toEqual(
+      Array.from({ length: 21 }, (_, index) => `user-${index + 1}`),
+    );
+    expect(request).toHaveBeenCalledTimes(21);
+
+    await service.onModuleDestroy();
+  });
+
   it('returns null when requested chat member is absent', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
@@ -1956,6 +1985,44 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     await firstService.onModuleDestroy();
     await secondService.onModuleDestroy();
+  });
+
+  it('paginates bot chat discovery beyond twenty pages', async () => {
+    const request = jest.fn();
+    for (let index = 0; index < 21; index += 1) {
+      request.mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            chats: [
+              {
+                chat_id: `chat-${index + 1}`,
+                title: `Chat ${index + 1}`,
+                type: 'chat',
+              },
+            ],
+            marker: index < 20 ? index + 1 : null,
+          },
+        }),
+      );
+    }
+    const service = createService({ request });
+
+    await expect(service.listBotChats({ bypassCache: true })).resolves.toEqual(
+      Array.from({ length: 21 }, (_, index) => ({
+        chatId: `chat-${index + 1}`,
+        title: `Chat ${index + 1}`,
+        lastEventTime: null,
+        entityType: 'chat',
+        link: null,
+        avatarUrl: null,
+        botId: '777000_bot',
+        botIds: ['777000_bot'],
+      })),
+    );
+    expect(request).toHaveBeenCalledTimes(21);
+
+    await service.onModuleDestroy();
   });
 
   it('bypasses cached chat snapshot when explicitly requested', async () => {

@@ -152,6 +152,7 @@ import {
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
+import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
   buildManagedPollButtons,
   buildManagedPollMessageText,
@@ -771,6 +772,8 @@ export class AdminService implements OnModuleDestroy {
     @Optional() private readonly systemModeService?: SystemModeService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional()
+    private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -3946,10 +3949,12 @@ export class AdminService implements OnModuleDestroy {
         entityType === 'all'
           ? legacyChats
           : legacyChats.filter((chat) => chat.entityType === entityType);
-
-      return candidateChats.filter(
+      const supportedChats = candidateChats.filter(
         (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
       );
+      this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
+
+      return supportedChats;
     }
 
     const remoteGroups = await Promise.all(
@@ -3976,10 +3981,46 @@ export class AdminService implements OnModuleDestroy {
       entityType === 'all'
         ? remoteChats
         : remoteChats.filter((chat) => chat.entityType === entityType);
-
-    return candidateChats.filter(
+    const supportedChats = candidateChats.filter(
       (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
     );
+    this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
+    return supportedChats;
+  }
+
+  private scheduleManagedEntitiesCatalogSync(
+    chats: readonly MaxBotChat[],
+    trafficClass: 'critical' | 'interactive' | 'background',
+  ): void {
+    if (!this.maxChatAdminRosterSyncService || chats.length === 0) {
+      return;
+    }
+
+    const syncCandidates =
+      trafficClass === 'background'
+        ? chats
+        : chats.slice(0, MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE);
+    if (syncCandidates.length === 0) {
+      return;
+    }
+
+    const snapshot = syncCandidates.map((chat) => ({
+      ...chat,
+      botIds: Array.from(
+        new Set([...(chat.botIds ?? []), ...(chat.botId ? [chat.botId] : [])]),
+      ),
+    }));
+
+    void this.maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync(snapshot).catch((error) => {
+      this.logger.warn(
+        {
+          candidateChats: snapshot.length,
+          trafficClass,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enqueue managed entities catalog sync after discovery snapshot',
+      );
+    });
   }
 
   async getChannelStats(
@@ -17356,6 +17397,9 @@ export class AdminService implements OnModuleDestroy {
     if (!(await this.hasPersistedChatAccess(chatId, userId))) {
       return resolution;
     }
+    if (!(await this.canUsePersistedChatAccessFallback(chatId))) {
+      return resolution;
+    }
 
     this.logger.warn(
       {
@@ -17367,6 +17411,64 @@ export class AdminService implements OnModuleDestroy {
     return {
       status: 'granted',
       source: 'allowlist_fallback',
+    };
+  }
+
+  private async canUsePersistedChatAccessFallback(chatId: string): Promise<boolean> {
+    try {
+      const memberships = await this.prisma.chatBotMembership.findMany({
+        where: {
+          chatId,
+          status: ChatBotMembershipStatus.ACTIVE,
+        },
+        select: {
+          botId: true,
+          permissionsSnapshot: true,
+        },
+      });
+      const knownMemberships = memberships.filter((membership) =>
+        this.maxBotRegistry?.getBotById(membership.botId) ?? true,
+      );
+      if (knownMemberships.length === 0) {
+        return false;
+      }
+
+      let sawUnknownSnapshot = false;
+      for (const membership of knownMemberships) {
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        if (!snapshot) {
+          sawUnknownSnapshot = true;
+          continue;
+        }
+        if (snapshot.isAdmin || snapshot.isOwner) {
+          return true;
+        }
+      }
+
+      return sawUnknownSnapshot;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to inspect bot memberships before persisted admin access fallback',
+      );
+      return true;
+    }
+  }
+
+  private normalizeMembershipAccessSnapshot(
+    value: unknown,
+  ): { isAdmin: boolean; isOwner: boolean } | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    return {
+      isAdmin: row.isAdmin === true,
+      isOwner: row.isOwner === true,
     };
   }
 
@@ -17832,6 +17934,9 @@ export class AdminService implements OnModuleDestroy {
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
         allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
+      if (this.shouldIgnoreManagedEntitiesQueueLagPause(decision, options)) {
+        return null;
+      }
       if (!decision || decision.action !== 'pause') {
         return null;
       }
@@ -17870,6 +17975,9 @@ export class AdminService implements OnModuleDestroy {
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
         allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
+      if (this.shouldIgnoreManagedEntitiesQueueLagPause(decision, options)) {
+        return null;
+      }
       if (decision.action !== 'pause') {
         return null;
       }
@@ -17970,6 +18078,37 @@ export class AdminService implements OnModuleDestroy {
         ? MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC
         : undefined,
     };
+  }
+
+  private shouldIgnoreManagedEntitiesQueueLagPause(
+    decision:
+      | {
+          action: 'run' | 'slow' | 'pause';
+          reason: string;
+          retryAfterMs: number;
+        }
+      | null
+      | undefined,
+    options: {
+      allowQueueLagSlowPathBelowSec?: number;
+    },
+  ): boolean {
+    if (
+      !decision ||
+      decision.action !== 'pause' ||
+      typeof options.allowQueueLagSlowPathBelowSec !== 'number' ||
+      !Number.isFinite(options.allowQueueLagSlowPathBelowSec)
+    ) {
+      return false;
+    }
+
+    const match = /^user-facing queue lag ([0-9]+(?:\.[0-9]+)?)s$/u.exec(decision.reason);
+    if (!match) {
+      return false;
+    }
+
+    const lagSec = Number.parseFloat(match[1]);
+    return Number.isFinite(lagSec) && lagSec < options.allowQueueLagSlowPathBelowSec;
   }
 
   private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {

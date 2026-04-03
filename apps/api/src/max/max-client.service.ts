@@ -266,6 +266,8 @@ const DEFAULT_MAX_API_CRITICAL_RATE_LIMIT_WAIT_MS = 1_000;
 const DEFAULT_MAX_API_INTERACTIVE_RATE_LIMIT_WAIT_MS = 1_500;
 const DEFAULT_MAX_API_BACKGROUND_RATE_LIMIT_WAIT_MS = 5_000;
 const DEFAULT_MAX_API_RATE_LIMIT_RETRY_FLOOR_MS = 25;
+const MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP = 10_000;
+const MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP = 10_000;
 const MAX_API_RATE_LIMIT_SLOT_TTL_MS = 2_000;
 const MAX_API_SOURCE_METRICS_TTL_SEC = 6 * 60 * 60;
 const MAX_API_RATE_LIMIT_RESERVATION_SCRIPT = `
@@ -1659,7 +1661,9 @@ export class MaxClientService implements OnModuleDestroy {
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;
 
-    for (let i = 0; i < 20; i += 1) {
+    let pagesFetched = 0;
+    while (pagesFetched < MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP) {
+      pagesFetched += 1;
       const pageData: Record<string, unknown> = await this.executeGlobalRequest(
         () =>
           this.request('get', '/chats', {
@@ -1719,6 +1723,17 @@ export class MaxClientService implements OnModuleDestroy {
       }
       seenMarkers.add(markerKey);
       marker = nextMarker;
+    }
+
+    if (pagesFetched >= MAX_API_LIST_BOT_CHATS_PAGE_SAFETY_CAP && marker !== null) {
+      this.logger.warn(
+        {
+          botId,
+          pagesFetched,
+          marker,
+        },
+        'Stopped MAX bot chat discovery after reaching pagination safety cap',
+      );
     }
 
     if (!options.bypassCache) {
@@ -1942,7 +1957,9 @@ export class MaxClientService implements OnModuleDestroy {
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;
 
-    for (let i = 0; i < 20; i += 1) {
+    let pagesFetched = 0;
+    while (pagesFetched < MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP) {
+      pagesFetched += 1;
       const data = await this.executeChatRequest(
         chatId,
         async () =>
@@ -1973,6 +1990,17 @@ export class MaxClientService implements OnModuleDestroy {
 
       seenMarkers.add(markerKey);
       marker = nextMarker;
+    }
+
+    if (pagesFetched >= MAX_API_CHAT_ADMIN_MEMBERS_PAGE_SAFETY_CAP && marker !== null) {
+      this.logger.warn(
+        {
+          chatId,
+          pagesFetched,
+          marker,
+        },
+        'Stopped MAX chat admin member discovery after reaching pagination safety cap',
+      );
     }
 
     return members;

@@ -23,7 +23,8 @@
     "prisma:generate": "prisma generate --schema prisma/schema.prisma",
     "prisma:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts"
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",

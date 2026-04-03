@@ -268,6 +268,72 @@ export class ChatContextCacheService implements OnModuleDestroy {
     }
   }
 
+  async replaceChatAdminUsers(chatId: string, userIds: readonly string[]): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const normalizedUserIds = Array.from(
+      new Set(
+        userIds
+          .map((userId) => (typeof userId === 'string' ? userId.trim() : ''))
+          .filter((userId): userId is string => userId.length > 0),
+      ),
+    );
+
+    const patchContext = (value: ChatContext): ChatContext => {
+      const currentIds = value.adminUserIds ?? [];
+      if (
+        currentIds.length === normalizedUserIds.length &&
+        currentIds.every((userId, index) => userId === normalizedUserIds[index])
+      ) {
+        return value;
+      }
+
+      return {
+        ...value,
+        adminUserIds: normalizedUserIds,
+      };
+    };
+
+    const localCached = this.readLocalChatContext(normalizedChatId);
+    if (localCached) {
+      const nextValue = patchContext(localCached);
+      if (nextValue !== localCached) {
+        this.writeLocalChatContext(normalizedChatId, nextValue);
+        this.writeChatContextToRedis(normalizedChatId, nextValue);
+      }
+      return;
+    }
+
+    const cached = await this.readRedisStringWithin(
+      ChatContextCacheService.cacheKey(normalizedChatId),
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
+    );
+    if (!cached) {
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(cached) as ChatContext;
+      const nextValue = patchContext(parsed);
+      if (nextValue !== parsed) {
+        this.writeLocalChatContext(normalizedChatId, nextValue);
+        this.writeChatContextToRedis(normalizedChatId, nextValue);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: normalizedChatId,
+          adminUserIds: normalizedUserIds,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to replace chat admin users in cached chat context',
+      );
+    }
+  }
+
   private resolveAdminAccessTtlSec(state: ChatAdminAccessState): number {
     return state === 'granted'
       ? ChatContextCacheService.ADMIN_ACCESS_GRANTED_TTL_SEC
