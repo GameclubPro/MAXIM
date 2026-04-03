@@ -237,6 +237,58 @@ function mergeManagedEntityPresentation(
   return changed ? merged : next;
 }
 
+function mergeManagedEntitiesIncrementally(
+  previous: ChatSummary[] | null,
+  next: ChatSummary[],
+): ChatSummary[] {
+  if (!previous || previous.length === 0 || next.length === 0) {
+    return next.length > 0 ? next : (previous ?? next);
+  }
+
+  const nextById = new Map(next.map((item) => [item.id, item]));
+  let changed = false;
+
+  const merged = previous.map((item) => {
+    const updated = nextById.get(item.id);
+    if (!updated) {
+      return item;
+    }
+
+    nextById.delete(item.id);
+    if (updated !== item) {
+      changed = true;
+    }
+    return updated;
+  });
+
+  if (nextById.size === 0) {
+    return changed ? merged : previous;
+  }
+
+  changed = true;
+  for (const item of next) {
+    if (nextById.has(item.id)) {
+      merged.push(item);
+    }
+  }
+
+  return merged;
+}
+
+export function mergeManagedEntitiesRefreshItems(options: {
+  previous: ChatSummary[] | null;
+  next: ChatSummary[];
+  refreshState: ManagedEntitiesRefreshState;
+}): ChatSummary[] {
+  const nextWithPresentation = mergeManagedEntityPresentation(options.previous, options.next);
+
+  if (options.refreshState.complete === true) {
+    return nextWithPresentation;
+  }
+
+  return mergeManagedEntitiesIncrementally(options.previous, nextWithPresentation);
+}
+
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
@@ -600,7 +652,11 @@ export function useManagedEntitiesSync({
           }
 
           const nextData = sanitizeManagedEntities(
-            mergeManagedEntityPresentation(latestDataRef.current, next.items),
+            mergeManagedEntitiesRefreshItems({
+              previous: latestDataRef.current,
+              next: next.items,
+              refreshState: next.refresh,
+            }),
           );
           latestDataRef.current = nextData;
           const phase = next.refresh.complete
