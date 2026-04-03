@@ -4,6 +4,15 @@ export const LAST_CHAT_ENTITY_ID_KEY = 'maxim:last-chat-entity-id';
 export const LAST_CHANNEL_ENTITY_ID_KEY = 'maxim:last-channel-entity-id';
 
 export type LastEntityType = 'chat' | 'channel';
+type ManagedEntityListItem = {
+  id: string;
+  title: string;
+};
+
+export type VisibleLaunchContext = {
+  tab: LastEntityType;
+  chatId: string;
+};
 
 export function readLastChatId(): string {
   try {
@@ -91,4 +100,29 @@ export function normalizeEntityType(
 
 export function buildManagedEntitiesRoute(entityType: LastEntityType): string {
   return entityType === 'channel' ? '/?view=channel' : '/?view=chat';
+}
+
+export function buildHomeView<T extends ManagedEntityListItem>(options: {
+  entities: readonly T[] | null | undefined;
+  query: string;
+  activeTab: LastEntityType;
+  visibleLaunchContext: VisibleLaunchContext | null;
+}) {
+  const normalizedQuery = options.query.trim().toLowerCase();
+  const matchingEntities = !Array.isArray(options.entities)
+    ? []
+    : !normalizedQuery
+      ? options.entities
+      : options.entities.filter((entity) =>
+          `${entity.title} ${entity.id}`.toLowerCase().includes(normalizedQuery),
+        );
+  const launchChatId =
+    options.visibleLaunchContext?.tab === options.activeTab
+      ? options.visibleLaunchContext.chatId
+      : null;
+  const listEntities = launchChatId
+    ? matchingEntities.filter((entity) => entity.id !== launchChatId)
+    : matchingEntities;
+
+  return [listEntities, listEntities.length + (launchChatId ? 1 : 0), Boolean(launchChatId)] as const;
 }

@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildManagedEntitiesHomeView } from '../src/lib/managed-entities-home';
+import { buildHomeView } from '../src/lib/last-chat';
 
 test('deduplicates the visible launch chat from the main home list and counts it once', () => {
-  const result = buildManagedEntitiesHomeView({
+  const [listEntities, visibleCount, hasVisibleLaunchContext] = buildHomeView({
     entities: [
       { id: 'chat-1', title: 'Текущий чат' },
       { id: 'chat-2', title: 'Второй чат' },
@@ -16,13 +16,13 @@ test('deduplicates the visible launch chat from the main home list and counts it
     },
   });
 
-  assert.deepEqual(result.listEntities, [{ id: 'chat-2', title: 'Второй чат' }]);
-  assert.equal(result.visibleCount, 2);
-  assert.equal(result.hasVisibleLaunchContext, true);
+  assert.deepEqual(listEntities, [{ id: 'chat-2', title: 'Второй чат' }]);
+  assert.equal(visibleCount, 2);
+  assert.equal(hasVisibleLaunchContext, true);
 });
 
 test('keeps a standalone launch card visible in the home count when the synced list is empty', () => {
-  const result = buildManagedEntitiesHomeView({
+  const [listEntities, visibleCount, hasVisibleLaunchContext] = buildHomeView({
     entities: [],
     query: '',
     activeTab: 'chat',
@@ -32,13 +32,13 @@ test('keeps a standalone launch card visible in the home count when the synced l
     },
   });
 
-  assert.deepEqual(result.listEntities, []);
-  assert.equal(result.visibleCount, 1);
-  assert.equal(result.hasVisibleLaunchContext, true);
+  assert.deepEqual(listEntities, []);
+  assert.equal(visibleCount, 1);
+  assert.equal(hasVisibleLaunchContext, true);
 });
 
 test('leaves the home list unchanged when there is no visible launch context for the active tab', () => {
-  const result = buildManagedEntitiesHomeView({
+  const [listEntities, visibleCount, hasVisibleLaunchContext] = buildHomeView({
     entities: [{ id: 'channel-1', title: 'Канал MAX' }],
     query: '',
     activeTab: 'channel',
@@ -48,7 +48,7 @@ test('leaves the home list unchanged when there is no visible launch context for
     },
   });
 
-  assert.deepEqual(result.listEntities, [{ id: 'channel-1', title: 'Канал MAX' }]);
-  assert.equal(result.visibleCount, 1);
-  assert.equal(result.hasVisibleLaunchContext, false);
+  assert.deepEqual(listEntities, [{ id: 'channel-1', title: 'Канал MAX' }]);
+  assert.equal(visibleCount, 1);
+  assert.equal(hasVisibleLaunchContext, false);
 });

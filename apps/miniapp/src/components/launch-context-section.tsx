@@ -3,8 +3,7 @@ import type { ManagedEntitiesRefreshState, Me } from '@maxim/contracts';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle } from '../lib/chat-titles';
-import { saveLastEntityId } from '../lib/last-chat';
-import type { VisibleLaunchContext } from '../lib/managed-entities-home';
+import { saveLastEntityId, type VisibleLaunchContext } from '../lib/last-chat';
 import type { ManagedEntitiesSyncResult } from '../lib/use-managed-entities-sync';
 import { LaunchContextCard } from './launch-context-card';
 

@@ -18,14 +18,12 @@ import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
-  buildManagedEntitiesHomeView,
-  type VisibleLaunchContext,
-} from '../lib/managed-entities-home';
-import {
+  buildHomeView,
   normalizeEntityType,
   readLastEntityType,
   saveLastEntityId,
   saveLastEntityType,
+  type VisibleLaunchContext,
 } from '../lib/last-chat';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -232,9 +230,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     Array.isArray(activeEntities) &&
     activeEntities.length === 0;
 
-  const managedEntitiesHomeView = useMemo(
+  const [filteredEntities, visibleEntitiesCount, hasVisibleLaunchContext] = useMemo(
     () =>
-      buildManagedEntitiesHomeView({
+      buildHomeView({
         entities: activeEntities,
         query,
         activeTab,
@@ -242,9 +240,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       }),
     [activeEntities, activeTab, query, visibleLaunchContext],
   );
-  const filteredEntities = managedEntitiesHomeView.listEntities;
-  const visibleEntitiesCount = managedEntitiesHomeView.visibleCount;
-  const hasVisibleLaunchContext = managedEntitiesHomeView.hasVisibleLaunchContext;
   const showSearchCard = !isNoEntitiesForTab || hasVisibleLaunchContext;
   const showEmptyState = isNoEntitiesForTab && !hasVisibleLaunchContext;
   const limitedStagger =
