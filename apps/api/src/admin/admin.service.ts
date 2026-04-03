@@ -409,6 +409,8 @@ const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
+const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT = 3;
+const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS = 300;
 const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
 const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS = 750;
@@ -1290,9 +1292,12 @@ export class AdminService implements OnModuleDestroy {
       bypassRemoteCache: options.bypassRemoteCache === true,
       resetRefreshCursor: options.resetRefreshCursor === true,
     });
-    const cached = await this.listChatsFromAllowlistWithinResponseBudget(user.userId, entityType, {
-      source: 'refresh',
-    });
+    const cached = await this.revalidateCachedManagedEntities(
+      user,
+      await this.listChatsFromAllowlistWithinResponseBudget(user.userId, entityType, {
+        source: 'refresh',
+      }),
+    );
     const responseWarmupPromise =
       eagerWarmupPromise ??
       (cached.length === 0
@@ -2968,29 +2973,81 @@ export class AdminService implements OnModuleDestroy {
       null,
     );
     const staleDeniedChats: Array<{ chat: ChatSummary; index: number }> = [];
+    const suspiciousChats: Array<{ chat: ChatSummary; index: number }> = [];
 
     for (const [index, entry] of cachedAccessStates.entries()) {
-      if (entry.cachedAccess !== 'user_denied' && entry.cachedAccess !== 'bot_denied') {
-        filtered[index] = entry.chat;
+      if (entry.cachedAccess === 'user_denied' || entry.cachedAccess === 'bot_denied') {
+        staleDeniedChats.push({
+          chat: entry.chat,
+          index,
+        });
         continue;
       }
 
-      staleDeniedChats.push({
-        chat: entry.chat,
-        index,
-      });
+      if (
+        entry.cachedAccess !== 'granted' &&
+        this.isSuspiciousManagedEntitiesAllowlistChat(entry.chat)
+      ) {
+        suspiciousChats.push({
+          chat: entry.chat,
+          index,
+        });
+        continue;
+      }
+
+      filtered[index] = entry.chat;
     }
 
-    if (staleDeniedChats.length > 0) {
-      const revalidatedChats = await this.mapWithConcurrencyLimit(
-        staleDeniedChats,
-        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
-        async ({ chat }) => {
-          const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, {
-            bypassNegativeCache: true,
-          });
+    const suspiciousChatsToRevalidate = suspiciousChats.slice(
+      0,
+      MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT,
+    );
+    for (const candidate of suspiciousChats.slice(suspiciousChatsToRevalidate.length)) {
+      filtered[candidate.index] = candidate.chat;
+    }
 
-          return access.status === 'granted' ? chat : null;
+    const revalidationCandidates: Array<{
+      chat: ChatSummary;
+      index: number;
+      strict: boolean;
+      options: {
+        bypassNegativeCache: true;
+        trafficClass?: 'interactive';
+        sourceTag?: string;
+        timeoutMs?: number;
+      };
+    }> = [
+      ...staleDeniedChats.map((candidate) => ({
+        ...candidate,
+        strict: true,
+        options: {
+          bypassNegativeCache: true as const,
+        },
+      })),
+      ...suspiciousChatsToRevalidate.map((candidate) => ({
+        ...candidate,
+        strict: false,
+        options: {
+          bypassNegativeCache: true as const,
+          trafficClass: 'interactive' as const,
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+          timeoutMs: MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS,
+        },
+      })),
+    ];
+
+    if (revalidationCandidates.length > 0) {
+      const revalidatedChats = await this.mapWithConcurrencyLimit(
+        revalidationCandidates,
+        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+        async ({ chat, strict, options }) => {
+          const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, options);
+
+          if (strict) {
+            return access.status === 'granted' ? chat : null;
+          }
+
+          return access.status === 'denied' ? null : chat;
         },
       );
 
@@ -2999,11 +3056,15 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        filtered[staleDeniedChats[index].index] = chat;
+        filtered[revalidationCandidates[index].index] = chat;
       }
     }
 
     return filtered.filter((chat): chat is ChatSummary => chat !== null);
+  }
+
+  private isSuspiciousManagedEntitiesAllowlistChat(chat: ChatSummary): boolean {
+    return this.resolvePresentableManagedEntityTitle(chat.id, chat.title) === null;
   }
 
   private async discoverManagedEntitiesFromLocalCatalog(

@@ -7045,6 +7045,93 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('proactively hides cached fallback-title chats when MAX says the bot lost access', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: '-72545334298631',
+          title: 'Chat -72545334298631',
+          createdAt: new Date('2026-03-24T19:35:33.379Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Рабочий чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === '-72545334298631') {
+          throw {
+            response: {
+              status: 403,
+              data: {
+                code: 'chat.denied',
+                message: 'Bot is not a chat member',
+              },
+            },
+          };
+        }
+
+        return ['admin-1'];
+      }),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-1',
+        title: 'Рабочий чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-72545334298631',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 300,
+      }),
+    );
+
+    await flushAsyncTasks();
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: '-72545334298631',
+        userId: 'admin-1',
+      },
+    });
+  });
+
   it('removes cached private direct dialogs from allowlist on default load', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -7581,6 +7668,94 @@ describe('AdminService.listChats', () => {
         manualRefreshRetryAfterMs: 1500,
       },
     });
+  });
+
+  it('revalidates suspicious cached chats in refresh responses before returning them', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: '-72545334298631',
+          title: 'Chat -72545334298631',
+          createdAt: new Date('2026-03-24T19:35:33.379Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Рабочий чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === '-72545334298631') {
+          throw {
+            response: {
+              status: 404,
+              data: {
+                code: 'chat.not.found',
+                message: 'Chat -72545334298631 not found',
+              },
+            },
+          };
+        }
+
+        return ['admin-1'];
+      }),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest
+      .spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh')
+      .mockResolvedValue({
+        complete: false,
+        cursor: 0,
+        backoffActive: false,
+        nextPollAfterMs: 1_500,
+      });
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          refresh: true,
+        },
+      ),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-1',
+        title: 'Рабочий чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-72545334298631',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 300,
+      }),
+    );
   });
 
   it('does not wait for an uncached runtime governor decision before returning a refresh response', async () => {
