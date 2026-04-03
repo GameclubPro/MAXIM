@@ -2720,6 +2720,11 @@ export class AdminService implements OnModuleDestroy {
           updateEntityType: true,
           preferredBotId: params.preferredBotId ?? null,
           observedBotIds: params.observedBotIds ?? [],
+          titleUpdateMode:
+            params.source === 'current_chat_bootstrap' ||
+            params.source === 'recent_bot_added_bootstrap'
+              ? 'fallback_only'
+              : 'always',
         },
       );
 
@@ -18733,11 +18738,15 @@ export class AdminService implements OnModuleDestroy {
       updateEntityType?: boolean;
       preferredBotId?: string | null;
       observedBotIds?: readonly string[] | null;
+      titleUpdateMode?: 'always' | 'fallback_only';
     } = {},
   ) {
     const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
     const fallbackTitle = entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`;
+    const nextTitle = normalizedTitle ?? fallbackTitle;
     const updateEntityType = options.updateEntityType === true;
+    const titleUpdateMode =
+      options.titleUpdateMode === 'fallback_only' ? 'fallback_only' : 'always';
     const observedBotIds = Array.from(
       new Set(
         (options.observedBotIds ?? [])
@@ -18745,6 +18754,20 @@ export class AdminService implements OnModuleDestroy {
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
+    let shouldUpdateTitle = false;
+    if (normalizedTitle) {
+      if (titleUpdateMode === 'always') {
+        shouldUpdateTitle = true;
+      } else {
+        const existing = await this.prisma.chat.findUnique({
+          where: { id: chatId },
+          select: { title: true },
+        });
+        const existingTitle = this.readTrimmedString(existing?.title);
+        shouldUpdateTitle =
+          !existingTitle || existingTitle === chatId || this.isFallbackTitle(chatId, existingTitle);
+      }
+    }
     let resolvedBotId: string | null | undefined =
       this.maxBotRegistry?.getBotById(options.preferredBotId)?.id ?? observedBotIds[0] ?? null;
     if (!resolvedBotId) {
@@ -18773,15 +18796,15 @@ export class AdminService implements OnModuleDestroy {
       where: { id: chatId },
       create: {
         id: chatId,
-        title: normalizedTitle ?? fallbackTitle,
+        title: nextTitle,
         ...this.buildResolvedBotAssignmentData(resolvedBotId),
         ...(entityType ? { entityType: this.toPrismaEntityType(entityType) } : {}),
       },
       update: {
         ...this.buildResolvedBotAssignmentData(resolvedBotId),
-        ...(normalizedTitle
+        ...(shouldUpdateTitle
           ? {
-              title: normalizedTitle,
+              title: nextTitle,
             }
           : {}),
         ...(updateEntityType && entityType
@@ -18811,7 +18834,7 @@ export class AdminService implements OnModuleDestroy {
           chatId,
           primaryBotId: resolvedBotId,
           botIds: resolvedBotId ? [resolvedBotId, ...observedBotIds] : observedBotIds,
-          title: normalizedTitle ?? fallbackTitle,
+          title: persistedChat.title,
           entityType: entityType ? this.toPrismaEntityType(entityType) : null,
         });
       } catch (error: unknown) {
@@ -18832,7 +18855,7 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    if (normalizedTitle || updateEntityType) {
+    if (shouldUpdateTitle || updateEntityType) {
       await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
     }
 

@@ -18,6 +18,10 @@ import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
+  buildManagedEntitiesHomeView,
+  type VisibleLaunchContext,
+} from '../lib/managed-entities-home';
+import {
   normalizeEntityType,
   readLastEntityType,
   saveLastEntityId,
@@ -151,6 +155,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [query, setQuery] = useState('');
   const [canAccessSystem, setCanAccessSystem] = useState(false);
   const [launchContextTabHint, setLaunchContextTabHint] = useState<ManagedTab | null>(null);
+  const [visibleLaunchContext, setVisibleLaunchContext] = useState<VisibleLaunchContext | null>(
+    null,
+  );
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -225,22 +232,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     Array.isArray(activeEntities) &&
     activeEntities.length === 0;
 
-  const filteredEntities = useMemo(() => {
-    if (!Array.isArray(activeEntities)) {
-      return [];
-    }
-
-    const normalized = query.trim().toLowerCase();
-
-    if (!normalized) {
-      return activeEntities;
-    }
-
-    return activeEntities.filter((entity) => {
-      const haystack = `${entity.title} ${entity.id}`.toLowerCase();
-      return haystack.includes(normalized);
-    });
-  }, [activeEntities, query]);
+  const managedEntitiesHomeView = useMemo(
+    () =>
+      buildManagedEntitiesHomeView({
+        entities: activeEntities,
+        query,
+        activeTab,
+        visibleLaunchContext,
+      }),
+    [activeEntities, activeTab, query, visibleLaunchContext],
+  );
+  const filteredEntities = managedEntitiesHomeView.listEntities;
+  const visibleEntitiesCount = managedEntitiesHomeView.visibleCount;
+  const hasVisibleLaunchContext = managedEntitiesHomeView.hasVisibleLaunchContext;
+  const showSearchCard = !isNoEntitiesForTab || hasVisibleLaunchContext;
+  const showEmptyState = isNoEntitiesForTab && !hasVisibleLaunchContext;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
 
@@ -387,7 +393,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="page-stack page-enter">
-      {!isNoEntitiesForTab ? (
+      {showSearchCard ? (
         <GlassCard className="chats-search-card" padding="sm" elevated>
           <div className="chats-search-card__head">
             <div className="chats-search-card__title">
@@ -426,9 +432,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   </button>
                   <span
                     className="chats-search-card__count"
-                    aria-label={`Найдено ${filteredEntities.length}`}
+                    aria-label={`Найдено ${visibleEntitiesCount}`}
                   >
-                    {filteredEntities.length}
+                    {visibleEntitiesCount}
                   </span>
                 </div>
               </div>
@@ -457,6 +463,18 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           chatsState={chatsState}
           channelsState={channelsState}
           onLaunchContextTabChange={setLaunchContextTabHint}
+          onVisibleLaunchContextChange={(nextValue) => {
+            setVisibleLaunchContext((currentValue) => {
+              if (
+                currentValue?.tab === nextValue?.tab &&
+                currentValue?.chatId === nextValue?.chatId
+              ) {
+                return currentValue;
+              }
+
+              return nextValue;
+            });
+          }}
           onQueueRefresh={queueRefresh}
           onSystemAccessChange={setCanAccessSystem}
         />
@@ -511,7 +529,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {isNoEntitiesForTab && activeTab === 'chat' ? (
+      {showEmptyState && activeTab === 'chat' ? (
         <Suspense
           fallback={
             <GlassCard>
@@ -531,7 +549,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </Suspense>
       ) : null}
 
-      {isNoEntitiesForTab && activeTab === 'channel' ? (
+      {showEmptyState && activeTab === 'channel' ? (
         <GlassCard>
           <StatusState
             tone="neutral"
@@ -553,10 +571,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
       {!isLoading &&
       !queryError &&
-      !isNoEntitiesForTab &&
+      !showEmptyState &&
       Array.isArray(activeEntities) &&
       activeEntities.length > 0 &&
-      filteredEntities.length === 0 ? (
+      filteredEntities.length === 0 &&
+      !hasVisibleLaunchContext ? (
         <GlassCard>
           <StatusState
             tone="neutral"
@@ -566,7 +585,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!isLoading && !queryError && !isNoEntitiesForTab && filteredEntities.length > 0 ? (
+      {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (
         <section className="chat-grid" aria-label="Список">
           {filteredEntities.map((entity, index) => {
             const staggerIndex =

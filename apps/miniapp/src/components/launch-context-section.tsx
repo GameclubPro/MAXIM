@@ -4,6 +4,7 @@ import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle } from '../lib/chat-titles';
 import { saveLastEntityId } from '../lib/last-chat';
+import type { VisibleLaunchContext } from '../lib/managed-entities-home';
 import type { ManagedEntitiesSyncResult } from '../lib/use-managed-entities-sync';
 import { LaunchContextCard } from './launch-context-card';
 
@@ -60,6 +61,7 @@ export function LaunchContextSection({
   chatsState,
   channelsState,
   onLaunchContextTabChange,
+  onVisibleLaunchContextChange,
   onQueueRefresh,
   onSystemAccessChange,
 }: {
@@ -67,6 +69,7 @@ export function LaunchContextSection({
   chatsState: ManagedEntitiesSyncResult;
   channelsState: ManagedEntitiesSyncResult;
   onLaunchContextTabChange: (tab: ManagedTab | null) => void;
+  onVisibleLaunchContextChange: (value: VisibleLaunchContext | null) => void;
   onQueueRefresh: (tab: ManagedTab, behavior: 'default' | 'recovery') => void;
   onSystemAccessChange: (value: boolean) => void;
 }) {
@@ -157,8 +160,19 @@ export function LaunchContextSection({
             : launchContextEntitiesState.error
               ? 'Не удалось подтвердить доступ в этой сессии.'
               : launchContextProgress
-                ? `${launchContextNoun === 'чат' ? 'Чат' : 'Канал'} ещё не в общем списке. Синк: ${launchContextProgress}.`
+              ? `${launchContextNoun === 'чат' ? 'Чат' : 'Канал'} ещё не в общем списке. Синк: ${launchContextProgress}.`
                 : `${launchContextNoun === 'чат' ? 'Чат' : 'Канал'} открыт из MAX, но права бота ещё не подтверждены.`;
+  const visibleLaunchContext =
+    launchContext && launchContextTab && launchContextPrimaryRoute && launchContextDescription
+      ? {
+          tab: launchContextTab,
+          chatId: launchContext.chatId,
+        }
+      : null;
+
+  useEffect(() => {
+    onVisibleLaunchContextChange(visibleLaunchContext);
+  }, [onVisibleLaunchContextChange, visibleLaunchContext]);
 
   useEffect(() => {
     if (
