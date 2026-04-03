@@ -67,6 +67,64 @@ describe('BackgroundRuntimeGovernorService', () => {
     });
   });
 
+  it('lets explicitly user-triggered work run during the recovery window when queue lag is healthy', async () => {
+    const service = new BackgroundRuntimeGovernorService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          webhookDefaultWorkerGroups: {},
+          userFacingEffectiveLagSec: 0,
+          effectiveLagSec: 0,
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'degrade',
+          source: 'auto',
+          reason: 'recovery window in progress',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 0,
+            success: 0,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      {
+        getSourceSnapshot: jest.fn().mockResolvedValue({
+          overall: {
+            totalRequests: 10,
+            trafficClasses: {
+              critical: { totalRequests: 1 },
+              interactive: { totalRequests: 3 },
+              background: { totalRequests: 6 },
+            },
+          },
+          sources: {},
+        }),
+      } as never,
+      createConfigMock(),
+      {
+        recordBackgroundDecision: jest.fn().mockResolvedValue(undefined),
+      } as never,
+    );
+
+    await expect(
+      service.decide({
+        component: 'admin-managed-refresh',
+        sourceTag: 'managed_refresh',
+        allowRecoveryWindowRun: true,
+      }),
+    ).resolves.toMatchObject({
+      action: 'slow',
+    });
+  });
+
   it('slows background work when background source share grows too large', async () => {
     const service = new BackgroundRuntimeGovernorService(
       {

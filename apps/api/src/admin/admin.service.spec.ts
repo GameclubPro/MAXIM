@@ -7858,11 +7858,120 @@ describe('AdminService.listChats', () => {
       expect(backgroundRuntimeGovernorService.peekDecision).toHaveBeenCalledWith({
         component: 'admin-managed-refresh',
         sourceTag: 'managed_refresh',
+        allowRecoveryWindowRun: false,
       });
       expect(backgroundRuntimeGovernorService.decide).not.toHaveBeenCalled();
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it('allows a reset-cursor managed refresh to bypass the recovery-window pause on schedule', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const backgroundRuntimeGovernorService = {
+      peekDecision: jest.fn().mockImplementation((params: { allowRecoveryWindowRun?: boolean }) =>
+        params.allowRecoveryWindowRun
+          ? {
+              action: 'slow',
+              reason: 'background share 60.0%',
+              retryAfterMs: 20_000,
+            }
+          : {
+              action: 'pause',
+              reason: 'recovery window in progress',
+              retryAfterMs: 60_000,
+            },
+      ),
+      decide: jest.fn(),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+
+    await expect(
+      service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          refresh: true,
+          resetRefreshCursor: true,
+        },
+      ),
+    ).resolves.toEqual({
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: '2026-03-01T10:00:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+      refresh: {
+        complete: false,
+        cursor: 0,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+        processedCandidates: null,
+        totalCandidates: null,
+        progressPercent: null,
+        lastSyncedAt: null,
+        manualRefreshBlockedReason: 'in_progress',
+        manualRefreshRetryAfterMs: 1500,
+      },
+    });
+
+    expect(backgroundRuntimeGovernorService.peekDecision).toHaveBeenCalledWith({
+      component: 'admin-managed-refresh',
+      sourceTag: 'managed_refresh',
+      allowRecoveryWindowRun: true,
+    });
+    expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
+      'refresh-managed-entities',
+      {
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: true,
+      },
+      expect.objectContaining({
+        jobId: 'managed-entities-refresh__chat__admin-1',
+      }),
+    );
   });
 
   it('does not wait for a slow managed discovery warmup before returning a forced refresh response', async () => {
@@ -9085,6 +9194,66 @@ describe('AdminService.listChats', () => {
     ).resolves.toBeNull();
 
     expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat');
+  });
+
+  it('allows a reset-cursor managed refresh background job to run through the recovery window', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        decide: jest.fn().mockImplementation(
+          async (params: { allowRecoveryWindowRun?: boolean }) =>
+            params.allowRecoveryWindowRun
+              ? {
+                  action: 'slow',
+                  reason: 'background share 60.0%',
+                  retryAfterMs: 20_000,
+                }
+              : {
+                  action: 'pause',
+                  reason: 'recovery window in progress',
+                  retryAfterMs: 60_000,
+                },
+        ),
+      } as never,
+    );
+
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
+      items: [],
+      refresh: {
+        complete: false,
+        cursor: 20,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+      },
+    });
+
+    await expect(
+      service.processManagedEntitiesRefreshJob({
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: true,
+      }),
+    ).resolves.toEqual({
+      continueAfterMs: 1500,
+    });
+
+    expect(discoverSpy).toHaveBeenCalledTimes(1);
   });
 
   it('uses background traffic for local full-scan admin checks', async () => {

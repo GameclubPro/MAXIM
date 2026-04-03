@@ -124,9 +124,12 @@ export class BackgroundRuntimeGovernorService {
   async decide(params: {
     component: string;
     sourceTag: string;
+    allowRecoveryWindowRun?: boolean;
   }): Promise<BackgroundRuntimeGovernorDecision> {
     const snapshot = await this.getPressureSnapshot();
-    const decision = this.buildDecisionFromSnapshot(snapshot);
+    const decision = this.buildDecisionFromSnapshot(snapshot, {
+      allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+    });
 
     if (decision.action !== 'run') {
       await this.runtimeDiagnosticsService?.recordBackgroundDecision({
@@ -140,16 +143,19 @@ export class BackgroundRuntimeGovernorService {
     return decision;
   }
 
-  peekDecision(_params: {
+  peekDecision(params: {
     component: string;
     sourceTag: string;
+    allowRecoveryWindowRun?: boolean;
   }): BackgroundRuntimeGovernorDecision | null {
     const snapshot = this.getCachedSnapshot();
     if (!snapshot) {
       return null;
     }
 
-    return this.buildDecisionFromSnapshot(snapshot);
+    return this.buildDecisionFromSnapshot(snapshot, {
+      allowRecoveryWindowRun: params.allowRecoveryWindowRun === true,
+    });
   }
 
   async getDashboardBudgetSummary(): Promise<BackgroundRuntimeBudgetSummary> {
@@ -259,8 +265,13 @@ export class BackgroundRuntimeGovernorService {
 
   private buildDecisionFromSnapshot(
     snapshot: BackgroundPressureSnapshot,
+    options: {
+      allowRecoveryWindowRun?: boolean;
+    } = {},
   ): BackgroundRuntimeGovernorDecision {
     const queueLagSec = snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
+    const allowRecoveryWindowRun =
+      options.allowRecoveryWindowRun === true && queueLagSec < this.softQueueLagSec;
 
     if (snapshot.mode.mode === 'degrade' && !isSystemModeRecoveryWindow(snapshot.mode)) {
       return {
@@ -270,7 +281,7 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
-    if (isSystemModeRecoveryWindow(snapshot.mode)) {
+    if (isSystemModeRecoveryWindow(snapshot.mode) && !allowRecoveryWindowRun) {
       return {
         action: 'pause',
         retryAfterMs: this.pauseRetryAfterMs,

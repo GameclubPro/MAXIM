@@ -1355,6 +1355,7 @@ export class AdminService implements OnModuleDestroy {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
+      allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     const refreshKey = [user.userId, entityType, 'remote', 'full', 'background'].join(':');
@@ -1404,9 +1405,15 @@ export class AdminService implements OnModuleDestroy {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
+      allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<void> {
-    let nextOptions = options;
+    const allowRecoveryWindowRun =
+      this.shouldAllowManagedEntitiesRecoveryWindowRun(options);
+    let nextOptions = {
+      ...options,
+      allowRecoveryWindowRun,
+    };
 
     while (true) {
       const outcome = await this.runManagedEntitiesRemoteFullRefresh(user, entityType, nextOptions);
@@ -1417,6 +1424,7 @@ export class AdminService implements OnModuleDestroy {
       nextOptions = {
         bypassRemoteCache: false,
         resetRefreshCursor: false,
+        allowRecoveryWindowRun,
       };
       await this.sleep(Math.max(0, outcome.continueAfterMs));
     }
@@ -1514,6 +1522,7 @@ export class AdminService implements OnModuleDestroy {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
+      allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshState> {
     let cursor: number | null = null;
@@ -1525,7 +1534,9 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const backgroundPauseDecision =
-      this.peekManagedEntitiesBackgroundRefreshPauseDecision('schedule');
+      this.peekManagedEntitiesBackgroundRefreshPauseDecision('schedule', {
+        allowRecoveryWindowRun: this.shouldAllowManagedEntitiesRecoveryWindowRun(options),
+      });
     if (backgroundPauseDecision) {
       const pausedCursor = cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
       const presentation = await this.loadManagedEntitiesRefreshPresentationData(
@@ -1625,10 +1636,13 @@ export class AdminService implements OnModuleDestroy {
     options: {
       bypassRemoteCache?: boolean;
       resetRefreshCursor?: boolean;
+      allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
     const backgroundPauseDecision =
-      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('job');
+      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision('job', {
+        allowRecoveryWindowRun: this.shouldAllowManagedEntitiesRecoveryWindowRun(options),
+      });
     if (backgroundPauseDecision) {
       return {
         continueAfterMs: backgroundPauseDecision.retryAfterMs,
@@ -17748,18 +17762,26 @@ export class AdminService implements OnModuleDestroy {
   private async isManagedEntitiesBackgroundRefreshPaused(
     reason: 'schedule' | 'job',
   ): Promise<boolean> {
-    return (await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(reason)) !== null;
+    return (
+      (await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(reason, {
+        allowRecoveryWindowRun: false,
+      })) !== null
+    );
   }
 
   private peekManagedEntitiesBackgroundRefreshPauseDecision(
     reason: 'schedule' | 'job',
+    options: {
+      allowRecoveryWindowRun?: boolean;
+    } = {},
   ): { reason: string; retryAfterMs: number } | null {
     if (this.backgroundRuntimeGovernorService) {
       const decision = this.backgroundRuntimeGovernorService.peekDecision({
         component: 'admin-managed-refresh',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+        allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
       });
-      if (!decision || decision.action === 'run') {
+      if (!decision || decision.action !== 'pause') {
         return null;
       }
 
@@ -17785,13 +17807,17 @@ export class AdminService implements OnModuleDestroy {
 
   private async resolveManagedEntitiesBackgroundRefreshPauseDecision(
     reason: 'schedule' | 'job',
+    options: {
+      allowRecoveryWindowRun?: boolean;
+    } = {},
   ): Promise<{ reason: string; retryAfterMs: number } | null> {
     if (this.backgroundRuntimeGovernorService) {
       const decision = await this.backgroundRuntimeGovernorService.decide({
         component: 'admin-managed-refresh',
         sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+        allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
       });
-      if (decision.action === 'run') {
+      if (decision.action !== 'pause') {
         return null;
       }
 
@@ -17862,6 +17888,18 @@ export class AdminService implements OnModuleDestroy {
       reason: snapshot.reason,
       retryAfterMs: MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS,
     };
+  }
+
+  private shouldAllowManagedEntitiesRecoveryWindowRun(options: {
+    bypassRemoteCache?: boolean;
+    resetRefreshCursor?: boolean;
+    allowRecoveryWindowRun?: boolean;
+  }): boolean {
+    return (
+      options.allowRecoveryWindowRun === true ||
+      options.resetRefreshCursor === true ||
+      options.bypassRemoteCache === true
+    );
   }
 
   private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
