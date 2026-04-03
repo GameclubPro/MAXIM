@@ -7,9 +7,9 @@ const distDir = path.join(workspaceDir, 'dist');
 const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
 // Small cross-environment headroom for gzip drift between local and VPS/Alpine builds,
-// including the current-chat home presentation fix and incremental sync merge logic
-// that now land within ~0.1 KB of the VPS ceiling.
-const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 640;
+// including the current-chat home presentation fix, incremental sync merge logic,
+// and late-initData startup recovery that now land within ~0.2 KB of the VPS ceiling.
+const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 768;
 // Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
 // sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
 // execution-planner control plane, lazy bot diagnostics entrypoint, and bot-persona-aware
