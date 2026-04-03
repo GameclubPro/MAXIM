@@ -1454,6 +1454,40 @@ export class AdminService implements OnModuleDestroy {
     return `managed-entities-refresh__${entityType}__${userId}`;
   }
 
+  private buildManagedEntitiesRefreshJobData(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      bypassRemoteCache?: boolean;
+      resetRefreshCursor?: boolean;
+    },
+    existingData?: Partial<AdminManagedEntitiesRefreshJob> | null,
+  ): AdminManagedEntitiesRefreshJob {
+    return {
+      userId,
+      entityType,
+      bypassRemoteCache:
+        existingData?.bypassRemoteCache === true || options.bypassRemoteCache === true,
+      resetRefreshCursor:
+        existingData?.resetRefreshCursor === true || options.resetRefreshCursor === true,
+    };
+  }
+
+  private buildManagedEntitiesRefreshJobPriority(
+    entityType: ManagedEntityTypeFilter,
+    jobData: AdminManagedEntitiesRefreshJob,
+  ): number {
+    if (jobData.bypassRemoteCache) {
+      return 1;
+    }
+
+    if (jobData.resetRefreshCursor) {
+      return entityType === 'chat' ? 2 : 3;
+    }
+
+    return entityType === 'chat' ? 10 : 20;
+  }
+
   private async enqueueManagedEntitiesRemoteFullRefresh(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -1470,9 +1504,25 @@ export class AdminService implements OnModuleDestroy {
 
     try {
       const existing = await this.adminManagedEntitiesRefreshQueue.getJob(jobId);
+      const desiredJobData = this.buildManagedEntitiesRefreshJobData(
+        userId,
+        entityType,
+        options,
+        (existing?.data as Partial<AdminManagedEntitiesRefreshJob> | undefined) ?? null,
+      );
+      const desiredPriority = this.buildManagedEntitiesRefreshJobPriority(entityType, desiredJobData);
       if (existing) {
         const state = await existing.getState();
-        if (state !== 'failed' && state !== 'completed') {
+        const existingPriority =
+          typeof existing.opts.priority === 'number'
+            ? existing.opts.priority
+            : Number.MAX_SAFE_INTEGER;
+        const shouldPromoteWaitingJob =
+          (state === 'waiting' || state === 'delayed') &&
+          (desiredPriority < existingPriority ||
+            existing.data?.bypassRemoteCache !== desiredJobData.bypassRemoteCache ||
+            existing.data?.resetRefreshCursor !== desiredJobData.resetRefreshCursor);
+        if (state !== 'failed' && state !== 'completed' && !shouldPromoteWaitingJob) {
           return true;
         }
 
@@ -1481,14 +1531,10 @@ export class AdminService implements OnModuleDestroy {
 
       await this.adminManagedEntitiesRefreshQueue.add(
         'refresh-managed-entities',
-        {
-          userId,
-          entityType,
-          bypassRemoteCache: options.bypassRemoteCache === true,
-          resetRefreshCursor: options.resetRefreshCursor === true,
-        },
+        desiredJobData,
         {
           jobId,
+          priority: desiredPriority,
           attempts: 5,
           removeOnComplete: true,
           removeOnFail: false,

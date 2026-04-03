@@ -7972,6 +7972,80 @@ describe('AdminService.listChats', () => {
       },
       expect.objectContaining({
         jobId: 'managed-entities-refresh__chat__admin-1',
+        priority: 2,
+      }),
+    );
+  });
+
+  it('reprioritizes a waiting managed refresh job when the user polls an already-started chat refresh', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const existingJob = {
+      data: {
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: true,
+      },
+      opts: {},
+      getState: jest.fn().mockResolvedValue('waiting'),
+      remove: jest.fn().mockResolvedValue(undefined),
+    };
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(existingJob),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+    );
+
+    await expect(
+      service.listChatsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          refresh: true,
+          includeRefreshState: true,
+        } as never,
+      ),
+    ).resolves.toMatchObject({
+      refresh: expect.objectContaining({
+        cursor: 0,
+        manualRefreshBlockedReason: 'in_progress',
+      }),
+    });
+
+    expect(existingJob.remove).toHaveBeenCalledTimes(1);
+    expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
+      'refresh-managed-entities',
+      {
+        userId: 'admin-1',
+        entityType: 'chat',
+        bypassRemoteCache: false,
+        resetRefreshCursor: true,
+      },
+      expect.objectContaining({
+        jobId: 'managed-entities-refresh__chat__admin-1',
+        priority: 2,
       }),
     );
   });
