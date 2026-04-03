@@ -83,3 +83,48 @@ export function getInitData(): string {
 
   return '';
 }
+
+const DEFAULT_INIT_DATA_POLL_INTERVAL_MS = 150;
+const DEFAULT_INIT_DATA_POLL_DURATION_MS = 5_000;
+
+export function waitForInitData(
+  onReady: (initData: string) => void,
+  pollIntervalMs = DEFAULT_INIT_DATA_POLL_INTERVAL_MS,
+  pollDurationMs = DEFAULT_INIT_DATA_POLL_DURATION_MS,
+): () => void {
+  if (typeof window === 'undefined') {
+    return () => undefined;
+  }
+
+  let stopped = false;
+
+  const stop = () => {
+    if (stopped) {
+      return;
+    }
+
+    stopped = true;
+    window.clearInterval(pollIntervalId);
+    window.clearTimeout(pollTimeoutId);
+    window.removeEventListener('hashchange', flush);
+  };
+
+  const flush = () => {
+    const nextValue = getInitData();
+    if (!nextValue) {
+      return;
+    }
+
+    stop();
+    onReady(nextValue);
+  };
+
+  const pollIntervalId = window.setInterval(flush, pollIntervalMs);
+  const pollTimeoutId = window.setTimeout(stop, pollDurationMs);
+  window.addEventListener('hashchange', flush);
+  flush();
+
+  return () => {
+    stop();
+  };
+}

@@ -15,7 +15,7 @@ import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
 import { getPreviewBootstrap } from './lib/design-preview';
-import { getInitData } from './lib/init-data';
+import { getInitData, waitForInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
 import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
 import {
@@ -123,10 +123,18 @@ function AppRoutes({
 }
 
 export function App() {
-  const initData = getInitData();
+  const [initData, setInitData] = useState(() => getInitData());
   const preview = getPreviewBootstrap(initData);
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
+
+  useEffect(() => {
+    if (initData) {
+      return;
+    }
+
+    return waitForInitData(setInitData);
+  }, [initData]);
 
   useEffect(() => {
     const cleanup = syncMaxNativeEnvironment({
