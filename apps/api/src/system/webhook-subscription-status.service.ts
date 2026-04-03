@@ -15,10 +15,14 @@ export type WebhookSubscriptionBotSyncState = {
   configuredUrl: string | null;
   headerSecretFingerprint: string | null;
   updatedAt: string;
+  lastIncomingWebhookAt: string | null;
+  lastAutoRecreateAt: string | null;
 };
 
 export type WebhookSubscriptionSyncState = {
   bots: Record<string, WebhookSubscriptionBotSyncState>;
+  lastGlobalIncomingWebhookAt: string | null;
+  lastGlobalAutoRecreateAt: string | null;
 };
 
 @Injectable()
@@ -108,6 +112,16 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
                       row.headerSecretFingerprint.trim().length > 0
                         ? row.headerSecretFingerprint
                         : null,
+                    lastIncomingWebhookAt:
+                      typeof row.lastIncomingWebhookAt === 'string' &&
+                      row.lastIncomingWebhookAt.trim().length > 0
+                        ? row.lastIncomingWebhookAt
+                        : null,
+                    lastAutoRecreateAt:
+                      typeof row.lastAutoRecreateAt === 'string' &&
+                      row.lastAutoRecreateAt.trim().length > 0
+                        ? row.lastAutoRecreateAt
+                        : null,
                     updatedAt:
                       typeof row.updatedAt === 'string' && row.updatedAt.trim().length > 0
                         ? row.updatedAt
@@ -121,11 +135,23 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
       if (Object.keys(parsedBots).length > 0) {
         return {
           bots: parsedBots,
+          lastGlobalIncomingWebhookAt:
+            typeof parsed.lastGlobalIncomingWebhookAt === 'string' &&
+            parsed.lastGlobalIncomingWebhookAt.trim().length > 0
+              ? parsed.lastGlobalIncomingWebhookAt
+              : null,
+          lastGlobalAutoRecreateAt:
+            typeof parsed.lastGlobalAutoRecreateAt === 'string' &&
+            parsed.lastGlobalAutoRecreateAt.trim().length > 0
+              ? parsed.lastGlobalAutoRecreateAt
+              : null,
         };
       }
 
       return {
         bots: {},
+        lastGlobalIncomingWebhookAt: null,
+        lastGlobalAutoRecreateAt: null,
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -140,6 +166,35 @@ export class WebhookSubscriptionStatusService implements OnModuleDestroy {
 
   async writeSyncState(state: WebhookSubscriptionSyncState): Promise<void> {
     await this.redis.set(WEBHOOK_SUBSCRIPTION_SYNC_STATE_KEY, JSON.stringify(state));
+  }
+
+  async markIncomingWebhook(botId: string, occurredAt = new Date().toISOString()): Promise<void> {
+    const normalizedBotId = botId.trim();
+    if (!normalizedBotId) {
+      return;
+    }
+
+    const current = (await this.getSyncState()) ?? {
+      bots: {},
+      lastGlobalIncomingWebhookAt: null,
+      lastGlobalAutoRecreateAt: null,
+    };
+    const existingBotState = current.bots[normalizedBotId];
+
+    await this.writeSyncState({
+      ...current,
+      bots: {
+        ...current.bots,
+        [normalizedBotId]: {
+          configuredUrl: existingBotState?.configuredUrl ?? null,
+          headerSecretFingerprint: existingBotState?.headerSecretFingerprint ?? null,
+          updatedAt: existingBotState?.updatedAt ?? occurredAt,
+          lastIncomingWebhookAt: occurredAt,
+          lastAutoRecreateAt: existingBotState?.lastAutoRecreateAt ?? null,
+        },
+      },
+      lastGlobalIncomingWebhookAt: occurredAt,
+    });
   }
 
   createPendingSnapshot(

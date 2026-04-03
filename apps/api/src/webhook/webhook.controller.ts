@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import type { FastifyRequest } from 'fastify';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
+import { WebhookSubscriptionStatusService } from '../system/webhook-subscription-status.service';
 import { WebhookParser } from './webhook.parser';
 import { WebhookRateLimitService } from './webhook-rate-limit.service';
 import { WebhookService } from './webhook.service';
@@ -27,6 +28,7 @@ export class WebhookController {
     private readonly parser: WebhookParser,
     private readonly webhookService: WebhookService,
     private readonly webhookRateLimitService: WebhookRateLimitService,
+    private readonly webhookSubscriptionStatusService: WebhookSubscriptionStatusService,
   ) {}
 
   @Post(':botId/:secretPath')
@@ -47,6 +49,8 @@ export class WebhookController {
     if (!bot) {
       throw new ForbiddenException('Invalid webhook bot signature');
     }
+
+    await this.webhookSubscriptionStatusService.markIncomingWebhook(bot.id);
 
     const ip = request.ip;
     const allowed = await this.webhookRateLimitService.isAllowed(ip);

@@ -30,6 +30,7 @@ describe('WebhookController', () => {
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(true) } as never,
+      { markIncomingWebhook: jest.fn() } as never,
     );
 
     await expect(
@@ -46,6 +47,7 @@ describe('WebhookController', () => {
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(false) } as never,
+      { markIncomingWebhook: jest.fn() } as never,
     );
 
     await expect(
@@ -57,11 +59,15 @@ describe('WebhookController', () => {
   });
 
   it('accepts the previous webhook header secret during rotation', async () => {
+    const webhookSubscriptionStatusService = {
+      markIncomingWebhook: jest.fn().mockResolvedValue(undefined),
+    };
     const controller = new WebhookController(
       botRegistry as never,
       parser as never,
       webhookService as never,
       { isAllowed: jest.fn().mockResolvedValue(true) } as never,
+      webhookSubscriptionStatusService as never,
     );
 
     await expect(
@@ -75,5 +81,6 @@ describe('WebhookController', () => {
         duplicate: false,
       }),
     );
+    expect(webhookSubscriptionStatusService.markIncomingWebhook).toHaveBeenCalledWith('bot-1');
   });
 });
