@@ -1,0 +1,21 @@
+{
+  "name": "Майор Максимов",
+  "short_name": "Максимов",
+  "start_url": "/app/",
+  "scope": "/app/",
+  "display": "standalone",
+  "background_color": "#eaf4ff",
+  "theme_color": "#eaf4ff",
+  "icons": [
+    {
+      "src": "/app/favicon.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "/app/apple-touch-icon.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ]
+}
