@@ -1804,6 +1804,7 @@ export class AdminService implements OnModuleDestroy {
       chat_id: string | null;
       chat_title: string | null;
       is_channel: string | null;
+      user_scoped: boolean;
     }>
   > {
     const normalizedUserId = userId.trim();
@@ -1852,10 +1853,20 @@ export class AdminService implements OnModuleDestroy {
       chat_id: string | null;
       chat_title: string | null;
       is_channel: string | null;
+      user_scoped: boolean;
     }> = [];
     const seen = new Set<string>();
 
-    for (const row of [...(Array.isArray(userScopedRows) ? userScopedRows : []), ...(Array.isArray(globalRows) ? globalRows : [])]) {
+    for (const row of [
+      ...(Array.isArray(userScopedRows) ? userScopedRows : []).map((item) => ({
+        ...item,
+        user_scoped: true,
+      })),
+      ...(Array.isArray(globalRows) ? globalRows : []).map((item) => ({
+        ...item,
+        user_scoped: false,
+      })),
+    ]) {
       const chatId = this.readTrimmedString(row.chat_id);
       if (!chatId || seen.has(chatId)) {
         continue;
@@ -3906,12 +3917,18 @@ export class AdminService implements OnModuleDestroy {
         chatId,
         hintedEntityType,
       );
-      const resolvedTitle = this.resolvePresentableManagedEntityTitle(
-        chatId,
-        this.readTrimmedString(row.chat_title),
-        this.readTrimmedString(cachedHeader?.title),
-        this.readTrimmedString(existing?.title),
-      );
+      const resolvedTitle =
+        this.resolvePresentableManagedEntityTitle(
+          chatId,
+          this.readTrimmedString(row.chat_title),
+          this.readTrimmedString(cachedHeader?.title),
+          this.readTrimmedString(existing?.title),
+        ) ??
+        (row.user_scoped
+          ? hintedEntityType === 'channel'
+            ? `Channel ${chatId}`
+            : `Chat ${chatId}`
+          : null);
       if (!resolvedTitle) {
         continue;
       }

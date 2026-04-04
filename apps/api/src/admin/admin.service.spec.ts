@@ -10805,13 +10805,15 @@ describe('AdminService.listChats', () => {
 
   it('skips recent bot-added chats when only fallback titles are available', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValue([
-      {
-        chat_id: 'chat-fallback',
-        chat_title: null,
-        is_channel: 'false',
-      },
-    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-fallback',
+          chat_title: null,
+          is_channel: 'false',
+        },
+      ]);
     prisma.chat.findUnique.mockResolvedValue({
       title: 'Chat chat-fallback',
     });
@@ -10851,6 +10853,69 @@ describe('AdminService.listChats', () => {
 
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
+  it('bootstraps a user-scoped recent bot_added chat even when MAX omits chatTitle', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-fallback',
+          chat_title: null,
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Chat chat-fallback',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-fallback',
+      title: 'Chat chat-fallback',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-04-05T00:10:00.000Z'),
+      primaryBotId: null,
+      botId: null,
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-fallback',
+        title: 'Chat chat-fallback',
+        createdAt: '2026-04-05T00:10:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId: {
+            chatId: 'chat-fallback',
+            userId: 'admin-1',
+          },
+        },
+      }),
+    );
   });
 
   it('keeps recent bot-added bootstrap alive when unsupported-chat pruning hits a saturated Prisma pool', async () => {
