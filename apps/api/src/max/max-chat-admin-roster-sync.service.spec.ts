@@ -31,6 +31,9 @@ describe('MaxChatAdminRosterSyncService', () => {
     const chatContextCache = {
       replaceChatAdminUsers: jest.fn().mockResolvedValue(undefined),
       setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
+      setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new MaxChatAdminRosterSyncService(
@@ -133,5 +136,147 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledWith('-100124', []);
     expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-7', 'bot_denied');
     expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-8', 'bot_denied');
+  });
+
+  it('retries a fresh webhook bot_added sync while bot admin rights are still propagating', async () => {
+    const { service, prisma, maxClient, chatContextCache } = createService();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }]);
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: false,
+      isOwner: false,
+      permissions: [],
+    });
+
+    await expect(
+      service.processJob({
+        chatId: '-100125',
+        botIds: ['bot-1'],
+        title: 'Fresh chat',
+        entityType: 'chat',
+        source: 'webhook_bot_added',
+        retryUntilMs: Date.now() + 30_000,
+      }),
+    ).rejects.toThrow('still propagating');
+
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+    expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith('-100125', []);
+  });
+
+  it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
+    const { service, prisma, maxClient, chatContextCache } = createService();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Snapshot chat',
+      entityType: 'CHAT',
+      primaryBotId: 'bot-1',
+      botId: 'bot-1',
+      botMemberships: [],
+      id: '-100126',
+      createdAt: new Date('2026-04-05T10:00:00.000Z'),
+    });
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1', 'user-2']);
+    chatContextCache.getManagedEntitiesPublishedSnapshot.mockImplementation(
+      async (userId: string, entityType: string) => {
+        if (entityType !== 'chat') {
+          return null;
+        }
+        if (userId === 'user-1') {
+          return {
+            version: 'snapshot-user-1',
+            builtAt: '2026-04-05T09:00:00.000Z',
+            lastSyncedAt: '2026-04-05T09:00:00.000Z',
+            itemCount: 1,
+            itemsHash: 'hash-1',
+            items: [
+              {
+                id: '-100000',
+                title: 'Existing',
+                createdAt: '2026-04-04T10:00:00.000Z',
+                entityType: 'chat',
+                link: null,
+                channelOverview: null,
+                primaryBotId: 'bot-1',
+                assignedBots: [],
+                sharedMode: 'owned',
+              },
+            ],
+          };
+        }
+        if (userId === 'user-3') {
+          return {
+            version: 'snapshot-user-3',
+            builtAt: '2026-04-05T09:00:00.000Z',
+            lastSyncedAt: '2026-04-05T09:00:00.000Z',
+            itemCount: 2,
+            itemsHash: 'hash-3',
+            items: [
+              {
+                id: '-100126',
+                title: 'Snapshot chat',
+                createdAt: '2026-04-05T10:00:00.000Z',
+                entityType: 'chat',
+                link: null,
+                channelOverview: null,
+                primaryBotId: 'bot-1',
+                assignedBots: [],
+                sharedMode: 'owned',
+              },
+              {
+                id: '-100999',
+                title: 'Other',
+                createdAt: '2026-04-04T10:00:00.000Z',
+                entityType: 'chat',
+                link: null,
+                channelOverview: null,
+                primaryBotId: 'bot-1',
+                assignedBots: [],
+                sharedMode: 'owned',
+              },
+            ],
+          };
+        }
+        return null;
+      },
+    );
+
+    await expect(
+      service.processJob({
+        chatId: '-100126',
+        botIds: ['bot-1'],
+        title: 'Snapshot chat',
+        entityType: 'chat',
+      }),
+    ).resolves.toBe(true);
+
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledTimes(2);
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
+      1,
+      'user-1',
+      'chat',
+      expect.objectContaining({
+        itemCount: 2,
+        items: expect.arrayContaining([
+          expect.objectContaining({ id: '-100126', title: 'Snapshot chat' }),
+        ]),
+      }),
+      604800,
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenNthCalledWith(
+      2,
+      'user-3',
+      'chat',
+      expect.objectContaining({
+        itemCount: 1,
+        items: [expect.objectContaining({ id: '-100999' })],
+      }),
+      604800,
+    );
   });
 });

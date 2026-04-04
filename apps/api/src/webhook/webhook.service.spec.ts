@@ -507,6 +507,8 @@ describe('WebhookService', () => {
       botIds: ['id613002203036_bot'],
       title: 'Новый чат',
       entityType: 'channel',
+      source: 'webhook_bot_added',
+      retryUntilMs: expect.any(Number),
     });
   });
 });

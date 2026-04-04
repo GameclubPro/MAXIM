@@ -27,6 +27,7 @@ const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
+  private static readonly BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS = 45_000;
   private readonly rawPayloadSampleRate: number;
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
@@ -437,12 +438,26 @@ export class WebhookService {
       return;
     }
 
+    const source =
+      normalizedType === 'bot_added'
+        ? 'webhook_bot_added'
+        : normalizedType === 'bot_removed'
+          ? 'webhook_bot_removed'
+          : normalizedType === 'chat_title_changed'
+            ? 'webhook_chat_title_changed'
+            : null;
+
     void this.maxChatAdminRosterSyncService
       .scheduleChatAdminRosterSync({
         chatId,
         botIds: update.botId ? [update.botId] : [],
         title: update.message?.chatTitle ?? null,
         entityType: update.message?.entityType ?? null,
+        source,
+        retryUntilMs:
+          normalizedType === 'bot_added'
+            ? Date.now() + WebhookService.BOT_ADDED_ADMIN_ROSTER_RETRY_WINDOW_MS
+            : null,
       })
       .catch((error: unknown) => {
         this.logger.warn(

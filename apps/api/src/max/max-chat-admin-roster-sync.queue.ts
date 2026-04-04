@@ -5,4 +5,11 @@ export type MaxChatAdminRosterSyncJob = {
   botIds?: string[];
   title?: string | null;
   entityType?: 'chat' | 'channel' | null;
+  source?:
+    | 'webhook_bot_added'
+    | 'webhook_bot_removed'
+    | 'webhook_chat_title_changed'
+    | 'discovery_snapshot'
+    | null;
+  retryUntilMs?: number | null;
 };

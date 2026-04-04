@@ -1,8 +1,13 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { createHash, randomUUID } from 'crypto';
+import type { ChatSummary, ManagedEntityType } from '@maxim/contracts';
 import { ChatBotMembershipStatus, ChatEntityType, Prisma } from '@prisma/client';
 import type { Queue } from 'bullmq';
-import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import {
+  ChatContextCacheService,
+  type ManagedEntitiesPublishedSnapshot,
+} from '../chat-context/chat-context-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService, type MaxBotChat } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
@@ -15,6 +20,15 @@ import {
 const CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS = 2_500;
 const CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE = 'background';
 const CHAT_ADMIN_ROSTER_SCHEDULE_CONCURRENCY = 8;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 7;
+const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
+const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
+
+class PendingBotAdminGrantError extends Error {
+  constructor(readonly chatId: string) {
+    super(`Bot admin access for chat ${chatId} is still propagating`);
+  }
+}
 
 @Injectable()
 export class MaxChatAdminRosterSyncService {
@@ -38,6 +52,7 @@ export class MaxChatAdminRosterSyncService {
         botIds: chat.botIds ?? (chat.botId ? [chat.botId] : []),
         title: chat.title,
         entityType: chat.entityType,
+        source: 'discovery_snapshot',
       }),
     );
   }
@@ -75,7 +90,10 @@ export class MaxChatAdminRosterSyncService {
 
       await this.queue.add('sync-chat-admin-roster', desiredJobData, {
         jobId,
-        attempts: 5,
+        attempts:
+          desiredJobData.source === 'webhook_bot_added'
+            ? CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS
+            : 5,
         removeOnComplete: true,
         removeOnFail: false,
         backoff: {
@@ -186,7 +204,7 @@ export class MaxChatAdminRosterSyncService {
           sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
           timeoutMs: CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS,
         });
-        await this.syncAllowlist(normalized.chatId, adminUserIds);
+        await this.syncAllowlist(normalized, adminUserIds);
         return true;
       } catch (error: unknown) {
         if (this.isChatAccessDeniedError(error)) {
@@ -200,6 +218,19 @@ export class MaxChatAdminRosterSyncService {
 
     if (recoverableError) {
       throw recoverableError;
+    }
+
+    if (this.shouldRetryPendingAdminGrant(normalized)) {
+      this.logger.log(
+        {
+          chatId: normalized.chatId,
+          botIds: normalized.botIds,
+          retryUntilMs: normalized.retryUntilMs ?? null,
+          source: normalized.source ?? null,
+        },
+        'Retrying chat admin roster sync while fresh bot_added admin rights propagate',
+      );
+      throw new PendingBotAdminGrantError(normalized.chatId);
     }
 
     await this.clearAllowlist(normalized.chatId, 'bot_denied');
@@ -250,6 +281,8 @@ export class MaxChatAdminRosterSyncService {
       botIds: mergedBotIds,
       title: incoming.title ?? this.readTrimmedString(persisted?.title) ?? null,
       entityType: incoming.entityType ?? this.fromPrismaEntityType(persisted?.entityType),
+      source: incoming.source ?? null,
+      retryUntilMs: incoming.retryUntilMs ?? null,
     };
   }
 
@@ -269,12 +302,25 @@ export class MaxChatAdminRosterSyncService {
       ),
     );
     const entityType = params?.entityType === 'channel' ? 'channel' : params?.entityType === 'chat' ? 'chat' : null;
+    const source =
+      params?.source === 'webhook_bot_added' ||
+      params?.source === 'webhook_bot_removed' ||
+      params?.source === 'webhook_chat_title_changed' ||
+      params?.source === 'discovery_snapshot'
+        ? params.source
+        : null;
+    const retryUntilMs =
+      typeof params?.retryUntilMs === 'number' && Number.isFinite(params.retryUntilMs)
+        ? Math.max(0, Math.trunc(params.retryUntilMs))
+        : null;
 
     return {
       chatId,
       botIds,
       title: this.readTrimmedString(params?.title) ?? null,
       entityType,
+      source,
+      retryUntilMs,
     };
   }
 
@@ -286,6 +332,8 @@ export class MaxChatAdminRosterSyncService {
       left.chatId === right.chatId &&
       (left.title ?? null) === (right.title ?? null) &&
       (left.entityType ?? null) === (right.entityType ?? null) &&
+      (left.source ?? null) === (right.source ?? null) &&
+      (left.retryUntilMs ?? null) === (right.retryUntilMs ?? null) &&
       left.botIds?.length === right.botIds?.length &&
       (left.botIds ?? []).every((botId, index) => botId === (right.botIds ?? [])[index])
     );
@@ -372,7 +420,11 @@ export class MaxChatAdminRosterSyncService {
     }
   }
 
-  private async syncAllowlist(chatId: string, adminUserIds: readonly string[]): Promise<void> {
+  private async syncAllowlist(
+    job: MaxChatAdminRosterSyncJob,
+    adminUserIds: readonly string[],
+  ): Promise<void> {
+    const chatId = job.chatId;
     const normalizedAdminUserIds = Array.from(
       new Set(
         adminUserIds
@@ -450,6 +502,14 @@ export class MaxChatAdminRosterSyncService {
         this.chatContextCache.setAdminAccess(chatId, userId, 'user_denied'),
       ),
     );
+
+    await this.patchManagedEntitiesPublishedSnapshots({
+      chatId,
+      entityTypeHint: job.entityType ?? null,
+      titleHint: job.title ?? null,
+      userIdsToUpsert: normalizedAdminUserIds,
+      userIdsToRemove: usersToRemove,
+    });
   }
 
   private async clearAllowlist(
@@ -489,6 +549,323 @@ export class MaxChatAdminRosterSyncService {
         this.chatContextCache.setAdminAccess(chatId, userId, deniedState),
       ),
     );
+
+    await this.patchManagedEntitiesPublishedSnapshots({
+      chatId,
+      entityTypeHint: null,
+      titleHint: null,
+      userIdsToUpsert: [],
+      userIdsToRemove: existingUserIds,
+    });
+  }
+
+  private shouldRetryPendingAdminGrant(job: MaxChatAdminRosterSyncJob): boolean {
+    return (
+      job.source === 'webhook_bot_added' &&
+      typeof job.retryUntilMs === 'number' &&
+      Number.isFinite(job.retryUntilMs) &&
+      job.retryUntilMs > Date.now()
+    );
+  }
+
+  private async patchManagedEntitiesPublishedSnapshots(params: {
+    chatId: string;
+    entityTypeHint: ManagedEntityType | null;
+    titleHint: string | null;
+    userIdsToUpsert: readonly string[];
+    userIdsToRemove: readonly string[];
+  }): Promise<void> {
+    const upsertUserIds = Array.from(
+      new Set(
+        params.userIdsToUpsert
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    const removeUserIds = Array.from(
+      new Set(
+        params.userIdsToRemove
+          .map((userId) => this.readTrimmedString(userId))
+          .filter((userId): userId is string => Boolean(userId)),
+      ),
+    );
+    if (upsertUserIds.length === 0 && removeUserIds.length === 0) {
+      return;
+    }
+
+    const snapshotChat = await this.loadManagedEntitySnapshotPatchChat(
+      params.chatId,
+      params.entityTypeHint,
+      params.titleHint,
+    );
+    const entityType = snapshotChat?.entityType ?? params.entityTypeHint;
+    if (!entityType) {
+      return;
+    }
+
+    const summary = snapshotChat
+      ? await this.buildManagedEntitySnapshotPatchSummary(snapshotChat)
+      : null;
+
+    if (summary) {
+      await this.mapWithConcurrencyLimit(
+        upsertUserIds,
+        MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+        async (userId) => {
+          await this.upsertManagedEntitiesPublishedSnapshotItem(userId, summary);
+          return null;
+        },
+      );
+    }
+
+    await this.mapWithConcurrencyLimit(
+      removeUserIds,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY,
+      async (userId) => {
+        await this.removeManagedEntitiesPublishedSnapshotItem(userId, entityType, params.chatId);
+        return null;
+      },
+    );
+  }
+
+  private async loadManagedEntitySnapshotPatchChat(
+    chatId: string,
+    entityTypeHint: ManagedEntityType | null,
+    titleHint: string | null,
+  ): Promise<{
+    id: string;
+    title: string;
+    createdAt: string;
+    entityType: ManagedEntityType;
+    primaryBotId: string | null;
+    link: string | null;
+    avatarUrl: string | null;
+  } | null> {
+    const persisted = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        entityType: true,
+        primaryBotId: true,
+        botId: true,
+      },
+    });
+
+    const entityType =
+      this.fromPrismaEntityType(persisted?.entityType) ?? entityTypeHint ?? null;
+    if (!entityType) {
+      return null;
+    }
+
+    const cachedHeader = await this.chatContextCache.getManagedEntityHeader(chatId, entityType);
+    const title =
+      this.readTrimmedString(cachedHeader?.title) ??
+      this.readTrimmedString(titleHint) ??
+      this.readTrimmedString(persisted?.title) ??
+      (entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
+
+    return {
+      id: chatId,
+      title,
+      createdAt: persisted?.createdAt?.toISOString() ?? new Date().toISOString(),
+      entityType,
+      primaryBotId:
+        this.readTrimmedString(persisted?.primaryBotId) ??
+        this.readTrimmedString(persisted?.botId) ??
+        null,
+      link: this.readTrimmedString(cachedHeader?.link) ?? null,
+      avatarUrl: this.readTrimmedString(cachedHeader?.avatarUrl) ?? null,
+    };
+  }
+
+  private async buildManagedEntitySnapshotPatchSummary(params: {
+    id: string;
+    title: string;
+    createdAt: string;
+    entityType: ManagedEntityType;
+    primaryBotId: string | null;
+    link: string | null;
+    avatarUrl: string | null;
+  }): Promise<ChatSummary> {
+    return {
+      id: params.id,
+      title: params.title,
+      createdAt: params.createdAt,
+      entityType: params.entityType,
+      link: params.link,
+      ...(params.avatarUrl ? { avatarUrl: params.avatarUrl } : {}),
+      channelOverview: null,
+      primaryBotId: params.primaryBotId,
+      assignedBots: [],
+      sharedMode: 'owned',
+    };
+  }
+
+  private async upsertManagedEntitiesPublishedSnapshotItem(
+    userId: string,
+    summary: ChatSummary,
+  ): Promise<void> {
+    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+      userId,
+      summary.entityType,
+    );
+    if (!currentSnapshot) {
+      return;
+    }
+
+    const nextItems = currentSnapshot.items.map((item) => this.cloneManagedEntitySummary(item));
+    const existingIndex = nextItems.findIndex((item) => item.id === summary.id);
+    let changed = false;
+
+    if (existingIndex < 0) {
+      nextItems.unshift(this.cloneManagedEntitySummary(summary));
+      changed = true;
+    } else {
+      const existing = nextItems[existingIndex];
+      const mergedTitle =
+        this.isFallbackTitle(summary.id, existing.title) && !this.isFallbackTitle(summary.id, summary.title)
+          ? summary.title
+          : existing.title;
+      const mergedLink = existing.link ?? summary.link ?? null;
+      const mergedAvatarUrl = existing.avatarUrl ?? summary.avatarUrl;
+      const mergedPrimaryBotId = existing.primaryBotId ?? summary.primaryBotId ?? null;
+
+      if (
+        mergedTitle !== existing.title ||
+        mergedLink !== (existing.link ?? null) ||
+        mergedAvatarUrl !== existing.avatarUrl ||
+        mergedPrimaryBotId !== (existing.primaryBotId ?? null)
+      ) {
+        nextItems[existingIndex] = {
+          ...existing,
+          title: mergedTitle,
+          link: mergedLink,
+          ...(mergedAvatarUrl ? { avatarUrl: mergedAvatarUrl } : {}),
+          primaryBotId: mergedPrimaryBotId,
+        };
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    await this.writeManagedEntitiesPublishedSnapshot(userId, summary.entityType, currentSnapshot, nextItems);
+  }
+
+  private async removeManagedEntitiesPublishedSnapshotItem(
+    userId: string,
+    entityType: ManagedEntityType,
+    chatId: string,
+  ): Promise<void> {
+    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+      userId,
+      entityType,
+    );
+    if (!currentSnapshot) {
+      return;
+    }
+
+    const nextItems = currentSnapshot.items.filter((item) => item.id !== chatId);
+    if (nextItems.length === currentSnapshot.items.length) {
+      return;
+    }
+
+    await this.writeManagedEntitiesPublishedSnapshot(userId, entityType, currentSnapshot, nextItems);
+  }
+
+  private async writeManagedEntitiesPublishedSnapshot(
+    userId: string,
+    entityType: ManagedEntityType,
+    currentSnapshot: ManagedEntitiesPublishedSnapshot,
+    items: readonly ChatSummary[],
+  ): Promise<void> {
+    const nextSnapshot: ManagedEntitiesPublishedSnapshot = {
+      version: randomUUID(),
+      builtAt: new Date().toISOString(),
+      lastSyncedAt: currentSnapshot.lastSyncedAt,
+      itemCount: items.length,
+      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(items, currentSnapshot.lastSyncedAt),
+      items: items.map((item) => this.cloneManagedEntitySummary(item)),
+    };
+    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
+      userId,
+      entityType,
+      nextSnapshot,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+    );
+  }
+
+  private buildManagedEntitiesPublishedSnapshotHash(
+    items: readonly ChatSummary[],
+    lastSyncedAt: string | null,
+  ): string {
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          lastSyncedAt,
+          items: items.map((item) => this.serializeManagedEntitySummary(item)),
+        }),
+      )
+      .digest('hex');
+  }
+
+  private serializeManagedEntitySummary(item: ChatSummary): Record<string, unknown> {
+    return {
+      id: item.id,
+      title: item.title,
+      createdAt: item.createdAt,
+      entityType: item.entityType,
+      link: item.link ?? null,
+      avatarUrl: this.readTrimmedString(item.avatarUrl) ?? null,
+      channelOverview: item.channelOverview
+        ? {
+            enabledScenariosCount: item.channelOverview.enabledScenariosCount,
+            commentsEnabled: item.channelOverview.commentsEnabled,
+            postSuggestionsEnabled: item.channelOverview.postSuggestionsEnabled,
+            commentsModerationEnabled: item.channelOverview.commentsModerationEnabled,
+          }
+        : null,
+      primaryBotId: item.primaryBotId ?? null,
+      assignedBots: (item.assignedBots ?? []).map((bot) => ({
+        botId: bot.botId,
+        label: bot.label,
+        role: bot.role,
+        membershipStatus: bot.membershipStatus,
+        lifecycleState: bot.lifecycleState,
+        speechPersona: bot.speechPersona,
+        characterName: bot.characterName ?? null,
+        avatarUrl: bot.avatarUrl ?? null,
+        capabilities: [...bot.capabilities],
+        permissionsSummary: bot.permissionsSummary
+          ? {
+              checkedAt: bot.permissionsSummary.checkedAt ?? null,
+              isAdmin: bot.permissionsSummary.isAdmin,
+              isOwner: bot.permissionsSummary.isOwner,
+              permissions: [...bot.permissionsSummary.permissions],
+            }
+          : null,
+      })),
+      sharedMode: item.sharedMode,
+    };
+  }
+
+  private cloneManagedEntitySummary(item: ChatSummary): ChatSummary {
+    return {
+      ...item,
+      channelOverview: item.channelOverview ? { ...item.channelOverview } : null,
+      assignedBots: Array.isArray(item.assignedBots)
+        ? item.assignedBots.map((bot) => ({ ...bot }))
+        : [],
+    };
+  }
+
+  private isFallbackTitle(chatId: string, title: string): boolean {
+    const normalized = title.trim();
+    return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
   }
 
   private async persistBotSelfAccessSnapshot(
