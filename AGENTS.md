@@ -118,6 +118,7 @@
 - The mini app shows only the intersection where the user is admin and the bot also has admin access to the same chat/channel.
 - Counts for `Чаты` and `Каналы` can differ because the UI uses `chat_admin_allowlist` plus progressive refresh, not an instant full MAX snapshot.
 - On an empty default load, managed entities now use a two-lane bootstrap: lightweight user-scoped candidates can appear immediately, while the server also starts background allowlist warmup and a durable remote full refresh without waiting for manual `refresh=1`.
+- For newly added chats discovered through `user-scoped bot_added`, do not require `chatTitle` to be present in the webhook payload. The API now persists the chat by `chatId` with a provisional fallback title and then attempts a narrow immediate MAX `getChatSnapshot(chatId)` hydration so the real title/header can replace `Chat <id>` quickly without waiting for the wider header-hydration batch.
 - Diagnose `CHAT` and `CHANNEL` separately.
 - Explicit `refresh=1` on managed chats/channels is now an async refresh trigger, not a synchronous full MAX scan. The API should return cached allowlist data immediately and continue remote full refresh in background.
 - For `refresh=1`, trust `refresh.cursor`, `refresh.complete`, `refresh.backoffActive`, and `refresh.nextPollAfterMs`; do not treat the first response as proof that discovery is finished.
