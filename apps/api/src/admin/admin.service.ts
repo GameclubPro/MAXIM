@@ -3631,6 +3631,16 @@ export class AdminService implements OnModuleDestroy {
             bypassCache: options.bypassRemoteCache === true,
             timeoutMs: snapshotTimeoutMs,
           });
+          const priorityCandidates = await this.loadManagedEntitiesDeltaPrioritySnapshot(
+            user,
+            entityType,
+          );
+          if (priorityCandidates.length > 0) {
+            supportedCandidateChats = this.mergeManagedEntitiesDiscoverySnapshots(
+              priorityCandidates,
+              supportedCandidateChats,
+            );
+          }
           storedCursor = 0;
           await this.chatContextCache.setManagedEntitiesDiscoverySnapshot?.(
             user.userId,

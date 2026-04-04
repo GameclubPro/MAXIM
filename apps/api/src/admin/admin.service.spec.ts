@@ -6203,6 +6203,125 @@ describe('AdminService.listChannels', () => {
     });
   });
 
+  it('prioritizes locally observed chats when starting a new remote full scan snapshot', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([
+      createLocalManagedEntityRow({
+        chatId: 'chat-priority',
+        title: 'Приоритетный чат',
+        entityType: 'chat',
+        createdAt: '2026-03-03T10:00:00.000Z',
+      }),
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue(
+        Array.from({ length: 25 }, (_, index) => ({
+          chatId: `chat-${index + 1}`,
+          title: `Чат ${index + 1}`,
+          lastEventTime: 500 - index,
+          entityType: 'chat' as const,
+          link: null,
+        })),
+      ),
+    };
+
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockImplementation(
+      async (...args: unknown[]) => {
+        const chatId = args[0] as string;
+        return chatId === 'chat-priority' ? { status: 'granted' } : { status: 'user_denied' };
+      },
+    );
+    jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockImplementation(
+      async (...args: unknown[]) => {
+        const params = args[0] as {
+          chatId: string;
+          title: string;
+          entityType: 'chat';
+        };
+
+        return createChatSummaryFixture({
+          id: params.chatId,
+          title: params.title,
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: params.entityType,
+        });
+      },
+    );
+
+    const result = await (service as any).runManagedEntitiesDiscovery(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'chat',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'chat'),
+      {
+        fullScan: true,
+        includeRefreshState: true,
+        bypassRemoteCache: false,
+        revalidateCachedChats: false,
+        resetRefreshCursor: false,
+        throwOnFailure: true,
+      },
+    );
+
+    expect(result.items).toEqual([
+      createChatSummaryFixture({
+        id: 'chat-priority',
+        title: 'Приоритетный чат',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+    expect(result.refresh).toEqual({
+      complete: false,
+      cursor: 20,
+      backoffActive: false,
+      nextPollAfterMs: 1500,
+      processedCandidates: 20,
+      totalCandidates: 26,
+      progressPercent: 77,
+      lastSyncedAt: null,
+      manualRefreshBlockedReason: 'in_progress',
+      manualRefreshRetryAfterMs: 1500,
+    });
+    await expect(
+      chatContextCache.getManagedEntitiesDiscoverySnapshot('admin-1', 'chat'),
+    ).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          chatId: 'chat-priority',
+          title: 'Приоритетный чат',
+        }),
+      ]),
+    );
+    await expect(
+      chatContextCache.getManagedEntitiesDiscoverySnapshot('admin-1', 'chat'),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        chatId: 'chat-priority',
+        title: 'Приоритетный чат',
+      }),
+      ...Array.from({ length: 25 }, (_, index) =>
+        expect.objectContaining({
+          chatId: `chat-${index + 1}`,
+          title: `Чат ${index + 1}`,
+        }),
+      ),
+    ]);
+  });
+
   it('re-runs local discovery on repeated explicit refreshes even during success cooldown', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
 

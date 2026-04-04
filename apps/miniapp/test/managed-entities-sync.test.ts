@@ -3,6 +3,7 @@ import test from 'node:test';
 import type { ChatSummary, ManagedEntitiesRefreshState } from '@maxim/contracts';
 import {
   mergeManagedEntitiesRefreshItems,
+  resolveManagedEntitiesRefreshRequestOptions,
   shouldStartManagedEntitiesBackgroundRefresh,
 } from '../src/lib/use-managed-entities-sync';
 
@@ -70,6 +71,54 @@ test('still allows an explicit reload session to force background refresh', () =
       hasLoadedFromServer: true,
     }),
     true,
+  );
+});
+
+test('keeps the existing server cursor on the first background refresh session', () => {
+  assert.deepEqual(
+    resolveManagedEntitiesRefreshRequestOptions({
+      forceRefreshSession: false,
+      reloadBehavior: 'default',
+      backgroundRefreshOnFirstLoad: true,
+      hasLoadedFromServer: false,
+    }),
+    {
+      startWithBackgroundRefresh: true,
+      bypassRemoteCache: false,
+      resetRefreshCursor: false,
+    },
+  );
+});
+
+test('manual refresh bypasses MAX cache without restarting the server cursor', () => {
+  assert.deepEqual(
+    resolveManagedEntitiesRefreshRequestOptions({
+      forceRefreshSession: true,
+      reloadBehavior: 'manual',
+      backgroundRefreshOnFirstLoad: false,
+      hasLoadedFromServer: true,
+    }),
+    {
+      startWithBackgroundRefresh: true,
+      bypassRemoteCache: true,
+      resetRefreshCursor: false,
+    },
+  );
+});
+
+test('recovery refresh also resumes the existing server cursor', () => {
+  assert.deepEqual(
+    resolveManagedEntitiesRefreshRequestOptions({
+      forceRefreshSession: true,
+      reloadBehavior: 'recovery',
+      backgroundRefreshOnFirstLoad: false,
+      hasLoadedFromServer: true,
+    }),
+    {
+      startWithBackgroundRefresh: true,
+      bypassRemoteCache: true,
+      resetRefreshCursor: false,
+    },
   );
 });
 

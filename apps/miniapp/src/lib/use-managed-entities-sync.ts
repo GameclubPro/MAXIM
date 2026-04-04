@@ -65,6 +65,33 @@ export function shouldStartManagedEntitiesBackgroundRefresh(options: {
   );
 }
 
+export function resolveManagedEntitiesRefreshRequestOptions(options: {
+  forceRefreshSession: boolean;
+  reloadBehavior: 'default' | 'manual' | 'recovery';
+  backgroundRefreshOnFirstLoad: boolean;
+  hasLoadedFromServer: boolean;
+}): {
+  startWithBackgroundRefresh: boolean;
+  bypassRemoteCache: boolean;
+  resetRefreshCursor: boolean;
+} {
+  const startWithBackgroundRefresh = shouldStartManagedEntitiesBackgroundRefresh({
+    forceRefreshSession: options.forceRefreshSession,
+    backgroundRefreshOnFirstLoad: options.backgroundRefreshOnFirstLoad,
+    hasLoadedFromServer: options.hasLoadedFromServer,
+  });
+  const bypassRemoteCache =
+    options.forceRefreshSession &&
+    (options.reloadBehavior === 'manual' || options.reloadBehavior === 'recovery');
+
+  return {
+    startWithBackgroundRefresh,
+    bypassRemoteCache,
+    // Let the backend resume an in-flight scan instead of restarting from zero on each cold open.
+    resetRefreshCursor: false,
+  };
+}
+
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
   isLoading: boolean;
   isRefreshing: boolean;
@@ -548,15 +575,16 @@ export function useManagedEntitiesSync({
 
     let cancelled = false;
     const forceRefreshSession = reloadNonce !== handledReloadNonceRef.current;
-    const forceRefreshUsesBypassRemoteCache =
-      forceRefreshSession && (reloadBehavior === 'manual' || reloadBehavior === 'recovery');
     handledReloadNonceRef.current = reloadNonce;
     const hasCachedData = latestDataRef.current !== null;
-    const shouldStartWithBackgroundRefresh = shouldStartManagedEntitiesBackgroundRefresh({
+    const refreshRequestOptions = resolveManagedEntitiesRefreshRequestOptions({
       forceRefreshSession,
+      reloadBehavior,
       backgroundRefreshOnFirstLoad,
       hasLoadedFromServer: hasLoadedFromServerRef.current,
     });
+    const forceRefreshUsesBypassRemoteCache = refreshRequestOptions.bypassRemoteCache;
+    const shouldStartWithBackgroundRefresh = refreshRequestOptions.startWithBackgroundRefresh;
     setState((current) => ({
       ...current,
       error: hasCachedData ? null : current.error,
@@ -622,7 +650,7 @@ export function useManagedEntitiesSync({
           }
         }
 
-        let resetRefreshCursor = shouldStartWithBackgroundRefresh;
+        let resetRefreshCursor = refreshRequestOptions.resetRefreshCursor;
 
         while (!cancelled) {
           if (
