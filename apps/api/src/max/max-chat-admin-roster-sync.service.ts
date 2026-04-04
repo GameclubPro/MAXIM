@@ -20,7 +20,8 @@ import {
 const CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS = 2_500;
 const CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE = 'background';
 const CHAT_ADMIN_ROSTER_SCHEDULE_CONCURRENCY = 8;
-const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 7;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 20;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS = 2_000;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 
@@ -96,10 +97,16 @@ export class MaxChatAdminRosterSyncService {
             : 5,
         removeOnComplete: true,
         removeOnFail: false,
-        backoff: {
-          type: 'exponential',
-          delay: 1_000,
-        },
+        backoff:
+          desiredJobData.source === 'webhook_bot_added'
+            ? {
+                type: 'fixed',
+                delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS,
+              }
+            : {
+                type: 'exponential',
+                delay: 1_000,
+              },
       });
       return true;
     } catch (error: unknown) {

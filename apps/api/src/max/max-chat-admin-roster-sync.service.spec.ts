@@ -35,6 +35,10 @@ describe('MaxChatAdminRosterSyncService', () => {
       getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
       setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
     };
+    const queue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new MaxChatAdminRosterSyncService(
       prisma as never,
@@ -42,6 +46,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       maxBotLinkService as never,
       maxBotRegistry as never,
       chatContextCache as never,
+      queue as never,
     );
 
     return {
@@ -51,8 +56,39 @@ describe('MaxChatAdminRosterSyncService', () => {
       maxBotLinkService,
       maxBotRegistry,
       chatContextCache,
+      queue,
     };
   }
+
+  it('enqueues fresh webhook bot_added jobs with a denser fixed retry cadence', async () => {
+    const { service, queue } = createService();
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100122',
+        botIds: ['bot-1'],
+        title: 'Fresh chat',
+        entityType: 'chat',
+        source: 'webhook_bot_added',
+        retryUntilMs: Date.now() + 45_000,
+      }),
+    ).resolves.toBe(true);
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'sync-chat-admin-roster',
+      expect.objectContaining({
+        chatId: '-100122',
+        source: 'webhook_bot_added',
+      }),
+      expect.objectContaining({
+        attempts: 20,
+        backoff: {
+          type: 'fixed',
+          delay: 2_000,
+        },
+      }),
+    );
+  });
 
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     const { service, prisma, maxClient, maxBotLinkService, chatContextCache } = createService();

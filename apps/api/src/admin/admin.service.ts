@@ -677,6 +677,7 @@ const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 4;
 const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 250;
 const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 200;
 const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS = 350;
+const RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS = 45_000;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
@@ -3898,6 +3899,15 @@ export class AdminService implements OnModuleDestroy {
         timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
       if (access.status === 'unknown' || access.status === 'throttled') {
+        if (row.user_scoped) {
+          this.scheduleUserScopedRecentBotAddedFastLane({
+            chatId,
+            entityType: hintedEntityType,
+            title: this.readTrimmedString(row.chat_title),
+            userId: normalizedUserId,
+            reason: access.status,
+          });
+        }
         this.logger.warn(
           {
             chatId,
@@ -3911,6 +3921,15 @@ export class AdminService implements OnModuleDestroy {
         break;
       }
       if (access.status !== 'granted') {
+        if (row.user_scoped && access.reason === 'bot_not_admin') {
+          this.scheduleUserScopedRecentBotAddedFastLane({
+            chatId,
+            entityType: hintedEntityType,
+            title: this.readTrimmedString(row.chat_title),
+            userId: normalizedUserId,
+            reason: access.reason,
+          });
+        }
         continue;
       }
 
@@ -3968,6 +3987,39 @@ export class AdminService implements OnModuleDestroy {
     );
 
     return bootstrapped;
+  }
+
+  private scheduleUserScopedRecentBotAddedFastLane(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    title: string | null;
+    userId: string;
+    reason: 'unknown' | 'throttled' | 'bot_not_admin';
+  }): void {
+    if (!this.maxChatAdminRosterSyncService) {
+      return;
+    }
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId: params.chatId,
+        title: params.title,
+        entityType: params.entityType,
+        source: 'webhook_bot_added',
+        retryUntilMs: Date.now() + RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            entityType: params.entityType,
+            userId: params.userId,
+            reason: params.reason,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule user-scoped recent bot_added fast lane retry',
+        );
+      });
   }
 
   private async maybeHydrateRecentBotAddedBootstrapChat(

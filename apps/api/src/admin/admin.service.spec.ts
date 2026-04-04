@@ -11032,6 +11032,64 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('re-arms a user-scoped recent bot_added fast lane when bot admin rights are still propagating', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-fresh',
+          chat_title: 'Пре',
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const accessSpy = jest
+      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
+      .mockResolvedValue({
+        status: 'denied',
+        source: 'remote',
+        reason: 'bot_not_admin',
+      });
+    const fastLaneSpy = jest
+      .spyOn(service as any, 'scheduleUserScopedRecentBotAddedFastLane')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([]);
+
+    expect(accessSpy).toHaveBeenCalledWith(
+      'chat-fresh',
+      'admin-1',
+      expect.objectContaining({
+        bypassNegativeCache: true,
+        trafficClass: 'interactive',
+      }),
+    );
+    expect(fastLaneSpy).toHaveBeenCalledWith({
+      chatId: 'chat-fresh',
+      entityType: 'chat',
+      title: 'Пре',
+      userId: 'admin-1',
+      reason: 'bot_not_admin',
+    });
+  });
+
   it('hydrates a user-scoped recent bot_added chat title immediately from MAX snapshot when available', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
