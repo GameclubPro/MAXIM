@@ -10918,6 +10918,105 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('hydrates a user-scoped recent bot_added chat title immediately from MAX snapshot when available', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-fallback',
+          chat_title: null,
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockResolvedValue({
+      title: 'Chat chat-fallback',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-fallback',
+      title: 'Chat chat-fallback',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-04-05T00:10:00.000Z'),
+      primaryBotId: null,
+      botId: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-fallback',
+        title: 'Рак',
+        participantsCount: 17,
+        status: 'active',
+        isPublic: false,
+        link: 'https://max.ru/chat-fallback',
+        lastEventAt: null,
+        entityType: 'chat',
+        avatarUrl: 'https://i.oneme.ru/chat-fallback.webp',
+      }),
+    };
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats')
+      .mockImplementation(() => undefined);
+    const schedulePublishedSnapshotRebuildSpy = jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-fallback',
+        title: 'Рак',
+        createdAt: '2026-04-05T00:10:00.000Z',
+        entityType: 'chat',
+        link: 'https://max.ru/chat-fallback',
+        avatarUrl: 'https://i.oneme.ru/chat-fallback.webp',
+      }),
+    ]);
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'chat-fallback',
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        sourceTag: 'managed_refresh',
+        timeoutMs: 350,
+        bypassCache: true,
+      }),
+    );
+    expect(prisma.chat.update).toHaveBeenCalledWith({
+      where: { id: 'chat-fallback' },
+      data: { title: 'Рак' },
+    });
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'chat-fallback',
+        title: 'Рак',
+        entityType: 'chat',
+        link: 'https://max.ru/chat-fallback',
+        participantsCount: 17,
+        avatarUrl: 'https://i.oneme.ru/chat-fallback.webp',
+      }),
+    );
+    expect(schedulePublishedSnapshotRebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
+  });
+
   it('keeps recent bot-added bootstrap alive when unsupported-chat pruning hits a saturated Prisma pool', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([

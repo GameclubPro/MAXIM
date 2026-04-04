@@ -675,6 +675,8 @@ const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
 const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 1_500;
 const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 4;
 const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 250;
+const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 200;
+const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS = 350;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
@@ -750,6 +752,10 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
   private readonly managedEntityHeaderHydrationRuns = new Map<string, Promise<void>>();
+  private readonly recentBotAddedImmediateHeaderHydrationRuns = new Map<
+    string,
+    Promise<ChatSummary>
+  >();
   private readonly managedEntitiesBackgroundRefreshRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesAllowlistCache = new Map<
     string,
@@ -3940,7 +3946,15 @@ export class AdminService implements OnModuleDestroy {
         source: 'recent_bot_added_bootstrap',
       });
 
-      bootstrapped.push(chat);
+      bootstrapped.push(
+        row.user_scoped
+          ? await this.maybeHydrateRecentBotAddedBootstrapChat(
+              normalizedUserId,
+              entityType,
+              chat,
+            )
+          : chat,
+      );
       if (bootstrapped.length >= RECENT_BOT_ADDED_BOOTSTRAP_LIMIT) {
         break;
       }
@@ -3953,6 +3967,136 @@ export class AdminService implements OnModuleDestroy {
     );
 
     return bootstrapped;
+  }
+
+  private async maybeHydrateRecentBotAddedBootstrapChat(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    chat: ChatSummary,
+  ): Promise<ChatSummary> {
+    if (!this.isFallbackTitle(chat.id, chat.title)) {
+      return chat;
+    }
+
+    const key = [userId, entityType, chat.entityType, chat.id].join(':');
+    const existing = this.recentBotAddedImmediateHeaderHydrationRuns.get(key);
+    const pending =
+      existing ??
+      this.runRecentBotAddedImmediateHeaderHydration(userId, entityType, chat)
+        .catch((error: unknown) => {
+          this.logger.debug(
+            {
+              chatId: chat.id,
+              entityType: chat.entityType,
+              userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Immediate recent bot_added header hydration fell back to provisional title',
+          );
+          return this.cloneManagedEntitySummary(chat);
+        })
+        .finally(() => {
+          if (this.recentBotAddedImmediateHeaderHydrationRuns.get(key) === pending) {
+            this.recentBotAddedImmediateHeaderHydrationRuns.delete(key);
+          }
+        });
+
+    if (!existing) {
+      this.recentBotAddedImmediateHeaderHydrationRuns.set(key, pending);
+    }
+
+    return this.awaitManagedEntitiesResponseValueWithinBudget(pending, {
+      fallback: this.cloneManagedEntitySummary(chat),
+      budgetMs: RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS,
+      timeoutMessage:
+        'Detached immediate recent bot_added header hydration after response budget exceeded',
+      failureMessage: 'Immediate recent bot_added header hydration failed',
+      logData: {
+        chatId: chat.id,
+        entityType: chat.entityType,
+        userId,
+      },
+    });
+  }
+
+  private async runRecentBotAddedImmediateHeaderHydration(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    chat: ChatSummary,
+  ): Promise<ChatSummary> {
+    if (typeof this.maxClient.getChatSnapshot !== 'function') {
+      return this.cloneManagedEntitySummary(chat);
+    }
+
+    const candidateBotIds = new Set<string>();
+    const preferredBotId = this.maxBotRegistry?.getBotById(chat.primaryBotId)?.id ?? null;
+    if (preferredBotId) {
+      candidateBotIds.add(preferredBotId);
+    }
+    for (const botId of await this.resolveCandidateBotIdsForChat(chat.id)) {
+      candidateBotIds.add(botId);
+    }
+
+    const botIds = [...candidateBotIds];
+    const lookupOrder = botIds.length > 0 ? botIds : [null];
+
+    for (const botId of lookupOrder) {
+      try {
+        const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS,
+          bypassCache: true,
+          ...(botId ? { botId } : {}),
+        });
+
+        const resolvedTitle =
+          this.resolvePresentableManagedEntityTitle(chat.id, snapshot.title, chat.title) ?? chat.title;
+        const resolvedLink = this.readTrimmedString(snapshot.link) ?? chat.link ?? null;
+        const resolvedAvatarUrl =
+          this.readTrimmedString(snapshot.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl);
+        const hydratedSnapshot = {
+          title: resolvedTitle,
+          link: resolvedLink,
+          participantsCount: snapshot.participantsCount,
+          avatarUrl: resolvedAvatarUrl ?? null,
+        };
+
+        await this.persistManagedEntityHeaderSnapshot(chat, hydratedSnapshot);
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+
+        const hydrated = this.cloneManagedEntitySummary({
+          ...chat,
+          title: resolvedTitle,
+          link: resolvedLink,
+          ...(resolvedAvatarUrl ? { avatarUrl: resolvedAvatarUrl } : {}),
+        });
+        this.rememberManagedEntitiesLastSuccessChats(userId, [hydrated]);
+        return hydrated;
+      } catch (error: unknown) {
+        if (this.isBotAdminLookupDeniedError(error)) {
+          continue;
+        }
+
+        if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+          break;
+        }
+
+        this.logger.debug(
+          {
+            chatId: chat.id,
+            entityType: chat.entityType,
+            botId: botId ?? 'default',
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Immediate recent bot_added header hydration failed for candidate bot',
+        );
+      }
+    }
+
+    return this.cloneManagedEntitySummary(chat);
   }
 
   private async revalidateCachedManagedEntities(
