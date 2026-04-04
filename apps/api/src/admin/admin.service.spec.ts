@@ -9072,6 +9072,134 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('schedules a published snapshot rebuild when current chat bootstrap finds a chat missing from the snapshot', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 1,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Старый чат',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const currentChat = createChatSummaryFixture({
+      id: 'chat-launch',
+      title: 'Новая группа',
+      createdAt: '2026-04-04T10:00:00.000Z',
+      entityType: 'chat',
+    });
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'granted',
+      source: 'remote',
+    });
+    jest
+      .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
+      .mockResolvedValue(currentChat);
+    const rebuildSpy = jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).bootstrapCurrentChat(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-launch',
+          chatTitle: 'Новая группа',
+          chatType: 'chat',
+        },
+        'chat',
+      ),
+    ).resolves.toEqual(currentChat);
+
+    await flushAsyncTasks();
+
+    expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
+  });
+
+  it('does not schedule a published snapshot rebuild when current chat bootstrap is already covered by the snapshot', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 1,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-launch',
+            title: 'Новая группа',
+            createdAt: '2026-04-04T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const currentChat = createChatSummaryFixture({
+      id: 'chat-launch',
+      title: 'Новая группа',
+      createdAt: '2026-04-04T10:00:00.000Z',
+      entityType: 'chat',
+    });
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'granted',
+      source: 'remote',
+    });
+    jest
+      .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
+      .mockResolvedValue(currentChat);
+    const rebuildSpy = jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).bootstrapCurrentChat(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-launch',
+          chatTitle: 'Новая группа',
+          chatType: 'chat',
+        },
+        'chat',
+      ),
+    ).resolves.toEqual(currentChat);
+
+    await flushAsyncTasks();
+
+    expect(rebuildSpy).not.toHaveBeenCalled();
+  });
+
   it('does not overwrite a presentable title during current chat bootstrap', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValueOnce({

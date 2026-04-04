@@ -1726,6 +1726,40 @@ export class AdminService implements OnModuleDestroy {
     this.managedEntitiesPublishedSnapshotRuns.set(key, pending);
   }
 
+  private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChat(
+    userId: string,
+    entityType: ManagedEntityType,
+    chat: ChatSummary,
+  ): void {
+    if (
+      !this.managedEntitiesPublishedSnapshotWriteEnabled ||
+      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function'
+    ) {
+      return;
+    }
+
+    void this.chatContextCache
+      .getManagedEntitiesPublishedSnapshot(userId, entityType)
+      .then((snapshot) => {
+        if (snapshot?.items.some((item) => item.id === chat.id)) {
+          return;
+        }
+
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            entityType,
+            userId,
+            chatId: chat.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed entities published snapshot bootstrap coverage check failed',
+        );
+      });
+  }
+
   private async rebuildManagedEntitiesPublishedSnapshot(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -19860,6 +19894,12 @@ export class AdminService implements OnModuleDestroy {
       preferredBotId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? null,
       source: 'current_chat_bootstrap',
     });
+
+    this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChat(
+      user.userId,
+      currentContextEntityType,
+      chat,
+    );
 
     return chat;
   }
