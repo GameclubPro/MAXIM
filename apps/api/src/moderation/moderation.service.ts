@@ -1187,13 +1187,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const { violations } = detection;
       const hasCompetingViolation = violations.length > 0;
-      const latestManualUnbanAt =
+      const latestManualReleaseAt =
         detection.duplicateDecision || detection.duplicateHit
-          ? await this.resolveLatestManualUnbanCreatedAt(chatId, senderId)
+          ? await this.resolveLatestManualReleaseCreatedAt(chatId, senderId)
           : null;
       const duplicateDecisionSuppressed =
-        detection.duplicateDecision && latestManualUnbanAt
-          ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateDecision.windowSec)
+        detection.duplicateDecision && latestManualReleaseAt
+          ? this.isWithinWindowFromDate(
+              latestManualReleaseAt,
+              detection.duplicateDecision.windowSec,
+            )
           : false;
       if (!hasCompetingViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
         await this.handleDuplicateDecision({
@@ -1222,8 +1225,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const duplicateHitSuppressed =
-        detection.duplicateHit && latestManualUnbanAt
-          ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateHit.windowSec)
+        detection.duplicateHit && latestManualReleaseAt
+          ? this.isWithinWindowFromDate(latestManualReleaseAt, detection.duplicateHit.windowSec)
           : false;
       if (!hasCompetingViolation && detection.duplicateHit && !duplicateHitSuppressed) {
         await this.handleDuplicateHit({
@@ -4173,24 +4176,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     windowMs: number,
   ): Promise<Date> {
     const baseSince = new Date(Date.now() - windowMs);
-    const latestManualUnban = await this.resolveLatestManualUnbanCreatedAt(chatId, userId);
+    const latestManualRelease = await this.resolveLatestManualReleaseCreatedAt(chatId, userId);
 
-    if (latestManualUnban && latestManualUnban.getTime() > baseSince.getTime()) {
-      return latestManualUnban;
+    if (latestManualRelease && latestManualRelease.getTime() > baseSince.getTime()) {
+      return latestManualRelease;
     }
 
     return baseSince;
   }
 
-  private async resolveLatestManualUnbanCreatedAt(
+  private async resolveLatestManualReleaseCreatedAt(
     chatId: string,
     userId: string,
   ): Promise<Date | null> {
-    const latestManualUnban = await this.prisma.moderationEvent.findFirst({
+    const latestManualRelease = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
         userId,
-        ruleCode: 'MANUAL_UNBAN',
+        ruleCode: {
+          in: ['MANUAL_UNMUTE', 'MANUAL_UNBAN'],
+        },
       },
       orderBy: {
         createdAt: 'desc',
@@ -4200,7 +4205,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    return latestManualUnban?.createdAt ?? null;
+    return latestManualRelease?.createdAt ?? null;
   }
 
   private isWithinWindowFromDate(createdAt: Date, windowSec: number): boolean {

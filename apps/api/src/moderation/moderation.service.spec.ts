@@ -5034,6 +5034,46 @@ describe('ModerationService', () => {
     }
   });
 
+  it('resets link escalation window after a later manual unmute', async () => {
+    const nowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-03-28T10:00:00.000Z').getTime());
+    try {
+      const prisma = {
+        violation: {
+          count: jest.fn().mockResolvedValue(1),
+        },
+        moderationEvent: {
+          findFirst: jest.fn().mockResolvedValue({
+            createdAt: new Date('2026-03-28T03:30:00.000Z'),
+          }),
+        },
+      };
+
+      const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
+
+      const result = await (
+        service as unknown as {
+          countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
+        }
+      ).countRecentLinkViolations('chat-1', 'user-1');
+
+      expect(result).toBe(1);
+      expect(prisma.violation.count).toHaveBeenCalledWith({
+        where: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          ruleCode: 'LINK_BLOCKED',
+          createdAt: {
+            gte: new Date('2026-03-28T03:30:00.000Z'),
+          },
+        },
+      });
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('suppresses duplicate escalation while a later manual unban is still inside the duplicate window', async () => {
     const prisma = {
       chat: {
@@ -9020,6 +9060,72 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('suppresses duplicate escalation while a later manual unmute is still inside the duplicate window', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          action: SanctionAction.NONE,
+          ruleCode: 'MANUAL_UNMUTE',
+          metadata: null,
+          createdAt: new Date(Date.now() - 60 * 60 * 1000),
+        }),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'MUTE',
+          count: 3,
+          threshold: 3,
+          windowSec: 24 * 60 * 60,
+          hash: 'dup-after-unmute',
+          nextAction: 'BAN',
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
