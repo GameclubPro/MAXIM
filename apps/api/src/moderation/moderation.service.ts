@@ -1292,7 +1292,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
       if (canDeleteMessage) {
-        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.deleteMessageImmediately(chatId, messageId);
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -1895,7 +1895,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.deleteMessageImmediately(chatId, messageId);
         messageDeleted = true;
         await this.createBotModerationEvent({
           data: {
@@ -2056,7 +2056,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.deleteMessageImmediately(chatId, messageId);
         messageDeleted = true;
         await this.createBotModerationEvent({
           data: {
@@ -2724,7 +2724,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.banMember(chatId, userId);
+      await this.banMemberImmediately(chatId, userId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -2747,6 +2747,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botMessageOptions,
       sanctionNoticeText,
       botSpeechStyle,
+    });
+  }
+
+  private async deleteMessageImmediately(
+    chatId: string,
+    messageId: string,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ) {
+    await this.maxClient.deleteMessage(chatId, messageId, {
+      ...(options ?? {}),
+      immediate: true,
+    });
+  }
+
+  private async kickMemberImmediately(
+    chatId: string,
+    userId: string,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ) {
+    await this.maxClient.kickMember(chatId, userId, {
+      ...(options ?? {}),
+      immediate: true,
+    });
+  }
+
+  private async banMemberImmediately(
+    chatId: string,
+    userId: string,
+    options?: Omit<MaxActionDispatchOptions, 'immediate'>,
+  ) {
+    await this.maxClient.banMember(chatId, userId, {
+      ...(options ?? {}),
+      immediate: true,
     });
   }
 
@@ -5034,7 +5067,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.deleteMessageImmediately(chatId, messageId);
       await this.createBotModerationEvent({
         data: {
           chatId,
@@ -5077,7 +5110,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { chatId, userId, messageId, text } = params;
 
     try {
-      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5091,7 +5124,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.kickMember(chatId, userId);
+      await this.kickMemberImmediately(chatId, userId);
       await this.createBotModerationEvent({
         data: {
           chatId,
@@ -5267,7 +5300,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     for (const userId of botUserIds) {
       kickedUserIds.add(userId);
       try {
-        await this.maxClient.kickMember(chatId, userId);
+        await this.kickMemberImmediately(chatId, userId);
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -5641,7 +5674,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5721,7 +5754,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { chatId, userId, messageId, text, reason } = params;
     try {
-      await this.maxClient.kickMember(chatId, userId);
+      await this.kickMemberImmediately(chatId, userId);
       await this.createBotModerationEvent({
         data: {
           chatId,
@@ -5910,7 +5943,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
     const warningText = `${userLabel}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
     try {
-      await this.maxClient.sendMessage(chatId, warningText, { textFormat: 'markdown' });
+      await this.maxClient.sendMessage(chatId, warningText, { textFormat: 'markdown' }, { immediate: true });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5932,7 +5965,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<void> {
     const { chatId, userId, messageId, text, reason } = params;
     try {
-      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.deleteMessageImmediately(chatId, messageId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6624,7 +6657,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.deleteMessageImmediately(chatId, messageId);
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -6692,7 +6725,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.deleteMessageImmediately(chatId, messageId);
         await this.createBotModerationEvent({
           data: {
             chatId,
@@ -6830,7 +6863,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    await this.maxClient.deleteMessage(params.chatId, params.messageId);
+    await this.deleteMessageImmediately(params.chatId, params.messageId);
 
     const missingChannelIdsNeedingRefresh = membership.missingChannelIds.filter((channelId) => {
       const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;

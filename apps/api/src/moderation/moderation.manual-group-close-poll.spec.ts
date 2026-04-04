@@ -123,7 +123,9 @@ describe('ModerationService manual group close polling', () => {
       }),
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
+      immediate: true,
+    });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -194,6 +196,8 @@ describe('ModerationService manual group close polling', () => {
     await (service as any).processManualGroupCloseChats();
 
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1');
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
+      immediate: true,
+    });
   });
 });

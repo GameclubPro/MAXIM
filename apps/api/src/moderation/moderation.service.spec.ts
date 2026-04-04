@@ -106,6 +106,18 @@ function topicFilterWarnNotice(name: string, reason: string): string {
   return `Товарищ ${userMention(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
+function expectImmediateDeleteMessage(mockFn: jest.Mock, chatId: string, messageId: string) {
+  expect(mockFn).toHaveBeenCalledWith(chatId, messageId, { immediate: true });
+}
+
+function expectImmediateKickMember(mockFn: jest.Mock, chatId: string, userId: string) {
+  expect(mockFn).toHaveBeenCalledWith(chatId, userId, { immediate: true });
+}
+
+function expectImmediateBanMember(mockFn: jest.Mock, chatId: string, userId: string) {
+  expect(mockFn).toHaveBeenCalledWith(chatId, userId, { immediate: true });
+}
+
 function nightModeNotice(window: string, timezone: string): string {
   return `Ночной режим, граждане 🌙 Участок прикрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
 }
@@ -2306,9 +2318,10 @@ describe('ModerationService', () => {
       'chat-5',
       expect.stringContaining('Предупреждение 1/2.'),
       { textFormat: 'markdown' },
+      { immediate: true },
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-6', 'msg-6');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-6', 'user-spam-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-6', 'msg-6');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-6', 'user-spam-1');
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-spam-1' },
       create: expect.objectContaining({
@@ -2998,12 +3011,14 @@ describe('ModerationService', () => {
       'chat-5',
       expect.stringContaining('Предупреждение 1/2.'),
       { textFormat: 'markdown' },
+      { immediate: true },
     );
     expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
       2,
       'chat-10',
       expect.stringContaining('Предупреждение 2/2.'),
       { textFormat: 'markdown' },
+      { immediate: true },
     );
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-spam-1' },
@@ -3072,9 +3087,9 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-bot-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'bot-1');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'bot-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
@@ -3182,7 +3197,7 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'bot-joined-1');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'bot-joined-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
@@ -4663,8 +4678,8 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-1');
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -4786,7 +4801,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-black-2');
+    expectImmediateKickMember(maxClient.kickMember, 'chat-1', 'user-black-2');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -4907,7 +4922,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
@@ -5138,7 +5153,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -5202,7 +5217,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -5284,7 +5299,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
       maxClient.deleteMessage.mock.invocationCallOrder[0],
     );
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
       'chat-1',
       expect.stringContaining('Ночной режим, граждане'),
@@ -5554,7 +5569,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -5619,7 +5634,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
   });
 
   it('skips live admin lookup in degrade mode to keep manual close moderation moving', async () => {
@@ -5696,7 +5711,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
   });
 
   it('sends scheduled night closed notice once per active window', async () => {
@@ -8306,7 +8321,7 @@ describe('ModerationService', () => {
 
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       muteNotice('Алексей', '6ч'),
@@ -8398,7 +8413,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -8667,8 +8682,8 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -8731,7 +8746,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       permanentBanNotice('Алексей'),
@@ -8791,7 +8806,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -8927,7 +8942,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       textFilterWarnNotice('Алексей', 'грубую лексику'),
@@ -9055,8 +9070,8 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -9130,7 +9145,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -9198,7 +9213,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -9283,7 +9298,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
@@ -9426,7 +9441,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -9503,7 +9518,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       majorExplanation(
@@ -9748,7 +9763,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -9830,7 +9845,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -9906,7 +9921,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
@@ -10154,7 +10169,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       linkWarnNotice('Алексей'),
@@ -10680,8 +10695,8 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -10820,7 +10835,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -10963,7 +10978,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -11116,7 +11131,7 @@ describe('ModerationService', () => {
     expect(detectionArgs.effectiveLength).toBeGreaterThan('коротко'.length);
     expect(detectionArgs.effectiveLength).toBeGreaterThan(100);
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-forwarded-1');
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -11403,7 +11418,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
@@ -11554,9 +11569,9 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       messageLimitsBanNotice('Алексей', 'слишком частая отправка фото'),
@@ -11628,7 +11643,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
@@ -11705,7 +11720,7 @@ describe('ModerationService', () => {
       hasVideoAttachment?: boolean;
     };
     expect(detectionArgs.hasVideoAttachment).toBe(true);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-video-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-video-1');
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -11889,7 +11904,7 @@ describe('ModerationService', () => {
       hasVideoAttachment?: boolean;
     };
     expect(detectionArgs.hasVideoAttachment).toBe(true);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-video-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-forwarded-video-1');
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -11959,7 +11974,7 @@ describe('ModerationService', () => {
       hasVoiceAttachment?: boolean;
     };
     expect(detectionArgs.hasVoiceAttachment).toBe(true);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-voice-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-forwarded-voice-1');
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -12029,7 +12044,7 @@ describe('ModerationService', () => {
       hasFileAttachment?: boolean;
     };
     expect(detectionArgs.hasFileAttachment).toBe(true);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-file-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-forwarded-file-1');
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -12105,7 +12120,7 @@ describe('ModerationService', () => {
       hasVoiceAttachment?: boolean;
     };
     expect(detectionArgs.hasVoiceAttachment).toBe(true);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-voice-1');
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-voice-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       majorExplanation('Алексей', 'снято с линии', 'голосовые сообщения в этом чате отключены'),
@@ -12308,7 +12323,7 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(ruleEngine.detect).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(prisma.violation.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           chatId: 'chat-1',
@@ -12639,7 +12654,7 @@ describe('ModerationService', () => {
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
@@ -12727,7 +12742,7 @@ describe('ModerationService', () => {
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
@@ -12908,7 +12923,7 @@ describe('ModerationService', () => {
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('обязательные каналы');
@@ -12968,7 +12983,7 @@ describe('ModerationService', () => {
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
-      expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('обязательные каналы');
@@ -13285,7 +13300,7 @@ describe('ModerationService', () => {
       );
       expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
       expect(maxClient.kickMember).not.toHaveBeenCalled();
-      expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+      expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
     });
 
     it('issues BAN on fourth required subscription violation without adding the user to global spammers', async () => {
@@ -13331,7 +13346,7 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(maxClient.kickMember).not.toHaveBeenCalled();
-      expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+      expectImmediateBanMember(maxClient.banMember, 'chat-1', 'user-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
