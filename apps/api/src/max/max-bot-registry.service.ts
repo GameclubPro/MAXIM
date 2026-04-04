@@ -22,12 +22,16 @@ export class MaxBotRegistryService {
   private readonly bots: readonly MaxBotDefinition[];
   private readonly botsById: ReadonlyMap<string, MaxBotDefinition>;
   private readonly appBaseUrl: string | null;
+  private readonly webhookBaseUrl: string | null;
   private readonly defaultBot: MaxBotDefinition;
   private readonly entryBot: MaxBotDefinition;
   private readonly knownBotUserIdVariants: ReadonlySet<string>;
 
   constructor(configService: ConfigService) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
+    this.webhookBaseUrl = this.normalizeAppBaseUrl(
+      configService.get<string>('MAX_WEBHOOK_BASE_URL') ?? this.appBaseUrl ?? undefined,
+    );
     this.bots = buildResolvedMaxBotConfigs({
       defaultBot: {
         id: configService.getOrThrow<string>('MAX_BOT_ID'),
@@ -182,11 +186,11 @@ export class MaxBotRegistryService {
   }
 
   private buildWebhookUrl(botId: string, secretPath: string): string | null {
-    if (!this.appBaseUrl) {
+    if (!this.webhookBaseUrl) {
       return null;
     }
 
-    return `${this.appBaseUrl}/api/webhook/max/${encodeURIComponent(botId)}/${encodeURIComponent(secretPath)}`;
+    return `${this.webhookBaseUrl}/api/webhook/max/${encodeURIComponent(botId)}/${encodeURIComponent(secretPath)}`;
   }
 
   private maskWebhookUrl(url: string | null): string | null {
