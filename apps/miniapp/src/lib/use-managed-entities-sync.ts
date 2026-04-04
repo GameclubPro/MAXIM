@@ -9,6 +9,7 @@ import type {
 } from '@maxim/contracts';
 import { getChannels, getChats } from './api/root-client';
 import { isUnusableChatTitle, resolveChatTitle } from './chat-titles';
+import { getInitData } from './init-data';
 import type { ApiTransport } from './api/transport';
 
 const MANAGED_ENTITIES_REFRESH_FALLBACK_DELAY_MS = 1500;
@@ -141,6 +142,44 @@ function readManagedEntitiesLocalCacheUserScope(): string | null {
         return `u:${normalized}`;
       }
     }
+  }
+
+  const initDataUserScope = readManagedEntitiesLocalCacheUserScopeFromInitData(getInitData());
+  if (initDataUserScope) {
+    return initDataUserScope;
+  }
+
+  return null;
+}
+
+export function readManagedEntitiesLocalCacheUserScopeFromInitData(
+  initData: string | null | undefined,
+): string | null {
+  if (typeof initData !== 'string' || initData.trim().length === 0) {
+    return null;
+  }
+
+  const params = new URLSearchParams(initData);
+  const directUserId = params.get('user_id');
+  if (directUserId?.trim()) {
+    return `u:${directUserId.trim()}`;
+  }
+
+  const rawUser = params.get('user');
+  if (!rawUser?.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawUser) as { id?: unknown } | null;
+    if (typeof parsed?.id === 'string' || typeof parsed?.id === 'number') {
+      const normalized = String(parsed.id).trim();
+      if (normalized) {
+        return `u:${normalized}`;
+      }
+    }
+  } catch {
+    return null;
   }
 
   return null;
@@ -477,6 +516,25 @@ export function applyManagedEntitiesResponseDiff(options: {
   return orderedItems;
 }
 
+export function resolveManagedEntitiesScopeTransitionState(options: {
+  currentState: ManagedEntitiesSyncState;
+  nextInitialState: ManagedEntitiesSyncState;
+}): ManagedEntitiesSyncState {
+  const currentHasVisibleData =
+    Array.isArray(options.currentState.data) && options.currentState.data.length > 0;
+  const nextHasVisibleData =
+    Array.isArray(options.nextInitialState.data) && options.nextInitialState.data.length > 0;
+
+  if (nextHasVisibleData || !currentHasVisibleData) {
+    return options.nextInitialState;
+  }
+
+  return {
+    ...options.currentState,
+    error: null,
+  };
+}
+
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
@@ -612,10 +670,16 @@ export function useManagedEntitiesSync({
     cacheScopeRef.current = effectiveStateCacheScope;
     skippedInitialSyncRef.current = false;
     backoffResumeAtRef.current = null;
-    latestDataRef.current = initialState.data;
-    latestSnapshotRef.current = initialState.snapshot;
-    hasLoadedFromServerRef.current = initialState.hasLoadedFromServer;
-    setState(initialState);
+    setState((current) => {
+      const nextState = resolveManagedEntitiesScopeTransitionState({
+        currentState: current,
+        nextInitialState: initialState,
+      });
+      latestDataRef.current = nextState.data;
+      latestSnapshotRef.current = nextState.snapshot;
+      hasLoadedFromServerRef.current = nextState.hasLoadedFromServer;
+      return nextState;
+    });
   }, [effectiveStateCacheScope, initialState]);
 
   useEffect(() => {

@@ -4,7 +4,9 @@ import type { ChatSummary, ManagedEntitiesRefreshState } from '@maxim/contracts'
 import {
   applyManagedEntitiesResponseDiff,
   mergeManagedEntitiesRefreshItems,
+  readManagedEntitiesLocalCacheUserScopeFromInitData,
   resolveManagedEntitiesRefreshRequestOptions,
+  resolveManagedEntitiesScopeTransitionState,
   shouldStartManagedEntitiesBackgroundRefresh,
 } from '../src/lib/use-managed-entities-sync';
 
@@ -258,6 +260,84 @@ test('rejects a published snapshot patch when the ordered ids cannot reconstruct
   });
 
   assert.equal(next, null);
+});
+
+test('extracts local cache user scope from init data user payload', () => {
+  assert.equal(
+    readManagedEntitiesLocalCacheUserScopeFromInitData(
+      'query_id=test&user=%7B%22id%22%3A123456%2C%22first_name%22%3A%22Max%22%7D&hash=test',
+    ),
+    'u:123456',
+  );
+});
+
+test('preserves the visible list when cache scope switches but the new scope has no data yet', () => {
+  const currentState = {
+    data: [createItem('1', 'Chat 1')],
+    error: new Error('stale'),
+    refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+    snapshot: {
+      version: 'snapshot-v1',
+      builtAt: '2026-04-04T10:00:00.000Z',
+      lastSyncedAt: '2026-04-04T09:59:00.000Z',
+      source: 'published_snapshot' as const,
+      stale: false,
+    },
+    phase: 'complete' as const,
+    hasLoadedFromServer: true,
+  };
+  const nextInitialState = {
+    data: null,
+    error: null,
+    refreshState: null,
+    snapshot: null,
+    phase: 'loading' as const,
+    hasLoadedFromServer: false,
+  };
+
+  assert.deepEqual(
+    resolveManagedEntitiesScopeTransitionState({
+      currentState,
+      nextInitialState,
+    }),
+    {
+      ...currentState,
+      error: null,
+    },
+  );
+});
+
+test('prefers the new scope cache when it already has visible data', () => {
+  const currentState = {
+    data: [createItem('1', 'Chat 1')],
+    error: null,
+    refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+    snapshot: null,
+    phase: 'complete' as const,
+    hasLoadedFromServer: true,
+  };
+  const nextInitialState = {
+    data: [createItem('2', 'Chat 2')],
+    error: null,
+    refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+    snapshot: {
+      version: 'snapshot-v2',
+      builtAt: '2026-04-04T10:02:00.000Z',
+      lastSyncedAt: '2026-04-04T10:01:00.000Z',
+      source: 'published_snapshot' as const,
+      stale: false,
+    },
+    phase: 'complete' as const,
+    hasLoadedFromServer: false,
+  };
+
+  assert.deepEqual(
+    resolveManagedEntitiesScopeTransitionState({
+      currentState,
+      nextInitialState,
+    }),
+    nextInitialState,
+  );
 });
 
 test('can keep the already visible home list when a complete refresh returns empty', () => {
