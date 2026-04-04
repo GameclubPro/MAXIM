@@ -10,8 +10,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // including the current-chat home presentation fix, incremental sync merge logic,
 // late-initData startup recovery, the managed-entities snapshot metadata contract,
 // version-aware home snapshot gating, the additive published-snapshot diff transport,
-// and startup cache-scope stabilization for managed entities.
-const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 2304;
+// startup cache-scope stabilization for managed entities, and immediate launch-context
+// projection into the home list before the server snapshot catches up.
+const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 2560;
 // Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
 // sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
 // execution-planner control plane, lazy bot diagnostics entrypoint, bot-persona-aware
