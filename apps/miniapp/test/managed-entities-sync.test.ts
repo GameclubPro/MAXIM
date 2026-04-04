@@ -84,9 +84,29 @@ test('keeps the existing server cursor on the first background refresh session',
       reloadBehavior: 'default',
       backgroundRefreshOnFirstLoad: true,
       hasLoadedFromServer: false,
+      hasVisibleData: true,
     }),
     {
       startWithBackgroundRefresh: true,
+      continueWithBackgroundRefreshAfterLoad: false,
+      bypassRemoteCache: false,
+      resetRefreshCursor: false,
+    },
+  );
+});
+
+test('cold start without visible data loads the default list first and refreshes only afterwards', () => {
+  assert.deepEqual(
+    resolveManagedEntitiesRefreshRequestOptions({
+      forceRefreshSession: false,
+      reloadBehavior: 'default',
+      backgroundRefreshOnFirstLoad: true,
+      hasLoadedFromServer: false,
+      hasVisibleData: false,
+    }),
+    {
+      startWithBackgroundRefresh: false,
+      continueWithBackgroundRefreshAfterLoad: true,
       bypassRemoteCache: false,
       resetRefreshCursor: false,
     },
@@ -100,9 +120,11 @@ test('manual refresh bypasses MAX cache without restarting the server cursor', (
       reloadBehavior: 'manual',
       backgroundRefreshOnFirstLoad: false,
       hasLoadedFromServer: true,
+      hasVisibleData: true,
     }),
     {
       startWithBackgroundRefresh: true,
+      continueWithBackgroundRefreshAfterLoad: false,
       bypassRemoteCache: true,
       resetRefreshCursor: false,
     },
@@ -116,9 +138,11 @@ test('recovery refresh also resumes the existing server cursor', () => {
       reloadBehavior: 'recovery',
       backgroundRefreshOnFirstLoad: false,
       hasLoadedFromServer: true,
+      hasVisibleData: true,
     }),
     {
       startWithBackgroundRefresh: true,
+      continueWithBackgroundRefreshAfterLoad: false,
       bypassRemoteCache: true,
       resetRefreshCursor: false,
     },

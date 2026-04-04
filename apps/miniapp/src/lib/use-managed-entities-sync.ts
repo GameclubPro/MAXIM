@@ -77,22 +77,28 @@ export function resolveManagedEntitiesRefreshRequestOptions(options: {
   reloadBehavior: 'default' | 'manual' | 'recovery';
   backgroundRefreshOnFirstLoad: boolean;
   hasLoadedFromServer: boolean;
+  hasVisibleData: boolean;
 }): {
   startWithBackgroundRefresh: boolean;
+  continueWithBackgroundRefreshAfterLoad: boolean;
   bypassRemoteCache: boolean;
   resetRefreshCursor: boolean;
 } {
-  const startWithBackgroundRefresh = shouldStartManagedEntitiesBackgroundRefresh({
+  const requestedBackgroundRefresh = shouldStartManagedEntitiesBackgroundRefresh({
     forceRefreshSession: options.forceRefreshSession,
     backgroundRefreshOnFirstLoad: options.backgroundRefreshOnFirstLoad,
     hasLoadedFromServer: options.hasLoadedFromServer,
   });
+  const startWithBackgroundRefresh =
+    requestedBackgroundRefresh && (options.forceRefreshSession || options.hasVisibleData);
   const bypassRemoteCache =
     options.forceRefreshSession &&
     (options.reloadBehavior === 'manual' || options.reloadBehavior === 'recovery');
 
   return {
     startWithBackgroundRefresh,
+    continueWithBackgroundRefreshAfterLoad:
+      requestedBackgroundRefresh && !startWithBackgroundRefresh,
     bypassRemoteCache,
     // Let the backend resume an in-flight scan instead of restarting from zero on each cold open.
     resetRefreshCursor: false,
@@ -832,9 +838,12 @@ export function useManagedEntitiesSync({
       reloadBehavior,
       backgroundRefreshOnFirstLoad,
       hasLoadedFromServer: hasLoadedFromServerRef.current,
+      hasVisibleData: hasCachedData,
     });
     const forceRefreshUsesBypassRemoteCache = refreshRequestOptions.bypassRemoteCache;
     const shouldStartWithBackgroundRefresh = refreshRequestOptions.startWithBackgroundRefresh;
+    const shouldContinueWithBackgroundRefreshAfterLoad =
+      refreshRequestOptions.continueWithBackgroundRefreshAfterLoad;
     setState((current) => ({
       ...current,
       error: hasCachedData ? null : current.error,
@@ -864,7 +873,8 @@ export function useManagedEntitiesSync({
           if (
             (!hasCachedData || freshOnLoad || reloadOnMount) &&
             !forceRefreshPending &&
-            !syncOnFirstLoad
+            !syncOnFirstLoad &&
+            !shouldContinueWithBackgroundRefreshAfterLoad
           ) {
             latestSnapshotRef.current = null;
             setState({

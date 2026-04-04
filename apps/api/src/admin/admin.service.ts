@@ -1478,8 +1478,9 @@ export class AdminService implements OnModuleDestroy {
           },
         })
       : null;
-    const shouldMergeLightweightBootstrap =
-      options.bypassRemoteCache === true || options.resetRefreshCursor === true;
+    // If no published snapshot exists yet, prefer showing lightweight bootstrap candidates
+    // over returning a temporarily empty refresh response.
+    const shouldMergeLightweightBootstrap = true;
     const responseBaseItems =
       responseWarmup && responseWarmup.items.length > 0
         ? this.mergeManagedEntityGroups(responseWarmup.items, cached)
