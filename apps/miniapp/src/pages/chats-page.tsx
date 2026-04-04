@@ -235,13 +235,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     activeEntities.length === 0;
 
   const [filteredEntities, visibleEntitiesCount, hasVisibleLaunchContext] = useMemo(
-    () =>
-      buildHomeView({
+    () => {
+      const provisionalLaunchEntity =
+        visibleLaunchContext && visibleLaunchContext.tab === activeTab
+          ? {
+              id: visibleLaunchContext.chatId,
+              title: visibleLaunchContext.title,
+              createdAt: '',
+              entityType: activeTab,
+              link: visibleLaunchContext.link ?? null,
+              avatarUrl: visibleLaunchContext.avatarUrl ?? null,
+              channelOverview: null,
+              assignedBots: [],
+              primaryBotId: null,
+              sharedMode: 'owned' as const,
+            }
+          : null;
+
+      return buildHomeView({
         entities: activeEntities,
         query,
         activeTab,
         visibleLaunchContext,
-      }),
+        provisionalEntity: provisionalLaunchEntity,
+      });
+    },
     [activeEntities, activeTab, query, visibleLaunchContext],
   );
   const showSearchCard = !isNoEntitiesForTab || hasVisibleLaunchContext;
@@ -476,6 +494,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       <Suspense fallback={null}>
         <LazyLaunchContextSection
           api={api}
+          activeTab={activeTab}
           chatsState={chatsState}
           channelsState={channelsState}
           onLaunchContextTabChange={setLaunchContextTabHint}

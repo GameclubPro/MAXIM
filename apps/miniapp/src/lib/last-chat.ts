@@ -12,6 +12,9 @@ type ManagedEntityListItem = {
 export type VisibleLaunchContext = {
   tab: LastEntityType;
   chatId: string;
+  title: string;
+  avatarUrl?: string | null;
+  link?: string | null;
 };
 
 export function readLastChatId(): string {
@@ -107,6 +110,7 @@ export function buildHomeView<T extends ManagedEntityListItem>(options: {
   query: string;
   activeTab: LastEntityType;
   visibleLaunchContext: VisibleLaunchContext | null;
+  provisionalEntity?: T | null;
 }) {
   const normalizedQuery = options.query.trim().toLowerCase();
   const matchingEntities = !Array.isArray(options.entities)
@@ -116,13 +120,21 @@ export function buildHomeView<T extends ManagedEntityListItem>(options: {
       : options.entities.filter((entity) =>
           `${entity.title} ${entity.id}`.toLowerCase().includes(normalizedQuery),
         );
-  const launchChatId =
-    options.visibleLaunchContext?.tab === options.activeTab
-      ? options.visibleLaunchContext.chatId
+  const activeLaunchContext =
+    options.visibleLaunchContext?.tab === options.activeTab ? options.visibleLaunchContext : null;
+  const hasLaunchContextInList =
+    activeLaunchContext !== null &&
+    matchingEntities.some((entity) => entity.id === activeLaunchContext.chatId);
+  const provisionalEntity =
+    activeLaunchContext !== null &&
+    !hasLaunchContextInList &&
+    options.provisionalEntity &&
+    `${options.provisionalEntity.title} ${options.provisionalEntity.id}`
+      .toLowerCase()
+      .includes(normalizedQuery)
+      ? options.provisionalEntity
       : null;
-  const listEntities = launchChatId
-    ? matchingEntities.filter((entity) => entity.id !== launchChatId)
-    : matchingEntities;
+  const listEntities = provisionalEntity ? [provisionalEntity, ...matchingEntities] : matchingEntities;
 
-  return [listEntities, listEntities.length + (launchChatId ? 1 : 0), Boolean(launchChatId)] as const;
+  return [listEntities, listEntities.length, false] as const;
 }

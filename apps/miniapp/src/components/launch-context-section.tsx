@@ -57,6 +57,7 @@ function formatRefreshProgress(refreshState: ManagedEntitiesRefreshState | null)
 
 export function LaunchContextSection({
   api,
+  activeTab,
   chatsState,
   channelsState,
   onLaunchContextTabChange,
@@ -65,6 +66,7 @@ export function LaunchContextSection({
   onSystemAccessChange,
 }: {
   api: ApiTransport;
+  activeTab: ManagedTab;
   chatsState: ManagedEntitiesSyncResult;
   channelsState: ManagedEntitiesSyncResult;
   onLaunchContextTabChange: (tab: ManagedTab | null) => void;
@@ -166,8 +168,12 @@ export function LaunchContextSection({
       ? {
           tab: launchContextTab,
           chatId: launchContext.chatId,
+          title: launchContextTitle,
+          avatarUrl: launchContextEntity?.avatarUrl ?? null,
+          link: launchContextEntity?.link ?? null,
         }
       : null;
+  const shouldRenderStandaloneCard = launchContextTab !== null && launchContextTab !== activeTab;
 
   useEffect(() => {
     onVisibleLaunchContextChange(visibleLaunchContext);
@@ -202,6 +208,7 @@ export function LaunchContextSection({
   ]);
 
   if (
+    !shouldRenderStandaloneCard ||
     !launchContext ||
     !launchContextTab ||
     !launchContextPrimaryRoute ||
