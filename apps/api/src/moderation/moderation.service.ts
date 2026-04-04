@@ -13277,7 +13277,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'channel-auto-post-buttons'
       | 'manual-group-close-scan',
   ): Promise<boolean> {
-    if (task === 'night-mode-announcements') {
+    if (task === 'night-mode-announcements' || task === 'manual-group-close-scan') {
       return false;
     }
 
