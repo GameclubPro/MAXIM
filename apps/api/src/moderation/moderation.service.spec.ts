@@ -294,6 +294,7 @@ function createUpdate(): MaxUpdate {
 function createAdminForwardedBanUpdate(
   text = 'бан',
   forwardedChatId: string | number = 'chat-1',
+  forwardedMessageId = 'mid-forward-ban-1',
 ): MaxUpdate {
   return {
     updateId: 'upd-admin-forward-ban-1',
@@ -328,6 +329,7 @@ function createAdminForwardedBanUpdate(
               title: forwardedChatId === 'chat-1' ? 'Chat 1' : 'Другой чат',
             },
             body: {
+              mid: forwardedMessageId,
               text: 'spam message',
             },
           },
@@ -7200,6 +7202,9 @@ describe('ModerationService', () => {
       'group_command',
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-forward-ban-1', {
+      immediate: true,
+    });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-ban-1', {
       immediate: true,
     });

@@ -194,6 +194,7 @@ type ForwardedModerationTarget = {
   chatTitle: string | null;
   userId: string;
   senderName: string | null;
+  messageId: string | null;
 };
 
 type ForwardedRulesSource = {
@@ -4446,6 +4447,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               'group_command',
             );
 
+      await this.deleteForwardedModerationTargetMessage(chatId, target);
       await this.deleteAdminCommandMessage(chatId, messageId);
       const targetLabel = this.formatUserLabel(target.senderName ?? undefined, target.userId);
       await this.sendGroupAdminCommandNotice({
@@ -4673,6 +4675,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatTitle: this.readChatTitleFromEntity(row),
       userId,
       senderName: this.readSenderNameFromForwardedNode(row),
+      messageId: this.readMessageIdFromForwardedNode(row),
     };
   }
 
@@ -4682,8 +4685,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const unique = new Map<string, ForwardedModerationTarget>();
     for (const target of targets) {
       const key = `${target.chatId}:${target.userId}`;
-      if (!unique.has(key)) {
+      const existing = unique.get(key);
+      if (!existing) {
         unique.set(key, target);
+        continue;
+      }
+
+      if (!existing.messageId && target.messageId) {
+        unique.set(key, {
+          ...existing,
+          messageId: target.messageId,
+        });
       }
     }
 
@@ -5006,6 +5018,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to delete handled admin command message',
+      );
+    }
+  }
+
+  private async deleteForwardedModerationTargetMessage(
+    chatId: string,
+    target: ForwardedModerationTarget,
+  ): Promise<void> {
+    if (target.chatId !== chatId || !target.messageId) {
+      return;
+    }
+
+    try {
+      await this.deleteMessageImmediately(chatId, target.messageId);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          targetUserId: target.userId,
+          targetMessageId: target.messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete handled forwarded moderation target message',
       );
     }
   }

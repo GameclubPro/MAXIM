@@ -11325,41 +11325,49 @@ export class AdminService implements OnModuleDestroy {
 
     await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
 
-    let sourceCleanup = {
-      candidateMessageIds: [] as string[],
-      deletedMessageIds: [] as string[],
-      failedMessageIds: [] as string[],
-    };
-    try {
-      sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          targetUserId,
-          actorUserId: user.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to run recent message cleanup after manual system ban',
-      );
-    }
+    const shouldQueuePostBanCleanup =
+      (source === 'group_command' || source === 'private_command') &&
+      Boolean(this.adminManualFanoutQueue);
 
-    const recentMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
-    const crossChatFanout =
-      source === 'group_command' || source === 'private_command'
-        ? await this.resolveManualBanFanoutSummary({
-            sourceChatId: chatId,
-            targetUserId,
-            actor: user,
-            source,
-          })
-        : this.summarizeManualBanFanout({
-            removedChatIds: [],
-            skippedChatIds: [],
-            failedChatIds: [],
-            deletedMessageCount: 0,
-            failedMessageDeleteCount: 0,
-          });
+    let recentMessageCleanup = this.summarizeManualModerationCleanup({
+      candidateMessageIds: [],
+      deletedMessageIds: [],
+      failedMessageIds: [],
+    });
+    let crossChatFanout = this.summarizeManualBanFanout({
+      removedChatIds: [],
+      skippedChatIds: [],
+      failedChatIds: [],
+      deletedMessageCount: 0,
+      failedMessageDeleteCount: 0,
+    });
+
+    if (source === 'group_command' || source === 'private_command') {
+      const fanoutParams = {
+        sourceChatId: chatId,
+        targetUserId,
+        actor: user,
+        source,
+      } as const;
+
+      if (shouldQueuePostBanCleanup) {
+        const queuedJob = this.buildManualBanFanoutJob(fanoutParams);
+        if (await this.enqueueManualModerationFanout(queuedJob)) {
+          recentMessageCleanup = this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId);
+          crossChatFanout = this.buildQueuedManualBanFanoutSummary(queuedJob.jobId);
+        } else {
+          recentMessageCleanup = this.summarizeManualModerationCleanup(
+            await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId),
+          );
+          crossChatFanout = await this.runManualBanFanoutInlineSummary(fanoutParams);
+        }
+      } else {
+        recentMessageCleanup = this.summarizeManualModerationCleanup(
+          await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId),
+        );
+        crossChatFanout = await this.runManualBanFanoutInlineSummary(fanoutParams);
+      }
+    }
 
     await this.recordManualModerationAction({
       chatId,
@@ -11469,6 +11477,10 @@ export class AdminService implements OnModuleDestroy {
       });
       return;
     }
+
+    await this.runManualBanSourceCleanup(job.sourceChatId, job.targetUserId, job.actor.userId, {
+      logMessage: 'Failed to run deferred recent message cleanup after manual system ban',
+    });
 
     await this.applyManualSystemBanFanout({
       sourceChatId: job.sourceChatId,
@@ -11582,6 +11594,16 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private buildQueuedManualModerationCleanupSummary(jobId: string) {
+    return {
+      mode: 'queued',
+      jobId,
+      candidateCount: 0,
+      deletedCount: 0,
+      failedCount: 0,
+    };
+  }
+
   private buildManualBanFanoutJob(params: {
     sourceChatId: string;
     targetUserId: string;
@@ -11682,6 +11704,65 @@ export class AdminService implements OnModuleDestroy {
     const normalizedUserId = userId.trim();
     const label = this.escapeMarkdown(normalizedUserId || 'Пользователь');
     return `[${label}](max://user/${encodeURIComponent(normalizedUserId)})`;
+  }
+
+  private async runManualBanSourceCleanup(
+    chatId: string,
+    targetUserId: string,
+    actorUserId: string,
+    options: { logMessage?: string } = {},
+  ): Promise<{
+    candidateMessageIds: string[];
+    deletedMessageIds: string[];
+    failedMessageIds: string[];
+  }> {
+    try {
+      return await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          targetUserId,
+          actorUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        options.logMessage ?? 'Failed to run recent message cleanup after manual system ban',
+      );
+      return {
+        candidateMessageIds: [],
+        deletedMessageIds: [],
+        failedMessageIds: [],
+      };
+    }
+  }
+
+  private async runManualBanFanoutInlineSummary(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  }) {
+    try {
+      const fanout = await this.applyManualSystemBanFanout(params);
+      return this.summarizeManualBanFanout(fanout);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.sourceChatId,
+          targetUserId: params.targetUserId,
+          actorUserId: params.actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run manual system ban fanout after source chat ban',
+      );
+      return this.summarizeManualBanFanout({
+        removedChatIds: [],
+        skippedChatIds: [],
+        failedChatIds: [],
+        deletedMessageCount: 0,
+        failedMessageDeleteCount: 0,
+      });
+    }
   }
 
   private async applyManualMuteFanout(params: {
