@@ -22,6 +22,7 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
+import { openLinkInMaxBridgeIfAvailable } from '../lib/max-bridge';
 import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
 
@@ -515,6 +516,11 @@ export function ManagedPollCard({
               target="_blank"
               rel="noreferrer"
               className="managed-poll-card__link"
+              onClick={(event) => {
+                if (openLinkInMaxBridgeIfAvailable(poll.publishedUrl ?? '')) {
+                  event.preventDefault();
+                }
+              }}
             >
               Открыть пост
             </a>

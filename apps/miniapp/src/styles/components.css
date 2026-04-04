@@ -7810,6 +7810,13 @@
   color: #075faa;
 }
 
+.rules-hero-card__meta-note {
+  font-size: 0.76rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
 .rules-button-preview {
   display: flex;
   flex-wrap: wrap;

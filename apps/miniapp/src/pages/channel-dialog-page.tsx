@@ -63,7 +63,11 @@ import {
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
+import {
+  maxImpact,
+  maxSelectionChanged,
+  openLinkInMaxBridgeIfAvailable,
+} from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -2563,6 +2567,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               target="_blank"
                               rel="noreferrer"
                               style={SUGGEST_CARD_LINK_STYLE}
+                              onClick={(event) => {
+                                if (openLinkInMaxBridgeIfAvailable(message.publishedUrl ?? '')) {
+                                  event.preventDefault();
+                                }
+                              }}
                             >
                               Открыть пост
                             </a>

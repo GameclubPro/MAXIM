@@ -94,7 +94,12 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import {
+  maxNotify,
+  openLinkInMaxBridgeIfAvailable,
+  openMaxBotLink,
+  setMaxClosingConfirmation,
+} from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -3718,6 +3723,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     publishRulesMutation.mutate();
   }
 
+  function handleManagedPostLinkClick(event: MouseEvent<HTMLAnchorElement>, url: string) {
+    if (openLinkInMaxBridgeIfAvailable(url)) {
+      event.preventDefault();
+    }
+  }
+
   function handleResetPublishedRules() {
     if (!chatId || !hasPublishedRules || isResettingPublishedRules) {
       return;
@@ -5827,9 +5838,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       target="_blank"
                                       rel="noreferrer"
                                       className="rules-published-link"
+                                      onClick={(event) =>
+                                        handleManagedPostLinkClick(event, rulesPublishedUrl)
+                                      }
                                     >
                                       Открыть пост
                                     </a>
+                                  ) : hasPublishedRules ? (
+                                    <span className="rules-hero-card__meta-note">
+                                      Ссылка на пост ещё обновляется.
+                                    </span>
                                   ) : null}
                                 </div>
 
@@ -5973,6 +5991,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             target="_blank"
                                             rel="noreferrer"
                                             className="rules-button-preview__button"
+                                            onClick={(event) =>
+                                              handleManagedPostLinkClick(
+                                                event,
+                                                rulesButtonPreviewUrl,
+                                              )
+                                            }
                                           >
                                             {rulesButtonPreviewText}
                                           </a>
