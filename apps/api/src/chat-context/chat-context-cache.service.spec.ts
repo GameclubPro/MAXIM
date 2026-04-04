@@ -10,8 +10,23 @@ jest.mock('ioredis', () =>
 );
 
 import Redis from 'ioredis';
+import type { ChatSummary } from '@maxim/contracts';
 import type { ChatSettings } from '@prisma/client';
 import { ChatContextCacheService } from './chat-context-cache.service';
+
+function buildChatSummary(chatId: string): ChatSummary {
+  return {
+    id: chatId,
+    title: 'Chat title',
+    createdAt: '2026-04-04T10:00:00.000Z',
+    entityType: 'chat',
+    link: null,
+    channelOverview: null,
+    primaryBotId: null,
+    assignedBots: [],
+    sharedMode: 'owned',
+  };
+}
 
 function buildSettings(chatId: string): ChatSettings {
   const now = new Date();
@@ -662,6 +677,48 @@ describe('ChatContextCacheService', () => {
       ChatContextCacheService.managedGiveawayRunnerBackoffKey('giveaway-1'),
       ChatContextCacheService.managedGiveawayRunnerFailureCountKey('giveaway-1'),
       ChatContextCacheService.managedGiveawayRunnerDeferKey('giveaway-1'),
+    );
+  });
+
+  it('stores and restores managed entities published snapshots', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results[0].value as {
+      get: jest.Mock;
+      set: jest.Mock;
+    };
+    const snapshot = {
+      version: 'snapshot-v1',
+      builtAt: '2026-04-04T10:00:00.000Z',
+      lastSyncedAt: '2026-04-04T09:59:00.000Z',
+      itemCount: 1,
+      itemsHash: 'hash-v1',
+      items: [buildChatSummary('chat-1')],
+    };
+
+    await service.setManagedEntitiesPublishedSnapshot('admin-1', 'chat', snapshot, 3600);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      'chat:managed-view-snapshot:v1:chat:admin-1',
+      JSON.stringify(snapshot),
+      'EX',
+      3600,
+    );
+
+    redisInstance.get.mockResolvedValueOnce(JSON.stringify(snapshot));
+    await expect(service.getManagedEntitiesPublishedSnapshot('admin-1', 'chat')).resolves.toEqual(
+      snapshot,
     );
   });
 });

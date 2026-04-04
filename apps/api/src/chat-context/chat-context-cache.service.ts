@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
+import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -20,6 +20,14 @@ export type ChatContext = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+export type ManagedEntitiesPublishedSnapshot = {
+  version: string;
+  builtAt: string;
+  lastSyncedAt: string | null;
+  itemCount: number;
+  itemsHash: string;
+  items: ChatSummary[];
+};
 type ManagedEntityBotProfileSnapshot = {
   avatarUrl: string | null;
 };
@@ -126,6 +134,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     entityType: ManagedEntityType | 'all',
   ): string {
     return `chat:managed-refresh-last-synced:v1:${entityType}:${userId}`;
+  }
+
+  static managedEntitiesPublishedSnapshotKey(
+    userId: string,
+    entityType: ManagedEntityType,
+  ): string {
+    return `chat:managed-view-snapshot:v1:${entityType}:${userId}`;
   }
 
   static managedGiveawayRunnerBackoffKey(giveawayId: string): string {
@@ -620,6 +635,52 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async getManagedEntitiesPublishedSnapshot(
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntitiesPublishedSnapshot | null> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType),
+    );
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesPublishedSnapshot(parsed) ? parsed : null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { userId, entityType, err: error instanceof Error ? error.message : String(error) },
+        'Failed to parse managed entities published snapshot cache',
+      );
+      return null;
+    }
+  }
+
+  async setManagedEntitiesPublishedSnapshot(
+    userId: string,
+    entityType: ManagedEntityType,
+    snapshot: ManagedEntitiesPublishedSnapshot,
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType),
+      JSON.stringify(snapshot),
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async clearManagedEntitiesPublishedSnapshot(
+    userId: string,
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    await this.redis.del(
+      ChatContextCacheService.managedEntitiesPublishedSnapshotKey(userId, entityType),
+    );
+  }
+
   async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
     const ttlMs = await this.redis.pttl(
       ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
@@ -835,6 +896,162 @@ export class ChatContextCacheService implements OnModuleDestroy {
           (row.avatarUrl === null || typeof row.avatarUrl === 'string')
         );
       })
+    );
+  }
+
+  private isManagedEntitiesPublishedSnapshot(
+    value: unknown,
+  ): value is ManagedEntitiesPublishedSnapshot {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.version !== 'string' ||
+      typeof record.builtAt !== 'string' ||
+      (record.lastSyncedAt !== null && typeof record.lastSyncedAt !== 'string') ||
+      typeof record.itemCount !== 'number' ||
+      !Number.isInteger(record.itemCount) ||
+      record.itemCount < 0 ||
+      typeof record.itemsHash !== 'string' ||
+      !Array.isArray(record.items)
+    ) {
+      return false;
+    }
+
+    return record.items.every((item) => this.isChatSummary(item));
+  }
+
+  private isChatSummary(value: unknown): value is ChatSummary {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.id !== 'string' ||
+      typeof record.title !== 'string' ||
+      typeof record.createdAt !== 'string' ||
+      (record.entityType !== undefined &&
+        record.entityType !== 'chat' &&
+        record.entityType !== 'channel') ||
+      (record.link !== undefined && record.link !== null && typeof record.link !== 'string') ||
+      (record.avatarUrl !== undefined &&
+        record.avatarUrl !== null &&
+        typeof record.avatarUrl !== 'string') ||
+      (record.primaryBotId !== undefined &&
+        record.primaryBotId !== null &&
+        typeof record.primaryBotId !== 'string') ||
+      (record.sharedMode !== undefined &&
+        record.sharedMode !== 'owned' &&
+        record.sharedMode !== 'shared-standby' &&
+        record.sharedMode !== 'shared-assist' &&
+        record.sharedMode !== 'shared-failover')
+    ) {
+      return false;
+    }
+
+    if (
+      record.channelOverview !== undefined &&
+      record.channelOverview !== null &&
+      !this.isChannelOverview(record.channelOverview)
+    ) {
+      return false;
+    }
+
+    if (
+      record.assignedBots !== undefined &&
+      (!Array.isArray(record.assignedBots) ||
+        !record.assignedBots.every((item) => this.isManagedEntityAssignedBot(item)))
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private isChannelOverview(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    return (
+      typeof record.enabledScenariosCount === 'number' &&
+      Number.isInteger(record.enabledScenariosCount) &&
+      record.enabledScenariosCount >= 0 &&
+      typeof record.commentsEnabled === 'boolean' &&
+      typeof record.postSuggestionsEnabled === 'boolean' &&
+      typeof record.commentsModerationEnabled === 'boolean'
+    );
+  }
+
+  private isManagedEntityAssignedBot(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.botId !== 'string' ||
+      typeof record.label !== 'string' ||
+      (record.role !== undefined && record.role !== 'primary' && record.role !== 'standby') ||
+      (record.membershipStatus !== undefined &&
+        record.membershipStatus !== 'active' &&
+        record.membershipStatus !== 'removed') ||
+      (record.lifecycleState !== undefined &&
+        record.lifecycleState !== 'active' &&
+        record.lifecycleState !== 'dormant' &&
+        record.lifecycleState !== 'draining' &&
+        record.lifecycleState !== 'disabled') ||
+      (record.speechPersona !== undefined &&
+        record.speechPersona !== 'male' &&
+        record.speechPersona !== 'female' &&
+        record.speechPersona !== 'neutral') ||
+      (record.characterName !== undefined &&
+        record.characterName !== null &&
+        typeof record.characterName !== 'string') ||
+      (record.avatarUrl !== undefined &&
+        record.avatarUrl !== null &&
+        typeof record.avatarUrl !== 'string')
+    ) {
+      return false;
+    }
+
+    if (
+      record.capabilities !== undefined &&
+      (!Array.isArray(record.capabilities) ||
+        !record.capabilities.every((capability) => typeof capability === 'string'))
+    ) {
+      return false;
+    }
+
+    if (
+      record.permissionsSummary !== undefined &&
+      record.permissionsSummary !== null &&
+      !this.isManagedEntityPermissionsSummary(record.permissionsSummary)
+    ) {
+      return false;
+    }
+
+    return true;
+  }
+
+  private isManagedEntityPermissionsSummary(value: unknown): boolean {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    return (
+      (record.checkedAt === null ||
+        record.checkedAt === undefined ||
+        typeof record.checkedAt === 'string') &&
+      typeof record.isAdmin === 'boolean' &&
+      typeof record.isOwner === 'boolean' &&
+      Array.isArray(record.permissions) &&
+      record.permissions.every((permission) => typeof permission === 'string')
     );
   }
 
