@@ -670,6 +670,7 @@ const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
 const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
+const RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT = 50;
 const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
 const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS = 1_500;
 const RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS = 4;
@@ -1726,22 +1727,58 @@ export class AdminService implements OnModuleDestroy {
     this.managedEntitiesPublishedSnapshotRuns.set(key, pending);
   }
 
-  private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChat(
+  private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
     userId: string,
-    entityType: ManagedEntityType,
-    chat: ChatSummary,
+    entityType: ManagedEntityTypeFilter,
+    chats: readonly ChatSummary[],
   ): void {
     if (
       !this.managedEntitiesPublishedSnapshotWriteEnabled ||
-      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function'
+      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
+      chats.length === 0
     ) {
+      return;
+    }
+
+    if (entityType === 'all') {
+      const chatItems = chats.filter((chat) => chat.entityType === 'chat');
+      if (chatItems.length > 0) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
+          userId,
+          'chat',
+          chatItems,
+        );
+      }
+
+      const channelItems = chats.filter((chat) => chat.entityType === 'channel');
+      if (channelItems.length > 0) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
+          userId,
+          'channel',
+          channelItems,
+        );
+      }
+
+      return;
+    }
+
+    const bootstrapChatIds = Array.from(
+      new Set(
+        chats
+          .filter((chat) => chat.entityType === entityType)
+          .map((chat) => chat.id)
+          .filter((chatId) => chatId.trim().length > 0),
+      ),
+    );
+    if (bootstrapChatIds.length === 0) {
       return;
     }
 
     void this.chatContextCache
       .getManagedEntitiesPublishedSnapshot(userId, entityType)
       .then((snapshot) => {
-        if (snapshot?.items.some((item) => item.id === chat.id)) {
+        const snapshotIds = new Set(snapshot?.items.map((item) => item.id) ?? []);
+        if (bootstrapChatIds.every((chatId) => snapshotIds.has(chatId))) {
           return;
         }
 
@@ -1752,12 +1789,83 @@ export class AdminService implements OnModuleDestroy {
           {
             entityType,
             userId,
-            chatId: chat.id,
+            chatIds: bootstrapChatIds,
             err: error instanceof Error ? error.message : String(error),
           },
           'Managed entities published snapshot bootstrap coverage check failed',
         );
       });
+  }
+
+  private async loadRecentBotAddedBootstrapRows(
+    userId: string,
+  ): Promise<
+    Array<{
+      chat_id: string | null;
+      chat_title: string | null;
+      is_channel: string | null;
+    }>
+  > {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return [];
+    }
+
+    const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
+    const lookbackFrom = new Date(Date.now() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
+    const userScopedRows = await managedEntitiesReadPrisma.$queryRaw<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        is_channel: string | null;
+      }>
+    >`
+      SELECT
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
+        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
+      FROM webhook_events
+      WHERE normalized_payload->>'type' = 'bot_added'
+        AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
+        AND created_at >= ${lookbackFrom}
+      ORDER BY created_at DESC
+      LIMIT ${RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT}
+    `;
+    const globalRows = await managedEntitiesReadPrisma.$queryRaw<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        is_channel: string | null;
+      }>
+    >`
+      SELECT
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
+        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
+      FROM webhook_events
+      WHERE normalized_payload->>'type' = 'bot_added'
+      ORDER BY created_at DESC
+      LIMIT ${RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT}
+    `;
+
+    const mergedRows: Array<{
+      chat_id: string | null;
+      chat_title: string | null;
+      is_channel: string | null;
+    }> = [];
+    const seen = new Set<string>();
+
+    for (const row of [...(Array.isArray(userScopedRows) ? userScopedRows : []), ...(Array.isArray(globalRows) ? globalRows : [])]) {
+      const chatId = this.readTrimmedString(row.chat_id);
+      if (!chatId || seen.has(chatId)) {
+        continue;
+      }
+
+      seen.add(chatId);
+      mergedRows.push(row);
+    }
+
+    return mergedRows;
   }
 
   private async rebuildManagedEntitiesPublishedSnapshot(
@@ -3708,22 +3816,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
-    const rows = await managedEntitiesReadPrisma.$queryRaw<
-      Array<{
-        chat_id: string | null;
-        chat_title: string | null;
-        is_channel: string | null;
-      }>
-    >`
-      SELECT
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
-        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
-      FROM webhook_events
-      WHERE normalized_payload->>'type' = 'bot_added'
-      ORDER BY created_at DESC
-      LIMIT ${RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT}
-    `;
+    const rows = await this.loadRecentBotAddedBootstrapRows(normalizedUserId);
     const safeRows = Array.isArray(rows) ? rows : [];
 
     const bootstrapped: ChatSummary[] = [];
@@ -3835,6 +3928,12 @@ export class AdminService implements OnModuleDestroy {
         break;
       }
     }
+
+    this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
+      normalizedUserId,
+      entityType,
+      bootstrapped,
+    );
 
     return bootstrapped;
   }
@@ -4205,6 +4304,13 @@ export class AdminService implements OnModuleDestroy {
         await this.attachManagedEntityAvatars(mergedChats),
       );
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, hydratedItems);
+      if (!options.fullScan) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
+          user.userId,
+          entityType,
+          Array.from(grantedById.values()).map((item) => item.chat),
+        );
+      }
 
       let nextCursor: number | null = null;
       let completedAt: string | null = null;
@@ -4686,6 +4792,13 @@ export class AdminService implements OnModuleDestroy {
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items, {
         remoteChats: supportedCandidateChats,
       });
+      if (!options.fullScan) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
+          user.userId,
+          entityType,
+          filtered.map((item) => item.chat),
+        );
+      }
       return {
         items,
         refresh:
@@ -19895,10 +20008,10 @@ export class AdminService implements OnModuleDestroy {
       source: 'current_chat_bootstrap',
     });
 
-    this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChat(
+    this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
       user.userId,
       currentContextEntityType,
-      chat,
+      [chat],
     );
 
     return chat;

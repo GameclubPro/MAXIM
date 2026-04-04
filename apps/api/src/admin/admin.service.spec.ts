@@ -7092,13 +7092,21 @@ describe('AdminService.listChats', () => {
         },
       },
     ]);
-    prisma.$queryRaw.mockResolvedValue([
-      {
-        chat_id: 'chat-2',
-        chat_title: 'Новый чат',
-        is_channel: 'false',
-      },
-    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Новый чат',
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Новый чат',
+          is_channel: 'false',
+        },
+      ]);
     prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
       return {
         id: where.id,
@@ -7182,7 +7190,7 @@ describe('AdminService.listChats', () => {
     );
   });
 
-  it('scans recent bot_added chats globally instead of filtering them by the current sender id', async () => {
+  it('scans recent bot_added chats globally in addition to user-scoped candidates', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
     prisma.$queryRaw.mockResolvedValue([]);
@@ -7212,20 +7220,159 @@ describe('AdminService.listChats', () => {
       }),
     ).resolves.toEqual([]);
 
-    const queryCall = prisma.$queryRaw.mock.calls[0] ?? [];
-    expect(queryCall).not.toContain('admin-1');
+    const userScopedQueryCall = prisma.$queryRaw.mock.calls[0] ?? [];
+    const globalQueryCall = prisma.$queryRaw.mock.calls[1] ?? [];
+    expect(userScopedQueryCall).toContain('admin-1');
+    expect(globalQueryCall).not.toContain('admin-1');
+  });
+
+  it('bootstraps a user-scoped bot_added chat even when the global recent scan is empty', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Моя новая группа',
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => {
+      return {
+        id: where.id,
+        title: where.id === 'chat-2' ? 'Моя новая группа' : where.id,
+        entityType: 'CHAT',
+      };
+    });
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Моя новая группа',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+  });
+
+  it('schedules a published snapshot rebuild when recent bot_added bootstrap finds a chat missing from the snapshot', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Моя новая группа',
+          is_channel: 'false',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-05T10:00:00.000Z',
+        lastSyncedAt: '2026-04-05T09:59:30.000Z',
+        itemCount: 1,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Старый чат',
+            createdAt: '2026-04-04T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const chat = createChatSummaryFixture({
+      id: 'chat-2',
+      title: 'Моя новая группа',
+      createdAt: '2026-04-05T10:00:00.000Z',
+      entityType: 'chat',
+    });
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'granted',
+      source: 'remote',
+    });
+    jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockResolvedValue(chat);
+    const rebuildSpy = jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+      .mockImplementation(() => undefined);
+
+    await expect(
+      (service as any).bootstrapRecentBotAddedEntities(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        'chat',
+      ),
+    ).resolves.toEqual([chat]);
+
+    await flushAsyncTasks();
+
+    expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
   });
 
   it('caps lightweight recent bot_added admin checks on empty default chat lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw.mockResolvedValue(
-      Array.from({ length: 20 }, (_, index) => ({
-        chat_id: `chat-${index + 1}`,
-        chat_title: `Чат ${index + 1}`,
-        is_channel: 'false',
-      })),
-    );
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce(
+        Array.from({ length: 20 }, (_, index) => ({
+          chat_id: `chat-${index + 1}`,
+          chat_title: `Чат ${index + 1}`,
+          is_channel: 'false',
+        })),
+      );
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
@@ -7271,23 +7418,25 @@ describe('AdminService.listChats', () => {
   it('caps lightweight recent bot_added bootstrap by total elapsed time on empty default chat lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw.mockResolvedValue([
-      {
-        chat_id: 'chat-1',
-        chat_title: 'Чат 1',
-        is_channel: 'false',
-      },
-      {
-        chat_id: 'chat-2',
-        chat_title: 'Чат 2',
-        is_channel: 'false',
-      },
-      {
-        chat_id: 'chat-3',
-        chat_title: 'Чат 3',
-        is_channel: 'false',
-      },
-    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-1',
+          chat_title: 'Чат 1',
+          is_channel: 'false',
+        },
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Чат 2',
+          is_channel: 'false',
+        },
+        {
+          chat_id: 'chat-3',
+          chat_title: 'Чат 3',
+          is_channel: 'false',
+        },
+      ]);
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
@@ -7321,18 +7470,9 @@ describe('AdminService.listChats', () => {
         }),
       ).resolves.toEqual([]);
 
-      expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
+      expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
       expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
         'chat-1',
-        expect.objectContaining({
-          trafficClass: 'interactive',
-          actionHealthLane: 'background',
-          sourceTag: 'managed_refresh',
-          timeoutMs: 250,
-        }),
-      );
-      expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
-        'chat-2',
         expect.objectContaining({
           trafficClass: 'interactive',
           actionHealthLane: 'background',
@@ -7405,13 +7545,15 @@ describe('AdminService.listChats', () => {
   it('does not bootstrap stale recent bot_added chats when MAX denies current admin access', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw.mockResolvedValue([
-      {
-        chat_id: 'chat-2',
-        chat_title: 'Битый чат',
-        is_channel: 'false',
-      },
-    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: 'Битый чат',
+          is_channel: 'false',
+        },
+      ]);
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
