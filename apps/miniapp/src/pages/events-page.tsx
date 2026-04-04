@@ -716,8 +716,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         { signal },
       ),
     enabled: Boolean(chatId),
-    refetchInterval: () => (document.hidden ? false : 10_000),
-    refetchOnWindowFocus: true,
+    staleTime: 0,
+    refetchOnMount: 'always',
+    refetchOnWindowFocus: false,
   });
 
   const chatTitle = useMemo(() => {
