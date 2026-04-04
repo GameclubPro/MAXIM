@@ -37,6 +37,13 @@ describe('AdminController chats refresh auth e2e', () => {
   beforeEach(async () => {
     listChatsWithRefreshState.mockReset().mockResolvedValue({
       items: [],
+      snapshot: {
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        source: 'published_snapshot',
+        stale: true,
+      },
       refresh: {
         complete: true,
         cursor: -1,
@@ -121,6 +128,13 @@ describe('AdminController chats refresh auth e2e', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       items: [],
+      snapshot: {
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        source: 'published_snapshot',
+        stale: true,
+      },
       refresh: {
         complete: true,
         cursor: -1,

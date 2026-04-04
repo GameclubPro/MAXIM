@@ -742,6 +742,13 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
       progressPercent: 100,
       lastSyncedAt: new Date().toISOString(),
     },
+    snapshot: {
+      version: 'preview-snapshot-v1',
+      builtAt: new Date().toISOString(),
+      lastSyncedAt: new Date().toISOString(),
+      source: 'published_snapshot',
+      stale: false,
+    },
   });
 }
 

@@ -6708,6 +6708,13 @@ describe('AdminService.listChats', () => {
         }),
       ],
       refresh: refreshState,
+      snapshot: {
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        source: 'published_snapshot',
+        stale: true,
+      },
     });
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });

@@ -1,4 +1,9 @@
-import type { ChatSummary, ManagedEntitiesListResponse, Me } from '@maxim/contracts';
+import type {
+  ChatSummary,
+  ManagedEntitiesListResponse,
+  ManagedEntitiesResponseSnapshot,
+  Me,
+} from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
 type ManagedEntitiesFetchOptions = {
@@ -178,6 +183,44 @@ function parseMe(value: unknown): Me {
   };
 }
 
+function parseManagedEntitiesResponseSnapshot(
+  value: unknown,
+): ManagedEntitiesResponseSnapshot | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (!isRecord(value)) {
+    throw new Error('Invalid managed entities snapshot metadata');
+  }
+
+  if (typeof value.version !== 'string' || typeof value.builtAt !== 'string') {
+    throw new Error('Invalid managed entities snapshot metadata');
+  }
+
+  const version = value.version.trim();
+  const builtAt = value.builtAt.trim();
+  if (version.length === 0 || builtAt.length === 0) {
+    throw new Error('Invalid managed entities snapshot metadata');
+  }
+
+  return {
+    version,
+    builtAt,
+    lastSyncedAt:
+      typeof value.lastSyncedAt === 'string' && value.lastSyncedAt.trim().length > 0
+        ? value.lastSyncedAt.trim()
+        : null,
+    source:
+      value.source === 'live_discovery' ||
+      value.source === 'allowlist_cache' ||
+      value.source === 'last_success_fallback'
+        ? value.source
+        : 'published_snapshot',
+    stale: value.stale === true,
+  };
+}
+
 function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListResponse {
   if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.refresh)) {
     throw new Error('Invalid managed entities response');
@@ -237,6 +280,11 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       manualRefreshBlockedReason,
       manualRefreshRetryAfterMs,
     },
+    ...(value.snapshot !== undefined
+      ? {
+          snapshot: parseManagedEntitiesResponseSnapshot(value.snapshot),
+        }
+      : {}),
   };
 }
 

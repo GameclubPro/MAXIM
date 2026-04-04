@@ -1484,9 +1484,24 @@ export const managedEntitiesRefreshStateSchema = z.object({
 });
 export type ManagedEntitiesRefreshState = z.infer<typeof managedEntitiesRefreshStateSchema>;
 
+export const managedEntitiesResponseSnapshotSchema = z.object({
+  version: z.string().trim().min(1),
+  builtAt: z.string().datetime(),
+  lastSyncedAt: z.string().datetime().nullable().optional().default(null),
+  source: z
+    .enum(['published_snapshot', 'live_discovery', 'allowlist_cache', 'last_success_fallback'])
+    .optional()
+    .default('published_snapshot'),
+  stale: z.boolean().optional().default(false),
+});
+export type ManagedEntitiesResponseSnapshot = z.infer<
+  typeof managedEntitiesResponseSnapshotSchema
+>;
+
 export const managedEntitiesListResponseSchema = z.object({
   items: z.array(chatSummarySchema),
   refresh: managedEntitiesRefreshStateSchema,
+  snapshot: managedEntitiesResponseSnapshotSchema.nullable().optional(),
 });
 export type ManagedEntitiesListResponse = z.infer<typeof managedEntitiesListResponseSchema>;
 

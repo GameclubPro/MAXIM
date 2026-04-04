@@ -55,6 +55,13 @@ test('getChats keeps refresh progress counters from the API response', async () 
   const api = createApiStub(
     {
       items: [],
+      snapshot: {
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        source: 'published_snapshot',
+        stale: true,
+      },
       refresh: {
         complete: false,
         cursor: 8,
@@ -80,6 +87,13 @@ test('getChats keeps refresh progress counters from the API response', async () 
   assert.equal(response.refresh.totalCandidates, 20);
   assert.equal(response.refresh.progressPercent, 40);
   assert.equal(response.refresh.manualRefreshBlockedReason, 'in_progress');
+  assert.deepEqual(response.snapshot, {
+    version: 'snapshot-v1',
+    builtAt: '2026-04-04T10:00:00.000Z',
+    lastSyncedAt: '2026-04-04T09:59:30.000Z',
+    source: 'published_snapshot',
+    stale: true,
+  });
   assert.deepEqual(calls, ['/chats?refresh=1&includeRefreshState=1']);
 });
 

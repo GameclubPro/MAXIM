@@ -73,6 +73,7 @@ import {
   type BroadcastTextFormat,
   type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
+  type ManagedEntitiesResponseSnapshot,
   type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
   type SendBroadcastResult,
@@ -204,6 +205,7 @@ type ManagedEntityTypeFilter = ManagedEntityType | 'all';
 type ManagedEntitiesListResult = {
   items: ChatSummary[];
   refresh: ManagedEntitiesRefreshState | null;
+  snapshot?: ManagedEntitiesResponseSnapshot | null;
 };
 
 type ManagedEntitiesRefreshPresentation = {
@@ -988,10 +990,14 @@ export class AdminService implements OnModuleDestroy {
       ...options,
       includeRefreshState: true,
     });
-    return {
+    const response: ManagedEntitiesListResponse = {
       items: result.items,
       refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
     };
+    if (result.snapshot) {
+      response.snapshot = result.snapshot;
+    }
+    return response;
   }
 
   async listChannelsWithRefreshState(
@@ -1002,10 +1008,14 @@ export class AdminService implements OnModuleDestroy {
       ...options,
       includeRefreshState: true,
     });
-    return {
+    const response: ManagedEntitiesListResponse = {
       items: result.items,
       refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
     };
+    if (result.snapshot) {
+      response.snapshot = result.snapshot;
+    }
+    return response;
   }
 
   async listManagedEntities(
@@ -1275,12 +1285,17 @@ export class AdminService implements OnModuleDestroy {
       if (publishedSnapshot) {
         const items = await mergePublishedSnapshotWithLightweightBootstrap(publishedSnapshot.items);
         this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+        const refreshState =
+          options.includeRefreshState === true
+            ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
+            : null;
         return {
           items,
-          refresh:
-            options.includeRefreshState === true
-              ? await this.readLocalManagedEntitiesRefreshState(user.userId, entityType)
-              : null,
+          refresh: refreshState,
+          snapshot: this.createManagedEntitiesResponseSnapshotMetadata(
+            publishedSnapshot,
+            refreshState,
+          ),
         };
       }
 
@@ -1376,6 +1391,7 @@ export class AdminService implements OnModuleDestroy {
       return {
         items: snapshotItems,
         refresh,
+        snapshot: this.createManagedEntitiesResponseSnapshotMetadata(publishedSnapshot, refresh),
       };
     }
     const cached = await this.revalidateCachedManagedEntities(
@@ -1487,6 +1503,25 @@ export class AdminService implements OnModuleDestroy {
       );
       return null;
     }
+  }
+
+  private createManagedEntitiesResponseSnapshotMetadata(
+    snapshot: ManagedEntitiesPublishedSnapshotReadResult,
+    refresh: ManagedEntitiesRefreshState | null,
+  ): ManagedEntitiesResponseSnapshot {
+    const stale =
+      !refresh ||
+      refresh.complete !== true ||
+      refresh.backoffActive === true ||
+      (typeof refresh.cursor === 'number' && refresh.cursor >= 0);
+
+    return {
+      version: snapshot.version,
+      builtAt: snapshot.builtAt,
+      lastSyncedAt: snapshot.lastSyncedAt,
+      source: 'published_snapshot',
+      stale,
+    };
   }
 
   private scheduleManagedEntitiesPublishedSnapshotRebuild(
