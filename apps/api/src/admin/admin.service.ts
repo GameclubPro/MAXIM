@@ -73,6 +73,7 @@ import {
   type BroadcastTextFormat,
   type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
+  type ManagedEntitiesResponseDiff,
   type ManagedEntitiesResponseSnapshot,
   type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
@@ -133,6 +134,7 @@ import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto
 import {
   ChatContextCacheService,
   type ChatAdminAccessState,
+  type ManagedEntitiesPublishedDiff,
   type ManagedEntitiesPublishedSnapshot,
 } from '../chat-context/chat-context-cache.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
@@ -206,6 +208,7 @@ type ManagedEntitiesListResult = {
   items: ChatSummary[];
   refresh: ManagedEntitiesRefreshState | null;
   snapshot?: ManagedEntitiesResponseSnapshot | null;
+  diff?: ManagedEntitiesResponseDiff | null;
 };
 
 type ManagedEntitiesRefreshPresentation = {
@@ -226,12 +229,22 @@ type ManagedEntitiesPublishedSnapshotReadResult = {
   lastSyncedAt: string | null;
 };
 
+type ManagedEntitiesPublishedDiffReadResult = {
+  baseVersion: string;
+  nextVersion: string;
+  added: ChatSummary[];
+  updated: ChatSummary[];
+  removedIds: string[];
+  orderedIds: string[];
+};
+
 type ManagedEntitiesListOptions = {
   refresh?: boolean;
   includeRefreshState?: boolean;
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
   fresh?: boolean;
+  sinceVersion?: string;
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
@@ -442,6 +455,7 @@ const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
+const MANAGED_ENTITIES_PUBLISHED_DIFF_MAX_CHANGE_RATIO = 0.3;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS = 30_000;
@@ -725,6 +739,8 @@ export class AdminService implements OnModuleDestroy {
   private readonly manualFanoutActionSpacingMs: number;
   private readonly managedEntitiesPublishedSnapshotReadEnabled: boolean;
   private readonly managedEntitiesPublishedSnapshotWriteEnabled: boolean;
+  private readonly managedEntitiesPublishedDiffReadEnabled: boolean;
+  private readonly managedEntitiesPublishedDiffWriteEnabled: boolean;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
   private readonly managedEntitiesDiscoveryChecks = new Map<
     string,
@@ -830,6 +846,14 @@ export class AdminService implements OnModuleDestroy {
     );
     this.managedEntitiesPublishedSnapshotWriteEnabled = this.readBooleanConfigFlag(
       configService.get<string>('MANAGED_ENTITIES_SNAPSHOT_WRITE_ENABLED'),
+      true,
+    );
+    this.managedEntitiesPublishedDiffReadEnabled = this.readBooleanConfigFlag(
+      configService.get<string>('MANAGED_ENTITIES_DIFF_READ_ENABLED'),
+      true,
+    );
+    this.managedEntitiesPublishedDiffWriteEnabled = this.readBooleanConfigFlag(
+      configService.get<string>('MANAGED_ENTITIES_DIFF_WRITE_ENABLED'),
       true,
     );
     this.managedEntitiesReadPrisma = this.createManagedEntitiesReadPrisma(
@@ -997,6 +1021,9 @@ export class AdminService implements OnModuleDestroy {
     if (result.snapshot) {
       response.snapshot = result.snapshot;
     }
+    if (result.diff) {
+      response.diff = result.diff;
+    }
     return response;
   }
 
@@ -1014,6 +1041,9 @@ export class AdminService implements OnModuleDestroy {
     };
     if (result.snapshot) {
       response.snapshot = result.snapshot;
+    }
+    if (result.diff) {
+      response.diff = result.diff;
     }
     return response;
   }
@@ -1383,6 +1413,21 @@ export class AdminService implements OnModuleDestroy {
       entityType,
     );
     if (publishedSnapshot) {
+      const diffResponse = await this.readManagedEntitiesPublishedDiffResponseForRefresh(
+        user.userId,
+        entityType,
+        options.sinceVersion,
+        publishedSnapshot,
+        refresh,
+        {
+          bypassRemoteCache: options.bypassRemoteCache === true,
+          resetRefreshCursor: options.resetRefreshCursor === true,
+        },
+      );
+      if (diffResponse) {
+        return diffResponse;
+      }
+
       const snapshotItems =
         options.bypassRemoteCache === true || options.resetRefreshCursor === true
           ? await mergePublishedSnapshotWithLightweightBootstrap(publishedSnapshot.items)
@@ -1524,6 +1569,126 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private normalizeManagedEntitiesSnapshotVersion(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private async readManagedEntitiesPublishedDiffResponseForRefresh(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    sinceVersion: string | undefined,
+    publishedSnapshot: ManagedEntitiesPublishedSnapshotReadResult,
+    refresh: ManagedEntitiesRefreshState,
+    options: {
+      bypassRemoteCache: boolean;
+      resetRefreshCursor: boolean;
+    },
+  ): Promise<ManagedEntitiesListResult | null> {
+    if (
+      !this.managedEntitiesPublishedDiffReadEnabled ||
+      !this.supportsManagedEntitiesPublishedSnapshot(entityType) ||
+      options.bypassRemoteCache ||
+      options.resetRefreshCursor
+    ) {
+      return null;
+    }
+
+    const normalizedSinceVersion = this.normalizeManagedEntitiesSnapshotVersion(sinceVersion);
+    if (!normalizedSinceVersion) {
+      return null;
+    }
+
+    const snapshot = this.createManagedEntitiesResponseSnapshotMetadata(publishedSnapshot, refresh);
+    if (normalizedSinceVersion === publishedSnapshot.version) {
+      return {
+        items: [],
+        refresh,
+        snapshot,
+        diff: {
+          mode: 'noop',
+          baseVersion: normalizedSinceVersion,
+          nextVersion: publishedSnapshot.version,
+        },
+      };
+    }
+
+    const publishedDiff = await this.readManagedEntitiesPublishedDiffForResponse(
+      userId,
+      entityType,
+      normalizedSinceVersion,
+      publishedSnapshot.version,
+    );
+    if (!publishedDiff) {
+      return null;
+    }
+
+    return {
+      items: [],
+      refresh,
+      snapshot,
+      diff: {
+        mode: 'patch',
+        baseVersion: publishedDiff.baseVersion,
+        nextVersion: publishedDiff.nextVersion,
+        added: publishedDiff.added,
+        updated: publishedDiff.updated,
+        removedIds: publishedDiff.removedIds,
+        orderedIds: publishedDiff.orderedIds,
+      },
+    };
+  }
+
+  private async readManagedEntitiesPublishedDiffForResponse(
+    userId: string,
+    entityType: ManagedEntityType,
+    baseVersion: string,
+    expectedNextVersion: string,
+  ): Promise<ManagedEntitiesPublishedDiffReadResult | null> {
+    if (
+      !this.managedEntitiesPublishedDiffReadEnabled ||
+      typeof this.chatContextCache.getManagedEntitiesPublishedDiff !== 'function'
+    ) {
+      return null;
+    }
+
+    try {
+      const diff = await this.chatContextCache.getManagedEntitiesPublishedDiff(
+        userId,
+        entityType,
+        baseVersion,
+      );
+      if (!diff || diff.nextVersion !== expectedNextVersion) {
+        return null;
+      }
+
+      return {
+        baseVersion: diff.baseVersion,
+        nextVersion: diff.nextVersion,
+        added: diff.added.map((item) => this.cloneManagedEntitySummary(item)),
+        updated: diff.updated.map((item) => this.cloneManagedEntitySummary(item)),
+        removedIds: [...diff.removedIds],
+        orderedIds: [...diff.orderedIds],
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId,
+          baseVersion,
+          expectedNextVersion,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read managed entities published diff',
+      );
+      return null;
+    }
+  }
+
   private scheduleManagedEntitiesPublishedSnapshotRebuild(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -1629,13 +1794,111 @@ export class AdminService implements OnModuleDestroy {
       nextSnapshot,
       MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
     );
+
+    const nextDiff = this.buildManagedEntitiesPublishedSnapshotDiff(currentSnapshot, nextSnapshot);
+    if (
+      nextDiff &&
+      this.managedEntitiesPublishedDiffWriteEnabled &&
+      typeof this.chatContextCache.setManagedEntitiesPublishedDiff === 'function'
+    ) {
+      try {
+        await this.chatContextCache.setManagedEntitiesPublishedDiff(
+          userId,
+          entityType,
+          nextDiff.baseVersion,
+          nextDiff,
+          MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            entityType,
+            userId,
+            baseVersion: nextDiff.baseVersion,
+            nextVersion: nextDiff.nextVersion,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed entities published diff write failed',
+        );
+      }
+    }
   }
 
   private buildManagedEntitiesPublishedSnapshotHash(
     items: readonly ChatSummary[],
     lastSyncedAt: string | null,
   ): string {
-    const normalizedItems = items.map((item) => ({
+    const normalizedItems = items.map((item) => this.serializeManagedEntitySummaryForSnapshot(item));
+
+    return createHash('sha256')
+      .update(
+        JSON.stringify({
+          lastSyncedAt,
+          items: normalizedItems,
+        }),
+      )
+      .digest('hex');
+  }
+
+  private buildManagedEntitiesPublishedSnapshotDiff(
+    currentSnapshot: ManagedEntitiesPublishedSnapshot | null,
+    nextSnapshot: ManagedEntitiesPublishedSnapshot,
+  ): ManagedEntitiesPublishedDiff | null {
+    if (!currentSnapshot || currentSnapshot.version === nextSnapshot.version) {
+      return null;
+    }
+
+    const currentById = new Map(currentSnapshot.items.map((item) => [item.id, item]));
+    const nextById = new Map(nextSnapshot.items.map((item) => [item.id, item]));
+    const added: ChatSummary[] = [];
+    const updated: ChatSummary[] = [];
+    const removedIds: string[] = [];
+
+    for (const item of nextSnapshot.items) {
+      const currentItem = currentById.get(item.id);
+      if (!currentItem) {
+        added.push(this.cloneManagedEntitySummary(item));
+        continue;
+      }
+
+      if (!this.areManagedEntitySummariesEquivalent(currentItem, item)) {
+        updated.push(this.cloneManagedEntitySummary(item));
+      }
+    }
+
+    for (const item of currentSnapshot.items) {
+      if (!nextById.has(item.id)) {
+        removedIds.push(item.id);
+      }
+    }
+
+    const changeCount = added.length + updated.length + removedIds.length;
+    if (changeCount === 0) {
+      return null;
+    }
+
+    const comparisonSize = Math.max(currentSnapshot.itemCount, nextSnapshot.itemCount);
+    const maxPatchChanges = Math.max(
+      1,
+      Math.floor(comparisonSize * MANAGED_ENTITIES_PUBLISHED_DIFF_MAX_CHANGE_RATIO),
+    );
+    if (changeCount > maxPatchChanges) {
+      return null;
+    }
+
+    return {
+      baseVersion: currentSnapshot.version,
+      nextVersion: nextSnapshot.version,
+      added,
+      updated,
+      removedIds,
+      orderedIds: nextSnapshot.items.map((item) => item.id),
+      changeCount,
+    };
+  }
+
+  private serializeManagedEntitySummaryForSnapshot(item: ChatSummary): Record<string, unknown> {
+    return {
       id: item.id,
       title: item.title,
       createdAt: item.createdAt,
@@ -1671,16 +1934,17 @@ export class AdminService implements OnModuleDestroy {
           : null,
       })),
       sharedMode: item.sharedMode,
-    }));
+    };
+  }
 
-    return createHash('sha256')
-      .update(
-        JSON.stringify({
-          lastSyncedAt,
-          items: normalizedItems,
-        }),
-      )
-      .digest('hex');
+  private areManagedEntitySummariesEquivalent(
+    left: ChatSummary,
+    right: ChatSummary,
+  ): boolean {
+    return (
+      JSON.stringify(this.serializeManagedEntitySummaryForSnapshot(left)) ===
+      JSON.stringify(this.serializeManagedEntitySummaryForSnapshot(right))
+    );
   }
 
   private async mergeManagedEntitiesPublishedSnapshotWithLightweightBootstrap(

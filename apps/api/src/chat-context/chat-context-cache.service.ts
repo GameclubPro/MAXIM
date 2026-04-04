@@ -28,6 +28,15 @@ export type ManagedEntitiesPublishedSnapshot = {
   itemsHash: string;
   items: ChatSummary[];
 };
+export type ManagedEntitiesPublishedDiff = {
+  baseVersion: string;
+  nextVersion: string;
+  added: ChatSummary[];
+  updated: ChatSummary[];
+  removedIds: string[];
+  orderedIds: string[];
+  changeCount: number;
+};
 type ManagedEntityBotProfileSnapshot = {
   avatarUrl: string | null;
 };
@@ -141,6 +150,14 @@ export class ChatContextCacheService implements OnModuleDestroy {
     entityType: ManagedEntityType,
   ): string {
     return `chat:managed-view-snapshot:v1:${entityType}:${userId}`;
+  }
+
+  static managedEntitiesPublishedDiffKey(
+    userId: string,
+    entityType: ManagedEntityType,
+    baseVersion: string,
+  ): string {
+    return `chat:managed-view-diff:v1:${entityType}:${userId}:${baseVersion}`;
   }
 
   static managedGiveawayRunnerBackoffKey(giveawayId: string): string {
@@ -681,6 +698,50 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async getManagedEntitiesPublishedDiff(
+    userId: string,
+    entityType: ManagedEntityType,
+    baseVersion: string,
+  ): Promise<ManagedEntitiesPublishedDiff | null> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesPublishedDiffKey(userId, entityType, baseVersion),
+    );
+    if (!raw) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesPublishedDiff(parsed) ? parsed : null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          entityType,
+          baseVersion,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to parse managed entities published diff cache',
+      );
+      return null;
+    }
+  }
+
+  async setManagedEntitiesPublishedDiff(
+    userId: string,
+    entityType: ManagedEntityType,
+    baseVersion: string,
+    diff: ManagedEntitiesPublishedDiff,
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesPublishedDiffKey(userId, entityType, baseVersion),
+      JSON.stringify(diff),
+      'EX',
+      ttlSec,
+    );
+  }
+
   async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
     const ttlMs = await this.redis.pttl(
       ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
@@ -921,6 +982,34 @@ export class ChatContextCacheService implements OnModuleDestroy {
     }
 
     return record.items.every((item) => this.isChatSummary(item));
+  }
+
+  private isManagedEntitiesPublishedDiff(value: unknown): value is ManagedEntitiesPublishedDiff {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    if (
+      typeof record.baseVersion !== 'string' ||
+      typeof record.nextVersion !== 'string' ||
+      !Array.isArray(record.added) ||
+      !Array.isArray(record.updated) ||
+      !Array.isArray(record.removedIds) ||
+      !Array.isArray(record.orderedIds) ||
+      typeof record.changeCount !== 'number' ||
+      !Number.isInteger(record.changeCount) ||
+      record.changeCount < 0
+    ) {
+      return false;
+    }
+
+    return (
+      record.added.every((item) => this.isChatSummary(item)) &&
+      record.updated.every((item) => this.isChatSummary(item)) &&
+      record.removedIds.every((item) => typeof item === 'string' && item.trim().length > 0) &&
+      record.orderedIds.every((item) => typeof item === 'string' && item.trim().length > 0)
+    );
   }
 
   private isChatSummary(value: unknown): value is ChatSummary {

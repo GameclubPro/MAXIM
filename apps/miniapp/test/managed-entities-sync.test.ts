@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { ChatSummary, ManagedEntitiesRefreshState } from '@maxim/contracts';
 import {
+  applyManagedEntitiesResponseDiff,
   mergeManagedEntitiesRefreshItems,
   resolveManagedEntitiesRefreshRequestOptions,
   shouldStartManagedEntitiesBackgroundRefresh,
@@ -211,6 +212,52 @@ test('switches the visible list when refresh returns a new snapshot version', ()
     }).map((item) => item.id),
     ['2', '3'],
   );
+});
+
+test('applies a published snapshot patch using the canonical server order', () => {
+  const previous = [
+    createItem('1', 'Chat 1', { avatarUrl: 'https://example.com/avatar-1.png' }),
+    createItem('2', 'Chat 2'),
+  ];
+
+  const next = applyManagedEntitiesResponseDiff({
+    previous,
+    previousSnapshotVersion: 'snapshot-v1',
+    diff: {
+      mode: 'patch',
+      baseVersion: 'snapshot-v1',
+      nextVersion: 'snapshot-v2',
+      added: [createItem('3', 'Chat 3')],
+      updated: [createItem('2', 'Chat 2 updated')],
+      removedIds: ['1'],
+      orderedIds: ['3', '2'],
+    },
+  });
+
+  assert.deepEqual(next, [
+    createItem('3', 'Chat 3'),
+    createItem('2', 'Chat 2 updated'),
+  ]);
+});
+
+test('rejects a published snapshot patch when the ordered ids cannot reconstruct the next list', () => {
+  const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
+
+  const next = applyManagedEntitiesResponseDiff({
+    previous,
+    previousSnapshotVersion: 'snapshot-v1',
+    diff: {
+      mode: 'patch',
+      baseVersion: 'snapshot-v1',
+      nextVersion: 'snapshot-v2',
+      added: [],
+      updated: [],
+      removedIds: [],
+      orderedIds: ['1'],
+    },
+  });
+
+  assert.equal(next, null);
 });
 
 test('can keep the already visible home list when a complete refresh returns empty', () => {

@@ -1498,10 +1498,31 @@ export type ManagedEntitiesResponseSnapshot = z.infer<
   typeof managedEntitiesResponseSnapshotSchema
 >;
 
+export const managedEntitiesResponseDiffNoopSchema = z.object({
+  mode: z.literal('noop'),
+  baseVersion: z.string().trim().min(1),
+  nextVersion: z.string().trim().min(1),
+});
+export const managedEntitiesResponseDiffPatchSchema = z.object({
+  mode: z.literal('patch'),
+  baseVersion: z.string().trim().min(1),
+  nextVersion: z.string().trim().min(1),
+  added: z.array(chatSummarySchema).optional().default([]),
+  updated: z.array(chatSummarySchema).optional().default([]),
+  removedIds: z.array(z.string().trim().min(1)).optional().default([]),
+  orderedIds: z.array(z.string().trim().min(1)).optional().default([]),
+});
+export const managedEntitiesResponseDiffSchema = z.discriminatedUnion('mode', [
+  managedEntitiesResponseDiffNoopSchema,
+  managedEntitiesResponseDiffPatchSchema,
+]);
+export type ManagedEntitiesResponseDiff = z.infer<typeof managedEntitiesResponseDiffSchema>;
+
 export const managedEntitiesListResponseSchema = z.object({
   items: z.array(chatSummarySchema),
   refresh: managedEntitiesRefreshStateSchema,
   snapshot: managedEntitiesResponseSnapshotSchema.nullable().optional(),
+  diff: managedEntitiesResponseDiffSchema.nullable().optional(),
 });
 export type ManagedEntitiesListResponse = z.infer<typeof managedEntitiesListResponseSchema>;
 

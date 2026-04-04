@@ -97,6 +97,87 @@ test('getChats keeps refresh progress counters from the API response', async () 
   assert.deepEqual(calls, ['/chats?refresh=1&includeRefreshState=1']);
 });
 
+test('getChats parses a diff-aware refresh response and sends sinceVersion', async () => {
+  const calls: string[] = [];
+  const api = createApiStub(
+    {
+      items: [],
+      snapshot: {
+        version: 'snapshot-v2',
+        builtAt: '2026-04-04T10:05:00.000Z',
+        lastSyncedAt: '2026-04-04T10:04:30.000Z',
+        source: 'published_snapshot',
+        stale: false,
+      },
+      diff: {
+        mode: 'patch',
+        baseVersion: 'snapshot-v1',
+        nextVersion: 'snapshot-v2',
+        added: [
+          {
+            id: 'chat-2',
+            title: 'Новый чат',
+            createdAt: '2026-04-04T10:04:00.000Z',
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+            channelOverview: null,
+            assignedBots: [],
+            primaryBotId: null,
+            sharedMode: 'owned',
+          },
+        ],
+        updated: [],
+        removedIds: [],
+        orderedIds: ['chat-2'],
+      },
+      refresh: {
+        complete: false,
+        cursor: 8,
+        backoffActive: false,
+        nextPollAfterMs: 1500,
+        processedCandidates: 8,
+        totalCandidates: 20,
+        progressPercent: 40,
+        lastSyncedAt: null,
+        manualRefreshBlockedReason: null,
+        manualRefreshRetryAfterMs: null,
+      },
+    },
+    calls,
+  );
+
+  const response = await getChats(api, {
+    refresh: true,
+    includeRefreshState: true,
+    sinceVersion: 'snapshot-v1',
+  });
+
+  assert.deepEqual(response.diff, {
+    mode: 'patch',
+    baseVersion: 'snapshot-v1',
+    nextVersion: 'snapshot-v2',
+    added: [
+      {
+        id: 'chat-2',
+        title: 'Новый чат',
+        createdAt: '2026-04-04T10:04:00.000Z',
+        entityType: 'chat',
+        link: null,
+        avatarUrl: null,
+        channelOverview: null,
+        assignedBots: [],
+        primaryBotId: null,
+        sharedMode: 'owned',
+      },
+    ],
+    updated: [],
+    removedIds: [],
+    orderedIds: ['chat-2'],
+  });
+  assert.deepEqual(calls, ['/chats?refresh=1&includeRefreshState=1&sinceVersion=snapshot-v1']);
+});
+
 test('getChats recovery refresh uses MAX cache bypass and cursor reset query params', async () => {
   const calls: string[] = [];
   const api = createApiStub(

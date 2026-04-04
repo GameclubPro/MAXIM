@@ -721,4 +721,47 @@ describe('ChatContextCacheService', () => {
       snapshot,
     );
   });
+
+  it('stores and restores managed entities published diffs', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results[0].value as {
+      get: jest.Mock;
+      set: jest.Mock;
+    };
+    const diff = {
+      baseVersion: 'snapshot-v1',
+      nextVersion: 'snapshot-v2',
+      added: [buildChatSummary('chat-2')],
+      updated: [buildChatSummary('chat-3')],
+      removedIds: ['chat-1'],
+      orderedIds: ['chat-2', 'chat-3'],
+      changeCount: 3,
+    };
+
+    await service.setManagedEntitiesPublishedDiff('admin-1', 'chat', 'snapshot-v1', diff, 3600);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      'chat:managed-view-diff:v1:chat:admin-1:snapshot-v1',
+      JSON.stringify(diff),
+      'EX',
+      3600,
+    );
+
+    redisInstance.get.mockResolvedValueOnce(JSON.stringify(diff));
+    await expect(
+      service.getManagedEntitiesPublishedDiff('admin-1', 'chat', 'snapshot-v1'),
+    ).resolves.toEqual(diff);
+  });
 });

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChatSummary,
   ManagedEntitiesListResponse,
+  ManagedEntitiesResponseDiff,
   ManagedEntitiesRefreshState,
   ManagedEntitiesResponseSnapshot,
 } from '@maxim/contracts';
@@ -31,6 +32,7 @@ type ManagedEntitiesReloadBehavior = 'default' | 'manual' | 'recovery';
 type ManagedEntitiesRefreshRequestOptions = {
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
+  sinceVersion?: string | null;
 };
 
 type ManagedEntitiesLocalCachePayload = {
@@ -311,6 +313,25 @@ function mergeManagedEntityPresentation(
   return changed ? merged : next;
 }
 
+function mergeManagedEntityPresentationItem(
+  previousById: ReadonlyMap<string, ChatSummary>,
+  next: ChatSummary,
+): ChatSummary {
+  if (next.avatarUrl) {
+    return next;
+  }
+
+  const previous = previousById.get(next.id);
+  if (!previous?.avatarUrl) {
+    return next;
+  }
+
+  return {
+    ...next,
+    avatarUrl: previous.avatarUrl,
+  };
+}
+
 function mergeManagedEntitiesIncrementally(
   previous: ChatSummary[] | null,
   next: ChatSummary[],
@@ -390,6 +411,72 @@ export function mergeManagedEntitiesRefreshItems(options: {
   return mergeManagedEntitiesIncrementally(options.previous, nextWithPresentation);
 }
 
+export function applyManagedEntitiesResponseDiff(options: {
+  previous: ChatSummary[] | null;
+  diff: ManagedEntitiesResponseDiff | null | undefined;
+  previousSnapshotVersion?: string | null;
+}): ChatSummary[] | null {
+  const previous = options.previous;
+  const diff = options.diff;
+  const previousSnapshotVersion = normalizeManagedEntitiesSnapshotVersion(
+    options.previousSnapshotVersion,
+  );
+
+  if (!Array.isArray(previous) || !diff || previousSnapshotVersion === null) {
+    return null;
+  }
+
+  if (
+    diff.mode === 'noop' &&
+    previousSnapshotVersion === normalizeManagedEntitiesSnapshotVersion(diff.baseVersion) &&
+    previousSnapshotVersion === normalizeManagedEntitiesSnapshotVersion(diff.nextVersion)
+  ) {
+    return previous;
+  }
+
+  if (
+    diff.mode !== 'patch' ||
+    previousSnapshotVersion !== normalizeManagedEntitiesSnapshotVersion(diff.baseVersion)
+  ) {
+    return null;
+  }
+
+  const removedIds = new Set(diff.removedIds);
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  const nextById = new Map<string, ChatSummary>();
+
+  for (const item of previous) {
+    if (!removedIds.has(item.id)) {
+      nextById.set(item.id, item);
+    }
+  }
+
+  for (const item of diff.updated) {
+    nextById.set(item.id, mergeManagedEntityPresentationItem(previousById, item));
+  }
+
+  for (const item of diff.added) {
+    nextById.set(item.id, mergeManagedEntityPresentationItem(previousById, item));
+  }
+
+  const orderedIds = diff.orderedIds;
+  if (orderedIds.length !== nextById.size) {
+    return null;
+  }
+
+  const orderedItems: ChatSummary[] = [];
+  for (const id of orderedIds) {
+    const item = nextById.get(id);
+    if (!item) {
+      return null;
+    }
+
+    orderedItems.push(item);
+  }
+
+  return orderedItems;
+}
+
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
@@ -411,12 +498,14 @@ async function refreshManagedEntities(
         includeRefreshState: true,
         bypassRemoteCache: options.bypassRemoteCache,
         resetRefreshCursor: options.resetRefreshCursor,
+        sinceVersion: options.sinceVersion ?? undefined,
       })
     : getChannels(api, {
         refresh: true,
         includeRefreshState: true,
         bypassRemoteCache: options.bypassRemoteCache,
         resetRefreshCursor: options.resetRefreshCursor,
+        sinceVersion: options.sinceVersion ?? undefined,
       });
 }
 
@@ -771,33 +860,51 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          const next = await refreshManagedEntities(api, entityType, {
+          let next = await refreshManagedEntities(api, entityType, {
             bypassRemoteCache: forceRefreshPending && forceRefreshUsesBypassRemoteCache,
             resetRefreshCursor: resetRefreshCursor,
+            sinceVersion:
+              latestDataRef.current !== null ? (latestSnapshotRef.current?.version ?? null) : null,
           });
           forceRefreshPending = false;
           resetRefreshCursor = false;
           if (cancelled) {
             return;
           }
+          let diffItems = applyManagedEntitiesResponseDiff({
+            previous: latestDataRef.current,
+            diff: next.diff,
+            previousSnapshotVersion: latestSnapshotRef.current?.version ?? null,
+          });
+          if (next.diff && diffItems === null) {
+            next = await refreshManagedEntities(api, entityType, {
+              bypassRemoteCache: false,
+              resetRefreshCursor: false,
+            });
+            if (cancelled) {
+              return;
+            }
+            diffItems = null;
+          }
 
-          const nextSnapshot = sanitizeManagedEntitiesSnapshot(next.snapshot);
+          const resolvedSnapshot = sanitizeManagedEntitiesSnapshot(next.snapshot);
           const nextData = sanitizeManagedEntities(
-            mergeManagedEntitiesRefreshItems({
-              previous: latestDataRef.current,
-              next: next.items,
-              refreshState: next.refresh,
-              preservePreviousOnEmptyComplete:
-                keepVisibleOnSameSnapshotVersion && nextSnapshot?.version
-                  ? false
-                  : preserveVisibleDataOnEmptyComplete,
-              keepVisibleOnSameSnapshotVersion,
-              previousSnapshotVersion: latestSnapshotRef.current?.version ?? null,
-              nextSnapshotVersion: nextSnapshot?.version ?? null,
-            }),
+            diffItems ??
+              mergeManagedEntitiesRefreshItems({
+                previous: latestDataRef.current,
+                next: next.items,
+                refreshState: next.refresh,
+                preservePreviousOnEmptyComplete:
+                  keepVisibleOnSameSnapshotVersion && resolvedSnapshot?.version
+                    ? false
+                    : preserveVisibleDataOnEmptyComplete,
+                keepVisibleOnSameSnapshotVersion,
+                previousSnapshotVersion: latestSnapshotRef.current?.version ?? null,
+                nextSnapshotVersion: resolvedSnapshot?.version ?? null,
+              }),
           );
           latestDataRef.current = nextData;
-          latestSnapshotRef.current = nextSnapshot;
+          latestSnapshotRef.current = resolvedSnapshot;
           const phase = next.refresh.complete
             ? 'complete'
             : next.refresh.backoffActive
@@ -807,7 +914,7 @@ export function useManagedEntitiesSync({
             data: nextData,
             error: null,
             refreshState: next.refresh,
-            snapshot: nextSnapshot,
+            snapshot: resolvedSnapshot,
             phase,
             hasLoadedFromServer: true,
           });

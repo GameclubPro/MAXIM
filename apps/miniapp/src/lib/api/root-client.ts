@@ -1,6 +1,7 @@
 import type {
   ChatSummary,
   ManagedEntitiesListResponse,
+  ManagedEntitiesResponseDiff,
   ManagedEntitiesResponseSnapshot,
   Me,
 } from '@maxim/contracts';
@@ -12,6 +13,7 @@ type ManagedEntitiesFetchOptions = {
   bypassRemoteCache?: boolean;
   resetRefreshCursor?: boolean;
   fresh?: boolean;
+  sinceVersion?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -221,6 +223,68 @@ function parseManagedEntitiesResponseSnapshot(
   };
 }
 
+function parseManagedEntitiesResponseDiff(
+  value: unknown,
+): ManagedEntitiesResponseDiff | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+
+  if (!isRecord(value) || typeof value.mode !== 'string') {
+    throw new Error('Invalid managed entities diff metadata');
+  }
+
+  if (typeof value.baseVersion !== 'string' || typeof value.nextVersion !== 'string') {
+    throw new Error('Invalid managed entities diff metadata');
+  }
+
+  const baseVersion = value.baseVersion.trim();
+  const nextVersion = value.nextVersion.trim();
+  if (baseVersion.length === 0 || nextVersion.length === 0) {
+    throw new Error('Invalid managed entities diff metadata');
+  }
+
+  if (value.mode === 'noop') {
+    return {
+      mode: 'noop',
+      baseVersion,
+      nextVersion,
+    };
+  }
+
+  if (
+    value.mode === 'patch' &&
+    Array.isArray(value.added) &&
+    Array.isArray(value.updated) &&
+    Array.isArray(value.removedIds) &&
+    Array.isArray(value.orderedIds)
+  ) {
+    return {
+      mode: 'patch',
+      baseVersion,
+      nextVersion,
+      added: value.added.map((item) => parseChatSummary(item)),
+      updated: value.updated.map((item) => parseChatSummary(item)),
+      removedIds: value.removedIds.map((item) => {
+        if (typeof item !== 'string' || item.trim().length === 0) {
+          throw new Error('Invalid managed entities diff metadata');
+        }
+
+        return item.trim();
+      }),
+      orderedIds: value.orderedIds.map((item) => {
+        if (typeof item !== 'string' || item.trim().length === 0) {
+          throw new Error('Invalid managed entities diff metadata');
+        }
+
+        return item.trim();
+      }),
+    };
+  }
+
+  throw new Error('Invalid managed entities diff metadata');
+}
+
 function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListResponse {
   if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.refresh)) {
     throw new Error('Invalid managed entities response');
@@ -285,6 +349,11 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
           snapshot: parseManagedEntitiesResponseSnapshot(value.snapshot),
         }
       : {}),
+    ...(value.diff !== undefined
+      ? {
+          diff: parseManagedEntitiesResponseDiff(value.diff),
+        }
+      : {}),
   };
 }
 
@@ -307,6 +376,9 @@ function buildManagedEntitiesPath(
   }
   if (options.resetRefreshCursor) {
     query.set('resetCursor', '1');
+  }
+  if (typeof options.sinceVersion === 'string' && options.sinceVersion.trim().length > 0) {
+    query.set('sinceVersion', options.sinceVersion.trim());
   }
 
   const basePath = entityType === 'chat' ? '/chats' : '/channels';
