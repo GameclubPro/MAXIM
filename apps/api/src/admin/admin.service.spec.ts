@@ -7518,6 +7518,75 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
+  it('warms the allowlist from priority local candidates on a cold default load without blocking the response', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      createLocalManagedEntityRow({
+        chatId: 'chat-priority',
+        title: 'Приоритетный чат',
+        entityType: 'chat',
+        createdAt: '2026-03-03T10:00:00.000Z',
+      }),
+    ]);
+
+    const maxChatAdminRosterSyncService = {
+      scheduleDiscoverySnapshotSync: jest.fn().mockReturnValue(createDeferred<void>().promise),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+      items: [],
+      refresh: null,
+    });
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-launch',
+        chatTitle: 'Лонч-чат',
+        chatType: 'chat',
+      }),
+    ).resolves.toEqual([]);
+
+    expect(maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync).toHaveBeenCalledWith([
+      expect.objectContaining({
+        chatId: 'chat-launch',
+        title: 'Лонч-чат',
+        entityType: 'chat',
+      }),
+      expect.objectContaining({
+        chatId: 'chat-priority',
+        title: 'Приоритетный чат',
+        entityType: 'chat',
+      }),
+    ]);
+  });
+
   it('reuses a cached chat avatar from stored header during refresh', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

@@ -422,6 +422,7 @@ const MANAGED_ENTITIES_REMOTE_DELTA_ADMIN_TIMEOUT_MS = 750;
 const MANAGED_ENTITIES_REMOTE_FULL_SCAN_ADMIN_TIMEOUT_MS = 1_000;
 const MANAGED_ENTITIES_REMOTE_DELTA_SNAPSHOT_TIMEOUT_MS = 2_500;
 const MANAGED_ENTITIES_REMOTE_FULL_SCAN_SNAPSHOT_TIMEOUT_MS = 4_000;
+const MANAGED_ENTITIES_PRIORITY_ALLOWLIST_WARMUP_LIMIT = 12;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
 const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
@@ -729,6 +730,7 @@ export class AdminService implements OnModuleDestroy {
     string,
     Promise<ManagedEntitiesListResult>
   >();
+  private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
@@ -1230,6 +1232,11 @@ export class AdminService implements OnModuleDestroy {
         }),
       );
       const initial = await mergeWithLightweightBootstrap(cached);
+      if (cached.length === 0) {
+        this.scheduleManagedEntitiesPriorityAllowlistWarmup(user, entityType, {
+          seededChats: initial,
+        });
+      }
       if (initial.length > 0) {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
@@ -1861,6 +1868,13 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:response-warmup`;
   }
 
+  private buildManagedEntitiesAllowlistWarmupKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:allowlist-warmup`;
+  }
+
   private buildManagedEntitiesAllowlistCacheKey(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -2056,6 +2070,68 @@ export class AdminService implements OnModuleDestroy {
 
     this.managedEntitiesResponseWarmupRuns.set(key, pending);
     return pending;
+  }
+
+  private scheduleManagedEntitiesPriorityAllowlistWarmup(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      seededChats?: readonly ChatSummary[];
+    } = {},
+  ): void {
+    if (!this.maxChatAdminRosterSyncService) {
+      return;
+    }
+
+    const key = this.buildManagedEntitiesAllowlistWarmupKey(user.userId, entityType);
+    if (this.managedEntitiesAllowlistWarmupRuns.has(key)) {
+      return;
+    }
+
+    const pending = this.runManagedEntitiesPriorityAllowlistWarmup(user, entityType, options)
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed entities priority allowlist warmup failed',
+        );
+      })
+      .finally(() => {
+        if (this.managedEntitiesAllowlistWarmupRuns.get(key) === pending) {
+          this.managedEntitiesAllowlistWarmupRuns.delete(key);
+        }
+      });
+
+    this.managedEntitiesAllowlistWarmupRuns.set(key, pending);
+  }
+
+  private async runManagedEntitiesPriorityAllowlistWarmup(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: {
+      seededChats?: readonly ChatSummary[];
+    } = {},
+  ): Promise<void> {
+    if (!this.maxChatAdminRosterSyncService) {
+      return;
+    }
+
+    const seededCandidates = (options.seededChats ?? []).map((chat) =>
+      this.toManagedEntitiesDiscoveryCandidate(chat),
+    );
+    const priorityCandidates = this.mergeManagedEntitiesDiscoverySnapshots(
+      seededCandidates,
+      await this.loadManagedEntitiesDeltaPrioritySnapshot(user, entityType),
+    ).slice(0, MANAGED_ENTITIES_PRIORITY_ALLOWLIST_WARMUP_LIMIT);
+
+    if (priorityCandidates.length === 0) {
+      return;
+    }
+
+    await this.maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync(priorityCandidates);
   }
 
   private createManagedEntitySummary(params: {
