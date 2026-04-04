@@ -24,8 +24,16 @@
 
 ## VPS
 - Primary prod SSH alias: `ssh maxim-vps`
+- Public site edge SSH alias: `ssh maxim-vps-edge`
 - Legacy REG.RU fallback alias: `ssh maxim-vps-legacy`
 - `maxim-vps` should point to the Yandex prod VM and use SSH multiplexing: `ControlMaster auto`, `ControlPersist 10m`, `Compression yes`.
+- `maxim-vps-edge` points to the public edge VM on `84.201.186.244`; `maxim-vps` remains the main Yandex prod VM on `158.160.179.30`.
+- Current public prod routing:
+  - `maxim.play-team.ru` is the canonical public domain for both mini app/API traffic and MAX webhook subscriptions
+  - `maxim.play-team.ru` resolves to `84.201.186.244` via `maxim-site-edge-1`
+  - `maxim-site-edge-1` runs `haproxy` in TCP passthrough mode to `10.130.0.29:80/443`
+  - the backend app on `maxim-prod-1` still terminates TLS and still sees webhook/user traffic
+- `hook.maxim.play-team.ru` is now legacy/fallback infrastructure on `158.160.179.30`, not the expected live subscription target.
 - `./infra/scripts/vps-pull-build-up.sh` and `./infra/scripts/vps-pull-build-up-scale.sh` are meant to run on the VPS host. From local machine, invoke them through SSH. For shared API runtime changes, prefer the full prod API role set plus `miniapp-static` when the mini app changed.
 - Use `docker compose` only. Do not use `docker-compose`.
 - Main prod stack: `infra/docker-compose.yml`
@@ -69,6 +77,11 @@
   4. `https://github.com/max-messenger`
 - When onboarding, moderation entry flows, or webhook behavior are in scope, inspect `GET /subscriptions`.
 - Minimum expected webhook events are `message_created`, `user_added`, `bot_added`; in practice also check `bot_started`.
+- Current prod expectation: both active bots should have exactly one webhook subscription each, and both should point to `https://maxim.play-team.ru/api/webhook/max/...`.
+- After changing a bot's webhook host or domain, do not trust a side-by-side added subscription alone. Re-read `GET /subscriptions`, then delete and recreate the target subscription so MAX binds the current `secret` to that URL.
+- Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned in prod when the intended steady state is one canonical domain. If they diverge, webhook reconcile can silently steer subscriptions back to the old host.
+- If `POST /api/webhook/max/...` on a new host returns `403` while the same bot/path/secret works in a local synthetic request, suspect a stale MAX subscription secret first, not nginx or VPS networking.
+- In ingress logs, missing visible `x-max-bot-api-secret` is inconclusive because pino redacts that header. Confirm by watching the status transition after recreating the subscription and by checking whether new rows appear in `webhook_events`.
 - Treat `initDataUnsafe` as convenience only. Authentication, user identity, and server trust must rely on validated `initData`.
 - Keep MAX API client behavior aligned with current docs:
   - production uses Webhook, development/testing may use Long Polling,
@@ -89,6 +102,11 @@
 - Keep bot tokens and webhook secrets only in VPS secrets or `.env`, never in git. If a token was pasted into chat or another external surface, treat it as potentially exposed and rotate it before production activation.
 - Bot-specific speech is now registry-level, not chat-level. Chat settings still control `botSpeechStyle`, while bot registry metadata controls persona fields like `speechPersona` and `characterName`.
 - Current moderation/runtime speech resolves from the active `botId`. The legacy prod bot remains male by default (`Майор Максимов`); a future female bot should be introduced by setting `speechPersona: "female"` plus an explicit `characterName`, not by forking chat settings.
+- For per-chat webhook gaps, compare MAX API reality against local ingestion before touching moderation code:
+  - verify the bot still sees the chat via MAX API,
+  - fetch recent chat messages from MAX API,
+  - compare that with local `webhook_events` for the same `chatId`.
+  If MAX has the messages and `webhook_events` does not, the issue is webhook delivery/subscription state, not the moderation handler.
 
 ## Multi-bot model
 - The current data model is `Chat.primaryBotId` plus `ChatBotMembership`. Do not treat `Chat.botId` as the long-term source of truth for shared-presence logic; it remains a transitional compatibility field.
@@ -99,11 +117,17 @@
 ## Managed entities diagnostics
 - The mini app shows only the intersection where the user is admin and the bot also has admin access to the same chat/channel.
 - Counts for `Чаты` and `Каналы` can differ because the UI uses `chat_admin_allowlist` plus progressive refresh, not an instant full MAX snapshot.
+- On an empty default load, managed entities now use a two-lane bootstrap: lightweight user-scoped candidates can appear immediately, while the server also starts background allowlist warmup and a durable remote full refresh without waiting for manual `refresh=1`.
 - Diagnose `CHAT` and `CHANNEL` separately.
 - Explicit `refresh=1` on managed chats/channels is now an async refresh trigger, not a synchronous full MAX scan. The API should return cached allowlist data immediately and continue remote full refresh in background.
 - For `refresh=1`, trust `refresh.cursor`, `refresh.complete`, `refresh.backoffActive`, and `refresh.nextPollAfterMs`; do not treat the first response as proof that discovery is finished.
 - An empty or partial `refresh=1` response can be expected while the background scan is still progressing. Confirm completion only after the cursor reaches `-1`.
 - Full refresh is complete only when the Redis cursor becomes `-1`.
+- On cold default loads with an empty allowlist, the API now also enqueues the durable Bull job `managed-entities-refresh__<entityType>__<userId>` on queue `admin-managed-entities-refresh`; if discovery seems stalled, inspect Redis keys `bull:admin-managed-entities-refresh:*` alongside the managed refresh cursor/backoff keys.
+- A passive cold-start should not leave a fake in-progress state behind: if queue scheduling fails before the job is accepted, the freshly initialized managed refresh cursor is cleared instead of being left at `0`.
+- Home is now version-aware for published managed-entities snapshots: if the server keeps returning the same `snapshot.version`, the mini app should update `refresh` state only and keep the visible list stable instead of reapplying the same list.
+- The home local cache now persists snapshot metadata together with managed entities. If a user reopens the mini app and sees the cached list immediately, the next server response should only replace it when `snapshot.version` changes.
+- A visibility-return refresh on home is now expected only when the current snapshot is stale or missing. If the screen still visibly redraws while `snapshot.stale === false` and `snapshot.version` is unchanged, treat that as a client regression, not normal progressive sync behavior.
 - In multi-bot mode, visibility should still be reasoned about per unique chat/channel, not per bot. Use `assignedBots` and `primaryBotId` to understand presence/ownership before assuming the entity is missing.
 - For visibility problems, check:
   - `chat_admin_allowlist` rows for the `user_id`,
