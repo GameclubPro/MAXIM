@@ -7587,6 +7587,128 @@ describe('AdminService.listChats', () => {
     ]);
   });
 
+  it('queues a durable managed entities refresh on a cold default load without blocking the response', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const managedEntitiesRefreshEnqueue = createDeferred<void>();
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockReturnValue(managedEntitiesRefreshEnqueue.promise),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+      items: [],
+      refresh: null,
+    });
+
+    try {
+      await expect(
+        service.listChats({
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        }),
+      ).resolves.toEqual([]);
+
+      await flushAsyncTasks();
+
+      expect(managedEntitiesRefreshQueue.getJob).toHaveBeenCalledWith(
+        'managed-entities-refresh__chat__admin-1',
+      );
+      expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
+        'refresh-managed-entities',
+        {
+          userId: 'admin-1',
+          entityType: 'chat',
+          bypassRemoteCache: false,
+          resetRefreshCursor: false,
+        },
+        expect.objectContaining({
+          jobId: 'managed-entities-refresh__chat__admin-1',
+          priority: 10,
+        }),
+      );
+    } finally {
+      managedEntitiesRefreshEnqueue.resolve(undefined);
+      await flushAsyncTasks();
+    }
+  });
+
+  it('clears a newly initialized managed entities refresh cursor when cold-start queue scheduling fails', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const chatContextCache = createChatContextCacheMock();
+    const managedEntitiesRefreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockRejectedValue(new Error('queue unavailable')),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      managedEntitiesRefreshQueue as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
+      items: [],
+      refresh: null,
+    });
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
+
+    await flushAsyncTasks();
+    await flushAsyncTasks();
+
+    expect(chatContextCache.clearManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+    );
+  });
+
   it('reuses a cached chat avatar from stored header during refresh', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

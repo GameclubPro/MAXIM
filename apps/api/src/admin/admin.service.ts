@@ -731,6 +731,10 @@ export class AdminService implements OnModuleDestroy {
     Promise<ManagedEntitiesListResult>
   >();
   private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<
+    string,
+    Promise<void>
+  >();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
@@ -1236,6 +1240,7 @@ export class AdminService implements OnModuleDestroy {
         this.scheduleManagedEntitiesPriorityAllowlistWarmup(user, entityType, {
           seededChats: initial,
         });
+        this.scheduleManagedEntitiesColdStartRemoteFullRefresh(user, entityType);
       }
       if (initial.length > 0) {
         const items = await this.attachManagedEntityBotAssignments(
@@ -1875,6 +1880,13 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:allowlist-warmup`;
   }
 
+  private buildManagedEntitiesColdStartRefreshKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}:cold-start-refresh`;
+  }
+
   private buildManagedEntitiesAllowlistCacheKey(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -2132,6 +2144,82 @@ export class AdminService implements OnModuleDestroy {
     }
 
     await this.maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync(priorityCandidates);
+  }
+
+  private scheduleManagedEntitiesColdStartRemoteFullRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): void {
+    if (!this.adminManagedEntitiesRefreshQueue) {
+      return;
+    }
+
+    const key = this.buildManagedEntitiesColdStartRefreshKey(user.userId, entityType);
+    if (this.managedEntitiesColdStartRefreshScheduleRuns.has(key)) {
+      return;
+    }
+
+    const pending = this.runManagedEntitiesColdStartRemoteFullRefresh(user, entityType)
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Managed entities cold-start background refresh scheduling failed',
+        );
+      })
+      .finally(() => {
+        if (this.managedEntitiesColdStartRefreshScheduleRuns.get(key) === pending) {
+          this.managedEntitiesColdStartRefreshScheduleRuns.delete(key);
+        }
+      });
+
+    this.managedEntitiesColdStartRefreshScheduleRuns.set(key, pending);
+  }
+
+  private async runManagedEntitiesColdStartRemoteFullRefresh(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<void> {
+    if (!this.adminManagedEntitiesRefreshQueue) {
+      return;
+    }
+
+    let previousCursor: number | null = null;
+    try {
+      previousCursor =
+        (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(user.userId, entityType)) ??
+        null;
+    } catch {
+      previousCursor = null;
+    }
+
+    const refreshState = await this.prepareManagedEntitiesRemoteFullRefreshState(
+      user.userId,
+      entityType,
+    );
+    if (refreshState.backoffActive || refreshState.complete) {
+      return;
+    }
+
+    const enqueued = await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType);
+    if (
+      enqueued ||
+      !(
+        previousCursor === null ||
+        previousCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
+      )
+    ) {
+      return;
+    }
+
+    try {
+      await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+    } catch {
+      // Preserve best-effort behavior for passive cold-start scheduling.
+    }
   }
 
   private createManagedEntitySummary(params: {
