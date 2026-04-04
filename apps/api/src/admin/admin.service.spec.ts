@@ -3071,7 +3071,7 @@ describe('AdminService.getLogsDashboard', () => {
 });
 
 describe('AdminService.getChatActivityFeed', () => {
-  it('respects filter, limit, cursor and falls back to resolved names', async () => {
+  it('respects filter, limit, cursor and falls back to resolved names without remote profile lookup', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -3156,7 +3156,7 @@ describe('AdminService.getChatActivityFeed', () => {
         type: 'left',
         userId: 'user-5',
         userDisplayName: 'Игорь',
-        avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
+        avatarUrl: null,
         profileUrl: null,
         profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T11:00:00.000Z',
@@ -3183,8 +3183,8 @@ describe('AdminService.getChatActivityFeed', () => {
           type: 'left',
           userId: 'user-4',
           userDisplayName: 'Мария',
-          avatarUrl: 'https://cdn.max.ru/u/4/avatar-full.jpg',
-          profileUrl: 'https://max.ru/maria',
+          avatarUrl: null,
+          profileUrl: null,
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
@@ -3192,6 +3192,7 @@ describe('AdminService.getChatActivityFeed', () => {
       hasMore: false,
       nextCursor: null,
     });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
 
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(activitySqlText).toContain('WITH membership_events AS (');
@@ -3204,7 +3205,7 @@ describe('AdminService.getChatModerationFeed', () => {
     jest.useRealTimers();
   });
 
-  it('paginates filtered moderation events and preserves enriched user profiles', async () => {
+  it('paginates filtered moderation events and keeps local display names on the fast path', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -3325,8 +3326,8 @@ describe('AdminService.getChatModerationFeed', () => {
         ruleCode: 'MANUAL_BAN',
         userId: 'user-3',
         userDisplayName: 'Анна',
-        avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
-        profileUrl: 'https://max.ru/anna',
+        avatarUrl: null,
+        profileUrl: null,
         profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T11:00:00.000Z',
         maskedExcerpt: null,
@@ -3338,8 +3339,8 @@ describe('AdminService.getChatModerationFeed', () => {
         ruleCode: 'LINK_BLOCKED',
         userId: 'user-2',
         userDisplayName: 'Мария',
-        avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
-        profileUrl: 'https://max.ru/maria',
+        avatarUrl: null,
+        profileUrl: null,
         profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
         createdAt: '2026-03-02T10:30:00.000Z',
         maskedExcerpt: '***',
@@ -3368,7 +3369,7 @@ describe('AdminService.getChatModerationFeed', () => {
           ruleCode: 'DUPLICATE_BAN',
           userId: 'user-1',
           userDisplayName: 'Игорь',
-          avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+          avatarUrl: null,
           profileUrl: null,
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
           createdAt: '2026-03-02T09:00:00.000Z',
@@ -3379,6 +3380,7 @@ describe('AdminService.getChatModerationFeed', () => {
       hasMore: false,
       nextCursor: null,
     });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
 
     const firstCall = prisma.moderationEvent.findMany.mock.calls[0]?.[0];
     expect(firstCall.where).toEqual(

@@ -300,6 +300,10 @@ type ResolvedUserProfile = {
   profileHandoffUrl: string | null;
 };
 
+type ResolveUserProfilesOptions = {
+  allowRemoteLookup?: boolean;
+};
+
 type ModerationFeedCursor = {
   createdAt: Date;
   id: string;
@@ -11003,7 +11007,12 @@ export class AdminService implements OnModuleDestroy {
     const moderationFeed = includeModerationPreview
       ? moderationFeedPageSchema.parse({
           items: moderationPreviewRows.map((row) =>
-            this.mapModerationViolationRow(row as ModerationViolationRow, moderationUserProfiles),
+            this.mapModerationViolationRow(
+              chatId,
+              'chat',
+              row as ModerationViolationRow,
+              moderationUserProfiles,
+            ),
           ),
           hasMore: violationRows.length > LOGS_DASHBOARD_VIOLATIONS_LIMIT,
           nextCursor:
@@ -11102,6 +11111,7 @@ export class AdminService implements OnModuleDestroy {
       now,
       parsed.data,
       'chat',
+      { allowRemoteLookup: false },
     );
   }
 
@@ -11122,7 +11132,9 @@ export class AdminService implements OnModuleDestroy {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getCachedModerationFeedPage(chatId, user.userId, from, now, parsed.data, 'chat');
+    return this.getCachedModerationFeedPage(chatId, user.userId, from, now, parsed.data, 'chat', {
+      allowRemoteLookup: false,
+    });
   }
 
   async applyManualModerationAction(
@@ -13269,6 +13281,8 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private mapModerationViolationRow(
+    chatId: string,
+    entityType: ManagedEntityType,
     row: ModerationViolationRow,
     userProfiles: Map<string, ResolvedUserProfile>,
   ): LogsDashboardViolation {
@@ -13276,16 +13290,19 @@ export class AdminService implements OnModuleDestroy {
     const metadata = this.normalizeModerationViolationMetadata(row.metadata);
     const action = this.normalizeModerationViolationAction(row.action, metadata);
     const ruleCode = this.normalizeModerationViolationRuleCode(row.ruleCode, row.action);
+    const userDisplayName = userProfile?.displayName ?? null;
 
     return {
       id: row.id,
       action,
       ruleCode,
       userId: row.userId,
-      userDisplayName: userProfile?.displayName ?? null,
+      userDisplayName,
       avatarUrl: userProfile?.avatarUrl ?? null,
       profileUrl: userProfile?.profileUrl ?? null,
-      profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
+      profileHandoffUrl:
+        userProfile?.profileHandoffUrl ??
+        this.buildProfileMentionHandoffUrl(chatId, entityType, row.userId, userDisplayName),
       createdAt: row.createdAt.toISOString(),
       maskedExcerpt: row.maskedExcerpt,
       metadata,
@@ -13335,6 +13352,7 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     query: ModerationFeedQuery,
     entityType: ManagedEntityType = 'chat',
+    profileOptions: ResolveUserProfilesOptions = {},
   ): Promise<ModerationFeedPage> {
     const limit = Math.max(1, Math.min(100, query.limit));
     const cursor = this.decodeModerationFeedCursor(query.cursor);
@@ -13365,12 +13383,13 @@ export class AdminService implements OnModuleDestroy {
       chatId,
       entityType,
       pageRows.map((row) => row.userId),
+      profileOptions,
     );
     const lastRow = pageRows.at(-1);
 
     return moderationFeedPageSchema.parse({
       items: pageRows.map((row) =>
-        this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
+        this.mapModerationViolationRow(chatId, entityType, row as ModerationViolationRow, userProfiles),
       ),
       hasMore: rows.length > limit,
       nextCursor:
@@ -13390,15 +13409,22 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     query: ModerationFeedQuery,
     entityType: ManagedEntityType,
+    profileOptions: ResolveUserProfilesOptions = {},
   ): Promise<ModerationFeedPage> {
-    const cacheKey = this.buildModerationFeedPageCacheKey(chatId, userId, entityType, query);
+    const cacheKey = this.buildModerationFeedPageCacheKey(
+      chatId,
+      userId,
+      entityType,
+      query,
+      profileOptions,
+    );
     const cached = this.moderationFeedPageCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
       return cached.promise;
     }
 
     let pending!: Promise<ModerationFeedPage>;
-    pending = this.getModerationFeedPage(chatId, from, to, query, entityType).catch(
+    pending = this.getModerationFeedPage(chatId, from, to, query, entityType, profileOptions).catch(
       (error: unknown) => {
         const current = this.moderationFeedPageCache.get(cacheKey);
         if (current?.promise === pending) {
@@ -13430,7 +13456,9 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     query: MembershipActivityQuery,
     entityType: ManagedEntityType = 'chat',
+    profileOptions: ResolveUserProfilesOptions = {},
   ): Promise<MembershipActivityPage> {
+    const allowRemoteLookup = profileOptions.allowRemoteLookup !== false;
     const limit = Math.max(1, Math.min(100, query.limit));
     const cursor = this.decodeMembershipActivityCursor(query.cursor);
     const eventTypes =
@@ -13446,12 +13474,22 @@ export class AdminService implements OnModuleDestroy {
     });
 
     const pageRows = rows.slice(0, limit);
+    const userIdsToResolve = pageRows
+      .filter((row) => {
+        if (allowRemoteLookup) {
+          return true;
+        }
+
+        const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
+        return !directName;
+      })
+      .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
+      .filter(Boolean);
     const userProfiles = await this.resolveUserProfiles(
       chatId,
       entityType,
-      pageRows
-        .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
-        .filter(Boolean),
+      userIdsToResolve,
+      profileOptions,
     );
     const items = pageRows
       .map((row) => {
@@ -13476,7 +13514,9 @@ export class AdminService implements OnModuleDestroy {
           userDisplayName,
           avatarUrl: userProfile?.avatarUrl ?? null,
           profileUrl: userProfile?.profileUrl ?? null,
-          profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
+          profileHandoffUrl:
+            userProfile?.profileHandoffUrl ??
+            this.buildProfileMentionHandoffUrl(chatId, entityType, normalizedUserId, userDisplayName),
           createdAt,
         };
       })
@@ -13517,12 +13557,14 @@ export class AdminService implements OnModuleDestroy {
     to: Date,
     query: MembershipActivityQuery,
     entityType: ManagedEntityType,
+    profileOptions: ResolveUserProfilesOptions = {},
   ): Promise<MembershipActivityPage> {
     const cacheKey = this.buildMembershipActivityFeedPageCacheKey(
       chatId,
       userId,
       entityType,
       query,
+      profileOptions,
     );
     const cached = this.membershipActivityFeedPageCache.get(cacheKey);
     if (cached && cached.expiresAtMs > Date.now()) {
@@ -13530,7 +13572,14 @@ export class AdminService implements OnModuleDestroy {
     }
 
     let pending!: Promise<MembershipActivityPage>;
-    pending = this.getMembershipActivityFeedPage(chatId, from, to, query, entityType).catch(
+    pending = this.getMembershipActivityFeedPage(
+      chatId,
+      from,
+      to,
+      query,
+      entityType,
+      profileOptions,
+    ).catch(
       (error: unknown) => {
         const current = this.membershipActivityFeedPageCache.get(cacheKey);
         if (current?.promise === pending) {
@@ -13963,7 +14012,9 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     entityType: ManagedEntityType,
     userIds: readonly string[],
+    options: ResolveUserProfilesOptions = {},
   ): Promise<Map<string, ResolvedUserProfile>> {
+    const allowRemoteLookup = options.allowRemoteLookup !== false;
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
     if (normalizedUserIds.length === 0) {
       return new Map();
@@ -13975,23 +14026,39 @@ export class AdminService implements OnModuleDestroy {
     const missingUserIds: string[] = [];
 
     for (const userId of normalizedUserIds) {
-      const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
-      const cached = this.resolvedUserProfileCache.get(cacheKey);
+      const remoteCacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, {
+        allowRemoteLookup: true,
+      });
+      const localCacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, {
+        allowRemoteLookup: false,
+      });
+      const cached =
+        this.resolvedUserProfileCache.get(remoteCacheKey) ??
+        (allowRemoteLookup ? undefined : this.resolvedUserProfileCache.get(localCacheKey));
       if (cached && cached.expiresAtMs > nowMs) {
         pendingByUserId.set(userId, cached.promise);
         continue;
       }
 
-      this.resolvedUserProfileCache.delete(cacheKey);
+      if (allowRemoteLookup) {
+        this.resolvedUserProfileCache.delete(remoteCacheKey);
+      } else {
+        this.resolvedUserProfileCache.delete(localCacheKey);
+      }
       missingUserIds.push(userId);
     }
 
     if (missingUserIds.length > 0) {
       let batchPromise!: Promise<Map<string, ResolvedUserProfile>>;
-      batchPromise = this.loadResolvedUserProfiles(chatId, entityType, missingUserIds).catch(
+      batchPromise = this.loadResolvedUserProfiles(
+        chatId,
+        entityType,
+        missingUserIds,
+        options,
+      ).catch(
         (error: unknown) => {
           for (const userId of missingUserIds) {
-            const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
+            const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
             const current = this.resolvedUserProfileCache.get(cacheKey);
             if (current?.promise === pendingByUserId.get(userId)) {
               this.resolvedUserProfileCache.delete(cacheKey);
@@ -14002,7 +14069,7 @@ export class AdminService implements OnModuleDestroy {
       );
 
       for (const userId of missingUserIds) {
-        const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId);
+        const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
         const pendingProfile = batchPromise.then(
           (batch) =>
             batch.get(userId) ?? {
@@ -14040,7 +14107,9 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     entityType: ManagedEntityType,
     userIds: readonly string[],
+    options: ResolveUserProfilesOptions = {},
   ): Promise<Map<string, ResolvedUserProfile>> {
+    const allowRemoteLookup = options.allowRemoteLookup !== false;
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
     if (normalizedUserIds.length === 0) {
       return new Map();
@@ -14058,7 +14127,7 @@ export class AdminService implements OnModuleDestroy {
     >();
 
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
-    if (loadProfiles) {
+    if (allowRemoteLookup && loadProfiles) {
       try {
         const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
         chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds, {
@@ -19441,7 +19510,9 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityType,
     query: ModerationFeedQuery,
+    profileOptions: ResolveUserProfilesOptions = {},
   ): string {
+    const profileMode = profileOptions.allowRemoteLookup === false ? 'local' : 'remote';
     return [
       chatId,
       userId,
@@ -19450,6 +19521,7 @@ export class AdminService implements OnModuleDestroy {
       query.filter,
       String(query.limit),
       query.cursor ?? '',
+      profileMode,
     ].join(':');
   }
 
@@ -19458,7 +19530,9 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityType,
     query: MembershipActivityQuery,
+    profileOptions: ResolveUserProfilesOptions = {},
   ): string {
+    const profileMode = profileOptions.allowRemoteLookup === false ? 'local' : 'remote';
     return [
       chatId,
       userId,
@@ -19467,6 +19541,7 @@ export class AdminService implements OnModuleDestroy {
       query.filter,
       String(query.limit),
       query.cursor ?? '',
+      profileMode,
     ].join(':');
   }
 
@@ -19474,8 +19549,14 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     entityType: ManagedEntityType,
     userId: string,
+    options: ResolveUserProfilesOptions = {},
   ): string {
-    return [chatId, entityType, userId].join(':');
+    return [
+      chatId,
+      entityType,
+      userId,
+      options.allowRemoteLookup === false ? 'local' : 'remote',
+    ].join(':');
   }
 
   private invalidateLogsDashboardResponseCache(chatId: string): void {

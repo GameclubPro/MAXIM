@@ -241,7 +241,8 @@
   align-items: center;
   justify-content: center;
   min-height: 26px;
-  padding: 0 9px;
+  min-width: 26px;
+  padding: 0;
   border-radius: 999px;
   font-size: 0.67rem;
   font-weight: 800;
@@ -1269,6 +1270,33 @@
 
 .skeleton-card__line:last-child {
   width: 76%;
+}
+
+.spinner {
+  --spinner-size: 18px;
+  --spinner-track: rgba(62, 96, 127, 0.16);
+  --spinner-head: rgba(18, 92, 170, 0.9);
+  display: inline-flex;
+  width: var(--spinner-size);
+  height: var(--spinner-size);
+  border-radius: 999px;
+  border: 2px solid var(--spinner-track);
+  border-top-color: var(--spinner-head);
+  animation: spinnerRotate 0.8s linear infinite;
+}
+
+.spinner--sm {
+  --spinner-size: 12px;
+  border-width: 1.8px;
+}
+
+.spinner--md {
+  --spinner-size: 18px;
+}
+
+.spinner--lg {
+  --spinner-size: 28px;
+  border-width: 2.4px;
 }
 
 .chat-card__header {
@@ -4039,6 +4067,12 @@
 }
 
 @keyframes dialogSubmitSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes spinnerRotate {
   to {
     transform: rotate(360deg);
   }
@@ -11868,6 +11902,12 @@
   border-radius: 20px;
 }
 
+.events-loading-state {
+  min-height: 112px;
+  display: grid;
+  place-items: center;
+}
+
 .events-feed {
   display: grid;
   gap: 8px;
@@ -12642,6 +12682,7 @@
   border: 1px solid rgba(216, 227, 238, 0.94);
   background: rgba(250, 252, 254, 0.98);
   color: var(--text-secondary);
+  justify-items: start;
 }
 
 .membership-feed__status p {

@@ -2,6 +2,7 @@ import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/co
 import { type MouseEvent, useMemo } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
+import { Spinner } from '../ui/spinner';
 
 type MembershipActivityFeedProps = {
   title?: string | null;
@@ -188,7 +189,11 @@ export function MembershipActivityFeed({
           onChange={onFilterChange}
           className="membership-feed__filters"
         />
-        {isReloading ? <span className="membership-feed__badge">Обновляем</span> : null}
+        {isReloading ? (
+          <span className="membership-feed__badge">
+            <Spinner size="sm" label={null} />
+          </span>
+        ) : null}
       </div>
 
       {error ? (
@@ -202,7 +207,7 @@ export function MembershipActivityFeed({
 
       {!error && isReloading && items.length === 0 ? (
         <div className="membership-feed__status">
-          <p>Загружаем активность участников...</p>
+          <Spinner size="lg" label="Загружаем активность участников" />
         </div>
       ) : null}
 

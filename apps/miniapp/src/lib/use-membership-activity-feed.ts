@@ -15,7 +15,7 @@ type LoadMembershipActivityPage = (query: {
 type UseMembershipActivityFeedOptions = {
   enabled?: boolean;
   range: MembershipActivityRange;
-  initialPage: MembershipActivityPage;
+  initialPage?: MembershipActivityPage | null;
   loadPage: LoadMembershipActivityPage;
   limit?: number;
 };
@@ -45,12 +45,16 @@ function isAbortError(cause: unknown): boolean {
 export function useMembershipActivityFeed({
   enabled = true,
   range,
-  initialPage,
+  initialPage = null,
   loadPage,
   limit = 50,
 }: UseMembershipActivityFeedOptions) {
   const [filter, setFilter] = useState<MembershipActivityFilter>('all');
-  const [feed, setFeed] = useState<FeedState>(() => toFeedState(initialPage));
+  const [feed, setFeed] = useState<FeedState>(() => (initialPage ? toFeedState(initialPage) : {
+    items: [],
+    hasMore: false,
+    nextCursor: null,
+  }));
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
   const requestIdRef = useRef(0);
@@ -63,13 +67,21 @@ export function useMembershipActivityFeed({
     activeControllerRef.current = null;
 
     if (!enabled) {
-      setFeed(toFeedState(initialPage));
+      setFeed(
+        initialPage
+          ? toFeedState(initialPage)
+          : {
+              items: [],
+              hasMore: false,
+              nextCursor: null,
+            },
+      );
       setError(null);
       setStatus('idle');
       return;
     }
 
-    if (filter === 'all') {
+    if (filter === 'all' && initialPage) {
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
@@ -82,7 +94,9 @@ export function useMembershipActivityFeed({
     }
 
     if (filter === 'all') {
-      return;
+      if (initialPage) {
+        return;
+      }
     }
 
     const requestId = requestIdRef.current + 1;
@@ -178,13 +192,21 @@ export function useMembershipActivityFeed({
 
   async function retry() {
     if (!enabled) {
-      setFeed(toFeedState(initialPage));
+      setFeed(
+        initialPage
+          ? toFeedState(initialPage)
+          : {
+              items: [],
+              hasMore: false,
+              nextCursor: null,
+            },
+      );
       setError(null);
       setStatus('idle');
       return;
     }
 
-    if (filter === 'all') {
+    if (filter === 'all' && initialPage) {
       setFeed(toFeedState(initialPage));
       setError(null);
       return;

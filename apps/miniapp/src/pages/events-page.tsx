@@ -5,7 +5,6 @@ import type {
   ManualModerationActionRequest,
   ModerationFeedFilter,
   MembershipActivityItem,
-  MembershipActivityPage,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } from 'react';
@@ -16,6 +15,7 @@ import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
+import { Spinner } from '../components/ui/spinner';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -65,12 +65,6 @@ const periodOptions: Array<{ value: LogsDashboardRange; label: string }> = [
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
 ];
-
-const EMPTY_ACTIVITY_PAGE: MembershipActivityPage = {
-  items: [],
-  hasMore: false,
-  nextCursor: null,
-};
 
 function ModerationTabIcon() {
   return (
@@ -701,8 +695,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
-  const includeActivityPreview = section === 'activity';
-  const includeModerationPreview = section === 'moderation';
 
   useEffect(() => {
     if (chatId) {
@@ -711,21 +703,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   const dashboardQuery = useQuery({
-    queryKey: [
-      'logs-dashboard',
-      chatId,
-      range,
-      includeActivityPreview,
-      includeModerationPreview,
-    ],
+    queryKey: ['logs-dashboard', chatId, range],
     queryFn: ({ signal }) =>
       getLogsDashboard(
         api,
         chatId ?? '',
         range,
         {
-          includeActivityPreview,
-          includeModerationPreview,
+          includeActivityPreview: false,
+          includeModerationPreview: false,
         },
         { signal },
       ),
@@ -802,14 +788,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const activityFeed = useMembershipActivityFeed({
     enabled: Boolean(chatId) && section === 'activity',
     range,
-    initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
+    initialPage: null,
     loadPage: (query, request) => getChatActivityFeed(api, chatId ?? '', query, request),
   });
   const moderationFeed = useModerationFeed({
-    enabled: Boolean(chatId) && section === 'moderation' && !isDashboardPending,
+    enabled: Boolean(chatId) && section === 'moderation',
     range,
     filter: eventsFilter,
-    initialPage: dashboard?.moderationFeed ?? null,
+    initialPage: null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
   });
   const profileHandoffMutation = useMutation({
@@ -871,6 +857,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     () => filterOptions.find((option) => option.value === eventsFilter)?.count ?? 0,
     [eventsFilter, filterOptions],
   );
+  const isModerationInitialLoading =
+    moderationFeed.isReloading && moderationFeed.items.length === 0;
 
   const hardMeasures = violationsSummary.mute + violationsSummary.ban;
 
@@ -1057,15 +1045,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
             {isDashboardPending ? (
               <GlassCard className="events-inline-state">
-                <StatusState
-                  tone="neutral"
-                  title="Подтягиваем сводку"
-                  description={
-                    section === 'activity'
-                      ? 'Собираем баланс входов и выходов.'
-                      : 'Открываем журнал и прогреваем ленту.'
-                  }
-                />
+                <div className="events-loading-state">
+                  <Spinner
+                    size="lg"
+                    label={
+                      section === 'activity'
+                        ? 'Загружаем сводку по входам и выходам'
+                        : 'Загружаем сводку по модерации'
+                    }
+                  />
+                </div>
               </GlassCard>
             ) : hasBlockingDashboardError ? (
               <GlassCard className="events-inline-state">
@@ -1167,32 +1156,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </div>
       </section>
 
-      {section === 'activity' && isDashboardPending ? (
-        <GlassCard className="events-inline-state">
-          <StatusState
-            tone="neutral"
-            title="Загружаем активность"
-            description="Лента входов и выходов появится сразу после сводки."
-          />
-        </GlassCard>
-      ) : section === 'activity' && hasBlockingDashboardError ? (
-        <GlassCard className="events-inline-state">
-          <StatusState
-            tone="warning"
-            title="Лента активности пока недоступна"
-            description="Сначала нужно получить сводку по чату."
-            action={
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => void dashboardQuery.refetch()}
-              >
-                Повторить
-              </button>
-            }
-          />
-        </GlassCard>
-      ) : section === 'activity' ? (
+      {section === 'activity' ? (
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
@@ -1232,16 +1196,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {isDashboardPending ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="neutral"
-                title="Готовим журнал"
-                description="Сначала подтягиваем сводку, потом откроем список событий."
-              />
-            </GlassCard>
-          ) : null}
-
           {dashboard && violationsSummary.total === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
@@ -1262,7 +1216,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {selectedFilterCount > 0 && moderationFeed.error ? (
+          {moderationFeed.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="warning"
@@ -1281,15 +1235,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {selectedFilterCount > 0 &&
-          moderationFeed.isReloading &&
-          moderationFeed.items.length === 0 ? (
+          {isModerationInitialLoading ? (
             <GlassCard className="events-inline-state">
-              <StatusState
-                tone="neutral"
-                title="Загружаем список"
-                description="Подтягиваем все записи по выбранному фильтру."
-              />
+              <div className="events-loading-state">
+                <Spinner size="lg" label="Загружаем список событий модерации" />
+              </div>
             </GlassCard>
           ) : null}
 
