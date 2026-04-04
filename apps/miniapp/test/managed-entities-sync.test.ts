@@ -179,6 +179,40 @@ test('uses the final server snapshot once refresh is complete', () => {
   );
 });
 
+test('keeps the visible list stable when refresh returns the same snapshot version', () => {
+  const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
+  const next = [createItem('2', 'Chat 2'), createItem('3', 'Chat 3')];
+
+  assert.deepEqual(
+    mergeManagedEntitiesRefreshItems({
+      previous,
+      next,
+      refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+      keepVisibleOnSameSnapshotVersion: true,
+      previousSnapshotVersion: 'snapshot-v1',
+      nextSnapshotVersion: 'snapshot-v1',
+    }).map((item) => item.id),
+    ['1', '2'],
+  );
+});
+
+test('switches the visible list when refresh returns a new snapshot version', () => {
+  const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
+  const next = [createItem('2', 'Chat 2'), createItem('3', 'Chat 3')];
+
+  assert.deepEqual(
+    mergeManagedEntitiesRefreshItems({
+      previous,
+      next,
+      refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+      keepVisibleOnSameSnapshotVersion: true,
+      previousSnapshotVersion: 'snapshot-v1',
+      nextSnapshotVersion: 'snapshot-v2',
+    }).map((item) => item.id),
+    ['2', '3'],
+  );
+});
+
 test('can keep the already visible home list when a complete refresh returns empty', () => {
   const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
 

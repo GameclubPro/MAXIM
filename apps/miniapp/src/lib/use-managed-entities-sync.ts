@@ -4,6 +4,7 @@ import type {
   ChatSummary,
   ManagedEntitiesListResponse,
   ManagedEntitiesRefreshState,
+  ManagedEntitiesResponseSnapshot,
 } from '@maxim/contracts';
 import { getChannels, getChats } from './api/root-client';
 import { isUnusableChatTitle, resolveChatTitle } from './chat-titles';
@@ -36,12 +37,14 @@ type ManagedEntitiesLocalCachePayload = {
   version: number;
   items: ChatSummary[];
   updatedAt: string;
+  snapshot?: ManagedEntitiesResponseSnapshot | null;
 };
 
 type ManagedEntitiesSyncState = {
   data: ChatSummary[] | null;
   error: Error | null;
   refreshState: ManagedEntitiesRefreshState | null;
+  snapshot: ManagedEntitiesResponseSnapshot | null;
   phase: ManagedEntitiesSyncPhase;
   hasLoadedFromServer: boolean;
 };
@@ -50,6 +53,7 @@ const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
   data: null,
   error: null,
   refreshState: null,
+  snapshot: null,
   phase: 'loading',
   hasLoadedFromServer: false,
 };
@@ -183,10 +187,46 @@ function sanitizeManagedEntitiesOrNull(
   return sanitized.length > 0 ? sanitized : null;
 }
 
+function sanitizeManagedEntitiesSnapshot(
+  snapshot: ManagedEntitiesResponseSnapshot | null | undefined,
+): ManagedEntitiesResponseSnapshot | null {
+  if (!snapshot) {
+    return null;
+  }
+
+  const version = snapshot.version.trim();
+  const builtAt = snapshot.builtAt.trim();
+  if (!version || !builtAt) {
+    return null;
+  }
+
+  return {
+    version,
+    builtAt,
+    lastSyncedAt:
+      typeof snapshot.lastSyncedAt === 'string' && snapshot.lastSyncedAt.trim().length > 0
+        ? snapshot.lastSyncedAt.trim()
+        : null,
+    source: snapshot.source,
+    stale: snapshot.stale === true,
+  };
+}
+
+function normalizeManagedEntitiesSnapshotVersion(
+  value: string | null | undefined,
+): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : null;
+}
+
 function readManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
-): ChatSummary[] | null {
+): ManagedEntitiesLocalCachePayload | null {
   if (typeof window === 'undefined') {
     return null;
   }
@@ -202,7 +242,12 @@ function readManagedEntitiesLocalCache(
       return null;
     }
 
-    return Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : null;
+    return {
+      version: parsed.version,
+      items: Array.isArray(parsed.items) ? sanitizeManagedEntities(parsed.items) : [],
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      snapshot: sanitizeManagedEntitiesSnapshot(parsed.snapshot),
+    };
   } catch {
     return null;
   }
@@ -212,6 +257,7 @@ function saveManagedEntitiesLocalCache(
   entityType: ManagedEntityKind,
   scope: string,
   items: ChatSummary[],
+  snapshot: ManagedEntitiesResponseSnapshot | null,
 ): void {
   if (typeof window === 'undefined') {
     return;
@@ -223,6 +269,7 @@ function saveManagedEntitiesLocalCache(
       version: MANAGED_ENTITIES_LOCAL_CACHE_VERSION,
       items: sanitizedItems,
       updatedAt: new Date().toISOString(),
+      snapshot: sanitizeManagedEntitiesSnapshot(snapshot),
     };
     window.localStorage.setItem(
       buildManagedEntitiesLocalCacheKey(entityType, scope),
@@ -307,7 +354,23 @@ export function mergeManagedEntitiesRefreshItems(options: {
   next: ChatSummary[];
   refreshState: ManagedEntitiesRefreshState;
   preservePreviousOnEmptyComplete?: boolean;
+  keepVisibleOnSameSnapshotVersion?: boolean;
+  previousSnapshotVersion?: string | null;
+  nextSnapshotVersion?: string | null;
 }): ChatSummary[] {
+  const previousSnapshotVersion = normalizeManagedEntitiesSnapshotVersion(
+    options.previousSnapshotVersion,
+  );
+  const nextSnapshotVersion = normalizeManagedEntitiesSnapshotVersion(options.nextSnapshotVersion);
+  if (
+    options.keepVisibleOnSameSnapshotVersion === true &&
+    nextSnapshotVersion !== null &&
+    previousSnapshotVersion === nextSnapshotVersion &&
+    Array.isArray(options.previous)
+  ) {
+    return options.previous;
+  }
+
   if (
     options.preservePreviousOnEmptyComplete === true &&
     options.refreshState.complete === true &&
@@ -373,6 +436,7 @@ export function useManagedEntitiesSync({
   persistLocalCache = false,
   localCacheScope = 'default',
   preserveVisibleDataOnEmptyComplete = false,
+  keepVisibleOnSameSnapshotVersion = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -389,6 +453,7 @@ export function useManagedEntitiesSync({
   persistLocalCache?: boolean;
   localCacheScope?: string;
   preserveVisibleDataOnEmptyComplete?: boolean;
+  keepVisibleOnSameSnapshotVersion?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const [ephemeralCacheScope] = useState(() => `s:${Math.random().toString(36).slice(2, 10)}`);
@@ -408,15 +473,21 @@ export function useManagedEntitiesSync({
       : {
           ...cachedState,
           hasLoadedFromServer: cachedState.hasLoadedFromServer === true,
+          snapshot: sanitizeManagedEntitiesSnapshot(cachedState.snapshot),
         };
-  const persistedData = useMemo(
+  const persistedCache = useMemo(
     () =>
       persistLocalCache && effectiveLocalCacheScope !== null
         ? readManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope)
         : null,
     [effectiveLocalCacheScope, entityType, persistLocalCache],
   );
-  const initialCachedData = sanitizeManagedEntitiesOrNull(cachedState?.data ?? persistedData);
+  const initialCachedData = sanitizeManagedEntitiesOrNull(
+    cachedState?.data ?? persistedCache?.items ?? null,
+  );
+  const initialSnapshot = sanitizeManagedEntitiesSnapshot(
+    normalizedCachedState?.snapshot ?? persistedCache?.snapshot ?? null,
+  );
   const initialState: ManagedEntitiesSyncState = freshOnLoad
     ? {
         ...EMPTY_SYNC_STATE,
@@ -427,6 +498,7 @@ export function useManagedEntitiesSync({
             data: initialCachedData,
             error: null,
             refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+            snapshot: initialSnapshot,
             phase: 'complete',
             hasLoadedFromServer: false,
           }
@@ -436,6 +508,7 @@ export function useManagedEntitiesSync({
   const [state, setState] = useState<ManagedEntitiesSyncState>(() => initialState);
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(initialState.data);
+  const latestSnapshotRef = useRef<ManagedEntitiesResponseSnapshot | null>(initialState.snapshot);
   const hasLoadedFromServerRef = useRef(initialState.hasLoadedFromServer);
   const skippedInitialSyncRef = useRef(false);
   const handledReloadNonceRef = useRef(reloadNonce);
@@ -451,6 +524,7 @@ export function useManagedEntitiesSync({
     skippedInitialSyncRef.current = false;
     backoffResumeAtRef.current = null;
     latestDataRef.current = initialState.data;
+    latestSnapshotRef.current = initialState.snapshot;
     hasLoadedFromServerRef.current = initialState.hasLoadedFromServer;
     setState(initialState);
   }, [effectiveStateCacheScope, initialState]);
@@ -458,6 +532,10 @@ export function useManagedEntitiesSync({
   useEffect(() => {
     hasLoadedFromServerRef.current = state.hasLoadedFromServer;
   }, [state.hasLoadedFromServer]);
+
+  useEffect(() => {
+    latestSnapshotRef.current = state.snapshot;
+  }, [state.snapshot]);
 
   useEffect(() => {
     queryClient.setQueryData(cacheKey, state);
@@ -474,7 +552,12 @@ export function useManagedEntitiesSync({
       return;
     }
 
-    saveManagedEntitiesLocalCache(entityType, effectiveLocalCacheScope, dataToPersist);
+    saveManagedEntitiesLocalCache(
+      entityType,
+      effectiveLocalCacheScope,
+      dataToPersist,
+      state.snapshot,
+    );
   }, [
     effectiveLocalCacheScope,
     entityType,
@@ -483,6 +566,7 @@ export function useManagedEntitiesSync({
     state.error,
     state.hasLoadedFromServer,
     state.refreshState,
+    state.snapshot,
   ]);
 
   useEffect(() => {
@@ -629,10 +713,12 @@ export function useManagedEntitiesSync({
             !forceRefreshPending &&
             !syncOnFirstLoad
           ) {
+            latestSnapshotRef.current = null;
             setState({
               data: initialData,
               error: null,
               refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+              snapshot: null,
               phase: documentVisible ? 'complete' : 'idle',
               hasLoadedFromServer: true,
             });
@@ -640,10 +726,12 @@ export function useManagedEntitiesSync({
           }
 
           if (manualRefreshUsesFresh) {
+            latestSnapshotRef.current = null;
             setState({
               data: initialData,
               error: null,
               refreshState: MANAGED_ENTITIES_LOCAL_COMPLETE_STATE,
+              snapshot: null,
               phase: documentVisible ? 'complete' : 'idle',
               hasLoadedFromServer: true,
             });
@@ -654,6 +742,7 @@ export function useManagedEntitiesSync({
             data: initialData,
             error: null,
             refreshState: null,
+            snapshot: latestSnapshotRef.current,
             phase: documentVisible ? 'syncing' : 'idle',
             hasLoadedFromServer: true,
           });
@@ -692,15 +781,23 @@ export function useManagedEntitiesSync({
             return;
           }
 
+          const nextSnapshot = sanitizeManagedEntitiesSnapshot(next.snapshot);
           const nextData = sanitizeManagedEntities(
             mergeManagedEntitiesRefreshItems({
               previous: latestDataRef.current,
               next: next.items,
               refreshState: next.refresh,
-              preservePreviousOnEmptyComplete: preserveVisibleDataOnEmptyComplete,
+              preservePreviousOnEmptyComplete:
+                keepVisibleOnSameSnapshotVersion && nextSnapshot?.version
+                  ? false
+                  : preserveVisibleDataOnEmptyComplete,
+              keepVisibleOnSameSnapshotVersion,
+              previousSnapshotVersion: latestSnapshotRef.current?.version ?? null,
+              nextSnapshotVersion: nextSnapshot?.version ?? null,
             }),
           );
           latestDataRef.current = nextData;
+          latestSnapshotRef.current = nextSnapshot;
           const phase = next.refresh.complete
             ? 'complete'
             : next.refresh.backoffActive
@@ -710,6 +807,7 @@ export function useManagedEntitiesSync({
             data: nextData,
             error: null,
             refreshState: next.refresh,
+            snapshot: nextSnapshot,
             phase,
             hasLoadedFromServer: true,
           });
@@ -758,6 +856,7 @@ export function useManagedEntitiesSync({
     reloadOnMount,
     skipInitialSyncIfCached,
     syncOnFirstLoad,
+    keepVisibleOnSameSnapshotVersion,
     visibilityResumeNonce,
     effectiveStateCacheScope,
   ]);

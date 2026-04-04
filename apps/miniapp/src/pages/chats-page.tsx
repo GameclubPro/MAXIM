@@ -180,6 +180,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
+    keepVisibleOnSameSnapshotVersion: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -192,6 +193,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
+    keepVisibleOnSameSnapshotVersion: true,
   });
 
   const activeEntities = useMemo(() => {
@@ -288,6 +290,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       if (activeEntitiesState.isLoading || activeEntitiesState.isRefreshing) {
         return;
       }
+      if (
+        activeEntitiesState.hasLoadedFromServer &&
+        activeEntitiesState.snapshot?.stale === false &&
+        activeEntitiesState.isSyncComplete
+      ) {
+        awaitingReturnRefreshRef.current = false;
+        return;
+      }
 
       const now = Date.now();
       if (now - lastRefreshAtRef.current < LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS) {
@@ -320,7 +330,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('pageshow', refreshAfterReturn);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeEntitiesState.isLoading, activeEntitiesState.isRefreshing]);
+  }, [
+    activeEntitiesState.hasLoadedFromServer,
+    activeEntitiesState.isLoading,
+    activeEntitiesState.isRefreshing,
+    activeEntitiesState.isSyncComplete,
+    activeEntitiesState.snapshot?.stale,
+    activeTab,
+    isFetching,
+    isManualRefreshBlocked,
+  ]);
 
   useEffect(() => {
     const allEntities = [...(chatsState.data ?? []), ...(channelsState.data ?? [])];
