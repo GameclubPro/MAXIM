@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openLinkInMaxBridgeIfAvailable } from '../src/lib/max-bridge';
+import { openMaxBotLink } from '../src/lib/max-bridge';
 
 type MockBridge = {
   openLink?: (url: string) => void;
@@ -49,15 +49,15 @@ test.afterEach(() => {
   });
 });
 
-test('openLinkInMaxBridgeIfAvailable returns false when bridge is unavailable', () => {
+test('openMaxBotLink falls back to location assign when bridge is unavailable', () => {
   const assignedUrls: string[] = [];
   setMockWindow(null, assignedUrls);
 
-  assert.equal(openLinkInMaxBridgeIfAvailable('https://max.ru/chats/chat-1/message/42'), false);
-  assert.deepEqual(assignedUrls, []);
+  openMaxBotLink('https://max.ru/chats/chat-1/message/42');
+  assert.deepEqual(assignedUrls, ['https://max.ru/chats/chat-1/message/42']);
 });
 
-test('openLinkInMaxBridgeIfAvailable opens MAX deep links inside bridge', () => {
+test('openMaxBotLink opens MAX deep links inside bridge', () => {
   const assignedUrls: string[] = [];
   const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
   setMockWindow(
@@ -68,12 +68,12 @@ test('openLinkInMaxBridgeIfAvailable opens MAX deep links inside bridge', () => 
     assignedUrls,
   );
 
-  assert.equal(openLinkInMaxBridgeIfAvailable('https://max.ru/chats/chat-1/message/42'), true);
+  openMaxBotLink('https://max.ru/chats/chat-1/message/42');
   assert.deepEqual(opened, [{ kind: 'max', url: 'https://max.ru/chats/chat-1/message/42' }]);
   assert.deepEqual(assignedUrls, []);
 });
 
-test('openLinkInMaxBridgeIfAvailable opens external links through bridge browser API', () => {
+test('openMaxBotLink opens external links through bridge browser API', () => {
   const assignedUrls: string[] = [];
   const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
   setMockWindow(
@@ -84,7 +84,7 @@ test('openLinkInMaxBridgeIfAvailable opens external links through bridge browser
     assignedUrls,
   );
 
-  assert.equal(openLinkInMaxBridgeIfAvailable('https://example.com/path'), true);
+  openMaxBotLink('https://example.com/path');
   assert.deepEqual(opened, [{ kind: 'external', url: 'https://example.com/path' }]);
   assert.deepEqual(assignedUrls, []);
 });

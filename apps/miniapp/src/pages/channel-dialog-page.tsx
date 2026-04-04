@@ -66,7 +66,7 @@ import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from
 import {
   maxImpact,
   maxSelectionChanged,
-  openLinkInMaxBridgeIfAvailable,
+  openMaxBotLink,
 } from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
@@ -2568,9 +2568,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               rel="noreferrer"
                               style={SUGGEST_CARD_LINK_STYLE}
                               onClick={(event) => {
-                                if (openLinkInMaxBridgeIfAvailable(message.publishedUrl ?? '')) {
-                                  event.preventDefault();
+                                if (!(window.MAX?.WebApp ?? window.WebApp)) {
+                                  return;
                                 }
+
+                                event.preventDefault();
+                                openMaxBotLink(message.publishedUrl ?? '');
                               }}
                             >
                               Открыть пост

@@ -147,16 +147,15 @@ export function openMaxBotLink(url: string): void {
     return;
   }
 
-  const bridge = resolveBridge();
   const parsed = parseMaxUrl(normalizedUrl);
-  if (parsed && isMaxDeepLink(parsed)) {
+  const isDeepLink = Boolean(parsed && isMaxDeepLink(parsed));
+  const bridge = resolveBridge();
+
+  if (isDeepLink) {
     if (typeof bridge?.openMaxLink === 'function') {
       bridge.openMaxLink(normalizedUrl);
       return;
     }
-  }
-
-  if (parsed && isMaxDeepLink(parsed)) {
     window.location.assign(normalizedUrl);
     return;
   }
@@ -167,16 +166,6 @@ export function openMaxBotLink(url: string): void {
   }
 
   window.location.assign(normalizedUrl);
-}
-
-export function openLinkInMaxBridgeIfAvailable(url: string): boolean {
-  const normalizedUrl = url.trim();
-  if (!normalizedUrl || !resolveBridge()) {
-    return false;
-  }
-
-  openMaxBotLink(normalizedUrl);
-  return true;
 }
 
 export function openMaxBotLinkAndClose(url: string): boolean {

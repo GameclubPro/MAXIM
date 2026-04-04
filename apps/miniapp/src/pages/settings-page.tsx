@@ -96,7 +96,6 @@ import {
 import { cn } from '../lib/cn';
 import {
   maxNotify,
-  openLinkInMaxBridgeIfAvailable,
   openMaxBotLink,
   setMaxClosingConfirmation,
 } from '../lib/max-bridge';
@@ -3724,9 +3723,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function handleManagedPostLinkClick(event: MouseEvent<HTMLAnchorElement>, url: string) {
-    if (openLinkInMaxBridgeIfAvailable(url)) {
-      event.preventDefault();
+    if (!(window.MAX?.WebApp ?? window.WebApp)) {
+      return;
     }
+
+    event.preventDefault();
+    openMaxBotLink(url);
   }
 
   function handleResetPublishedRules() {
