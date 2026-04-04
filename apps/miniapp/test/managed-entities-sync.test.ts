@@ -178,3 +178,17 @@ test('uses the final server snapshot once refresh is complete', () => {
     ['2', '3'],
   );
 });
+
+test('can keep the already visible home list when a complete refresh returns empty', () => {
+  const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
+
+  assert.deepEqual(
+    mergeManagedEntitiesRefreshItems({
+      previous,
+      next: [],
+      refreshState: createRefreshState({ complete: true, cursor: -1, nextPollAfterMs: 0 }),
+      preservePreviousOnEmptyComplete: true,
+    }).map((item) => item.id),
+    ['1', '2'],
+  );
+});

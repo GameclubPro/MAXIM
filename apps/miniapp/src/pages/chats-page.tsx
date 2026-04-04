@@ -179,6 +179,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     backgroundRefreshOnFirstLoad: true,
     persistLocalCache: true,
     localCacheScope: 'home',
+    preserveVisibleDataOnEmptyComplete: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -190,6 +191,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     backgroundRefreshOnFirstLoad: true,
     persistLocalCache: true,
     localCacheScope: 'home',
+    preserveVisibleDataOnEmptyComplete: true,
   });
 
   const activeEntities = useMemo(() => {

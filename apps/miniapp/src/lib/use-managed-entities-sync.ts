@@ -306,7 +306,18 @@ export function mergeManagedEntitiesRefreshItems(options: {
   previous: ChatSummary[] | null;
   next: ChatSummary[];
   refreshState: ManagedEntitiesRefreshState;
+  preservePreviousOnEmptyComplete?: boolean;
 }): ChatSummary[] {
+  if (
+    options.preservePreviousOnEmptyComplete === true &&
+    options.refreshState.complete === true &&
+    options.next.length === 0 &&
+    Array.isArray(options.previous) &&
+    options.previous.length > 0
+  ) {
+    return options.previous;
+  }
+
   const nextWithPresentation = mergeManagedEntityPresentation(options.previous, options.next);
 
   if (options.refreshState.complete === true) {
@@ -361,6 +372,7 @@ export function useManagedEntitiesSync({
   freshOnManualReload = false,
   persistLocalCache = false,
   localCacheScope = 'default',
+  preserveVisibleDataOnEmptyComplete = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -376,6 +388,7 @@ export function useManagedEntitiesSync({
   freshOnManualReload?: boolean;
   persistLocalCache?: boolean;
   localCacheScope?: string;
+  preserveVisibleDataOnEmptyComplete?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const [ephemeralCacheScope] = useState(() => `s:${Math.random().toString(36).slice(2, 10)}`);
@@ -684,6 +697,7 @@ export function useManagedEntitiesSync({
               previous: latestDataRef.current,
               next: next.items,
               refreshState: next.refresh,
+              preservePreviousOnEmptyComplete: preserveVisibleDataOnEmptyComplete,
             }),
           );
           latestDataRef.current = nextData;
