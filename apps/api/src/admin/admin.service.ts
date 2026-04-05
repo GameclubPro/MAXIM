@@ -19766,7 +19766,12 @@ export class AdminService implements OnModuleDestroy {
         return chat;
       }
 
-      const title = this.readTrimmedString(header.title) ?? chat.title;
+      const title =
+        this.resolvePresentableManagedEntityTitle(
+          chat.id,
+          this.readTrimmedString(header.title),
+          chat.title,
+        ) ?? chat.title;
       const link = this.readTrimmedString(header.link) ?? chat.link ?? null;
       const avatarUrl = this.readTrimmedString(header.avatarUrl);
 
@@ -19799,7 +19804,9 @@ export class AdminService implements OnModuleDestroy {
           return;
         }
 
-        const title = remoteChat.title?.trim() || chat.title;
+        const title =
+          this.resolvePresentableManagedEntityTitle(chat.id, remoteChat.title, chat.title) ??
+          chat.title;
         const link = remoteChat.link ?? chat.link ?? null;
         const avatarUrl =
           this.readTrimmedString(remoteChat.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl);

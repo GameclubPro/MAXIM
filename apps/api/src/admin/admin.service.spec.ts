@@ -7000,6 +7000,57 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('keeps the persisted chat title when the managed-entity header cache only has a fallback title', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Мер',
+          createdAt: new Date('2026-04-05T00:36:52.557Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
+      getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(null),
+      getManagedEntityHeader: jest.fn().mockResolvedValue(
+        createManagedEntityHeaderFixture({
+          id: 'chat-1',
+          title: 'Chat chat-1',
+          entityType: 'chat',
+        }),
+      ),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).rebuildManagedEntitiesPublishedSnapshot('admin-1', 'chat');
+
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Мер',
+            createdAt: '2026-04-05T00:36:52.557Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+      expect.any(Number),
+    );
+  });
+
   it('stores a small published snapshot patch when rebuild publishes a new version', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
