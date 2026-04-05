@@ -11726,8 +11726,13 @@ export class AdminService implements OnModuleDestroy {
 
     let resolvedUrl: string | null = null;
     try {
+      const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
       resolvedUrl = this.normalizePublishedRulesUrl(
-        await this.maxClient.resolveMessageLink(poll.publishedMessageId),
+        resolvedBotId
+          ? await this.maxClient.resolveMessageLink(poll.publishedMessageId, {
+              botId: resolvedBotId,
+            })
+          : await this.maxClient.resolveMessageLink(poll.publishedMessageId),
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -18137,7 +18142,7 @@ export class AdminService implements OnModuleDestroy {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
   }
 
-  private async resolveManualActionBotAssignment(chatId: string): Promise<string | undefined> {
+  private async resolveChatBotIdForRead(chatId: string): Promise<string | undefined> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       return undefined;
@@ -18150,8 +18155,18 @@ export class AdminService implements OnModuleDestroy {
     const persistedBotId =
       this.maxBotRegistry?.getBotById(persisted?.primaryBotId ?? persisted?.botId ?? null)?.id ??
       this.readTrimmedString(persisted?.primaryBotId ?? persisted?.botId);
-    let fallbackBotId =
-      persistedBotId ?? (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
+
+    return persistedBotId ?? (await this.resolveBotAssignment(normalizedChatId)) ?? undefined;
+  }
+
+  private async resolveManualActionBotAssignment(chatId: string): Promise<string | undefined> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return undefined;
+    }
+
+    const persistedBotId = await this.resolveChatBotIdForRead(normalizedChatId);
+    let fallbackBotId = persistedBotId;
     const seenBotIds = new Set<string>();
 
     if (persistedBotId) {

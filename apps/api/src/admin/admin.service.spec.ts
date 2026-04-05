@@ -2518,7 +2518,7 @@ describe('AdminService managed polls', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Ваш любимый режим?'),
+      'Опрос\n\nВаш любимый режим?',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: 'Соло (0)' })],
@@ -2638,6 +2638,61 @@ describe('AdminService managed polls', () => {
     expect(closed.status).toBe('CLOSED');
     expect(closed.publishedMessageId).toBe('mid-poll-closed');
     expect(closed.publishedUrl).toBe('https://max.ru/chats/chat-1/message/777');
+  });
+
+  it('recovers missing published poll url with the assigned bot context', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+    });
+    prisma.managedPoll.upsert.mockResolvedValue({
+      id: 'poll-chat-1',
+      chatId: 'chat-1',
+      question: 'Какой режим оставляем?',
+      options: ['Соло', 'Сквад'],
+      status: 'ACTIVE',
+      activeVersion: 4,
+      publishedMessageId: 'mid-poll-old',
+      publishedUrl: null,
+      publishedAt: new Date('2026-03-10T09:05:00.000Z'),
+      closedAt: null,
+      createdAt: new Date('2026-03-10T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-10T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/888'),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      createConfigMock() as never,
+    );
+
+    const poll = await service.getChatPoll('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-poll-old', {
+      botId: 'id613002203036_4_bot',
+    });
+    expect(prisma.managedPoll.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: {
+        publishedUrl: 'https://max.ru/chats/chat-1/message/888',
+      },
+    });
+    expect(poll.publishedUrl).toBe('https://max.ru/chats/chat-1/message/888');
   });
 
   it('resets a closed channel poll back to draft when content changes', async () => {

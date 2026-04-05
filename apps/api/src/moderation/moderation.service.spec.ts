@@ -14010,7 +14010,7 @@ describe('ModerationService', () => {
       'callback-poll-1',
       'Голос учтён',
       expect.objectContaining({
-        text: expect.stringContaining('Соло - 1 (100%)'),
+        text: 'Опрос\n\nКакой режим выбираем?',
         options: expect.objectContaining({
           buttons: [
             [expect.objectContaining({ text: 'Соло (1)' })],
@@ -14087,7 +14087,7 @@ describe('ModerationService', () => {
       'callback-poll-1',
       'Голос учтён',
       expect.objectContaining({
-        text: expect.stringContaining('Соло - 1 (100%)'),
+        text: 'Опрос\n\nКакой режим выбираем?',
       }),
       {
         ignoreFailureMetricStatuses: [400, 404],
@@ -14096,7 +14096,7 @@ describe('ModerationService', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-poll-1',
-      expect.stringContaining('Соло - 1 (100%)'),
+      'Опрос\n\nКакой режим выбираем?',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: 'Соло (1)' })],
@@ -14232,7 +14232,7 @@ describe('ModerationService', () => {
       'callback-poll-2',
       'Голос учтён',
       expect.objectContaining({
-        text: expect.stringContaining('Соло - 1 (50%)'),
+        text: 'Опрос\n\nКакой режим выбираем?',
         options: expect.objectContaining({
           buttons: [
             [expect.objectContaining({ text: 'Соло (1)' })],

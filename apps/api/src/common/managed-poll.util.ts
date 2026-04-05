@@ -93,9 +93,13 @@ export function buildManagedPollOptionSummaries(
 export function buildManagedPollMessageText(
   question: string,
   optionResults: readonly ManagedPollOptionSummary[],
-  _status: ManagedPollStatus,
+  status: ManagedPollStatus,
 ): string {
   const lines: string[] = ['Опрос', '', question.trim()];
+
+  if (status === 'ACTIVE') {
+    return lines.join('\n');
+  }
 
   optionResults.forEach((row, index) => {
     lines.push(`${index + 1}. ${row.option} - ${row.votes} (${row.percent}%)`);
