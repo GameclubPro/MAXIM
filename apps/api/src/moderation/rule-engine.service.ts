@@ -83,8 +83,10 @@ type CommercialSignalState = {
   matchedSignals: string[];
   negativeSignals: string[];
   hasIntent: boolean;
+  hasServiceIntent: boolean;
   hasPrice: boolean;
   hasContact: boolean;
+  hasPhoneContact: boolean;
   hasDealChannel: boolean;
   hasTransactional: boolean;
   hasDealSignal: boolean;
@@ -92,6 +94,7 @@ type CommercialSignalState = {
   hasBusinessContext: boolean;
   hasRecruitmentContext: boolean;
   hasInfoProductContext: boolean;
+  hasServiceContext: boolean;
   hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
   hasPrivateSaleContext: boolean;
@@ -213,6 +216,14 @@ const ADS_INTENT_MARKERS = [
   'на заказ',
   'заказ',
 ];
+const ADS_SERVICE_INTENT_MARKERS = new Set([
+  'услуга',
+  'услуги',
+  'запись',
+  'записывайтесь',
+  'на заказ',
+  'заказ',
+]);
 const ADS_PROMO_MARKERS = [
   'акци',
   'прайс',
@@ -249,6 +260,21 @@ const ADS_BUSINESS_MARKERS = [
   'озон',
   'ozon',
 ];
+const ADS_STRICT_SERVICE_MARKERS = [
+  'ремонт',
+  'сантехник',
+  'электрик',
+  'грузчик',
+  'мастер',
+  'бригада',
+  'монтаж',
+  'демонтаж',
+  'сборк',
+  'установк',
+  'настройк',
+  'клининг',
+  'уборк',
+];
 const ADS_RECRUITMENT_MARKERS = [
   'ваканси',
   'подработк',
@@ -260,14 +286,7 @@ const ADS_RECRUITMENT_MARKERS = [
   'смена',
   'отклик',
 ];
-const ADS_INFO_PRODUCT_MARKERS = [
-  'курс',
-  'вебинар',
-  'марафон',
-  'обучени',
-  'интенсив',
-  'наставнич',
-];
+const ADS_INFO_PRODUCT_MARKERS = ['курс', 'вебинар', 'марафон', 'обучени', 'интенсив', 'наставнич'];
 const ADS_CALL_TO_ACTION_MARKERS = [
   'успей',
   'переходите',
@@ -340,7 +359,8 @@ const ADS_PRICE_PATTERN = /\b\d{2,}\s?(₽|руб(\.|лей)?|р\.|р|₸|\$|€
 const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|предоплата|доставка|в наличии)\b/iu;
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
-const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
+const ADS_PHONE_PATTERN =
+  /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const DUPLICATE_EXCLUDED_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const THEMATIC_CODEWORD_MIN_LENGTH = 90;
@@ -1083,11 +1103,7 @@ export class RuleEngineService {
     }
 
     const appliedThresholds = this.resolveCommercialThresholds(settings);
-    const state = this.collectCommercialSignals(
-      normalizedText,
-      rawLoweredText,
-      appliedThresholds,
-    );
+    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, appliedThresholds);
     if (state.matchedSignals.length === 0 || !state.hasCommercialContext || !state.hasDealSignal) {
       return null;
     }
@@ -1100,9 +1116,15 @@ export class RuleEngineService {
       state.hasPromoContext ||
       state.hasBusinessContext ||
       state.hasRecruitmentContext ||
-      state.hasInfoProductContext;
+      state.hasInfoProductContext ||
+      state.hasServiceContext;
+    const hasStrictServiceEvidence =
+      appliedThresholds.sensitivity === 'STRICT' &&
+      state.hasServiceContext &&
+      (state.hasPhoneContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
     const hasServiceCommercialOverride =
-      state.hasPrivateServiceContext && (state.hasPromoContext || state.hasBusinessContext);
+      state.hasPrivateServiceContext &&
+      (state.hasPromoContext || state.hasBusinessContext || hasStrictServiceEvidence);
 
     if (state.hasPrivateSaleContext && !hasStructuredCommercialContext) {
       return null;
@@ -1183,12 +1205,8 @@ export class RuleEngineService {
       : 65;
     const warnThreshold = Math.max(10, Math.min(90, warnBase));
     const deleteThreshold = Math.max(warnThreshold + 5, Math.min(100, deleteBase));
-    const thresholdStrictness =
-      ((60 - warnThreshold) / 22 + (82 - deleteThreshold) / 27) / 2;
-    const strictness = Math.max(
-      0,
-      Math.min(1, thresholdStrictness + (strict ? 0.04 : -0.02)),
-    );
+    const thresholdStrictness = ((60 - warnThreshold) / 22 + (82 - deleteThreshold) / 27) / 2;
+    const strictness = Math.max(0, Math.min(1, thresholdStrictness + (strict ? 0.04 : -0.02)));
 
     return {
       warnThreshold,
@@ -1301,8 +1319,10 @@ export class RuleEngineService {
     };
 
     let hasIntent = false;
+    let hasServiceIntent = false;
     let hasPrice = false;
     let hasContact = false;
+    let hasPhoneContact = false;
     let hasDealChannel = false;
     let hasTransactional = false;
     let hasDealSignal = false;
@@ -1310,6 +1330,7 @@ export class RuleEngineService {
     let hasBusinessContext = false;
     let hasRecruitmentContext = false;
     let hasInfoProductContext = false;
+    let hasServiceContext = false;
     let hasCallToActionContext = false;
     let hasCommercialContext = false;
     let hasPrivateSaleContext = false;
@@ -1323,6 +1344,9 @@ export class RuleEngineService {
     for (const marker of intentHits.slice(0, 3)) {
       addPositive(`intent:${marker}`, 10);
       hasIntent = true;
+      if (ADS_SERVICE_INTENT_MARKERS.has(marker)) {
+        hasServiceIntent = true;
+      }
       hasDealSignal = true;
     }
 
@@ -1351,6 +1375,16 @@ export class RuleEngineService {
     for (const marker of infoProductHits.slice(0, 2)) {
       addPositive(`info:${marker}`, 12);
       hasInfoProductContext = true;
+      hasCommercialContext = true;
+    }
+
+    const strictServiceHits =
+      profile.sensitivity === 'STRICT'
+        ? ADS_STRICT_SERVICE_MARKERS.filter((marker) => hasMarker(marker))
+        : [];
+    for (const marker of strictServiceHits.slice(0, 2)) {
+      addPositive(`service:${marker}`, 10);
+      hasServiceContext = true;
       hasCommercialContext = true;
     }
 
@@ -1383,6 +1417,7 @@ export class RuleEngineService {
     if (ADS_PHONE_PATTERN.test(rawLoweredText) || ADS_PHONE_PATTERN.test(normalizedText)) {
       addPositive('contact:phone', 14);
       hasContact = true;
+      hasPhoneContact = true;
       hasDealSignal = true;
     }
 
@@ -1447,6 +1482,14 @@ export class RuleEngineService {
       addPositive('combo:intent+deal', 6);
     }
 
+    const hasStrictServiceDirectEvidence =
+      hasPhoneContact || hasDealChannel || hasPrice || hasTransactional;
+    if (profile.sensitivity === 'STRICT' && hasServiceIntent && hasStrictServiceDirectEvidence) {
+      addPositive('combo:strict-service-intent+deal', 8);
+      hasServiceContext = true;
+      hasCommercialContext = true;
+    }
+
     if (hasPromoContext && (hasPrice || hasContact || hasDealChannel || hasTransactional)) {
       addPositive('combo:promo+deal', 18);
     }
@@ -1459,8 +1502,15 @@ export class RuleEngineService {
       addPositive('combo:recruitment+deal', 14);
     }
 
-    if (hasInfoProductContext && (hasContact || hasDealChannel || hasPrice || hasCallToActionContext)) {
+    if (
+      hasInfoProductContext &&
+      (hasContact || hasDealChannel || hasPrice || hasCallToActionContext)
+    ) {
       addPositive('combo:info+deal', 14);
+    }
+
+    if (hasServiceContext && (hasContact || hasDealChannel || hasPrice || hasTransactional)) {
+      addPositive('combo:service+deal', 12);
     }
 
     if (hasContact && hasPrice) {
@@ -1472,8 +1522,10 @@ export class RuleEngineService {
       matchedSignals: [...new Set(matchedSignals)],
       negativeSignals: [...new Set(negativeSignals)],
       hasIntent,
+      hasServiceIntent,
       hasPrice,
       hasContact,
+      hasPhoneContact,
       hasDealChannel,
       hasTransactional,
       hasDealSignal,
@@ -1481,6 +1533,7 @@ export class RuleEngineService {
       hasBusinessContext,
       hasRecruitmentContext,
       hasInfoProductContext,
+      hasServiceContext,
       hasCallToActionContext,
       hasCommercialContext,
       hasPrivateSaleContext,
@@ -1527,8 +1580,7 @@ export class RuleEngineService {
         const normalizedToken = this.normalizeProfanityJoinToken(segments[cursor]);
         if (
           !normalizedToken ||
-          (normalizedToken.length === 2 &&
-            !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken))
+          (normalizedToken.length === 2 && !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken))
         ) {
           break;
         }

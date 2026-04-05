@@ -834,6 +834,21 @@ describe('RuleEngineService', () => {
     expect(violation?.metadata?.decisionBand).toBe('HIGH');
   });
 
+  it('detects COMMERCIAL_AD with +7 phone and records phone signal', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам курс, звоните +7 (999) 123-45-67',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toContain('contact:phone');
+  });
+
   it('detects commercial beauty ad when salon promo context is present', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -873,6 +888,54 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
+  it('keeps direct service ad with phone below detection on balanced sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Услуги сантехника, звоните +7 (999) 123-45-67',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'BALANCED',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('detects direct service ad with phone on strict sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Услуги сантехника, звоните +7 (999) 123-45-67',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('detects private service ad with phone on strict sensitivity when service intent is explicit', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Запись на маникюр по телефону +7 (999) 123-45-67',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
   it('does not detect COMMERCIAL_AD for private service without promo context', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -906,6 +969,22 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'Продам детскую коляску, звоните +7 (999) 123-45-67',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('does not detect COMMERCIAL_AD for private sale with phone only even on strict sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам детскую коляску, звоните +7 (999) 123-45-67',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
       domainAllowlist: [],
     });
 
