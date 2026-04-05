@@ -57,12 +57,8 @@ import {
   moderationBackgroundTasksEnabled,
 } from '../runtime/moderation-runtime';
 import { QueueMetricsService } from '../system/queue-metrics.service';
-import {
-  BackgroundRuntimeGovernorService,
-} from '../system/background-runtime-governor.service';
-import {
-  RuntimeDiagnosticsService,
-} from '../system/runtime-diagnostics.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -545,7 +541,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.manualGroupCloseInterChatDelayMs = DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS;
     this.manualGroupCloseIdleBackoffMaxMs = DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS;
     this.manualGroupCloseStartupDelayMs = DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS;
-    this.manualGroupCloseMaxNewMessagesPerScan = DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN;
+    this.manualGroupCloseMaxNewMessagesPerScan =
+      DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN;
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
       DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
@@ -615,9 +612,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private createBotModerationEvent(params: {
-    data: Prisma.ModerationEventUncheckedCreateInput;
-  }) {
+  private createBotModerationEvent(params: { data: Prisma.ModerationEventUncheckedCreateInput }) {
     return this.prisma.moderationEvent.create({
       data: this.withBotModerationEventData(params.data),
     });
@@ -1311,10 +1306,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             operator: Operator.BOT,
             metadata: {
               reason: topViolation.reason,
-              ...((topViolation.ruleCode === 'TOPIC_FILTER_MISMATCH' ||
-                topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD') &&
-              topViolation.metadata &&
-              typeof topViolation.metadata === 'object'
+              ...(topViolation.metadata && typeof topViolation.metadata === 'object'
                 ? topViolation.metadata
                 : {}),
             },
@@ -1811,9 +1803,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           metadata: {
             reason: topViolation.reason,
             action,
-            ...((isTopicFilterHit || topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD') &&
-            topViolation.metadata &&
-            typeof topViolation.metadata === 'object'
+            ...(topViolation.metadata && typeof topViolation.metadata === 'object'
               ? topViolation.metadata
               : {}),
             ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
@@ -4283,7 +4273,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const durationHours = storedDurationHours ?? fallbackMuteDurationHours;
-    const expiresAt = new Date(latestSanctionEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      latestSanctionEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
+    );
     if (expiresAt.getTime() <= Date.now()) {
       return null;
     }
@@ -5868,18 +5860,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
-        this.runGlobalSpammerSideEffect(
-          { chatId, userId, action: 'upsert-detected' },
-          async () =>
-            this.upsertGlobalSpammerEntry({
-              userId,
-              sourceChatId: chatId,
-              reason: 'HIGH_FANOUT_6_CHATS_2M',
-              evidence: {
-                uniqueChats: uniqueChatsState.size,
-                windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-              },
-            }),
+        this.runGlobalSpammerSideEffect({ chatId, userId, action: 'upsert-detected' }, async () =>
+          this.upsertGlobalSpammerEntry({
+            userId,
+            sourceChatId: chatId,
+            reason: 'HIGH_FANOUT_6_CHATS_2M',
+            evidence: {
+              uniqueChats: uniqueChatsState.size,
+              windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+            },
+          }),
         );
         if (deleteSpammersEnabled && !exemptFromEnforcement) {
           this.runGlobalSpammerSideEffect(
@@ -5914,14 +5904,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
       );
       if (deleteSpammersEnabled) {
-        this.runGlobalSpammerSideEffect(
-          { chatId, userId, action: 'send-warning' },
-          async () =>
-            this.sendGlobalSpammerFanoutWarning({
-              chatId,
-              userLabel,
-              warningCount,
-            }),
+        this.runGlobalSpammerSideEffect({ chatId, userId, action: 'send-warning' }, async () =>
+          this.sendGlobalSpammerFanoutWarning({
+            chatId,
+            userLabel,
+            warningCount,
+          }),
         );
       }
 
@@ -5984,7 +5972,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
     const warningText = `${userLabel}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
     try {
-      await this.maxClient.sendMessage(chatId, warningText, { textFormat: 'markdown' }, { immediate: true });
+      await this.maxClient.sendMessage(
+        chatId,
+        warningText,
+        { textFormat: 'markdown' },
+        { immediate: true },
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -7362,97 +7355,104 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           })
         : [];
     const persistedChatsById = new Map(persistedChats.map((chat) => [chat.id, chat] as const));
-    const resolvedFreshMetadata = await this.mapWithConcurrency(unresolvedChannelIds, 2, async (channelId) => {
-      const persistedChat = persistedChatsById.get(channelId) ?? null;
-      if (persistedChat?.entityType === ChatEntityType.CHAT) {
-        await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
-        return this.rememberRequiredSubscriptionChannelMetadata({
-          id: channelId,
-          title: persistedChat.title?.trim() || `Чат ${channelId}`,
-          link: null,
-          usable: false,
-          checkMembership: false,
-        });
-      }
-
-      const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
-      const cachedTitle = this.readRequiredSubscriptionChannelTitle(channelId, cached?.title ?? '');
-      const cachedLink = this.normalizeBotButtonUrl(cached?.link ?? '');
-      const fallbackTitle = cachedTitle || persistedChat?.title?.trim() || `Канал ${channelId}`;
-      if (this.isUsableRequiredSubscriptionChannelMetadata(channelId, cachedTitle, cachedLink)) {
-        return this.rememberRequiredSubscriptionChannelMetadata({
-          id: channelId,
-          title: cachedTitle,
-          link: cachedLink,
-          usable: true,
-          checkMembership: true,
-        });
-      }
-
-      if (!allowRemoteFetch) {
-        return this.rememberRequiredSubscriptionChannelMetadata({
-          id: channelId,
-          title: fallbackTitle,
-          link: cachedLink,
-          usable: false,
-          checkMembership: true,
-        });
-      }
-
-      try {
-        const snapshot = await this.maxClient.getChatSnapshot(channelId, {
-          trafficClass: 'interactive',
-          timeoutMs: 2_500,
-          sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
-        });
-        const title =
-          this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') ||
-          fallbackTitle;
-        const link = this.normalizeBotButtonUrl(snapshot.link ?? '');
-        if (snapshot.entityType !== 'channel') {
+    const resolvedFreshMetadata = await this.mapWithConcurrency(
+      unresolvedChannelIds,
+      2,
+      async (channelId) => {
+        const persistedChat = persistedChatsById.get(channelId) ?? null;
+        if (persistedChat?.entityType === ChatEntityType.CHAT) {
           await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
           return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
-            title,
+            title: persistedChat.title?.trim() || `Чат ${channelId}`,
             link: null,
             usable: false,
             checkMembership: false,
           });
         }
-        await this.chatContextCache?.setManagedEntityHeader({
-          id: channelId,
-          title,
-          entityType: 'channel',
-          link,
-          participantsCount: snapshot.participantsCount,
-          primaryBotId: null,
-          assignedBots: [],
-          sharedMode: 'owned',
-        });
-        return this.rememberRequiredSubscriptionChannelMetadata({
-          id: channelId,
-          title,
-          link,
-          usable: this.isUsableRequiredSubscriptionChannelMetadata(channelId, title, link),
-          checkMembership: true,
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            channelId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to resolve required subscription channel metadata',
+
+        const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
+        const cachedTitle = this.readRequiredSubscriptionChannelTitle(
+          channelId,
+          cached?.title ?? '',
         );
-        return this.rememberRequiredSubscriptionChannelMetadata({
-          id: channelId,
-          title: fallbackTitle,
-          link: cachedLink,
-          usable: false,
-          checkMembership: true,
-        });
-      }
-    });
+        const cachedLink = this.normalizeBotButtonUrl(cached?.link ?? '');
+        const fallbackTitle = cachedTitle || persistedChat?.title?.trim() || `Канал ${channelId}`;
+        if (this.isUsableRequiredSubscriptionChannelMetadata(channelId, cachedTitle, cachedLink)) {
+          return this.rememberRequiredSubscriptionChannelMetadata({
+            id: channelId,
+            title: cachedTitle,
+            link: cachedLink,
+            usable: true,
+            checkMembership: true,
+          });
+        }
+
+        if (!allowRemoteFetch) {
+          return this.rememberRequiredSubscriptionChannelMetadata({
+            id: channelId,
+            title: fallbackTitle,
+            link: cachedLink,
+            usable: false,
+            checkMembership: true,
+          });
+        }
+
+        try {
+          const snapshot = await this.maxClient.getChatSnapshot(channelId, {
+            trafficClass: 'interactive',
+            timeoutMs: 2_500,
+            sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+          });
+          const title =
+            this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') ||
+            fallbackTitle;
+          const link = this.normalizeBotButtonUrl(snapshot.link ?? '');
+          if (snapshot.entityType !== 'channel') {
+            await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
+            return this.rememberRequiredSubscriptionChannelMetadata({
+              id: channelId,
+              title,
+              link: null,
+              usable: false,
+              checkMembership: false,
+            });
+          }
+          await this.chatContextCache?.setManagedEntityHeader({
+            id: channelId,
+            title,
+            entityType: 'channel',
+            link,
+            participantsCount: snapshot.participantsCount,
+            primaryBotId: null,
+            assignedBots: [],
+            sharedMode: 'owned',
+          });
+          return this.rememberRequiredSubscriptionChannelMetadata({
+            id: channelId,
+            title,
+            link,
+            usable: this.isUsableRequiredSubscriptionChannelMetadata(channelId, title, link),
+            checkMembership: true,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              channelId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to resolve required subscription channel metadata',
+          );
+          return this.rememberRequiredSubscriptionChannelMetadata({
+            id: channelId,
+            title: fallbackTitle,
+            link: cachedLink,
+            usable: false,
+            checkMembership: true,
+          });
+        }
+      },
+    );
     for (const metadata of resolvedFreshMetadata) {
       resolvedMetadataById.set(metadata.id, metadata);
     }
@@ -7476,11 +7476,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    if (
-      allowRemoteFetch &&
-      !cached.metadata.usable &&
-      cached.metadata.checkMembership
-    ) {
+    if (allowRemoteFetch && !cached.metadata.usable && cached.metadata.checkMembership) {
       return null;
     }
 
@@ -10851,9 +10847,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const normalizedMessages = messages
       .map((message) => this.parseManualGroupCloseListedMessage(message))
       .filter(
-        (
-          item,
-        ): item is NonNullable<ReturnType<typeof this.parseManualGroupCloseListedMessage>> =>
+        (item): item is NonNullable<ReturnType<typeof this.parseManualGroupCloseListedMessage>> =>
           item !== null,
       )
       .sort(
@@ -11051,7 +11045,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string,
     timestampMs: number,
   ): void {
-    const current = this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
+    const current =
+      this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
     const nextState =
       Number.isFinite(timestampMs) && timestampMs > 0
         ? this.advanceChannelAutoPostScanState(current, { messageId, timestampMs })
@@ -11060,7 +11055,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.channelAutoPostScanState.set(chatId, {
       ...nextState,
       idleStreak: 0,
-      nextScanAtMs: Math.max(nextState.nextScanAtMs, Date.now() + this.channelAutoPostRepairSweepMs),
+      nextScanAtMs: Math.max(
+        nextState.nextScanAtMs,
+        Date.now() + this.channelAutoPostRepairSweepMs,
+      ),
     });
   }
 
@@ -12449,7 +12447,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       activeBotId?: string | null;
       webhookHotPathContext?: Record<string, unknown> | null;
     };
-    if (timeoutError.code !== 'WEBHOOK_USER_FACING_TIMEOUT' || !timeoutError.webhookHotPathContext) {
+    if (
+      timeoutError.code !== 'WEBHOOK_USER_FACING_TIMEOUT' ||
+      !timeoutError.webhookHotPathContext
+    ) {
       return baseMessage;
     }
 
@@ -13046,7 +13047,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private deferChannelAutoPostScan(chatId: string, backoffMs: number): void {
-    const current = this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
+    const current =
+      this.channelAutoPostScanState.get(chatId) ?? this.createChannelAutoPostScanState();
     this.channelAutoPostScanState.set(chatId, {
       ...current,
       idleStreak: Math.min(current.idleStreak + 1, 8),
@@ -13140,9 +13142,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return {
       ...current,
-      latestMessageIdsAtTimestamp: [...current.latestMessageIdsAtTimestamp, message.messageId].slice(
-        -10,
-      ),
+      latestMessageIdsAtTimestamp: [
+        ...current.latestMessageIdsAtTimestamp,
+        message.messageId,
+      ].slice(-10),
     };
   }
 
@@ -13372,10 +13375,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async shouldPauseBackgroundWork(
-    task:
-      | 'night-mode-announcements'
-      | 'channel-auto-post-buttons'
-      | 'manual-group-close-scan',
+    task: 'night-mode-announcements' | 'channel-auto-post-buttons' | 'manual-group-close-scan',
   ): Promise<boolean> {
     if (task === 'night-mode-announcements' || task === 'manual-group-close-scan') {
       return false;

@@ -83,7 +83,8 @@ type CommercialSignalState = {
   matchedSignals: string[];
   negativeSignals: string[];
   hasIntent: boolean;
-  hasServiceIntent: boolean;
+  hasServiceOfferContext: boolean;
+  hasServiceSpecialtyContext: boolean;
   hasPrice: boolean;
   hasContact: boolean;
   hasPhoneContact: boolean;
@@ -92,13 +93,15 @@ type CommercialSignalState = {
   hasDealSignal: boolean;
   hasPromoContext: boolean;
   hasBusinessContext: boolean;
+  hasBuyoutContext: boolean;
   hasRecruitmentContext: boolean;
   hasInfoProductContext: boolean;
+  hasGroupPromoContext: boolean;
+  hasSearchRequestContext: boolean;
   hasServiceContext: boolean;
   hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
   hasPrivateSaleContext: boolean;
-  hasPrivateServiceContext: boolean;
   hasStrongNegativeContext: boolean;
 };
 
@@ -224,6 +227,16 @@ const ADS_SERVICE_INTENT_MARKERS = new Set([
   'на заказ',
   'заказ',
 ]);
+const ADS_BUYOUT_MARKERS = [
+  'выкуп',
+  'скуп',
+  'закуп',
+  'прием',
+  'приём',
+  'выкупаем',
+  'скупаем',
+  'закупаем',
+];
 const ADS_PROMO_MARKERS = [
   'акци',
   'прайс',
@@ -244,6 +257,7 @@ const ADS_BUSINESS_MARKERS = [
   'салон',
   'студия',
   'компания',
+  'официально',
   'каталог',
   'витрина',
   'ассортимент',
@@ -260,7 +274,7 @@ const ADS_BUSINESS_MARKERS = [
   'озон',
   'ozon',
 ];
-const ADS_STRICT_SERVICE_MARKERS = [
+const ADS_SERVICE_SPECIALTY_MARKERS = [
   'ремонт',
   'сантехник',
   'электрик',
@@ -274,6 +288,13 @@ const ADS_STRICT_SERVICE_MARKERS = [
   'настройк',
   'клининг',
   'уборк',
+  'маникюр',
+  'педикюр',
+  'ресниц',
+  'бров',
+  'логопед',
+  'юрист',
+  'психолог',
 ];
 const ADS_RECRUITMENT_MARKERS = [
   'ваканси',
@@ -298,6 +319,40 @@ const ADS_CALL_TO_ACTION_MARKERS = [
   'бронируйте',
   'бронь',
 ];
+const ADS_GROUP_CONTEXT_MARKERS = [
+  'группа',
+  'чат',
+  'канал',
+  'сообщество',
+  'клуб',
+  'группа в max',
+  'чат в max',
+  'канал в max',
+];
+const ADS_GROUP_PROMO_MARKERS = [
+  'приглашаю',
+  'вступайте',
+  'присоединяйтесь',
+  'добавляйтесь',
+  'заходите',
+];
+const ADS_GROUP_TRADE_MARKERS = [
+  'покупать',
+  'продавать',
+  'объявлен',
+  'обмениваться',
+  'купля',
+  'продажа',
+];
+const ADS_COMMERCIAL_AUDIENCE_MARKERS = [
+  'клиент',
+  'клиентов',
+  'подписчик',
+  'подписчиков',
+  'заказчик',
+  'заказчиков',
+  'для ваших проектов',
+];
 const ADS_CONTACT_MARKERS = [
   'пишите в лс',
   'пишите в лич',
@@ -306,7 +361,7 @@ const ADS_CONTACT_MARKERS = [
   'в директ',
   'директ',
   'звоните',
-  'пишите',
+  'обращайтесь',
   'ватсап',
   'whatsapp',
   'вацап',
@@ -322,9 +377,7 @@ const ADS_NEGATIVE_MARKERS = [
   'не реклама',
   'без рекламы',
   'без коммерции',
-  'кто подскажет',
-  'ищу совет',
-  'посоветуйте',
+  'для себя',
 ];
 const ADS_PRIVATE_CONTEXT_MARKERS = [
   'собственник',
@@ -342,16 +395,24 @@ const ADS_PRIVATE_CONTEXT_MARKERS = [
   'разбираю',
   'после ребен',
 ];
-const ADS_PRIVATE_SERVICE_MARKERS = [
-  'маникюр',
-  'педикюр',
-  'ресниц',
-  'бров',
-  'на дому',
-  'у себя',
-  'частный мастер',
+const ADS_QUESTION_CONTEXT_MARKERS = [
+  'кто подскажет',
+  'посоветуйте',
+  'подскажите',
+  'как лучше',
+  'что выбрать',
+  'может кто знает',
 ];
-const ADS_QUESTION_CONTEXT_MARKERS = ['кто подскажет', 'посоветуйте', 'как лучше', 'что выбрать'];
+const ADS_SEARCH_REQUEST_MARKERS = [
+  'ищу маст',
+  'нужен мастер',
+  'нужна помощь',
+  'нужен контакт',
+  'поделитесь контак',
+  'у кого есть контакт',
+  'у кого есть номер',
+  'к кому обратиться',
+];
 const ADS_LINK_PATTERN =
   /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
@@ -776,8 +837,22 @@ export class RuleEngineService {
     const hasCommercialContext =
       ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_BUSINESS_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
+    const hasServiceOfferContext = [...ADS_SERVICE_INTENT_MARKERS].some((marker) =>
+      hasMarker(marker),
+    );
+    const hasServiceSpecialtyContext = ADS_SERVICE_SPECIALTY_MARKERS.some((marker) =>
+      hasMarker(marker),
+    );
+    const hasGroupContext = ADS_GROUP_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
+    const hasGroupTradeContext =
+      ADS_GROUP_TRADE_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_COMMERCIAL_AUDIENCE_MARKERS.some((marker) => hasMarker(marker));
+    const hasSearchRequestContext =
+      ADS_QUESTION_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_SEARCH_REQUEST_MARKERS.some((marker) => hasMarker(marker));
     const hasDealSignal =
       ADS_LINK_PATTERN.test(rawLoweredText) ||
       ADS_PHONE_PATTERN.test(rawLoweredText) ||
@@ -785,12 +860,22 @@ export class RuleEngineService {
       ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
       ADS_INTENT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
+    const hasSelfPromotionalContext =
+      hasCommercialContext ||
+      (hasServiceOfferContext && hasDealSignal) ||
+      (hasGroupContext && hasDealSignal && hasGroupTradeContext) ||
+      (hasServiceSpecialtyContext && hasServiceOfferContext && hasDealSignal);
+
+    if (hasSearchRequestContext && !hasSelfPromotionalContext) {
+      return false;
+    }
 
     return (
-      hasCommercialContext &&
+      (hasCommercialContext ||
+        (hasServiceOfferContext && hasDealSignal) ||
+        (hasGroupContext && hasDealSignal && hasGroupTradeContext)) &&
       hasDealSignal &&
-      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) &&
-      !ADS_PRIVATE_SERVICE_MARKERS.some((marker) => hasMarker(marker))
+      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker))
     );
   }
 
@@ -1115,22 +1200,25 @@ export class RuleEngineService {
     const hasStructuredCommercialContext =
       state.hasPromoContext ||
       state.hasBusinessContext ||
+      state.hasBuyoutContext ||
       state.hasRecruitmentContext ||
       state.hasInfoProductContext ||
+      state.hasGroupPromoContext ||
       state.hasServiceContext;
-    const hasStrictServiceEvidence =
-      appliedThresholds.sensitivity === 'STRICT' &&
-      state.hasServiceContext &&
-      (state.hasPhoneContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-    const hasServiceCommercialOverride =
-      state.hasPrivateServiceContext &&
-      (state.hasPromoContext || state.hasBusinessContext || hasStrictServiceEvidence);
+    const hasSelfPromotionalCommercialContext =
+      state.hasPromoContext ||
+      state.hasBusinessContext ||
+      state.hasBuyoutContext ||
+      state.hasRecruitmentContext ||
+      state.hasInfoProductContext ||
+      state.hasGroupPromoContext ||
+      state.hasServiceContext;
 
     if (state.hasPrivateSaleContext && !hasStructuredCommercialContext) {
       return null;
     }
 
-    if (state.hasPrivateServiceContext && !hasServiceCommercialOverride) {
+    if (state.hasSearchRequestContext && !hasSelfPromotionalCommercialContext) {
       return null;
     }
 
@@ -1319,7 +1407,8 @@ export class RuleEngineService {
     };
 
     let hasIntent = false;
-    let hasServiceIntent = false;
+    let hasServiceOfferContext = false;
+    let hasServiceSpecialtyContext = false;
     let hasPrice = false;
     let hasContact = false;
     let hasPhoneContact = false;
@@ -1328,14 +1417,19 @@ export class RuleEngineService {
     let hasDealSignal = false;
     let hasPromoContext = false;
     let hasBusinessContext = false;
+    let hasBuyoutContext = false;
     let hasRecruitmentContext = false;
     let hasInfoProductContext = false;
+    let hasGroupPromoContext = false;
+    let hasSearchRequestContext = false;
     let hasServiceContext = false;
     let hasCallToActionContext = false;
     let hasCommercialContext = false;
     let hasPrivateSaleContext = false;
-    let hasPrivateServiceContext = false;
     let hasStrongNegativeContext = false;
+    let hasGroupContext = false;
+    let hasGroupTradeContext = false;
+    let hasCommercialAudienceContext = false;
 
     const hasMarker = (marker: string): boolean =>
       normalizedText.includes(marker) || rawLoweredText.includes(marker);
@@ -1345,7 +1439,7 @@ export class RuleEngineService {
       addPositive(`intent:${marker}`, 10);
       hasIntent = true;
       if (ADS_SERVICE_INTENT_MARKERS.has(marker)) {
-        hasServiceIntent = true;
+        hasServiceOfferContext = true;
       }
       hasDealSignal = true;
     }
@@ -1364,6 +1458,14 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
+    const buyoutHits = ADS_BUYOUT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of buyoutHits.slice(0, 2)) {
+      addPositive(`buyout:${marker}`, 18);
+      hasBuyoutContext = true;
+      hasBusinessContext = true;
+      hasCommercialContext = true;
+    }
+
     const recruitmentHits = ADS_RECRUITMENT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of recruitmentHits.slice(0, 2)) {
       addPositive(`recruitment:${marker}`, 14);
@@ -1378,13 +1480,40 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const strictServiceHits =
-      profile.sensitivity === 'STRICT'
-        ? ADS_STRICT_SERVICE_MARKERS.filter((marker) => hasMarker(marker))
-        : [];
-    for (const marker of strictServiceHits.slice(0, 2)) {
-      addPositive(`service:${marker}`, 10);
-      hasServiceContext = true;
+    const serviceSpecialtyHits = ADS_SERVICE_SPECIALTY_MARKERS.filter((marker) =>
+      hasMarker(marker),
+    );
+    for (const marker of serviceSpecialtyHits.slice(0, 3)) {
+      addPositive(`service-specialty:${marker}`, 8);
+      hasServiceSpecialtyContext = true;
+    }
+
+    const groupContextHits = ADS_GROUP_CONTEXT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of groupContextHits.slice(0, 2)) {
+      addPositive(`group:${marker}`, 6);
+      hasGroupContext = true;
+    }
+
+    const groupPromoHits = ADS_GROUP_PROMO_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of groupPromoHits.slice(0, 2)) {
+      addPositive(`group-promo:${marker}`, 8);
+      hasGroupContext = true;
+      hasCallToActionContext = true;
+    }
+
+    const groupTradeHits = ADS_GROUP_TRADE_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of groupTradeHits.slice(0, 3)) {
+      addPositive(`group-trade:${marker}`, 8);
+      hasGroupTradeContext = true;
+    }
+
+    const commercialAudienceHits = ADS_COMMERCIAL_AUDIENCE_MARKERS.filter((marker) =>
+      hasMarker(marker),
+    );
+    for (const marker of commercialAudienceHits.slice(0, 2)) {
+      addPositive(`audience:${marker}`, 12);
+      hasCommercialAudienceContext = true;
+      hasBusinessContext = true;
       hasCommercialContext = true;
     }
 
@@ -1454,6 +1583,7 @@ export class RuleEngineService {
       }
 
       addNegative(`context:${marker}`, 18, true);
+      hasSearchRequestContext = true;
     }
 
     for (const marker of ADS_PRIVATE_CONTEXT_MARKERS) {
@@ -1465,28 +1595,63 @@ export class RuleEngineService {
       hasPrivateSaleContext = true;
     }
 
-    for (const marker of ADS_PRIVATE_SERVICE_MARKERS) {
+    for (const marker of ADS_SEARCH_REQUEST_MARKERS) {
       if (!hasMarker(marker)) {
         continue;
       }
 
-      addNegative(`private-service:${marker}`, 12);
-      hasPrivateServiceContext = true;
+      addNegative(`search:${marker}`, 20, true);
+      hasSearchRequestContext = true;
     }
 
     if (rawLoweredText.includes('?') && !hasPrice && !hasContact && !hasDealChannel) {
       addNegative('context:question', 10);
+      hasSearchRequestContext = true;
     }
 
     if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
       addPositive('combo:intent+deal', 6);
     }
 
-    const hasStrictServiceDirectEvidence =
-      hasPhoneContact || hasDealChannel || hasPrice || hasTransactional;
-    if (profile.sensitivity === 'STRICT' && hasServiceIntent && hasStrictServiceDirectEvidence) {
-      addPositive('combo:strict-service-intent+deal', 8);
+    const hasDirectDealEvidence =
+      hasPhoneContact || hasContact || hasDealChannel || hasPrice || hasTransactional;
+
+    if (hasBuyoutContext && hasDirectDealEvidence) {
+      addPositive('combo:buyout+deal', 18);
+      hasCommercialContext = true;
+    }
+
+    if (hasServiceOfferContext && hasDirectDealEvidence) {
+      addPositive('combo:service-offer+deal', 16);
       hasServiceContext = true;
+      hasCommercialContext = true;
+    }
+
+    if (hasServiceOfferContext && hasServiceSpecialtyContext) {
+      addPositive('combo:service-offer+specialty', 8);
+    }
+
+    if (
+      profile.sensitivity === 'STRICT' &&
+      hasServiceSpecialtyContext &&
+      hasDirectDealEvidence &&
+      !hasSearchRequestContext
+    ) {
+      addPositive('combo:strict-service-specialty+deal', 12);
+      hasServiceContext = true;
+      hasCommercialContext = true;
+    }
+
+    if (
+      hasGroupContext &&
+      hasDealChannel &&
+      (hasGroupTradeContext ||
+        hasCommercialAudienceContext ||
+        hasBusinessContext ||
+        hasPromoContext)
+    ) {
+      addPositive('combo:group-promo+deal', 18);
+      hasGroupPromoContext = true;
       hasCommercialContext = true;
     }
 
@@ -1522,7 +1687,8 @@ export class RuleEngineService {
       matchedSignals: [...new Set(matchedSignals)],
       negativeSignals: [...new Set(negativeSignals)],
       hasIntent,
-      hasServiceIntent,
+      hasServiceOfferContext,
+      hasServiceSpecialtyContext,
       hasPrice,
       hasContact,
       hasPhoneContact,
@@ -1531,13 +1697,15 @@ export class RuleEngineService {
       hasDealSignal,
       hasPromoContext,
       hasBusinessContext,
+      hasBuyoutContext,
       hasRecruitmentContext,
       hasInfoProductContext,
+      hasGroupPromoContext,
+      hasSearchRequestContext,
       hasServiceContext,
       hasCallToActionContext,
       hasCommercialContext,
       hasPrivateSaleContext,
-      hasPrivateServiceContext,
       hasStrongNegativeContext,
     };
   }

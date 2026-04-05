@@ -888,7 +888,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
-  it('keeps direct service ad with phone below detection on balanced sensitivity', async () => {
+  it('detects explicit service ad with phone on balanced sensitivity', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -901,7 +901,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
   it('detects direct service ad with phone on strict sensitivity', async () => {
@@ -913,6 +913,22 @@ describe('RuleEngineService', () => {
       settings: buildSettings({
         commercialAdsFilterEnabled: true,
         commercialAdsSensitivity: 'STRICT',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('detects service ad with channel link on balanced sensitivity', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Запись на маникюр, подробности в канале https://t.me/beauty_room',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'BALANCED',
       }),
       domainAllowlist: [],
     });
@@ -936,17 +952,30 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
-  it('does not detect COMMERCIAL_AD for private service without promo context', async () => {
+  it('detects buyout ad from real logs with phone numbers', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Запись на маникюр, подробности в канале https://t.me/beauty_room',
+      text: 'Выкупаем старую зерноочистительную технику в любом состоянии. +79271992333 +79603324233',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('detects commercial group invite from real logs with max link', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Приглашаю в свою группу Цветовод. Где можно покупать, продавать обмениваться цветами и опытом. Группа в MAX https://max.ru/join/RNzP5wpdj-U1n8shWC1R0M8hj50MyRIAiIcYsJ5BVu8',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
   it('detects recruitment ad with salary and contact', async () => {
@@ -998,6 +1027,38 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'Ищу мастера, кто подскажет по ремонту?',
       settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('does not detect household request for master from real logs even with phone callback details', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Нужен мастер собрать, навесть кухню 2 метра. Врезать мойку. Писать в личку либо по телефону 8 912 433 93 18.',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('does not detect request for service specialist from real logs when user is looking for help', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Ищу мастера по маникюра в Южном. можно кто на дому принимает тоже, отзовитесь в личку пожалуйста',
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'STRICT',
+      }),
       domainAllowlist: [],
     });
 
