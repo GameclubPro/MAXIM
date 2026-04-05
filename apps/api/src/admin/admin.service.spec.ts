@@ -261,6 +261,7 @@ function createPrismaMock() {
     },
     managedPollVote: {
       findMany: jest.fn().mockResolvedValue([]),
+      groupBy: jest.fn().mockResolvedValue([]),
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue(undefined),
     },
@@ -2476,10 +2477,16 @@ describe('AdminService managed polls', () => {
 
     prisma.managedPoll.upsert.mockResolvedValueOnce(draftPoll).mockResolvedValueOnce(activePoll);
     prisma.managedPoll.update.mockResolvedValueOnce(activePoll).mockResolvedValueOnce(closedPoll);
-    prisma.managedPollVote.findMany
+    prisma.managedPollVote.groupBy
       .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([{ optionIndex: 0 }, { optionIndex: 0 }, { optionIndex: 1 }])
-      .mockResolvedValueOnce([{ optionIndex: 0 }, { optionIndex: 0 }, { optionIndex: 1 }]);
+      .mockResolvedValueOnce([
+        { optionIndex: 0, _count: { _all: 2 } },
+        { optionIndex: 1, _count: { _all: 1 } },
+      ])
+      .mockResolvedValueOnce([
+        { optionIndex: 0, _count: { _all: 2 } },
+        { optionIndex: 1, _count: { _all: 1 } },
+      ]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2550,6 +2557,87 @@ describe('AdminService managed polls', () => {
         action: 'CLOSE_MANAGED_POLL',
       }),
     });
+  });
+
+  it('recreates the poll post when MAX refuses to edit an old published message on close', async () => {
+    const prisma = createPrismaMock();
+    const activePoll = {
+      id: 'poll-chat-1',
+      chatId: 'chat-1',
+      question: 'Какой режим оставляем?',
+      options: ['Соло', 'Сквад'],
+      status: 'ACTIVE',
+      activeVersion: 4,
+      publishedMessageId: 'mid-poll-old',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/555',
+      publishedAt: new Date('2026-03-10T09:05:00.000Z'),
+      closedAt: null,
+      createdAt: new Date('2026-03-10T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-10T09:05:00.000Z'),
+    };
+    const closedPoll = {
+      ...activePoll,
+      status: 'CLOSED',
+      publishedMessageId: 'mid-poll-closed',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/777',
+      closedAt: new Date('2026-03-10T09:15:00.000Z'),
+    };
+
+    prisma.managedPoll.upsert.mockResolvedValue(activePoll);
+    prisma.managedPoll.update.mockResolvedValue(closedPoll);
+    prisma.managedPollVote.groupBy.mockResolvedValue([
+      { optionIndex: 0, _count: { _all: 2 } },
+      { optionIndex: 1, _count: { _all: 1 } },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-poll-closed',
+        url: 'https://max.ru/chats/chat-1/message/777',
+      }),
+      editMessageInlineKeyboard: jest.fn().mockRejectedValue(
+        Object.assign(new Error("can't be edited, too old"), {
+          response: {
+            status: 400,
+            data: {
+              message: "can't be edited, too old",
+            },
+          },
+        }),
+      ),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      createConfigMock() as never,
+    );
+
+    const closed = await service.closeChatPoll('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Соло - 2 (67%)'),
+    );
+    expect(prisma.managedPoll.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        status: 'CLOSED',
+        publishedMessageId: 'mid-poll-closed',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/777',
+      }),
+    });
+    expect(closed.status).toBe('CLOSED');
+    expect(closed.publishedMessageId).toBe('mid-poll-closed');
+    expect(closed.publishedUrl).toBe('https://max.ru/chats/chat-1/message/777');
   });
 
   it('resets a closed channel poll back to draft when content changes', async () => {

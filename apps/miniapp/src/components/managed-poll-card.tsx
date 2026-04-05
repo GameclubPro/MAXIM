@@ -22,6 +22,11 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
+import {
+  buildManagedPollDraftKey,
+  shouldReplaceLocalManagedPollDraft,
+  syncManagedPollDraft,
+} from '../lib/managed-poll-draft-sync';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
@@ -189,6 +194,8 @@ export function ManagedPollCard({
   const latestDraftKeyRef = useRef('');
   const lastFailedDraftKeyRef = useRef<string | null>(null);
   const isDirtyRef = useRef(false);
+  const isActiveRef = useRef(false);
+  const hydratedEntityKeyRef = useRef('');
 
   const queryKey = useMemo(
     () => ['managed-poll', entityType, entityId] as const,
@@ -209,13 +216,43 @@ export function ManagedPollCard({
     }
 
     const nextDraft = toDraft(pollQuery.data);
-    setDraft(nextDraft);
+    const nextDraftKey = buildManagedPollDraftKey(normalizeDraft(nextDraft));
+    const entityKey = `${entityType}:${entityId}`;
+    const entityChanged = hydratedEntityKeyRef.current !== entityKey;
+    hydratedEntityKeyRef.current = entityKey;
+
     setSavedSnapshot(nextDraft);
-    setSaveState('idle');
-    setQuestionError('');
-    setOptionError('');
-    lastFailedDraftKeyRef.current = null;
-  }, [pollQuery.data]);
+    setDraft((current) => {
+      const currentKey = current ? buildManagedPollDraftKey(normalizeDraft(current)) : '';
+      return shouldReplaceLocalManagedPollDraft({
+        entityChanged,
+        hasCurrentDraft: current !== null,
+        isDirty: isDirtyRef.current,
+        currentDraftKey: currentKey,
+        nextDraftKey,
+      })
+        ? nextDraft
+        : current;
+    });
+
+    const shouldResetLocalState = shouldReplaceLocalManagedPollDraft({
+      entityChanged,
+      hasCurrentDraft: latestDraftRef.current !== null,
+      isDirty: isDirtyRef.current,
+      currentDraftKey: latestDraftKeyRef.current,
+      nextDraftKey,
+    });
+
+    if (shouldResetLocalState) {
+      latestDraftRef.current = nextDraft;
+      latestDraftKeyRef.current = nextDraftKey;
+      isDirtyRef.current = false;
+      lastFailedDraftKeyRef.current = null;
+      setSaveState('idle');
+      setQuestionError('');
+      setOptionError('');
+    }
+  }, [entityId, entityType, pollQuery.data]);
 
   const normalizedDraft = useMemo(() => (draft ? normalizeDraft(draft) : null), [draft]);
   const normalizedSavedSnapshot = useMemo(
@@ -223,11 +260,11 @@ export function ManagedPollCard({
     [savedSnapshot],
   );
   const normalizedDraftKey = useMemo(
-    () => (normalizedDraft ? JSON.stringify(normalizedDraft) : ''),
+    () => (normalizedDraft ? buildManagedPollDraftKey(normalizedDraft) : ''),
     [normalizedDraft],
   );
   const normalizedSavedKey = useMemo(
-    () => (normalizedSavedSnapshot ? JSON.stringify(normalizedSavedSnapshot) : ''),
+    () => (normalizedSavedSnapshot ? buildManagedPollDraftKey(normalizedSavedSnapshot) : ''),
     [normalizedSavedSnapshot],
   );
   const isDirty = Boolean(normalizedDraft && normalizedDraftKey !== normalizedSavedKey);
@@ -239,7 +276,8 @@ export function ManagedPollCard({
     latestDraftRef.current = normalizedDraft;
     latestDraftKeyRef.current = normalizedDraftKey;
     isDirtyRef.current = isDirty;
-  }, [isDirty, normalizedDraft, normalizedDraftKey]);
+    isActiveRef.current = isActive;
+  }, [isActive, isDirty, normalizedDraft, normalizedDraftKey]);
 
   const clearAutosaveTimer = () => {
     if (autosaveTimerRef.current !== null) {
@@ -272,57 +310,66 @@ export function ManagedPollCard({
         return nextDraft;
       }
 
-      const currentKey = JSON.stringify(normalizeDraft(current));
+      const currentKey = buildManagedPollDraftKey(normalizeDraft(current));
       return currentKey === payloadKey ? nextDraft : current;
     });
   };
 
   const saveDraftNow = async ({ force = false }: { force?: boolean } = {}): Promise<ManagedPoll | null> => {
-    const payload = latestDraftRef.current;
-    const payloadKey = latestDraftKeyRef.current;
-
-    if (!payload || isActive || (!force && !isDirtyRef.current)) {
+    if (!entityId) {
       return null;
     }
 
-    if (!force && payloadKey === lastFailedDraftKeyRef.current) {
-      setSaveState('error');
-      return null;
-    }
-
-    if (saveInFlightRef.current) {
-      return saveInFlightRef.current;
-    }
-
-    clearAutosaveTimer();
-    clearAutosaveHideTimer();
-    setSaveState('saving');
-
-    const request =
-      (entityType === 'channel'
-        ? updateChannelPoll(api, entityId, payload)
-        : updateChatPoll(api, entityId, payload))
-        .then((saved) => {
+    return syncManagedPollDraft<ManagedPollDraft, ManagedPoll>(
+      {
+        readState: () => ({
+          payload: latestDraftRef.current,
+          payloadKey: latestDraftKeyRef.current,
+          isDirty: isDirtyRef.current,
+          isActive: isActiveRef.current,
+          lastFailedKey: lastFailedDraftKeyRef.current,
+        }),
+        getInFlightSave: () => saveInFlightRef.current,
+        setInFlightSave: (request) => {
+          saveInFlightRef.current = request;
+        },
+        onBlockedByLastFailure: () => {
+          setSaveState('error');
+        },
+        onSaveStart: () => {
+          clearAutosaveTimer();
+          clearAutosaveHideTimer();
+          setSaveState('saving');
+        },
+        onSaveSuccess: (saved, payloadKey) => {
           lastFailedDraftKeyRef.current = null;
           applyPollResponse(saved, payloadKey);
+
+          const nextDraft = toDraft(saved);
+          const nextDraftKey = buildManagedPollDraftKey(normalizeDraft(nextDraft));
+          if (latestDraftKeyRef.current === payloadKey) {
+            latestDraftRef.current = nextDraft;
+            latestDraftKeyRef.current = nextDraftKey;
+            isDirtyRef.current = false;
+          }
+
           setSaveState('saved');
           autosaveHideTimerRef.current = window.setTimeout(() => {
             setSaveState((current) => (current === 'saved' ? 'idle' : current));
             autosaveHideTimerRef.current = null;
           }, AUTOSAVE_SAVED_HIDE_MS);
-          return saved;
-        })
-        .catch((error: unknown) => {
+        },
+        onSaveError: (_error, payloadKey) => {
           lastFailedDraftKeyRef.current = payloadKey;
           setSaveState('error');
-          throw error;
-        })
-        .finally(() => {
-          saveInFlightRef.current = null;
-        });
-
-    saveInFlightRef.current = request;
-    return request;
+        },
+        performSave: (payload) =>
+          entityType === 'channel'
+            ? updateChannelPoll(api, entityId, payload)
+            : updateChatPoll(api, entityId, payload),
+      },
+      { force },
+    );
   };
 
   useEffect(() => {
@@ -419,7 +466,13 @@ export function ManagedPollCard({
   }, [isDirty, saveState]);
 
   const canPublish = useMemo(() => {
-    if (!draft || isActive || publishMutation.isPending || closeMutation.isPending) {
+    if (
+      !draft ||
+      isActive ||
+      publishMutation.isPending ||
+      closeMutation.isPending ||
+      (saveState === 'saving' && isDirty)
+    ) {
       return false;
     }
 
@@ -435,7 +488,7 @@ export function ManagedPollCard({
 
     const uniqueOptions = new Set(trimmedOptions.map((option) => normalizeOptionKey(option)));
     return uniqueOptions.size === trimmedOptions.length;
-  }, [closeMutation.isPending, draft, isActive, publishMutation.isPending]);
+  }, [closeMutation.isPending, draft, isActive, isDirty, publishMutation.isPending, saveState]);
 
   const toggleHint = (hintKey: ManagedPollHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));

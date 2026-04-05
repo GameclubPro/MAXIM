@@ -13942,7 +13942,7 @@ describe('ModerationService', () => {
       managedPollVote: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue(undefined),
-        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+        groupBy: jest.fn().mockResolvedValue([{ optionIndex: 0, _count: { _all: 1 } }]),
       },
       chat: {
         upsert: jest.fn(),
@@ -14040,7 +14040,7 @@ describe('ModerationService', () => {
       managedPollVote: {
         findUnique: jest.fn().mockResolvedValue(null),
         upsert: jest.fn().mockResolvedValue(undefined),
-        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+        groupBy: jest.fn().mockResolvedValue([{ optionIndex: 0, _count: { _all: 1 } }]),
       },
       chat: {
         upsert: jest.fn(),
@@ -14106,6 +14106,146 @@ describe('ModerationService', () => {
     );
   });
 
+  it('serializes concurrent callbacks for the same poll before rewriting the message', async () => {
+    const votes = new Map<string, number>();
+    const prisma = {
+      managedPoll: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'poll-1',
+          chatId: 'channel-1',
+          question: 'Какой режим выбираем?',
+          options: ['Соло', 'Сквад'],
+          status: 'ACTIVE',
+          activeVersion: 1,
+          publishedMessageId: 'mid-poll-1',
+        }),
+      },
+      managedPollVote: {
+        findUnique: jest.fn().mockImplementation(async ({ where }) => {
+          const userId = where.pollId_pollVersion_userId.userId;
+          if (!votes.has(userId)) {
+            return null;
+          }
+
+          return {
+            optionIndex: votes.get(userId),
+          };
+        }),
+        upsert: jest.fn().mockImplementation(async ({ where, create, update }) => {
+          const userId = where.pollId_pollVersion_userId.userId;
+          votes.set(userId, votes.has(userId) ? update.optionIndex : create.optionIndex);
+          return undefined;
+        }),
+        groupBy: jest.fn().mockImplementation(async () => {
+          const counts = new Map<number, number>();
+          for (const optionIndex of votes.values()) {
+            counts.set(optionIndex, (counts.get(optionIndex) ?? 0) + 1);
+          }
+
+          return Array.from(counts.entries()).map(([optionIndex, count]) => ({
+            optionIndex,
+            _count: {
+              _all: count,
+            },
+          }));
+        }),
+      },
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    let releaseFirstAnswer: VoidFunction | undefined;
+    let firstAnswerStarted = false;
+    const maxClient = {
+      answerCallback: jest.fn().mockImplementation(async (callbackId: string, _notification, edit) => {
+        if (callbackId === 'callback-poll-1') {
+          firstAnswerStarted = true;
+          await new Promise<void>((resolve) => {
+            releaseFirstAnswer = resolve;
+          });
+        }
+
+        return edit;
+      }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    const firstUpdate = createManagedPollCallbackUpdate('poll|poll-1|1|0');
+    const secondUpdate = createManagedPollCallbackUpdate('poll|poll-1|1|1');
+    secondUpdate.message = {
+      ...secondUpdate.message!,
+      senderId: 'user-2',
+      senderName: 'Олег',
+    };
+    if (secondUpdate.raw && typeof secondUpdate.raw === 'object' && 'callback' in secondUpdate.raw) {
+      const callback = (secondUpdate.raw as { callback: { callback_id: string; user: { user_id: string } } })
+        .callback;
+      callback.callback_id = 'callback-poll-2';
+      callback.user.user_id = 'user-2';
+    }
+
+    const firstPromise = service.handleUpdate(firstUpdate);
+    while (!firstAnswerStarted) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    const secondPromise = service.handleUpdate(secondUpdate);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(1);
+
+    if (!releaseFirstAnswer) {
+      throw new Error('Expected the first callback answer to be blocked');
+    }
+    releaseFirstAnswer();
+    await Promise.all([firstPromise, secondPromise]);
+
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(2);
+    expect(maxClient.answerCallback).toHaveBeenNthCalledWith(
+      2,
+      'callback-poll-2',
+      'Голос учтён',
+      expect.objectContaining({
+        text: expect.stringContaining('Соло - 1 (50%)'),
+        options: expect.objectContaining({
+          buttons: [
+            [expect.objectContaining({ text: 'Соло (1)' })],
+            [expect.objectContaining({ text: 'Сквад (1)' })],
+          ],
+        }),
+      }),
+      {
+        ignoreFailureMetricStatuses: [400, 404],
+      },
+    );
+  });
+
   it('does not rewrite the vote when the same option is pressed again', async () => {
     const prisma = {
       managedPoll: {
@@ -14122,7 +14262,7 @@ describe('ModerationService', () => {
       managedPollVote: {
         findUnique: jest.fn().mockResolvedValue({ optionIndex: 0 }),
         upsert: jest.fn(),
-        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+        groupBy: jest.fn(),
       },
       chat: {
         upsert: jest.fn(),
@@ -14162,7 +14302,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
 
     expect(prisma.managedPollVote.upsert).not.toHaveBeenCalled();
-    expect(prisma.managedPollVote.findMany).not.toHaveBeenCalled();
+    expect(prisma.managedPollVote.groupBy).not.toHaveBeenCalled();
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-poll-1',
@@ -14190,7 +14330,7 @@ describe('ModerationService', () => {
       managedPollVote: {
         findUnique: jest.fn(),
         upsert: jest.fn(),
-        findMany: jest.fn(),
+        groupBy: jest.fn(),
       },
       chat: {
         upsert: jest.fn(),

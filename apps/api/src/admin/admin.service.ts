@@ -6369,7 +6369,7 @@ export class AdminService implements OnModuleDestroy {
         }
         updatedExisting = true;
       } catch (error: unknown) {
-        if (!this.shouldRecreateChannelEngagementMessage(error)) {
+        if (!this.shouldRecreateEditableMessage(error)) {
           const maxApiMessage = this.extractMaxApiErrorMessage(error);
           throw new BadRequestException(
             maxApiMessage || 'Не удалось обновить опубликованный пост с кнопками.',
@@ -11600,6 +11600,9 @@ export class AdminService implements OnModuleDestroy {
       'CLOSED',
     );
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    let nextPublishedMessageId = publishedMessageId;
+    let nextPublishedUrl = this.normalizePublishedRulesUrl(current.publishedUrl);
+    let recreatedFromMessageId: string | null = null;
 
     try {
       if (resolvedBotId) {
@@ -11614,8 +11617,22 @@ export class AdminService implements OnModuleDestroy {
         await this.maxClient.editMessageInlineKeyboard(chatId, publishedMessageId, messageText);
       }
     } catch (error: unknown) {
-      if (!this.isMaxMessageMissingError(error)) {
+      if (!this.shouldRecreateEditableMessage(error)) {
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        throw new BadRequestException(maxApiMessage || 'Не удалось закрыть опрос.');
+      }
+
+      recreatedFromMessageId = publishedMessageId;
+      try {
+        const recreated = resolvedBotId
+          ? await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, undefined, {
+              botId: resolvedBotId,
+            })
+          : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText);
+        nextPublishedMessageId = recreated.messageId;
+        nextPublishedUrl = this.normalizePublishedRulesUrl(recreated.url);
+      } catch (recreateError: unknown) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(recreateError);
         throw new BadRequestException(maxApiMessage || 'Не удалось закрыть опрос.');
       }
     }
@@ -11626,6 +11643,12 @@ export class AdminService implements OnModuleDestroy {
       data: {
         status: PrismaManagedPollStatus.CLOSED,
         closedAt,
+        ...(recreatedFromMessageId
+          ? {
+              publishedMessageId: nextPublishedMessageId,
+              publishedUrl: nextPublishedUrl,
+            }
+          : {}),
       },
     });
 
@@ -11636,9 +11659,10 @@ export class AdminService implements OnModuleDestroy {
         action: MANAGED_POLL_ACTION_CLOSE,
         payload: {
           entityType,
-          messageId: publishedMessageId,
+          messageId: nextPublishedMessageId,
           activeVersion: current.activeVersion,
           totalVotes: summary.totalVotes,
+          recreatedFromMessageId,
           source,
         },
       },
@@ -11749,19 +11773,20 @@ export class AdminService implements OnModuleDestroy {
     optionCount: number,
   ): Promise<number[]> {
     const counts = Array.from({ length: optionCount }, () => 0);
-    const votes = await this.prisma.managedPollVote.findMany({
+    const votes = await this.prisma.managedPollVote.groupBy({
       where: {
         pollId,
         pollVersion,
       },
-      select: {
-        optionIndex: true,
+      by: ['optionIndex'],
+      _count: {
+        _all: true,
       },
     });
 
     for (const vote of votes) {
       if (vote.optionIndex >= 0 && vote.optionIndex < counts.length) {
-        counts[vote.optionIndex] += 1;
+        counts[vote.optionIndex] = vote._count._all;
       }
     }
 
@@ -11789,7 +11814,7 @@ export class AdminService implements OnModuleDestroy {
     return normalized.includes('not found') || normalized.includes('message_not_found');
   }
 
-  private shouldRecreateChannelEngagementMessage(error: unknown): boolean {
+  private shouldRecreateEditableMessage(error: unknown): boolean {
     if (this.isMaxMessageMissingError(error)) {
       return true;
     }
