@@ -1065,6 +1065,119 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
+  it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect recommendation request for store with site link on %s sensitivity',
+    async (sensitivity) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'Подскажите хороший магазин дверей, кто заказывал? Вот сайт https://dveri.example.ru',
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          commercialAdsSensitivity: sensitivity,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    },
+  );
+
+  it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect recommendation request for salon channel on %s sensitivity',
+    async (sensitivity) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'Посоветуйте салон маникюра, пожалуйста. Нашла этот канал https://t.me/nailsalon',
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          commercialAdsSensitivity: sensitivity,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    },
+  );
+
+  it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect recommendation request for specialist with found phone on %s sensitivity',
+    async (sensitivity) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'Кто знает хорошего электрика? Нашла номер 8 912 000 00 00, это нормальный мастер?',
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          commercialAdsSensitivity: sensitivity,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    },
+  );
+
+  it.each(['BALANCED', 'STRICT'] as const)(
+    'does not detect household search for brigade even with reply CTA on %s sensitivity',
+    async (sensitivity) => {
+      const service = new RuleEngineService(new MockRedisCounterService() as never);
+      const result = await service.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: 'Ищу бригаду на ремонт, писать в личку',
+        settings: buildSettings({
+          commercialAdsFilterEnabled: true,
+          commercialAdsSensitivity: sensitivity,
+        }),
+        domainAllowlist: [],
+      });
+
+      expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    },
+  );
+
+  it.each([
+    'Ремонт квартир, звоните 8 999 123 45 67',
+    'Электрик, звоните 8 999 123 45 67',
+    'Маникюр, пишите в личку',
+    'Клининг квартир, whatsapp 8 999 123 45 67',
+  ])('detects bare service ad on balanced sensitivity: %s', async (text) => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text,
+      settings: buildSettings({
+        commercialAdsFilterEnabled: true,
+        commercialAdsSensitivity: 'BALANCED',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('keeps fast commercial marker helper aligned for recommendation requests', () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+
+    expect(
+      service.hasCommercialSpamMarkers(
+        'Подскажите хороший магазин дверей, кто заказывал? Вот сайт https://dveri.example.ru',
+      ),
+    ).toBe(false);
+  });
+
+  it('keeps fast commercial marker helper aligned for bare service ads', () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+
+    expect(service.hasCommercialSpamMarkers('Электрик, звоните 8 999 123 45 67')).toBe(true);
+  });
+
   it('detects COMMERCIAL_AD with mixed latin/cyrillic obfuscation', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
