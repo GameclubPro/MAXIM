@@ -18,10 +18,13 @@ import {
 } from './max-chat-admin-roster-sync.queue';
 
 const CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS = 2_500;
+const CHAT_ADMIN_ROSTER_SYNC_FAST_LANE_TIMEOUT_MS = 1_500;
 const CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE = 'background';
 const CHAT_ADMIN_ROSTER_SCHEDULE_CONCURRENCY = 8;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 20;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS = 2_000;
+const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 
@@ -95,6 +98,10 @@ export class MaxChatAdminRosterSyncService {
           desiredJobData.source === 'webhook_bot_added'
             ? CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS
             : 5,
+        priority:
+          desiredJobData.source === 'webhook_bot_added'
+            ? CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY
+            : CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY,
         removeOnComplete: true,
         removeOnFail: false,
         backoff:
@@ -191,26 +198,18 @@ export class MaxChatAdminRosterSyncService {
 
     for (const botId of candidateBotIds) {
       try {
-        const access = await this.maxClient.getCurrentChatMemberAccess(normalized.chatId, {
-          botId,
-          trafficClass: 'background',
-          actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-          timeoutMs: CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS,
-        });
+        const requestOptions = this.buildChatAdminRosterReadOptions(normalized, botId);
+        const access = await this.maxClient.getCurrentChatMemberAccess(
+          normalized.chatId,
+          requestOptions,
+        );
         await this.persistBotSelfAccessSnapshot(normalized.chatId, botId, access);
 
         if (!access.isAdmin && !access.isOwner) {
           continue;
         }
 
-        const adminUserIds = await this.maxClient.getChatAdminIds(normalized.chatId, {
-          botId,
-          trafficClass: 'background',
-          actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-          timeoutMs: CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS,
-        });
+        const adminUserIds = await this.maxClient.getChatAdminIds(normalized.chatId, requestOptions);
         await this.syncAllowlist(normalized, adminUserIds);
         return true;
       } catch (error: unknown) {
@@ -573,6 +572,32 @@ export class MaxChatAdminRosterSyncService {
       Number.isFinite(job.retryUntilMs) &&
       job.retryUntilMs > Date.now()
     );
+  }
+
+  private buildChatAdminRosterReadOptions(job: MaxChatAdminRosterSyncJob, botId: string): {
+    botId: string;
+    trafficClass: 'interactive' | 'background';
+    actionHealthLane: 'background';
+    sourceTag: string;
+    timeoutMs: number;
+  } {
+    if (job.source === 'webhook_bot_added') {
+      return {
+        botId,
+        trafficClass: 'interactive',
+        actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+        timeoutMs: CHAT_ADMIN_ROSTER_SYNC_FAST_LANE_TIMEOUT_MS,
+      };
+    }
+
+    return {
+      botId,
+      trafficClass: 'background',
+      actionHealthLane: CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE,
+      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+      timeoutMs: CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS,
+    };
   }
 
   private async patchManagedEntitiesPublishedSnapshots(params: {

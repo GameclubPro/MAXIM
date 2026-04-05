@@ -82,6 +82,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
       expect.objectContaining({
         attempts: 20,
+        priority: 1,
         backoff: {
           type: 'fixed',
           delay: 2_000,
@@ -195,8 +196,57 @@ describe('MaxChatAdminRosterSyncService', () => {
       }),
     ).rejects.toThrow('still propagating');
 
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100125',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: 1_500,
+      }),
+    );
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
     expect(chatContextCache.replaceChatAdminUsers).not.toHaveBeenCalledWith('-100125', []);
+  });
+
+  it('keeps non-webhook roster sync reads on the background traffic lane', async () => {
+    const { service, maxClient } = createService();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100127',
+        botIds: ['bot-1'],
+        title: 'Discovery chat',
+        entityType: 'chat',
+        source: 'discovery_snapshot',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100127',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        timeoutMs: 2_500,
+      }),
+    );
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-100127',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        timeoutMs: 2_500,
+      }),
+    );
   });
 
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
