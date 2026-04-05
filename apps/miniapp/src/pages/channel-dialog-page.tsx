@@ -332,7 +332,7 @@ function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatu
     return {
       badge: 'Не доставлено',
       headline: 'Редакторы пока не получили материал',
-      note: 'Материал сохранён, но его ещё нужно отправить повторно.',
+      note: 'Материал сохранён. Для правок или дополнений отправьте новую предложку.',
       tone: 'pending',
     };
   }
@@ -340,7 +340,7 @@ function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatu
   return {
     badge: 'На проверке',
     headline: 'Материал ушёл редакторам',
-    note: 'Бот уже отправил предложку админам канала в личку.',
+    note: 'Бот уже отправил предложку админам. Дополнения после отправки идут новой предложкой.',
     tone: 'pending',
   };
 }
@@ -2509,7 +2509,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   </strong>
                   {renderPlainTextParagraphs(
                     introText ||
-                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
+                      'Напишите короткий текст, приложите одно фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
                   )}
                   <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
                     <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
@@ -2790,7 +2790,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         Пока нет отправленных предложек
                       </strong>
                       <p style={SUGGEST_EMPTY_COPY_STYLE}>
-                        Добавьте тему, подпись или фото, чтобы отправить первую идею редактору.
+                        Добавьте тему, подпись или одно фото, чтобы отправить первую идею редактору.
                       </p>
                     </>
                   ) : (
@@ -2870,7 +2870,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 )}
               >
                 {dialogType === 'suggest' ? (
-                  <span>После отправки бот передаст материал админам канала в личку</span>
+                  <span>Одно фото на предложку. После отправки для правок создайте новую.</span>
                 ) : editingMessage ? (
                   <span>Изменение сохранится для всех участников треда</span>
                 ) : null}

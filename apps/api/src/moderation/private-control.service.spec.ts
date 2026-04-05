@@ -2551,6 +2551,9 @@ describe('PrivateControlService', () => {
       '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
     );
     expect(getLastEditedText(maxClient)).toContain('Можно отправить несколько сообщений подряд');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Если пришлёте новое фото или видео, оно заменит предыдущее в черновике.',
+    );
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
@@ -2586,6 +2589,9 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
     expect(getLastEditedText(maxClient)).toContain(
       'Бот передал материал редакторам канала на проверку.',
+    );
+    expect(getLastEditedText(maxClient)).toContain(
+      'Дополнить уже отправленную предложку нельзя: для правок отправьте новую.',
     );
     const completionButtons = getLastEditedButtons(maxClient)
       .flat()
