@@ -17,6 +17,7 @@ import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
+import { shouldRefreshManagedEntitiesOnVisibilityReturn } from '../lib/managed-entities-visibility-refresh';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -40,6 +41,7 @@ type ManagedEntitiesReloadRequest = {
 };
 
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
+const LIST_VISIBILITY_REFRESH_MIN_HIDDEN_MS = 2_000;
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
@@ -163,7 +165,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     channel: { nonce: 0, behavior: 'default' },
   });
   const lastRefreshAtRef = useRef(0);
+  const lastSettledRefreshMarkerRef = useRef<string | null>(null);
   const awaitingReturnRefreshRef = useRef(false);
+  const hiddenAtRef = useRef<number | null>(null);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     launchContextTabHint ?? readLastEntityType(),
@@ -293,36 +297,77 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     queueRefresh(tab, behavior);
   }
 
+  const settledRefreshMarker = useMemo(() => {
+    if (!activeEntitiesState.hasLoadedFromServer) {
+      return null;
+    }
+    if (!activeEntitiesState.isSyncComplete && !activeEntitiesState.isBackoffActive) {
+      return null;
+    }
+
+    return [
+      activeTab,
+      activeEntitiesState.snapshot?.version ?? 'no-snapshot',
+      activeEntitiesState.snapshot?.builtAt ?? '',
+      activeEntitiesState.refreshState?.lastSyncedAt ?? '',
+      activeEntitiesState.isBackoffActive ? 'backoff' : 'complete',
+    ].join(':');
+  }, [
+    activeEntitiesState.hasLoadedFromServer,
+    activeEntitiesState.isBackoffActive,
+    activeEntitiesState.isSyncComplete,
+    activeEntitiesState.refreshState?.lastSyncedAt,
+    activeEntitiesState.snapshot?.builtAt,
+    activeEntitiesState.snapshot?.version,
+    activeTab,
+  ]);
+
+  useEffect(() => {
+    if (!settledRefreshMarker) {
+      return;
+    }
+    if (lastSettledRefreshMarkerRef.current === settledRefreshMarker) {
+      return;
+    }
+
+    lastSettledRefreshMarkerRef.current = settledRefreshMarker;
+    lastRefreshAtRef.current = Date.now();
+  }, [settledRefreshMarker]);
+
   useEffect(() => {
     const markRefreshOnReturn = () => {
       awaitingReturnRefreshRef.current = true;
+      hiddenAtRef.current = Date.now();
     };
 
     const refreshAfterReturn = () => {
-      if (!awaitingReturnRefreshRef.current) {
-        return;
-      }
-      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-        return;
-      }
-      if (activeEntitiesState.isLoading || activeEntitiesState.isRefreshing) {
-        return;
-      }
-      if (
-        activeEntitiesState.hasLoadedFromServer &&
-        activeEntitiesState.snapshot?.stale === false &&
-        activeEntitiesState.isSyncComplete
-      ) {
-        awaitingReturnRefreshRef.current = false;
-        return;
-      }
-
+      const documentVisible =
+        typeof document === 'undefined' || document.visibilityState === 'visible';
       const now = Date.now();
-      if (now - lastRefreshAtRef.current < LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS) {
+      const hiddenDurationMs =
+        typeof hiddenAtRef.current === 'number' ? Math.max(0, now - hiddenAtRef.current) : null;
+
+      if (
+        !shouldRefreshManagedEntitiesOnVisibilityReturn({
+          awaitingReturnRefresh: awaitingReturnRefreshRef.current,
+          documentVisible,
+          isLoading: activeEntitiesState.isLoading,
+          isRefreshing: activeEntitiesState.isRefreshing,
+          hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+          isSyncComplete: activeEntitiesState.isSyncComplete,
+          snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
+          hiddenDurationMs,
+          lastRefreshAtMs: lastRefreshAtRef.current,
+          nowMs: now,
+          minIntervalMs: LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+          minHiddenDurationMs: LIST_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
+        })
+      ) {
         return;
       }
 
       awaitingReturnRefreshRef.current = false;
+      hiddenAtRef.current = null;
       handleRefresh();
     };
 
