@@ -47,6 +47,7 @@ import {
   deleteChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
+  getChannelSuggestionRedirect,
   updateChatDialogMessage,
   updateChannelDialogMessage,
   toggleChannelDialogReaction,
@@ -64,7 +65,12 @@ import {
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import {
+  maxImpact,
+  maxSelectionChanged,
+  openMaxBotLink,
+  openMaxBotLinkAndClose,
+} from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -1211,6 +1217,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
+  const isChannelSuggestRedirect = entityType === 'channel' && dialogType === 'suggest';
+  const isPreviewChannelSuggestRedirect = isChannelSuggestRedirect && chatId === PREVIEW_CHANNEL_ID;
   const [draft, setDraft] = useState('');
   const [suggestionImages, setSuggestionImages] = useState<SuggestionDraftImage[]>([]);
   const [isPreparingSuggestionImage, setIsPreparingSuggestionImage] = useState(false);
@@ -1244,6 +1252,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messageRectsRef = useRef(new Map<string, DOMRect>());
   const ignoreNextBubbleClickRef = useRef(false);
   const launchErrorRedirectedRef = useRef(false);
+  const suggestRedirectOpenedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
@@ -1287,7 +1296,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       entityType === 'channel'
         ? getChannelDialog(api, chatId, dialogType, token, { signal })
         : getChatDialog(api, chatId, dialogType, token, { signal }),
-    enabled: Boolean(chatId && token) && terminalDialogError === null,
+    enabled: Boolean(chatId && token) && terminalDialogError === null && !isChannelSuggestRedirect,
     retry: (failureCount, error) =>
       !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
     refetchOnWindowFocus: terminalDialogError === null,
@@ -1301,6 +1310,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false;
     },
   });
+  const suggestRedirectQuery = useQuery({
+    queryKey: ['channel-suggestion-redirect', chatId, token] as const,
+    queryFn: ({ signal }) => getChannelSuggestionRedirect(api, chatId, token, { signal }),
+    enabled: Boolean(chatId && token) && terminalDialogError === null && isChannelSuggestRedirect,
+    retry: (failureCount, error) =>
+      !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
+    refetchOnWindowFocus: false,
+    retryOnMount: terminalDialogError === null,
+  });
 
   useEffect(() => {
     if (launchErrorRedirectedRef.current) {
@@ -1308,8 +1326,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     const dialogErrorMessage = dialogQuery.error ? normalizeApiError(dialogQuery.error) : '';
+    const redirectErrorMessage = suggestRedirectQuery.error
+      ? normalizeApiError(suggestRedirectQuery.error)
+      : '';
     const meErrorMessage = meQuery.error ? normalizeApiError(meQuery.error) : '';
     const message =
+      (redirectErrorMessage &&
+        isTerminalDialogApiMessage(redirectErrorMessage) &&
+        redirectErrorMessage) ||
       (dialogErrorMessage &&
         isTerminalDialogApiMessage(dialogErrorMessage) &&
         dialogErrorMessage) ||
@@ -1339,6 +1363,30 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     navigate,
     pushToast,
     queryClient,
+    suggestRedirectQuery.error,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isChannelSuggestRedirect ||
+      isPreviewChannelSuggestRedirect ||
+      suggestRedirectOpenedRef.current
+    ) {
+      return;
+    }
+
+    const url = suggestRedirectQuery.data?.url?.trim() ?? '';
+    if (!url) {
+      return;
+    }
+
+    if (openMaxBotLinkAndClose(url)) {
+      suggestRedirectOpenedRef.current = true;
+    }
+  }, [
+    isChannelSuggestRedirect,
+    isPreviewChannelSuggestRedirect,
+    suggestRedirectQuery.data?.url,
   ]);
 
   const messages = dialogQuery.data?.messages ?? [];
@@ -2521,6 +2569,69 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
                 К списку
               </Link>
+            }
+          />
+        </div>
+      </div>
+    );
+  }
+
+  if (isChannelSuggestRedirect) {
+    const redirectUrl = suggestRedirectQuery.data?.url?.trim() ?? '';
+    const redirectTitle = suggestRedirectQuery.data?.title?.trim() || chatLabel;
+    const isRedirectLoading = suggestRedirectQuery.isLoading && !redirectUrl;
+
+    return (
+      <div className="page-stack page-enter">
+        <div className="glass-card glass-card--md">
+          <StatusState
+            tone={suggestRedirectQuery.error ? 'danger' : 'neutral'}
+            title={
+              suggestRedirectQuery.error
+                ? 'Не удалось открыть чат с ботом'
+                : 'Открываем чат с ботом'
+            }
+            description={
+              suggestRedirectQuery.error
+                ? normalizeApiError(suggestRedirectQuery.error)
+                : isRedirectLoading
+                  ? `Переводим в диалог с ботом для канала «${redirectTitle}».`
+                  : `Если чат не открылся автоматически, нажмите кнопку ниже.`
+            }
+            action={
+              suggestRedirectQuery.error ? (
+                <div className="button-row">
+                  <button
+                    type="button"
+                    className="button button--danger"
+                    onClick={() => void suggestRedirectQuery.refetch()}
+                  >
+                    Повторить
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={handleDismiss}
+                  >
+                    Назад
+                  </button>
+                </div>
+              ) : redirectUrl ? (
+                <button
+                  type="button"
+                  className="button button--accent"
+                  onClick={() => {
+                    if (!isPreviewChannelSuggestRedirect) {
+                      openMaxBotLinkAndClose(redirectUrl);
+                      return;
+                    }
+
+                    openMaxBotLink(redirectUrl);
+                  }}
+                >
+                  Открыть чат
+                </button>
+              ) : null
             }
           />
         </div>

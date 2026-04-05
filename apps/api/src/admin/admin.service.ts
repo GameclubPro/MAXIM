@@ -9,6 +9,7 @@ import {
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
+  channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
   createChannelDialogMessageRequestSchema,
@@ -6483,6 +6484,28 @@ export class AdminService implements OnModuleDestroy {
       type: dialogType,
       introText: this.resolveChannelDialogIntroText(channelSettings, dialogType),
       messages,
+    });
+  }
+
+  async getChannelSuggestionRedirect(chatId: string, token: string | null) {
+    const threadId = this.resolveChannelDialogThreadId(chatId, 'suggest', token);
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+
+    if (!channelSettings.postSuggestionsEnabled && !threadId) {
+      throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
+    }
+
+    const startPayload = threadId
+      ? this.buildChannelSuggestionStartPayload(chatId, threadId)
+      : this.buildChannelDialogStartParam(chatId, 'suggest', '');
+    const url = this.buildBotStartUrl(startPayload);
+    if (!url) {
+      throw new BadRequestException('Не удалось открыть диалог с ботом.');
+    }
+
+    return channelSuggestionRedirectResponseSchema.parse({
+      url,
+      title: null,
     });
   }
 

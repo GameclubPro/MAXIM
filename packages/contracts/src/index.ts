@@ -2551,11 +2551,11 @@ export const channelSettingsScreenResponseSchema = z.object({
 });
 export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreenResponseSchema>;
 
-export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
+export const channelDialogTypeSchema = /*#__PURE__*/ z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
 export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 5;
 
-export const publishChannelEngagementRequestSchema = z
+export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z
   .object({
     text: z
       .string()
@@ -2579,7 +2579,7 @@ export const publishChannelEngagementRequestSchema = z
   });
 export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
 
-export const publishChannelEngagementResultSchema = z.object({
+export const publishChannelEngagementResultSchema = /*#__PURE__*/ z.object({
   chatId: z.string(),
   sent: z.boolean(),
   messageId: z.string().nullable(),
@@ -2588,7 +2588,7 @@ export const publishChannelEngagementResultSchema = z.object({
 });
 export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngagementResultSchema>;
 
-export const channelDialogImageInputSchema = z
+export const channelDialogImageInputSchema = /*#__PURE__*/ z
   .object({
     base64: z.string().trim().max(4_000_000).default(''),
     mimeType: z.string().trim().max(128).default(''),
@@ -2613,7 +2613,7 @@ export const channelDialogImageInputSchema = z
   });
 export type ChannelDialogImageInput = z.infer<typeof channelDialogImageInputSchema>;
 
-export const createChannelDialogMessageRequestSchema = z
+export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
   .object({
     token: z.string().trim().min(16).max(256),
     text: z.string().trim().max(2_000).default(''),
@@ -2658,21 +2658,21 @@ export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
 
-export const channelDialogReactionGroupSchema = z.object({
+export const channelDialogReactionGroupSchema = /*#__PURE__*/ z.object({
   emoji: z.string().trim().min(1).max(16),
   count: z.number().int().min(1),
   reactedByMe: z.boolean().default(false),
 });
 export type ChannelDialogReactionGroup = z.infer<typeof channelDialogReactionGroupSchema>;
 
-export const channelDialogReplyPreviewSchema = z.object({
+export const channelDialogReplyPreviewSchema = /*#__PURE__*/ z.object({
   messageId: z.string(),
   authorDisplayName: z.string().nullable(),
   text: z.string(),
 });
 export type ChannelDialogReplyPreview = z.infer<typeof channelDialogReplyPreviewSchema>;
 
-export const channelDialogSuggestionReviewStatusSchema = z.enum([
+export const channelDialogSuggestionReviewStatusSchema = /*#__PURE__*/ z.enum([
   'pending',
   'published',
   'cancelled',
@@ -2681,7 +2681,7 @@ export type ChannelDialogSuggestionReviewStatus = z.infer<
   typeof channelDialogSuggestionReviewStatusSchema
 >;
 
-export const channelDialogMessageSchema = z.object({
+export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   id: z.string(),
   type: channelDialogTypeSchema,
   text: z.string(),
@@ -2713,7 +2713,7 @@ export const channelDialogMessageSchema = z.object({
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 
-export const channelDialogResponseSchema = z.object({
+export const channelDialogResponseSchema = /*#__PURE__*/ z.object({
   chatId: z.string(),
   type: channelDialogTypeSchema,
   introText: z.string().nullable().default(null),
@@ -2721,7 +2721,15 @@ export const channelDialogResponseSchema = z.object({
 });
 export type ChannelDialogResponse = z.infer<typeof channelDialogResponseSchema>;
 
-export const createChannelDialogMessageResponseSchema = z.object({
+export const channelSuggestionRedirectResponseSchema = /*#__PURE__*/ z.object({
+  url: z.string().trim().url(),
+  title: z.string().trim().max(256).nullable().default(null),
+});
+export type ChannelSuggestionRedirectResponse = z.infer<
+  typeof channelSuggestionRedirectResponseSchema
+>;
+
+export const createChannelDialogMessageResponseSchema = /*#__PURE__*/ z.object({
   ok: z.boolean(),
   message: channelDialogMessageSchema,
 });
@@ -2729,7 +2737,7 @@ export type CreateChannelDialogMessageResponse = z.infer<
   typeof createChannelDialogMessageResponseSchema
 >;
 
-export const updateChannelDialogMessageRequestSchema = z.object({
+export const updateChannelDialogMessageRequestSchema = /*#__PURE__*/ z.object({
   token: z.string().trim().min(16).max(256),
   text: z.string().trim().min(1).max(2_000),
 });
@@ -2737,7 +2745,7 @@ export type UpdateChannelDialogMessageRequest = z.infer<
   typeof updateChannelDialogMessageRequestSchema
 >;
 
-export const updateChannelDialogMessageResponseSchema = z.object({
+export const updateChannelDialogMessageResponseSchema = /*#__PURE__*/ z.object({
   ok: z.boolean(),
   message: channelDialogMessageSchema,
 });
@@ -2745,7 +2753,7 @@ export type UpdateChannelDialogMessageResponse = z.infer<
   typeof updateChannelDialogMessageResponseSchema
 >;
 
-export const toggleChannelDialogReactionRequestSchema = z.object({
+export const toggleChannelDialogReactionRequestSchema = /*#__PURE__*/ z.object({
   token: z.string().trim().min(16).max(256),
   emoji: z.string().trim().min(1).max(16),
 });
@@ -2753,7 +2761,7 @@ export type ToggleChannelDialogReactionRequest = z.infer<
   typeof toggleChannelDialogReactionRequestSchema
 >;
 
-export const toggleChannelDialogReactionResponseSchema = z.object({
+export const toggleChannelDialogReactionResponseSchema = /*#__PURE__*/ z.object({
   ok: z.boolean(),
   message: channelDialogMessageSchema,
 });
@@ -2761,14 +2769,14 @@ export type ToggleChannelDialogReactionResponse = z.infer<
   typeof toggleChannelDialogReactionResponseSchema
 >;
 
-export const deleteChannelDialogMessageRequestSchema = z.object({
+export const deleteChannelDialogMessageRequestSchema = /*#__PURE__*/ z.object({
   token: z.string().trim().min(16).max(256),
 });
 export type DeleteChannelDialogMessageRequest = z.infer<
   typeof deleteChannelDialogMessageRequestSchema
 >;
 
-export const deleteChannelDialogMessageResponseSchema = z.object({
+export const deleteChannelDialogMessageResponseSchema = /*#__PURE__*/ z.object({
   ok: z.boolean(),
   deletedMessageId: z.string(),
 });

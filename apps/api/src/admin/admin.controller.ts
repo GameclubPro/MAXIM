@@ -385,6 +385,15 @@ export class AdminController {
     return this.adminService.closeChannelPoll(chatId, user);
   }
 
+  @Get('channels/:chatId/dialog/suggest/redirect')
+  getChannelSuggestionRedirect(
+    @Param('chatId') chatId: string,
+    @CurrentUser() _user: AuthUser,
+    @Query('token') token: string | undefined,
+  ) {
+    return this.adminService.getChannelSuggestionRedirect(chatId, token ?? null);
+  }
+
   @Get('channels/:chatId/dialog/:dialogType')
   getChannelDialog(
     @Param('chatId') chatId: string,

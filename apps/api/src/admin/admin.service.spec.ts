@@ -16402,6 +16402,42 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
+  it('returns a bot redirect url for channel suggestion dialog tokens', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        postSuggestionsEnabled: true,
+      }),
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const token = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'suggest',
+      '12345678-1234-1234-9234-1234567890ab',
+    );
+
+    const result = await service.getChannelSuggestionRedirect('channel-1', token);
+
+    expect(result.title).toBeNull();
+    expect(result.url).toMatch(/^https:\/\/max\.ru\/777000_bot\?start=/u);
+
+    const startPayload = new URL(result.url).searchParams.get('start');
+    expect(service.parseChannelSuggestionStartPayload(startPayload)).toEqual({
+      chatId: 'channel-1',
+      token,
+    });
+  });
+
   it('rejects publishing when all engagement buttons are disabled', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

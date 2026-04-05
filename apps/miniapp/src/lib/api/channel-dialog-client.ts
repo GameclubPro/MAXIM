@@ -1,11 +1,13 @@
 import {
   channelDialogResponseSchema,
+  channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
   type ChannelDialogResponse,
+  type ChannelSuggestionRedirectResponse,
   type ChannelDialogType,
   type CreateChannelDialogMessageResponse,
   type DeleteChannelDialogMessageResponse,
@@ -158,6 +160,19 @@ export async function getChannelDialog(
   request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelDialogResponse> {
   return getEntityDialog(api, 'channel', chatId, dialogType, token, request);
+}
+
+export async function getChannelSuggestionRedirect(
+  api: ApiTransport,
+  chatId: string,
+  token: string,
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<ChannelSuggestionRedirectResponse> {
+  const response = await api.request(
+    `/channels/${chatId}/dialog/suggest/redirect?token=${encodeURIComponent(token)}`,
+    request,
+  );
+  return channelSuggestionRedirectResponseSchema.parse(response);
 }
 
 export async function createChannelDialogMessage(

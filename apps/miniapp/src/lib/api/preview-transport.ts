@@ -3,6 +3,7 @@ import {
   broadcastHandoffStateSchema,
   channelDialogMessageSchema,
   channelDialogResponseSchema,
+  channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
@@ -3141,6 +3142,16 @@ async function handleChannelRequest(
   }
 
   if (tail[0] === 'dialog' && tail[1]) {
+    if (tail[1] === 'suggest' && tail[2] === 'redirect' && method === 'GET') {
+      const token = url.searchParams.get('token')?.trim() ?? '';
+      return channelSuggestionRedirectResponseSchema.parse({
+        url: `https://max.ru/id613002203036_bot?start=${encodeURIComponent(
+          token ? `preview-suggest-${channelId}-${token}` : `preview-suggest-${channelId}`,
+        )}`,
+        title: resolveChannelTitle(channelId, state),
+      });
+    }
+
     const dialogType = channelDialogTypeSchema.parse(tail[1]);
 
     if (tail.length === 2 && method === 'GET') {
