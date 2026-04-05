@@ -1013,6 +1013,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('passes request options to follow-up link resolution after send', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            mid: 'mid-rules-bot-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const resolveSpy = jest
+      .spyOn(service as any, 'resolveMessageLink')
+      .mockResolvedValue('https://max.ru/chats/chat-1/message/999');
+
+    const result = await service.sendMessageImmediateWithResolvedLink(
+      'chat-1',
+      'Правила чата',
+      undefined,
+      {
+        botId: '777000_bot',
+        trafficClass: 'critical',
+      },
+    );
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-bot-1',
+      url: 'https://max.ru/chats/chat-1/message/999',
+    });
+    expect(resolveSpy).toHaveBeenCalledWith(
+      'mid-rules-bot-1',
+      expect.objectContaining({
+        botId: '777000_bot',
+        trafficClass: 'critical',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('keeps successful send result when follow-up link resolution fails', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            mid: 'mid-rules-send-ok-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+    const resolveSpy = jest
+      .spyOn(service as any, 'resolveMessageLink')
+      .mockRejectedValue(new Error('resolve failed'));
+    const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-send-ok-1',
+      url: null,
+    });
+    expect(resolveSpy).toHaveBeenCalledWith('mid-rules-send-ok-1', {});
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'mid-rules-send-ok-1',
+        err: 'resolve failed',
+      }),
+      'Failed to resolve MAX message link after successful send',
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('does not count ignored terminal send failures in action health metrics', async () => {
     const error = {
       response: {

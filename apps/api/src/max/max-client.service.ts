@@ -545,7 +545,7 @@ export class MaxClientService implements OnModuleDestroy {
       };
     }
 
-    const resolvedUrl = await this.resolveMessageLink(messageId);
+    const resolvedUrl = await this.resolveMessageLinkSafely(messageId, requestOptions);
     return {
       messageId,
       url: resolvedUrl ?? null,
@@ -611,7 +611,7 @@ export class MaxClientService implements OnModuleDestroy {
       };
     }
 
-    const resolvedUrl = await this.resolveMessageLink(messageId);
+    const resolvedUrl = await this.resolveMessageLinkSafely(messageId, requestOptions);
     return {
       messageId,
       url: resolvedUrl ?? null,
@@ -656,15 +656,36 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
-  async resolveMessageLink(messageId: string): Promise<string | null> {
-    const sentMessage = await this.getMessageById(messageId);
+  async resolveMessageLink(
+    messageId: string,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<string | null> {
+    const sentMessage = await this.getMessageById(messageId, requestOptions);
     const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;
     if (batchLink) {
       return batchLink;
     }
 
-    const detailedMessage = await this.getMessageByPath(messageId);
+    const detailedMessage = await this.getMessageByPath(messageId, requestOptions);
     return detailedMessage ? this.parseChatLink(detailedMessage) : null;
+  }
+
+  private async resolveMessageLinkSafely(
+    messageId: string,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<string | null> {
+    try {
+      return await this.resolveMessageLink(messageId, requestOptions);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          messageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve MAX message link after successful send',
+      );
+      return null;
+    }
   }
 
   async editMessageInlineKeyboard(
