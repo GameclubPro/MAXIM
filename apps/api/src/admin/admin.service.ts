@@ -1908,6 +1908,7 @@ export class AdminService implements OnModuleDestroy {
         ? await this.chatContextCache.getManagedEntitiesRefreshCursor(userId, entityType)
         : null;
     if (
+      currentSnapshot &&
       typeof refreshCursor === 'number' &&
       refreshCursor >= 0 &&
       refreshCursor !== MANAGED_ENTITIES_REFRESH_CURSOR_DONE

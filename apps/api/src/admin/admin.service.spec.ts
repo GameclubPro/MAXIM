@@ -6955,6 +6955,51 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('publishes the first snapshot even while a full refresh cursor is still in progress', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Тнк',
+          createdAt: new Date('2026-04-05T00:20:07.272Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
+      getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(20),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).rebuildManagedEntitiesPublishedSnapshot('admin-1', 'chat');
+
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        itemCount: 1,
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Тнк',
+            createdAt: '2026-04-05T00:20:07.272Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+      expect.any(Number),
+    );
+  });
+
   it('stores a small published snapshot patch when rebuild publishes a new version', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
