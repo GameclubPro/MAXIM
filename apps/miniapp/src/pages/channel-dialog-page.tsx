@@ -3,6 +3,7 @@ import type {
   ChannelDialogResponse,
   ChannelDialogType,
 } from '@maxim/contracts';
+import { MAX_CHANNEL_DIALOG_SUGGEST_IMAGES } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
   BubbleStar as IconoirBubbleStar,
@@ -63,11 +64,7 @@ import {
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import {
-  maxImpact,
-  maxSelectionChanged,
-  openMaxBotLink,
-} from '../lib/max-bridge';
+import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -157,7 +154,14 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-3',
     shift: 'left',
     tiles: [
-      { id: 'conversation-1', icon: 'conversation', tone: 'soft', rotate: -6, scale: 1.04, offsetY: -8 },
+      {
+        id: 'conversation-1',
+        icon: 'conversation',
+        tone: 'soft',
+        rotate: -6,
+        scale: 1.04,
+        offsetY: -8,
+      },
       { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.9, offsetY: 6 },
       { id: 'typing-1', icon: 'typing', tone: 'accent', rotate: -5, scale: 1, offsetY: -4 },
       { id: 'pin-1', icon: 'pin', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
@@ -188,9 +192,23 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'reaction-1', icon: 'reaction', tone: 'soft', rotate: 8, scale: 1.02, offsetY: 5 },
-      { id: 'microphone-2', icon: 'microphone', tone: 'faint', rotate: -8, scale: 0.92, offsetY: -6 },
+      {
+        id: 'microphone-2',
+        icon: 'microphone',
+        tone: 'faint',
+        rotate: -8,
+        scale: 0.92,
+        offsetY: -6,
+      },
       { id: 'star-2', icon: 'star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
-      { id: 'conversation-2', icon: 'conversation', tone: 'accent', rotate: -7, scale: 1.02, offsetY: -5 },
+      {
+        id: 'conversation-2',
+        icon: 'conversation',
+        tone: 'accent',
+        rotate: -7,
+        scale: 1.02,
+        offsetY: -5,
+      },
     ],
   },
   {
@@ -355,6 +373,15 @@ function resolveSuggestionText(message: ChannelDialogMessage): string {
     return 'Предложение отправлено только с видео.';
   }
 
+  const imageCount = Math.max(
+    message.imageCount ?? 0,
+    message.imageFileNames?.length ?? 0,
+    message.imageFileName ? 1 : 0,
+  );
+  if (imageCount > 1) {
+    return `Предложение отправлено с ${imageCount} фото.`;
+  }
+
   if (message.hasImage && !message.hasVideo) {
     return 'Предложение отправлено только с фото.';
   }
@@ -366,6 +393,15 @@ function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string
   if (message.hasVideo) {
     const fileName = message.videoFileName?.trim();
     return fileName ? `Видео · ${fileName}` : 'Видео приложено';
+  }
+
+  const imageCount = Math.max(
+    message.imageCount ?? 0,
+    message.imageFileNames?.length ?? 0,
+    message.imageFileName ? 1 : 0,
+  );
+  if (imageCount > 1) {
+    return `Фото · ${imageCount} шт.`;
   }
 
   const fileName = message.imageFileName?.trim();
@@ -933,12 +969,7 @@ function TrashIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <path
-        d="M4.8 5.2H15.2"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
+      <path d="M4.8 5.2H15.2" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       <path
         d="M8.1 5.2V4.6C8.1 4.2 8.4 3.9 8.8 3.9H11.2C11.6 3.9 11.9 4.2 11.9 4.6V5.2"
         stroke="currentColor"
@@ -1009,7 +1040,9 @@ function MicrophoneOutlineIcon() {
 }
 
 function SendOutlineIcon() {
-  return <IconoirSendDiagonal strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <IconoirSendDiagonal strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />
+  );
 }
 
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
@@ -1179,7 +1212,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
-  const [suggestionImage, setSuggestionImage] = useState<SuggestionDraftImage | null>(null);
+  const [suggestionImages, setSuggestionImages] = useState<SuggestionDraftImage[]>([]);
   const [isPreparingSuggestionImage, setIsPreparingSuggestionImage] = useState(false);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
@@ -1201,6 +1234,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
+  const suggestionImagesRef = useRef<SuggestionDraftImage[]>([]);
   const highlightTimerRef = useRef<number | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -1236,13 +1270,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [chatId, entityType]);
 
   useEffect(() => {
-    const previewUrl = suggestionImage?.previewUrl;
+    suggestionImagesRef.current = suggestionImages;
+  }, [suggestionImages]);
+
+  useEffect(() => {
     return () => {
-      if (previewUrl) {
+      for (const { previewUrl } of suggestionImagesRef.current) {
         URL.revokeObjectURL(previewUrl);
       }
     };
-  }, [suggestionImage?.previewUrl]);
+  }, []);
 
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
@@ -1273,7 +1310,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const dialogErrorMessage = dialogQuery.error ? normalizeApiError(dialogQuery.error) : '';
     const meErrorMessage = meQuery.error ? normalizeApiError(meQuery.error) : '';
     const message =
-      (dialogErrorMessage && isTerminalDialogApiMessage(dialogErrorMessage) && dialogErrorMessage) ||
+      (dialogErrorMessage &&
+        isTerminalDialogApiMessage(dialogErrorMessage) &&
+        dialogErrorMessage) ||
       (meErrorMessage && isTerminalDialogApiMessage(meErrorMessage) && meErrorMessage) ||
       '';
     if (!message) {
@@ -1285,12 +1324,22 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     void queryClient.cancelQueries({ queryKey: dialogQueryKey });
     pushToast({
       tone: 'info',
-      title: isSessionExpiredApiMessage(message) ? 'Откройте мини-приложение заново' : 'Диалог недоступен',
+      title: isSessionExpiredApiMessage(message)
+        ? 'Откройте мини-приложение заново'
+        : 'Диалог недоступен',
       description: message,
       durationMs: 4_000,
     });
     navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-  }, [dialogQuery.error, dialogQueryKey, entityType, meQuery.error, navigate, pushToast, queryClient]);
+  }, [
+    dialogQuery.error,
+    dialogQueryKey,
+    entityType,
+    meQuery.error,
+    navigate,
+    pushToast,
+    queryClient,
+  ]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
@@ -1311,7 +1360,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const showComposeMeta =
     dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget) || Boolean(editingMessage);
   const canSubmitMessage =
-    dialogType === 'suggest' ? Boolean(draftLength || suggestionImage) : draftLength > 0;
+    dialogType === 'suggest'
+      ? Boolean(draftLength || suggestionImages.length > 0)
+      : draftLength > 0;
   const activeMessageIsOwn = activeMessage
     ? meQuery.data?.userId === activeMessage.authorUserId
     : false;
@@ -1775,17 +1826,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId, reactionPopoverLayout]);
 
   const sendMutation = useMutation({
-    mutationFn: (payload: { text: string; image: SuggestionDraftImage | null }) =>
+    mutationFn: (payload: { text: string; images: SuggestionDraftImage[] }) =>
       entityType === 'channel'
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
             replyToMessageId,
-            ...(payload.image
+            ...(payload.images.length > 0
               ? {
-                  imageBase64: payload.image.base64,
-                  imageMimeType: payload.image.mimeType,
-                  imageFileName: payload.image.fileName,
+                  images: payload.images.map((image) => ({
+                    base64: image.base64,
+                    mimeType: image.mimeType,
+                    fileName: image.fileName,
+                  })),
                 }
               : {}),
           })
@@ -1809,7 +1862,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             : 'Комментарий отправлен.',
       });
       setDraft('');
-      setSuggestionImage(null);
+      setSuggestionImages((current) => {
+        for (const image of current) {
+          URL.revokeObjectURL(image.previewUrl);
+        }
+        return [];
+      });
       if (suggestionImageInputRef.current) {
         suggestionImageInputRef.current.value = '';
       }
@@ -2174,11 +2232,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     maxImpact('soft');
-    setEditRestoreState((current) =>
-      current ?? {
-        draft,
-        replyToMessageId,
-      },
+    setEditRestoreState(
+      (current) =>
+        current ?? {
+          draft,
+          replyToMessageId,
+        },
     );
     setReplyToMessageId(null);
     setEditingMessageId(message.id);
@@ -2317,30 +2376,79 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     scrollToMessage(replyTarget.id);
   };
 
-  const clearSuggestionImage = () => {
-    setSuggestionImage(null);
+  const clearSuggestionImages = () => {
+    setSuggestionImages((current) => {
+      for (const image of current) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+      return [];
+    });
     if (suggestionImageInputRef.current) {
       suggestionImageInputRef.current.value = '';
     }
   };
 
+  const removeSuggestionImage = (indexToRemove: number) => {
+    setSuggestionImages((current) =>
+      current.filter((image, index) => {
+        if (index === indexToRemove) {
+          URL.revokeObjectURL(image.previewUrl);
+          return false;
+        }
+
+        return true;
+      }),
+    );
+    if (suggestionImageInputRef.current) {
+      suggestionImageInputRef.current.value = '';
+    }
+    maxImpact('light');
+  };
+
   const handleSuggestionImageChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) {
+    const files = Array.from(event.target.files ?? []);
+    if (files.length === 0) {
+      return;
+    }
+
+    const availableSlots = Math.max(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES - suggestionImages.length);
+    if (availableSlots === 0) {
+      event.target.value = '';
+      pushToast({
+        tone: 'info',
+        title: 'Лимит фото',
+        description: `В одной предложке можно отправить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`,
+      });
       return;
     }
 
     setIsPreparingSuggestionImage(true);
+    const nextImages: SuggestionDraftImage[] = [];
     try {
-      const prepared = await prepareBroadcastImage(file);
+      for (const file of files.slice(0, availableSlots)) {
+        const prepared = await prepareBroadcastImage(file);
+        nextImages.push({
+          base64: prepared.base64,
+          mimeType: prepared.mimeType,
+          fileName: prepared.fileName,
+          previewUrl: URL.createObjectURL(file),
+        });
+      }
+
       maxImpact('light');
-      setSuggestionImage({
-        base64: prepared.base64,
-        mimeType: prepared.mimeType,
-        fileName: prepared.fileName,
-        previewUrl: URL.createObjectURL(file),
-      });
+      setSuggestionImages((current) => [...current, ...nextImages]);
+      if (files.length > availableSlots) {
+        pushToast({
+          tone: 'info',
+          title: 'Лимит фото',
+          description: `Добавили первые ${availableSlots} фото. Больше ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} в одну предложку нельзя.`,
+        });
+      }
+      event.target.value = '';
     } catch (error) {
+      for (const image of nextImages) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
       event.target.value = '';
       pushToast({
         tone: 'danger',
@@ -2358,7 +2466,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       isComposePending ||
       !chatId ||
       !token ||
-      (dialogType === 'suggest' ? !text && !suggestionImage : !text)
+      (dialogType === 'suggest' ? !text && suggestionImages.length === 0 : !text)
     ) {
       return;
     }
@@ -2378,7 +2486,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     sendMutation.mutate({
       text,
-      image: dialogType === 'suggest' ? suggestionImage : null,
+      images: dialogType === 'suggest' ? suggestionImages : [],
     });
   };
 
@@ -2509,7 +2617,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   </strong>
                   {renderPlainTextParagraphs(
                     introText ||
-                      'Напишите короткий текст, приложите одно фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
+                      'Напишите короткий текст, приложите несколько фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
                   )}
                   <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
                     <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
@@ -2790,7 +2898,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         Пока нет отправленных предложек
                       </strong>
                       <p style={SUGGEST_EMPTY_COPY_STYLE}>
-                        Добавьте тему, подпись или одно фото, чтобы отправить первую идею редактору.
+                        Добавьте тему, подпись или несколько фото, чтобы отправить первую идею
+                        редактору.
                       </p>
                     </>
                   ) : (
@@ -2870,31 +2979,65 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 )}
               >
                 {dialogType === 'suggest' ? (
-                  <span>Одно фото на предложку. После отправки для правок создайте новую.</span>
+                  <span>
+                    До {MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото в одной предложке. После отправки
+                    для правок создайте новую.
+                  </span>
                 ) : editingMessage ? (
                   <span>Изменение сохранится для всех участников треда</span>
                 ) : null}
-                <span>{draftLength}/2000</span>
+                <span>
+                  {draftLength}/2000
+                  {dialogType === 'suggest'
+                    ? ` · ${suggestionImages.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`
+                    : ''}
+                </span>
               </div>
             ) : null}
 
-            {dialogType === 'suggest' && suggestionImage ? (
-              <div className="channel-dialog-compose__attachment">
-                <div className="channel-dialog-compose__attachment-preview">
-                  <img src={suggestionImage.previewUrl} alt="" />
-                </div>
-                <div className="channel-dialog-compose__attachment-copy">
-                  <strong>Фото приложено</strong>
-                  <span>{suggestionImage.fileName}</span>
-                </div>
-                <button
-                  type="button"
-                  className="channel-dialog-compose__attachment-dismiss"
-                  onClick={clearSuggestionImage}
-                  aria-label="Убрать фото"
-                >
-                  <CloseIcon />
-                </button>
+            {dialogType === 'suggest' && suggestionImages.length > 0 ? (
+              <div
+                style={{
+                  display: 'grid',
+                  gap: 8,
+                }}
+              >
+                {suggestionImages.map((image, index) => (
+                  <div
+                    key={`${image.fileName}-${index}`}
+                    className="channel-dialog-compose__attachment"
+                  >
+                    <div className="channel-dialog-compose__attachment-preview">
+                      <img src={image.previewUrl} alt="" />
+                    </div>
+                    <div className="channel-dialog-compose__attachment-copy">
+                      <strong>
+                        Фото {index + 1}
+                        {suggestionImages.length > 1 ? ` из ${suggestionImages.length}` : ''}
+                      </strong>
+                      <span>{image.fileName}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="channel-dialog-compose__attachment-dismiss"
+                      onClick={() => removeSuggestionImage(index)}
+                      aria-label={`Убрать фото ${index + 1}`}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                ))}
+                {suggestionImages.length > 1 ? (
+                  <button
+                    type="button"
+                    className="channel-dialog-compose__attachment-dismiss"
+                    onClick={clearSuggestionImages}
+                    aria-label="Убрать все фото"
+                    style={{ justifySelf: 'flex-end' }}
+                  >
+                    Убрать все
+                  </button>
+                ) : null}
               </div>
             ) : null}
 
@@ -2903,13 +3046,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 <label
                   className={cn(
                     'channel-dialog-compose__attach',
-                    (suggestionImage || isPreparingSuggestionImage) && 'is-active',
+                    (suggestionImages.length > 0 || isPreparingSuggestionImage) && 'is-active',
                   )}
                 >
                   <input
                     ref={suggestionImageInputRef}
                     type="file"
                     accept="image/*"
+                    multiple
                     onChange={handleSuggestionImageChange}
                     disabled={sendMutation.isPending || isPreparingSuggestionImage}
                   />

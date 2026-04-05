@@ -19,6 +19,7 @@ import {
   type LogsDashboardRange,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
+  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   MANAGED_GIVEAWAY_MAX_PRIZES,
   MANAGED_POLL_MAX_OPTIONS,
   MANAGED_POLL_MIN_OPTIONS,
@@ -159,18 +160,30 @@ type PrivatePollDraft = {
   options: string[];
 };
 
-type PrivateSuggestionMediaDraft = {
-  kind: 'image' | 'video';
+type PrivateSuggestionImageDraft = {
+  kind: 'image';
   mimeType: string;
   fileName: string;
   payload: Record<string, unknown>;
 };
 
+type PrivateSuggestionVideoDraft = {
+  kind: 'video';
+  mimeType: string;
+  fileName: string;
+  payload: Record<string, unknown>;
+};
+
+type PrivateSuggestionMediaDraft = PrivateSuggestionImageDraft | PrivateSuggestionVideoDraft;
+
 type PrivateSuggestionDraft = {
   chatId: string;
   token: string;
   text: string;
-  media: PrivateSuggestionMediaDraft | null;
+  images: PrivateSuggestionImageDraft[];
+  video: PrivateSuggestionVideoDraft | null;
+  // Legacy field keeps older persisted drafts readable until they are replaced.
+  media?: PrivateSuggestionMediaDraft | null;
   // Legacy fields keep older persisted drafts readable until they are replaced.
   imageBase64: string;
   imageMimeType: string;
@@ -1169,7 +1182,11 @@ export class PrivateControlService {
       configService?.get<string>('MAX_BOT_TOKEN'),
       configService?.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
-    this.maxBotToken = this.maxBotLinkService?.getBotTokenSync() ?? configuredBotTokens[0] ?? this.botDeepLinkId ?? 'max-bot';
+    this.maxBotToken =
+      this.maxBotLinkService?.getBotTokenSync() ??
+      configuredBotTokens[0] ??
+      this.botDeepLinkId ??
+      'max-bot';
     this.maxBotTokenValidationSecrets =
       this.maxBotLinkService?.getValidationTokens() ??
       (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
@@ -1726,11 +1743,7 @@ export class PrivateControlService {
       if (forwardedModerationCommand.action === 'RULES') {
         const forwardedRulesSources = this.extractForwardedRulesSources(context.update);
         if (forwardedRulesSources.length > 0) {
-          await this.handleForwardedRulesCommand(
-            context,
-            session,
-            forwardedRulesSources,
-          );
+          await this.handleForwardedRulesCommand(context, session, forwardedRulesSources);
           return;
         }
       } else {
@@ -2545,20 +2558,28 @@ export class PrivateControlService {
       result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
         token: draft.token,
         text: draft.text,
-        ...(draft.media
+        ...(draft.images.length > 0
           ? {
-              mediaType: draft.media.kind,
-              mediaPayload: draft.media.payload,
-              mediaMimeType: draft.media.mimeType || null,
-              mediaFileName: draft.media.fileName || null,
+              images: draft.images.map((image) => ({
+                payload: image.payload,
+                mimeType: image.mimeType || null,
+                fileName: image.fileName || null,
+              })),
             }
-          : draft.imageBase64
+          : draft.video
             ? {
-                imageBase64: draft.imageBase64,
-                imageMimeType: draft.imageMimeType || null,
-                imageFileName: draft.imageFileName || null,
+                mediaType: draft.video.kind,
+                mediaPayload: draft.video.payload,
+                mediaMimeType: draft.video.mimeType || null,
+                mediaFileName: draft.video.fileName || null,
               }
-            : {}),
+            : draft.imageBase64
+              ? {
+                  imageBase64: draft.imageBase64,
+                  imageMimeType: draft.imageMimeType || null,
+                  imageFileName: draft.imageFileName || null,
+                }
+              : {}),
       });
     } catch (error: unknown) {
       await this.sendChannelSuggestionDraftPreview(context, session);
@@ -2626,7 +2647,7 @@ export class PrivateControlService {
         '',
         '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
         'Можно отправить несколько сообщений подряд: бот будет обновлять пример публикации после каждого нового текста.',
-        'Если пришлёте новое фото или видео, оно заменит предыдущее в черновике.',
+        `Фото будут добавляться в одну предложку до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} шт., а новое видео заменит текущие медиа.`,
       ].join('\n'),
       options: {
         buttons: [[await this.buildChannelSuggestionReturnButton(chatId)]],
@@ -2988,7 +3009,9 @@ export class PrivateControlService {
       case 'chat_refresh': {
         session.chatPage = 1;
         session.screen = 'home';
-        const view = this.renderLauncherHomeView('Список чатов и каналов обновляется в приложении.');
+        const view = this.renderLauncherHomeView(
+          'Список чатов и каналов обновляется в приложении.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Обновляйте список в приложении',
@@ -4334,10 +4357,10 @@ export class PrivateControlService {
           pendingInput: session.pendingInput?.kind ?? null,
           pendingMassAction: session.pendingMassAction?.kind ?? null,
         };
-          const view = this.renderBroadcastLaunchingView(session);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Запускаю рассылку',
+        const view = this.renderBroadcastLaunchingView(session);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Запускаю рассылку',
         });
         void this.finishConfirmedBroadcastPublish({
           privateChatId: context.chatId,
@@ -5105,40 +5128,77 @@ export class PrivateControlService {
       }
 
       case 'channel_suggestion': {
-        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        const imageSourceAttachments = this.extractImageSourceAttachments(context.update);
         const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
         const fileAttachment = this.extractFirstFileAttachment(context.update);
 
-        if (fileAttachment && !imageSourceAttachment && !videoSourceAttachment) {
+        if (fileAttachment && imageSourceAttachments.length === 0 && !videoSourceAttachment) {
           throw new BadRequestException(
             'Сейчас через предложку можно отправить текст, фото, видео или подпись к медиа. Произвольные файлы не поддерживаются.',
           );
         }
 
-        if (!rawText && !imageSourceAttachment && !videoSourceAttachment) {
+        if (!rawText && imageSourceAttachments.length === 0 && !videoSourceAttachment) {
           throw new BadRequestException('Пришлите текст поста, фото, видео или подпись к медиа.');
         }
 
-        const media = imageSourceAttachment
-          ? await this.buildSuggestionMediaDraftFromImage(
-              imageSourceAttachment,
-              'channel-suggestion',
-            )
-          : videoSourceAttachment
-            ? await this.buildSuggestionMediaDraftFromVideo(
-                videoSourceAttachment,
-                'channel-suggestion',
-              )
-            : null;
         const previousDraft = session.suggestionDraft;
+        const previousImages = previousDraft?.images ?? [];
+        const previousVideo = previousDraft?.video ?? null;
+        let nextImages = previousImages;
+        let nextVideo = previousVideo;
+
+        if (imageSourceAttachments.length > 0 && videoSourceAttachment) {
+          throw new BadRequestException(
+            'В одну предложку можно добавить либо фото, либо одно видео.',
+          );
+        }
+
+        if (videoSourceAttachment) {
+          nextVideo = await this.buildSuggestionMediaDraftFromVideo(
+            videoSourceAttachment,
+            'channel-suggestion',
+          );
+          nextImages = [];
+        } else if (imageSourceAttachments.length > 0) {
+          const baseImages = previousVideo ? [] : previousImages;
+          if (
+            baseImages.length + imageSourceAttachments.length >
+            MAX_CHANNEL_DIALOG_SUGGEST_IMAGES
+          ) {
+            throw new BadRequestException(
+              `В одной предложке можно отправить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`,
+            );
+          }
+
+          nextImages = [
+            ...baseImages,
+            ...(await this.buildSuggestionImageDraftsFromImages(
+              imageSourceAttachments,
+              'channel-suggestion',
+            )),
+          ];
+          nextVideo = null;
+        }
+
         session.suggestionDraft = {
           chatId: pendingInput.chatId,
           token: pendingInput.token,
           text: rawText || previousDraft?.text || '',
-          media: media ?? previousDraft?.media ?? null,
-          imageBase64: media ? '' : (previousDraft?.imageBase64 ?? ''),
-          imageMimeType: media ? '' : (previousDraft?.imageMimeType ?? ''),
-          imageFileName: media ? '' : (previousDraft?.imageFileName ?? ''),
+          images: nextImages,
+          video: nextVideo,
+          imageBase64:
+            imageSourceAttachments.length > 0 || videoSourceAttachment
+              ? ''
+              : (previousDraft?.imageBase64 ?? ''),
+          imageMimeType:
+            imageSourceAttachments.length > 0 || videoSourceAttachment
+              ? ''
+              : (previousDraft?.imageMimeType ?? ''),
+          imageFileName:
+            imageSourceAttachments.length > 0 || videoSourceAttachment
+              ? ''
+              : (previousDraft?.imageFileName ?? ''),
           sourceMessageId:
             context.update.message?.messageId ?? previousDraft?.sourceMessageId ?? null,
           previewMessageId: previousDraft?.previewMessageId ?? null,
@@ -5994,7 +6054,12 @@ export class PrivateControlService {
           payload,
           'private_bot',
         )
-      : this.adminService.sendBroadcast(params.selectedChatId, params.actor, payload, 'private_bot');
+      : this.adminService.sendBroadcast(
+          params.selectedChatId,
+          params.actor,
+          payload,
+          'private_bot',
+        );
   }
 
   private async finishConfirmedBroadcastPublish(params: {
@@ -7019,9 +7084,7 @@ export class PrivateControlService {
     }
 
     if (settings.commercialAdsFilterEnabled) {
-      items.push(
-        'Коммерческую рекламу публикуйте только по согласованию с администраторами.',
-      );
+      items.push('Коммерческую рекламу публикуйте только по согласованию с администраторами.');
     }
 
     if (settings.thematicCodewordEnabled) {
@@ -8918,10 +8981,18 @@ export class PrivateControlService {
     buttons: MaxMessageButton[][],
   ): MaxCustomMessagePayload {
     const attachments: Record<string, unknown>[] = [];
-    if (draft.media) {
+
+    if (draft.images.length > 0) {
+      attachments.push(
+        ...draft.images.map((image) => ({
+          type: image.kind,
+          payload: image.payload,
+        })),
+      );
+    } else if (draft.video) {
       attachments.push({
-        type: draft.media.kind,
-        payload: draft.media.payload,
+        type: draft.video.kind,
+        payload: draft.video.payload,
       });
     }
 
@@ -9143,8 +9214,7 @@ export class PrivateControlService {
       case 'channel_suggestion':
         return {
           title: 'Требования для предложки',
-          description:
-            'Сначала прочитайте требования, затем отправьте текст, фото, видео или подпись к медиа. Можно прислать несколько сообщений подряд: бот обновляет превью после нового текста, а последнее фото или видео заменяет предыдущее. После отправки дополнить предложку нельзя. Для выхода используйте `Отмена`.',
+          description: `Сначала прочитайте требования, затем отправьте текст, фото, видео или подпись к медиа. Можно прислать несколько сообщений подряд: бот обновляет превью после нового текста, фото добавляет в одну подборку до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} шт., а видео заменяет текущие медиа. После отправки дополнить предложку нельзя. Для выхода используйте \`Отмена\`.`,
         };
       case 'giveaway_title':
         return {
@@ -10929,7 +10999,10 @@ export class PrivateControlService {
     entityType: ManagedEntityType;
     giveawayId: string | null;
   }): string {
-    const compactPayload = buildCompactGiveawayHandoffStartPayload(params, this.getCurrentBotToken());
+    const compactPayload = buildCompactGiveawayHandoffStartPayload(
+      params,
+      this.getCurrentBotToken(),
+    );
     if (compactPayload) {
       return compactPayload;
     }
@@ -11380,53 +11453,41 @@ export class PrivateControlService {
     return attachments;
   }
 
+  private extractImageSourceAttachments(update: MaxUpdate): ParsedImageSourceAttachment[] {
+    const attachments: ParsedImageSourceAttachment[] = [];
+
+    for (const row of this.collectMessageAttachments(update)) {
+      const imageAttachment = this.parseImageAttachment(row);
+      if (imageAttachment) {
+        attachments.push({
+          kind: 'image',
+          attachment: imageAttachment,
+        });
+        continue;
+      }
+
+      const imageFileAttachment = this.parseImageFileAttachment(row);
+      if (imageFileAttachment) {
+        attachments.push({
+          kind: 'file',
+          attachment: imageFileAttachment,
+        });
+      }
+    }
+
+    return attachments;
+  }
+
   private extractFirstImageSourceAttachment(update: MaxUpdate): ParsedImageSourceAttachment | null {
-    const imageAttachment = this.extractFirstImageAttachment(update);
-    if (imageAttachment) {
-      return {
-        kind: 'image',
-        attachment: imageAttachment,
-      };
-    }
-
-    const imageFileAttachment = this.extractFirstImageFileAttachment(update);
-    if (!imageFileAttachment) {
-      return null;
-    }
-
-    return {
-      kind: 'file',
-      attachment: imageFileAttachment,
-    };
+    return this.extractImageSourceAttachments(update)[0] ?? null;
   }
 
   private extractFirstImageAttachment(update: MaxUpdate): ParsedImageAttachment | null {
     for (const row of this.collectMessageAttachments(update)) {
-      const type = this.readLowerString(row.type);
-      if (type !== 'image') {
-        continue;
+      const parsed = this.parseImageAttachment(row);
+      if (parsed) {
+        return parsed;
       }
-
-      const payload = this.asRecord(row.payload);
-      if (!payload) {
-        continue;
-      }
-
-      const url = this.readString(payload.url);
-      if (!url) {
-        continue;
-      }
-
-      return {
-        url,
-        token: this.readString(payload.token) ?? null,
-        photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
-        width: this.readOptionalInteger(payload.width ?? payload.w),
-        height: this.readOptionalInteger(payload.height ?? payload.h),
-        mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType),
-        mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
-        payloadKeys: Object.keys(payload).sort(),
-      };
     }
 
     return null;
@@ -11445,33 +11506,68 @@ export class PrivateControlService {
 
   private extractFirstImageFileAttachment(update: MaxUpdate): ParsedImageFileAttachment | null {
     for (const row of this.collectMessageAttachments(update)) {
-      const parsed = this.parseFileAttachment(row);
-      if (!parsed?.url) {
-        continue;
+      const parsed = this.parseImageFileAttachment(row);
+      if (parsed) {
+        return parsed;
       }
-
-      const resolvedMimeType = this.resolveImageMimeType(
-        parsed.mimeType,
-        parsed.fileName,
-        parsed.url,
-      );
-      if (!resolvedMimeType) {
-        continue;
-      }
-
-      return {
-        url: parsed.url,
-        token: parsed.token,
-        fileId: parsed.fileId,
-        fileName: parsed.fileName,
-        size: parsed.size,
-        mimeType: resolvedMimeType,
-        mediaType: parsed.mediaType,
-        payloadKeys: parsed.payloadKeys,
-      };
     }
 
     return null;
+  }
+
+  private parseImageAttachment(row: Record<string, unknown>): ParsedImageAttachment | null {
+    const type = this.readLowerString(row.type);
+    if (type !== 'image') {
+      return null;
+    }
+
+    const payload = this.asRecord(row.payload);
+    if (!payload) {
+      return null;
+    }
+
+    const url = this.readString(payload.url);
+    if (!url) {
+      return null;
+    }
+
+    return {
+      url,
+      token: this.readString(payload.token) ?? null,
+      photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
+      width: this.readOptionalInteger(payload.width ?? payload.w),
+      height: this.readOptionalInteger(payload.height ?? payload.h),
+      mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType),
+      mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
+      payloadKeys: Object.keys(payload).sort(),
+    };
+  }
+
+  private parseImageFileAttachment(row: Record<string, unknown>): ParsedImageFileAttachment | null {
+    const parsed = this.parseFileAttachment(row);
+    if (!parsed?.url) {
+      return null;
+    }
+
+    const resolvedMimeType = this.resolveImageMimeType(
+      parsed.mimeType,
+      parsed.fileName,
+      parsed.url,
+    );
+    if (!resolvedMimeType) {
+      return null;
+    }
+
+    return {
+      url: parsed.url,
+      token: parsed.token,
+      fileId: parsed.fileId,
+      fileName: parsed.fileName,
+      size: parsed.size,
+      mimeType: resolvedMimeType,
+      mediaType: parsed.mediaType,
+      payloadKeys: parsed.payloadKeys,
+    };
   }
 
   private extractFirstVideoSourceAttachment(update: MaxUpdate): ParsedVideoSourceAttachment | null {
@@ -11694,10 +11790,23 @@ export class PrivateControlService {
     }
   }
 
+  private async buildSuggestionImageDraftsFromImages(
+    imageSourceAttachments: ParsedImageSourceAttachment[],
+    filePrefix = 'channel-suggestion',
+  ): Promise<PrivateSuggestionImageDraft[]> {
+    const drafts: PrivateSuggestionImageDraft[] = [];
+
+    for (const imageSourceAttachment of imageSourceAttachments) {
+      drafts.push(await this.buildSuggestionMediaDraftFromImage(imageSourceAttachment, filePrefix));
+    }
+
+    return drafts;
+  }
+
   private async buildSuggestionMediaDraftFromImage(
     imageSourceAttachment: ParsedImageSourceAttachment,
     filePrefix = 'channel-suggestion',
-  ): Promise<PrivateSuggestionMediaDraft> {
+  ): Promise<PrivateSuggestionImageDraft> {
     const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment, filePrefix);
     const payload = await this.maxClient.uploadImage(
       Buffer.from(downloaded.base64, 'base64'),
@@ -11716,7 +11825,7 @@ export class PrivateControlService {
   private async buildSuggestionMediaDraftFromVideo(
     videoSourceAttachment: ParsedVideoSourceAttachment,
     filePrefix = 'channel-suggestion',
-  ): Promise<PrivateSuggestionMediaDraft> {
+  ): Promise<PrivateSuggestionVideoDraft> {
     const downloaded = await this.downloadVideoSourceAttachment(videoSourceAttachment, filePrefix);
     const payload = await this.maxClient.uploadVideo(
       downloaded.buffer,
@@ -12678,6 +12787,7 @@ export class PrivateControlService {
     }
 
     const row = raw as Partial<PrivateSuggestionDraft>;
+    const rawRow = row as Record<string, unknown>;
     const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
     const token = typeof row.token === 'string' ? row.token.trim() : '';
 
@@ -12685,11 +12795,20 @@ export class PrivateControlService {
       return null;
     }
 
+    const images = this.normalizeSuggestionImageDrafts(rawRow.images);
+    const legacyMedia = this.normalizeSuggestionMediaDraft(rawRow.media);
+    const video =
+      this.normalizeSuggestionVideoDraft(rawRow.video) ??
+      (legacyMedia?.kind === 'video' ? legacyMedia : null);
+    const normalizedImages =
+      images.length > 0 ? images : legacyMedia?.kind === 'image' ? [legacyMedia] : [];
+
     return {
       chatId,
       token,
       text: typeof row.text === 'string' ? row.text : '',
-      media: this.normalizeSuggestionMediaDraft((row as Record<string, unknown>).media),
+      images: normalizedImages,
+      video,
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
       imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
       imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
@@ -12728,6 +12847,22 @@ export class PrivateControlService {
       fileName,
       payload,
     };
+  }
+
+  private normalizeSuggestionImageDrafts(raw: unknown): PrivateSuggestionImageDraft[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw
+      .map((item) => this.normalizeSuggestionMediaDraft(item))
+      .filter((item): item is PrivateSuggestionImageDraft => item?.kind === 'image')
+      .slice(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES);
+  }
+
+  private normalizeSuggestionVideoDraft(raw: unknown): PrivateSuggestionVideoDraft | null {
+    const media = this.normalizeSuggestionMediaDraft(raw);
+    return media?.kind === 'video' ? media : null;
   }
 
   private parseScreen(value: unknown): PrivateScreen {

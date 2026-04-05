@@ -84,6 +84,7 @@ import {
   type UpdateManagedEntityPrimaryBotRequest,
   type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
+  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   inferAllowlistMatchType,
   normalizeMessageLimitsBlockedWordCandidate,
   normalizeStoredAllowlistEntry,
@@ -338,8 +339,16 @@ type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
   avatarUrl?: string | null;
 };
 
+type ChannelSuggestionImageAsset = {
+  base64?: string | null;
+  payload?: Record<string, unknown> | null;
+  mimeType?: string | null;
+  fileName?: string | null;
+};
+
 type ChannelSuggestionDeliveryInput = {
   text: string;
+  images?: ChannelSuggestionImageAsset[] | null;
   imageBase64?: string | null;
   imageMimeType?: string | null;
   imageFileName?: string | null;
@@ -703,6 +712,7 @@ type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
 
 type ChannelSuggestionFromBotPayload = {
   token: string;
+  images: ChannelSuggestionImageAsset[];
   text: string;
   imageBase64: string | null;
   imageMimeType: string | null;
@@ -772,10 +782,7 @@ export class AdminService implements OnModuleDestroy {
     Promise<ManagedEntitiesListResult>
   >();
   private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
-  private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<
-    string,
-    Promise<void>
-  >();
+  private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesPublishedSnapshotRuns = new Map<string, Promise<void>>();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
@@ -1254,12 +1261,10 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter = 'all',
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
-    let lightweightBootstrapPromise:
-      | Promise<{
-          currentChat: ChatSummary | null;
-          recentBotAdded: ChatSummary[];
-        }>
-      | null = null;
+    let lightweightBootstrapPromise: Promise<{
+      currentChat: ChatSummary | null;
+      recentBotAdded: ChatSummary[];
+    }> | null = null;
     const mergeWithLightweightBootstrap = async (
       items: readonly ChatSummary[],
     ): Promise<ChatSummary[]> => {
@@ -1370,24 +1375,21 @@ export class AdminService implements OnModuleDestroy {
         resetRefreshCursor: options.resetRefreshCursor === true,
         includeRefreshState: options.includeRefreshState === true,
       });
-      const discovered = await this.awaitManagedEntitiesResponseValueWithinBudget(
-        warmupPromise,
-        {
-          fallback: {
-            items: [],
-            refresh: null,
-          },
-          budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
-          timeoutMessage:
-            'Detached managed entities discovery warmup from default response after response budget exceeded',
-          failureMessage: 'Managed entities discovery warmup failed during default response',
-          logData: {
-            entityType,
-            source: 'default',
-            userId: user.userId,
-          },
+      const discovered = await this.awaitManagedEntitiesResponseValueWithinBudget(warmupPromise, {
+        fallback: {
+          items: [],
+          refresh: null,
         },
-      );
+        budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
+        timeoutMessage:
+          'Detached managed entities discovery warmup from default response after response budget exceeded',
+        failureMessage: 'Managed entities discovery warmup failed during default response',
+        logData: {
+          entityType,
+          source: 'default',
+          userId: user.userId,
+        },
+      });
       const discoveredItems = this.mergeManagedEntityGroups(initial, discovered.items);
       const items =
         discoveredItems.length > 0
@@ -1805,9 +1807,7 @@ export class AdminService implements OnModuleDestroy {
       });
   }
 
-  private async loadRecentBotAddedBootstrapRows(
-    userId: string,
-  ): Promise<
+  private async loadRecentBotAddedBootstrapRows(userId: string): Promise<
     Array<{
       chat_id: string | null;
       chat_title: string | null;
@@ -1990,7 +1990,9 @@ export class AdminService implements OnModuleDestroy {
     items: readonly ChatSummary[],
     lastSyncedAt: string | null,
   ): string {
-    const normalizedItems = items.map((item) => this.serializeManagedEntitySummaryForSnapshot(item));
+    const normalizedItems = items.map((item) =>
+      this.serializeManagedEntitySummaryForSnapshot(item),
+    );
 
     return createHash('sha256')
       .update(
@@ -2099,10 +2101,7 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private areManagedEntitySummariesEquivalent(
-    left: ChatSummary,
-    right: ChatSummary,
-  ): boolean {
+  private areManagedEntitySummariesEquivalent(left: ChatSummary, right: ChatSummary): boolean {
     return (
       JSON.stringify(this.serializeManagedEntitySummaryForSnapshot(left)) ===
       JSON.stringify(this.serializeManagedEntitySummaryForSnapshot(right))
@@ -2136,7 +2135,7 @@ export class AdminService implements OnModuleDestroy {
     const hydratedById = new Map(hydratedBootstrap.map((item) => [item.id, item]));
 
     return this.mergeManagedEntitiesWithLightweightBootstrap(items, {
-      currentChat: currentChat ? hydratedById.get(currentChat.id) ?? currentChat : null,
+      currentChat: currentChat ? (hydratedById.get(currentChat.id) ?? currentChat) : null,
       recentBotAdded: recentBotAdded.map((chat) => hydratedById.get(chat.id) ?? chat),
     });
   }
@@ -2200,8 +2199,7 @@ export class AdminService implements OnModuleDestroy {
       allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<void> {
-    const allowRecoveryWindowRun =
-      this.shouldAllowManagedEntitiesRecoveryWindowRun(options);
+    const allowRecoveryWindowRun = this.shouldAllowManagedEntitiesRecoveryWindowRun(options);
     let nextOptions = {
       ...options,
       allowRecoveryWindowRun,
@@ -2301,7 +2299,10 @@ export class AdminService implements OnModuleDestroy {
         options,
         (existing?.data as Partial<AdminManagedEntitiesRefreshJob> | undefined) ?? null,
       );
-      const desiredPriority = this.buildManagedEntitiesRefreshJobPriority(entityType, desiredJobData);
+      const desiredPriority = this.buildManagedEntitiesRefreshJobPriority(
+        entityType,
+        desiredJobData,
+      );
       if (existing) {
         const state = await existing.getState();
         const existingPriority =
@@ -2320,21 +2321,17 @@ export class AdminService implements OnModuleDestroy {
         await existing.remove();
       }
 
-      await this.adminManagedEntitiesRefreshQueue.add(
-        'refresh-managed-entities',
-        desiredJobData,
-        {
-          jobId,
-          priority: desiredPriority,
-          attempts: 5,
-          removeOnComplete: true,
-          removeOnFail: false,
-          backoff: {
-            type: 'exponential',
-            delay: 1_000,
-          },
+      await this.adminManagedEntitiesRefreshQueue.add('refresh-managed-entities', desiredJobData, {
+        jobId,
+        priority: desiredPriority,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1_000,
         },
-      );
+      });
       return true;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -2371,11 +2368,10 @@ export class AdminService implements OnModuleDestroy {
       cursor = null;
     }
 
-    const backgroundPauseDecision =
-      this.peekManagedEntitiesBackgroundRefreshPauseDecision(
-        'schedule',
-        this.buildManagedEntitiesBackgroundGovernorOptions(options),
-      );
+    const backgroundPauseDecision = this.peekManagedEntitiesBackgroundRefreshPauseDecision(
+      'schedule',
+      this.buildManagedEntitiesBackgroundGovernorOptions(options),
+    );
     if (backgroundPauseDecision) {
       const pausedCursor = cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE ? null : cursor;
       const presentation = await this.loadManagedEntitiesRefreshPresentationData(
@@ -2478,11 +2474,10 @@ export class AdminService implements OnModuleDestroy {
       allowRecoveryWindowRun?: boolean;
     } = {},
   ): Promise<ManagedEntitiesRefreshJobOutcome> {
-    const backgroundPauseDecision =
-      await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
-        'job',
-        this.buildManagedEntitiesBackgroundGovernorOptions(options),
-      );
+    const backgroundPauseDecision = await this.resolveManagedEntitiesBackgroundRefreshPauseDecision(
+      'job',
+      this.buildManagedEntitiesBackgroundGovernorOptions(options),
+    );
     if (backgroundPauseDecision) {
       return {
         continueAfterMs: backgroundPauseDecision.retryAfterMs,
@@ -2563,7 +2558,8 @@ export class AdminService implements OnModuleDestroy {
         budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS,
         timeoutMessage:
           'Detached current chat bootstrap from lightweight managed entities response after response budget exceeded',
-        failureMessage: 'Current chat bootstrap failed during lightweight managed entities response',
+        failureMessage:
+          'Current chat bootstrap failed during lightweight managed entities response',
         logData: {
           entityType,
           userId: user.userId,
@@ -2984,10 +2980,7 @@ export class AdminService implements OnModuleDestroy {
     const enqueued = await this.enqueueManagedEntitiesRemoteFullRefresh(user.userId, entityType);
     if (
       enqueued ||
-      !(
-        previousCursor === null ||
-        previousCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-      )
+      !(previousCursor === null || previousCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE)
     ) {
       return;
     }
@@ -3623,7 +3616,7 @@ export class AdminService implements OnModuleDestroy {
           code:
             error instanceof Prisma.PrismaClientKnownRequestError
               ? error.code
-              : (error as { code?: string } | null)?.code ?? null,
+              : ((error as { code?: string } | null)?.code ?? null),
           err: error instanceof Error ? error.message : String(error),
         },
         this.isPrismaKnownError(error, 'P2024')
@@ -3676,7 +3669,8 @@ export class AdminService implements OnModuleDestroy {
         entityType: this.fromPrismaEntityType(persistedChat.entityType),
         link: params.link ?? null,
         avatarUrl: params.avatarUrl ?? null,
-        primaryBotId: this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
+        primaryBotId:
+          this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
       });
       this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
 
@@ -3705,7 +3699,7 @@ export class AdminService implements OnModuleDestroy {
           code:
             error instanceof Prisma.PrismaClientKnownRequestError
               ? error.code
-              : (error as { code?: string } | null)?.code ?? null,
+              : ((error as { code?: string } | null)?.code ?? null),
           err: error instanceof Error ? error.message : String(error),
         },
         'Using transient managed entity summary because the Prisma pool is saturated',
@@ -3716,8 +3710,7 @@ export class AdminService implements OnModuleDestroy {
         title:
           this.resolvePresentableManagedEntityTitle(params.chatId, params.title, null, null) ??
           params.chatId,
-        createdAt:
-          this.readTrimmedString(params.createdAtFallback) ?? new Date().toISOString(),
+        createdAt: this.readTrimmedString(params.createdAtFallback) ?? new Date().toISOString(),
         entityType: params.entityType,
         link: params.link ?? null,
         avatarUrl: params.avatarUrl ?? null,
@@ -3969,11 +3962,7 @@ export class AdminService implements OnModuleDestroy {
 
       bootstrapped.push(
         row.user_scoped
-          ? await this.maybeHydrateRecentBotAddedBootstrapChat(
-              normalizedUserId,
-              entityType,
-              chat,
-            )
+          ? await this.maybeHydrateRecentBotAddedBootstrapChat(normalizedUserId, entityType, chat)
           : chat,
       );
       if (bootstrapped.length >= RECENT_BOT_ADDED_BOOTSTRAP_LIMIT) {
@@ -4107,7 +4096,8 @@ export class AdminService implements OnModuleDestroy {
         });
 
         const resolvedTitle =
-          this.resolvePresentableManagedEntityTitle(chat.id, snapshot.title, chat.title) ?? chat.title;
+          this.resolvePresentableManagedEntityTitle(chat.id, snapshot.title, chat.title) ??
+          chat.title;
         const resolvedLink = this.readTrimmedString(snapshot.link) ?? chat.link ?? null;
         const resolvedAvatarUrl =
           this.readTrimmedString(snapshot.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl);
@@ -5162,21 +5152,21 @@ export class AdminService implements OnModuleDestroy {
 
     const snapshot = syncCandidates.map((chat) => ({
       ...chat,
-      botIds: Array.from(
-        new Set([...(chat.botIds ?? []), ...(chat.botId ? [chat.botId] : [])]),
-      ),
+      botIds: Array.from(new Set([...(chat.botIds ?? []), ...(chat.botId ? [chat.botId] : [])])),
     }));
 
-    void this.maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync(snapshot).catch((error) => {
-      this.logger.warn(
-        {
-          candidateChats: snapshot.length,
-          trafficClass,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to enqueue managed entities catalog sync after discovery snapshot',
-      );
-    });
+    void this.maxChatAdminRosterSyncService
+      .scheduleDiscoverySnapshotSync(snapshot)
+      .catch((error) => {
+        this.logger.warn(
+          {
+            candidateChats: snapshot.length,
+            trafficClass,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to enqueue managed entities catalog sync after discovery snapshot',
+        );
+      });
   }
 
   async getChannelStats(
@@ -6529,6 +6519,7 @@ export class AdminService implements OnModuleDestroy {
       threadId,
       source: 'private_bot',
       text: parsed.text,
+      images: parsed.images,
       imageBase64: parsed.imageBase64,
       imageMimeType: parsed.imageMimeType,
       imageFileName: parsed.imageFileName,
@@ -6766,9 +6757,11 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const imageBase64 = parsed.data.imageBase64.trim();
-    const imageMimeType = parsed.data.imageMimeType.trim();
-    const imageFileName = parsed.data.imageFileName.trim();
+    const images = parsed.data.images.map((image) => ({
+      base64: image.base64.trim(),
+      mimeType: image.mimeType.trim(),
+      fileName: image.fileName.trim(),
+    }));
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -6784,7 +6777,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
-    if (dialogType === 'comments' && imageBase64) {
+    if (dialogType === 'comments' && images.length > 0) {
       throw new BadRequestException('Фото доступно только в предложке.');
     }
 
@@ -6796,7 +6789,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
 
-    if (dialogType === 'suggest' && !text && !imageBase64) {
+    if (dialogType === 'suggest' && !text && images.length === 0) {
       throw new BadRequestException('Введите текст или добавьте фото.');
     }
 
@@ -6821,9 +6814,7 @@ export class AdminService implements OnModuleDestroy {
         threadId,
         source,
         text,
-        imageBase64: imageBase64 || null,
-        imageMimeType: imageMimeType || null,
-        imageFileName: imageFileName || null,
+        images,
       });
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
@@ -6956,7 +6947,7 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const imageBase64 = parsed.data.imageBase64.trim();
+    const hasImages = parsed.data.images.length > 0;
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -6972,7 +6963,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    if (imageBase64) {
+    if (hasImages) {
       throw new BadRequestException('Фото доступно только в предложке.');
     }
 
@@ -10573,10 +10564,20 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const normalized = value.trim().toLowerCase();
-    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+    if (
+      normalized === '1' ||
+      normalized === 'true' ||
+      normalized === 'yes' ||
+      normalized === 'on'
+    ) {
       return true;
     }
-    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+    if (
+      normalized === '0' ||
+      normalized === 'false' ||
+      normalized === 'no' ||
+      normalized === 'off'
+    ) {
       return false;
     }
 
@@ -11625,9 +11626,14 @@ export class AdminService implements OnModuleDestroy {
       recreatedFromMessageId = publishedMessageId;
       try {
         const recreated = resolvedBotId
-          ? await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, undefined, {
-              botId: resolvedBotId,
-            })
+          ? await this.maxClient.sendMessageImmediateWithResolvedLink(
+              chatId,
+              messageText,
+              undefined,
+              {
+                botId: resolvedBotId,
+              },
+            )
           : await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText);
         nextPublishedMessageId = recreated.messageId;
         nextPublishedUrl = this.normalizePublishedRulesUrl(recreated.url);
@@ -14412,7 +14418,12 @@ export class AdminService implements OnModuleDestroy {
 
     return moderationFeedPageSchema.parse({
       items: pageRows.map((row) =>
-        this.mapModerationViolationRow(chatId, entityType, row as ModerationViolationRow, userProfiles),
+        this.mapModerationViolationRow(
+          chatId,
+          entityType,
+          row as ModerationViolationRow,
+          userProfiles,
+        ),
       ),
       hasMore: rows.length > limit,
       nextCursor:
@@ -14539,7 +14550,12 @@ export class AdminService implements OnModuleDestroy {
           profileUrl: userProfile?.profileUrl ?? null,
           profileHandoffUrl:
             userProfile?.profileHandoffUrl ??
-            this.buildProfileMentionHandoffUrl(chatId, entityType, normalizedUserId, userDisplayName),
+            this.buildProfileMentionHandoffUrl(
+              chatId,
+              entityType,
+              normalizedUserId,
+              userDisplayName,
+            ),
           createdAt,
         };
       })
@@ -14602,15 +14618,13 @@ export class AdminService implements OnModuleDestroy {
       query,
       entityType,
       profileOptions,
-    ).catch(
-      (error: unknown) => {
-        const current = this.membershipActivityFeedPageCache.get(cacheKey);
-        if (current?.promise === pending) {
-          this.membershipActivityFeedPageCache.delete(cacheKey);
-        }
-        throw error;
-      },
-    );
+    ).catch((error: unknown) => {
+      const current = this.membershipActivityFeedPageCache.get(cacheKey);
+      if (current?.promise === pending) {
+        this.membershipActivityFeedPageCache.delete(cacheKey);
+      }
+      throw error;
+    });
 
     this.membershipActivityFeedPageCache.set(cacheKey, {
       expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
@@ -15078,18 +15092,21 @@ export class AdminService implements OnModuleDestroy {
         entityType,
         missingUserIds,
         options,
-      ).catch(
-        (error: unknown) => {
-          for (const userId of missingUserIds) {
-            const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
-            const current = this.resolvedUserProfileCache.get(cacheKey);
-            if (current?.promise === pendingByUserId.get(userId)) {
-              this.resolvedUserProfileCache.delete(cacheKey);
-            }
+      ).catch((error: unknown) => {
+        for (const userId of missingUserIds) {
+          const cacheKey = this.buildResolvedUserProfileCacheKey(
+            chatId,
+            entityType,
+            userId,
+            options,
+          );
+          const current = this.resolvedUserProfileCache.get(cacheKey);
+          if (current?.promise === pendingByUserId.get(userId)) {
+            this.resolvedUserProfileCache.delete(cacheKey);
           }
-          throw error;
-        },
-      );
+        }
+        throw error;
+      });
 
       for (const userId of missingUserIds) {
         const cacheKey = this.buildResolvedUserProfileCacheKey(chatId, entityType, userId, options);
@@ -15821,9 +15838,39 @@ export class AdminService implements OnModuleDestroy {
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
     const reviewStatus = this.readChannelDialogSuggestionReviewStatus(payload.reviewStatus);
     const publishedUrl = this.readTrimmedString(payload.publishedUrl);
+    const suggestionImages = this.normalizeChannelSuggestionImages({
+      images: this.readChannelSuggestionImageAssets(payload.images),
+      imageBase64: this.readTrimmedString(payload.imageBase64),
+      imageMimeType: this.readTrimmedString(payload.imageMimeType),
+      imageFileName: this.readTrimmedString(payload.imageFileName),
+      mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
+      mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
+      mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
+      mediaFileName: this.readTrimmedString(payload.mediaFileName),
+    });
     const hasImage =
-      payload.hasImage === true || Boolean(this.readTrimmedString(payload.imageBase64));
-    const imageFileName = this.readTrimmedString(payload.imageFileName);
+      payload.hasImage === true ||
+      suggestionImages.length > 0 ||
+      Boolean(this.readTrimmedString(payload.imageBase64));
+    const imageFileNames = Array.from(
+      new Set(
+        suggestionImages
+          .map((image) => image.fileName?.trim() ?? '')
+          .filter((fileName): fileName is string => fileName.length > 0),
+      ),
+    );
+    const legacyImageFileName = this.readTrimmedString(payload.imageFileName);
+    const resolvedImageFileNames =
+      imageFileNames.length > 0 ? imageFileNames : legacyImageFileName ? [legacyImageFileName] : [];
+    const imageFileName = resolvedImageFileNames[0] ?? null;
+    const imageCount = hasImage
+      ? Math.max(
+          suggestionImages.length,
+          resolvedImageFileNames.length,
+          this.toSafeInteger(payload.imageCount),
+          this.readChannelSuggestionMediaType(payload.mediaType) === 'image' ? 1 : 0,
+        )
+      : 0;
     const hasVideo =
       payload.hasVideo === true ||
       this.readChannelSuggestionMediaType(payload.mediaType) === 'video';
@@ -15859,12 +15906,117 @@ export class AdminService implements OnModuleDestroy {
             reviewStatus: reviewStatus ?? 'pending',
             publishedUrl: publishedUrl ?? null,
             hasImage,
-            imageFileName: imageFileName ?? null,
+            imageCount,
+            imageFileName,
+            imageFileNames: resolvedImageFileNames,
             hasVideo,
             videoFileName: videoFileName ?? null,
           }
         : {}),
     };
+  }
+
+  private readChannelSuggestionImageAssets(value: unknown): ChannelSuggestionImageAsset[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.readChannelSuggestionImageAsset(item))
+      .filter((image): image is ChannelSuggestionImageAsset => image !== null)
+      .slice(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES);
+  }
+
+  private readChannelSuggestionImageAsset(value: unknown): ChannelSuggestionImageAsset | null {
+    const row = this.readObjectPayloadOrNull(value);
+    if (!row) {
+      return null;
+    }
+
+    const payload = this.readObjectPayloadOrNull(row.payload);
+    if (payload && Object.keys(payload).length > 0) {
+      return {
+        payload,
+        mimeType: this.readTrimmedString(row.mimeType),
+        fileName: this.readTrimmedString(row.fileName),
+      };
+    }
+
+    const base64 = this.readTrimmedString(row.base64);
+    if (!base64) {
+      return null;
+    }
+
+    return {
+      base64,
+      mimeType: this.readTrimmedString(row.mimeType),
+      fileName: this.readTrimmedString(row.fileName),
+    };
+  }
+
+  private normalizeChannelSuggestionImages(params: {
+    images?: ChannelSuggestionImageAsset[] | null;
+    imageBase64?: string | null;
+    imageMimeType?: string | null;
+    imageFileName?: string | null;
+    mediaType?: 'image' | 'video' | null;
+    mediaPayload?: Record<string, unknown> | null;
+    mediaMimeType?: string | null;
+    mediaFileName?: string | null;
+  }): ChannelSuggestionImageAsset[] {
+    const normalizedImages: ChannelSuggestionImageAsset[] = [];
+
+    for (const image of params.images ?? []) {
+      if (image.payload && Object.keys(image.payload).length > 0) {
+        normalizedImages.push({
+          payload: image.payload,
+          mimeType: image.mimeType?.trim() || null,
+          fileName: image.fileName?.trim() || null,
+        });
+      } else {
+        const base64 = image.base64?.trim() ?? '';
+        if (!base64) {
+          continue;
+        }
+
+        normalizedImages.push({
+          base64,
+          mimeType: image.mimeType?.trim() || null,
+          fileName: image.fileName?.trim() || null,
+        });
+      }
+
+      if (normalizedImages.length >= MAX_CHANNEL_DIALOG_SUGGEST_IMAGES) {
+        break;
+      }
+    }
+
+    if (normalizedImages.length > 0) {
+      return normalizedImages;
+    }
+
+    if (params.mediaType === 'image' && params.mediaPayload) {
+      return [
+        {
+          payload: params.mediaPayload,
+          mimeType: params.mediaMimeType?.trim() || null,
+          fileName: params.mediaFileName?.trim() || null,
+        },
+      ];
+    }
+
+    const imageBase64 = params.imageBase64?.trim() ?? '';
+    if (!imageBase64) {
+      return [];
+    }
+
+    return [
+      {
+        base64: imageBase64,
+        mimeType: params.imageMimeType?.trim() || null,
+        fileName: params.imageFileName?.trim() || null,
+      },
+    ];
   }
 
   private readChannelDialogSuggestionReviewStatus(
@@ -16633,6 +16785,7 @@ export class AdminService implements OnModuleDestroy {
     threadId: string | null;
     source: ChannelDialogMessageSource;
     text: string;
+    images?: ChannelSuggestionImageAsset[] | null;
     imageBase64?: string | null;
     imageMimeType?: string | null;
     imageFileName?: string | null;
@@ -16645,6 +16798,20 @@ export class AdminService implements OnModuleDestroy {
     delivered: boolean;
     deliveredToUserId: string | null;
   }> {
+    const normalizedImages = this.normalizeChannelSuggestionImages({
+      images: params.images,
+      imageBase64: params.imageBase64,
+      imageMimeType: params.imageMimeType,
+      imageFileName: params.imageFileName,
+      mediaType: params.mediaType,
+      mediaPayload: params.mediaPayload,
+      mediaMimeType: params.mediaMimeType,
+      mediaFileName: params.mediaFileName,
+    });
+    const imageFileNames = normalizedImages
+      .map((image) => image.fileName?.trim() ?? '')
+      .filter((fileName): fileName is string => fileName.length > 0);
+
     const created = await this.prisma.auditLog.create({
       data: {
         chatId: params.chatId,
@@ -16663,11 +16830,14 @@ export class AdminService implements OnModuleDestroy {
           deliveries: [],
           source: params.source,
           reviewStatus: 'pending',
-          hasImage: params.mediaType === 'image' || Boolean(params.imageBase64),
+          hasImage: normalizedImages.length > 0,
+          imageCount: normalizedImages.length,
+          imageFileNames,
+          images: normalizedImages as Prisma.InputJsonValue,
           hasVideo: params.mediaType === 'video',
-          imageBase64: params.imageBase64 ?? null,
-          imageMimeType: params.imageMimeType ?? null,
-          imageFileName: params.imageFileName ?? null,
+          imageBase64: null,
+          imageMimeType: null,
+          imageFileName: imageFileNames[0] ?? null,
           mediaType: params.mediaType ?? null,
           mediaPayload: (params.mediaPayload ?? null) as Prisma.InputJsonValue | null,
           mediaMimeType: params.mediaMimeType ?? null,
@@ -16696,6 +16866,7 @@ export class AdminService implements OnModuleDestroy {
       params.user,
       {
         text: params.text,
+        images: normalizedImages,
         imageBase64: params.imageBase64,
         imageMimeType: params.imageMimeType,
         imageFileName: params.imageFileName,
@@ -16757,6 +16928,7 @@ export class AdminService implements OnModuleDestroy {
       },
       {
         text: this.readTrimmedString(payload.text) ?? '',
+        images: this.readChannelSuggestionImageAssets(payload.images),
         imageBase64: this.readTrimmedString(payload.imageBase64),
         imageMimeType: this.readTrimmedString(payload.imageMimeType),
         imageFileName: this.readTrimmedString(payload.imageFileName),
@@ -17064,6 +17236,7 @@ export class AdminService implements OnModuleDestroy {
   }> {
     const text = this.readTrimmedString(payload.text) ?? '';
     const media = await this.resolveChannelSuggestionAttachments({
+      images: this.readChannelSuggestionImageAssets(payload.images),
       imageBase64: this.readTrimmedString(payload.imageBase64),
       imageMimeType: this.readTrimmedString(payload.imageMimeType),
       imageFileName: this.readTrimmedString(payload.imageFileName),
@@ -17279,6 +17452,14 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Текст предложки слишком длинный.');
     }
 
+    const rawImages = Array.isArray(row.images) ? row.images : [];
+    if (rawImages.length > MAX_CHANNEL_DIALOG_SUGGEST_IMAGES) {
+      throw new BadRequestException(
+        `В одной предложке можно отправить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`,
+      );
+    }
+
+    const images = this.readChannelSuggestionImageAssets(row.images);
     const imageBase64 = this.readTrimmedString(row.imageBase64);
     const imageMimeType = this.readTrimmedString(row.imageMimeType);
     const imageFileName = this.readTrimmedString(row.imageFileName);
@@ -17287,11 +17468,28 @@ export class AdminService implements OnModuleDestroy {
     const mediaMimeType = this.readTrimmedString(row.mediaMimeType);
     const mediaFileName = this.readTrimmedString(row.mediaFileName);
 
-    if (!text && !imageBase64 && !mediaPayload) {
+    if (!text && images.length === 0 && !imageBase64 && !mediaPayload) {
       throw new BadRequestException('Пришлите текст, фото, видео или подпись к медиа.');
     }
 
+    if (images.length > 0 && mediaType === 'video') {
+      throw new BadRequestException(
+        'В одной предложке можно отправить либо фото, либо одно видео.',
+      );
+    }
+
     if (imageBase64 && (!imageMimeType || !imageMimeType.toLowerCase().startsWith('image/'))) {
+      throw new BadRequestException('Фото предложки передано в неверном формате.');
+    }
+
+    if (
+      images.some(
+        (image) =>
+          image.mimeType &&
+          image.mimeType.trim().length > 0 &&
+          !image.mimeType.toLowerCase().startsWith('image/'),
+      )
+    ) {
       throw new BadRequestException('Фото предложки передано в неверном формате.');
     }
 
@@ -17317,6 +17515,7 @@ export class AdminService implements OnModuleDestroy {
 
     return {
       token,
+      images,
       text,
       imageBase64,
       imageMimeType,
@@ -17373,6 +17572,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async resolveChannelSuggestionAttachments(suggestion: {
+    images?: ChannelSuggestionImageAsset[] | null;
     imageBase64?: string | null;
     imageMimeType?: string | null;
     imageFileName?: string | null;
@@ -17384,6 +17584,57 @@ export class AdminService implements OnModuleDestroy {
     imagePayload?: Record<string, unknown>;
     attachments?: MaxAttachmentPayload[];
   }> {
+    const normalizedImages = this.normalizeChannelSuggestionImages({
+      images: suggestion.images,
+      imageBase64: suggestion.imageBase64,
+      imageMimeType: suggestion.imageMimeType,
+      imageFileName: suggestion.imageFileName,
+      mediaType: suggestion.mediaType,
+      mediaPayload: suggestion.mediaPayload,
+      mediaMimeType: suggestion.mediaMimeType,
+      mediaFileName: suggestion.mediaFileName,
+    });
+
+    if (normalizedImages.length === 1) {
+      const [image] = normalizedImages;
+      const payload =
+        image.payload && Object.keys(image.payload).length > 0
+          ? image.payload
+          : await this.uploadChannelSuggestionImage({
+              imageBase64: image.base64 ?? null,
+              imageMimeType: image.mimeType ?? null,
+              imageFileName: image.fileName ?? null,
+            });
+
+      return payload ? { imagePayload: payload } : {};
+    }
+
+    if (normalizedImages.length > 1) {
+      const attachments: MaxAttachmentPayload[] = [];
+
+      for (const image of normalizedImages) {
+        const payload =
+          image.payload && Object.keys(image.payload).length > 0
+            ? image.payload
+            : await this.uploadChannelSuggestionImage({
+                imageBase64: image.base64 ?? null,
+                imageMimeType: image.mimeType ?? null,
+                imageFileName: image.fileName ?? null,
+              });
+
+        if (!payload) {
+          continue;
+        }
+
+        attachments.push({
+          type: 'image',
+          payload,
+        });
+      }
+
+      return attachments.length > 0 ? { attachments } : {};
+    }
+
     if (suggestion.mediaType && suggestion.mediaPayload) {
       return suggestion.mediaType === 'image'
         ? {
@@ -17410,6 +17661,7 @@ export class AdminService implements OnModuleDestroy {
 
   private async buildChannelSuggestionMessageOptions(
     suggestion: {
+      images?: ChannelSuggestionImageAsset[] | null;
       imageBase64?: string | null;
       imageMimeType?: string | null;
       imageFileName?: string | null;
@@ -18788,8 +19040,8 @@ export class AdminService implements OnModuleDestroy {
           permissionsSnapshot: true,
         },
       });
-      const knownMemberships = memberships.filter((membership) =>
-        this.maxBotRegistry?.getBotById(membership.botId) ?? true,
+      const knownMemberships = memberships.filter(
+        (membership) => this.maxBotRegistry?.getBotById(membership.botId) ?? true,
       );
       if (knownMemberships.length === 0) {
         return false;
@@ -19313,9 +19565,7 @@ export class AdminService implements OnModuleDestroy {
         })
       | undefined;
     const snapshot =
-      systemModeService?.peekCachedSnapshot?.() ??
-      systemModeService?.getSnapshot?.() ??
-      null;
+      systemModeService?.peekCachedSnapshot?.() ?? systemModeService?.getSnapshot?.() ?? null;
     if (!snapshot || snapshot.mode !== 'degrade' || isSystemModeRecoveryWindow(snapshot)) {
       return null;
     }
@@ -19569,7 +19819,7 @@ export class AdminService implements OnModuleDestroy {
               code:
                 error instanceof Prisma.PrismaClientKnownRequestError
                   ? error.code
-                  : (error as { code?: string } | null)?.code ?? null,
+                  : ((error as { code?: string } | null)?.code ?? null),
               err: error,
             },
             this.isPrismaKnownError(error, 'P2024')
@@ -19645,10 +19895,7 @@ export class AdminService implements OnModuleDestroy {
         },
       });
     } catch (error) {
-      if (
-        options.allowLastSuccessFallback !== false &&
-        this.isPrismaKnownError(error, 'P2024')
-      ) {
+      if (options.allowLastSuccessFallback !== false && this.isPrismaKnownError(error, 'P2024')) {
         const fallbackSnapshot = this.readManagedEntitiesLastSuccessSnapshot(userId, entityType);
         this.logger.warn(
           {
@@ -19658,7 +19905,7 @@ export class AdminService implements OnModuleDestroy {
             code:
               error instanceof Prisma.PrismaClientKnownRequestError
                 ? error.code
-                : (error as { code?: string } | null)?.code ?? null,
+                : ((error as { code?: string } | null)?.code ?? null),
             err: error instanceof Error ? error.message : String(error),
           },
           fallbackSnapshot.length > 0
@@ -19703,7 +19950,7 @@ export class AdminService implements OnModuleDestroy {
             code:
               error instanceof Prisma.PrismaClientKnownRequestError
                 ? error.code
-                : (error as { code?: string } | null)?.code ?? null,
+                : ((error as { code?: string } | null)?.code ?? null),
             err: error,
           },
           this.isPrismaKnownError(error, 'P2024')
@@ -19713,7 +19960,9 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const supportedChats = chats.filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType));
+    const supportedChats = chats.filter(
+      (chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType),
+    );
     this.rememberManagedEntitiesLastSuccessChats(userId, supportedChats);
 
     return supportedChats;
@@ -20155,7 +20404,7 @@ export class AdminService implements OnModuleDestroy {
             code:
               error instanceof Prisma.PrismaClientKnownRequestError
                 ? error.code
-                : (error as { code?: string } | null)?.code ?? null,
+                : ((error as { code?: string } | null)?.code ?? null),
             err: error instanceof Error ? error.message : String(error),
           },
           'Skipped bot assignment lookup while persisting managed entity access because the Prisma pool is saturated',
@@ -20215,7 +20464,7 @@ export class AdminService implements OnModuleDestroy {
             code:
               error instanceof Prisma.PrismaClientKnownRequestError
                 ? error.code
-                : (error as { code?: string } | null)?.code ?? null,
+                : ((error as { code?: string } | null)?.code ?? null),
             err: error instanceof Error ? error.message : String(error),
           },
           this.isPrismaKnownError(error, 'P2024')

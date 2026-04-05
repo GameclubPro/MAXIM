@@ -1494,9 +1494,7 @@ export const managedEntitiesResponseSnapshotSchema = z.object({
     .default('published_snapshot'),
   stale: z.boolean().optional().default(false),
 });
-export type ManagedEntitiesResponseSnapshot = z.infer<
-  typeof managedEntitiesResponseSnapshotSchema
->;
+export type ManagedEntitiesResponseSnapshot = z.infer<typeof managedEntitiesResponseSnapshotSchema>;
 
 export const managedEntitiesResponseDiffNoopSchema = z.object({
   mode: z.literal('noop'),
@@ -2555,6 +2553,7 @@ export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreen
 
 export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
+export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 5;
 
 export const publishChannelEngagementRequestSchema = z
   .object({
@@ -2589,6 +2588,31 @@ export const publishChannelEngagementResultSchema = z.object({
 });
 export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngagementResultSchema>;
 
+export const channelDialogImageInputSchema = z
+  .object({
+    base64: z.string().trim().max(4_000_000).default(''),
+    mimeType: z.string().trim().max(128).default(''),
+    fileName: z.string().trim().max(128).default(''),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.base64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['base64'],
+        message: 'Добавьте фото.',
+      });
+    }
+
+    if (!value.mimeType.trim() || !value.mimeType.toLowerCase().startsWith('image/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mimeType'],
+        message: 'Неверный формат фото.',
+      });
+    }
+  });
+export type ChannelDialogImageInput = z.infer<typeof channelDialogImageInputSchema>;
+
 export const createChannelDialogMessageRequestSchema = z
   .object({
     token: z.string().trim().min(16).max(256),
@@ -2597,9 +2621,14 @@ export const createChannelDialogMessageRequestSchema = z
     imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
+    images: z
+      .array(channelDialogImageInputSchema)
+      .max(MAX_CHANNEL_DIALOG_SUGGEST_IMAGES)
+      .default([]),
   })
   .superRefine((value, ctx) => {
     if (
+      value.images.length === 0 &&
       value.imageBase64 &&
       (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/'))
     ) {
@@ -2609,7 +2638,22 @@ export const createChannelDialogMessageRequestSchema = z
         message: 'Неверный формат фото.',
       });
     }
-  });
+  })
+  .transform((value) => ({
+    ...value,
+    images:
+      value.images.length > 0
+        ? value.images
+        : value.imageBase64
+          ? [
+              {
+                base64: value.imageBase64.trim(),
+                mimeType: value.imageMimeType.trim(),
+                fileName: value.imageFileName.trim(),
+              },
+            ]
+          : [],
+  }));
 export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
@@ -2658,7 +2702,12 @@ export const channelDialogMessageSchema = z.object({
   reviewStatus: channelDialogSuggestionReviewStatusSchema.optional(),
   publishedUrl: z.string().trim().max(2_048).nullable().optional(),
   hasImage: z.boolean().optional(),
+  imageCount: z.number().int().min(0).optional(),
   imageFileName: z.string().trim().max(128).nullable().optional(),
+  imageFileNames: z
+    .array(z.string().trim().max(128))
+    .max(MAX_CHANNEL_DIALOG_SUGGEST_IMAGES)
+    .optional(),
   hasVideo: z.boolean().optional(),
   videoFileName: z.string().trim().max(128).nullable().optional(),
 });

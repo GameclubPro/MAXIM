@@ -207,7 +207,10 @@ function createPrivateFormattedTextUpdate(
   };
 }
 
-function createPrivatePhotoUpdate(): MaxUpdate {
+function createPrivatePhotoUpdate(options: { text?: string; photoIds?: string[] } = {}): MaxUpdate {
+  const text = options.text ?? '';
+  const photoIds = options.photoIds && options.photoIds.length > 0 ? options.photoIds : ['photo-1'];
+
   return {
     updateId: `upd-photo-${Date.now()}`,
     type: 'message_created',
@@ -216,22 +219,21 @@ function createPrivatePhotoUpdate(): MaxUpdate {
       chatId: '152517912',
       senderId: 'user-1',
       senderName: 'Тестовый пользователь',
-      text: '',
+      text,
       createdAt: new Date().toISOString(),
     },
     raw: {
       update_type: 'message_created',
       message: {
         body: {
-          attachments: [
-            {
-              type: 'image',
-              payload: {
-                url: 'https://example.test/broadcast-photo.jpg',
-                photo_id: 'photo-1',
-              },
+          ...(text ? { text } : {}),
+          attachments: photoIds.map((photoId, index) => ({
+            type: 'image',
+            payload: {
+              url: `https://example.test/broadcast-photo-${index + 1}.jpg`,
+              photo_id: photoId,
             },
-          ],
+          })),
         },
         sender: {
           user_id: 'user-1',
@@ -247,43 +249,10 @@ function createPrivatePhotoUpdate(): MaxUpdate {
 }
 
 function createPrivateTextAndPhotoUpdate(text: string): MaxUpdate {
-  return {
-    updateId: `upd-text-photo-${Date.now()}`,
-    type: 'message_created',
-    message: {
-      messageId: `msg-text-photo-${Date.now()}`,
-      chatId: '152517912',
-      senderId: 'user-1',
-      senderName: 'Тестовый пользователь',
-      text,
-      createdAt: new Date().toISOString(),
-    },
-    raw: {
-      update_type: 'message_created',
-      message: {
-        body: {
-          text,
-          attachments: [
-            {
-              type: 'image',
-              payload: {
-                url: 'https://example.test/rules-photo.jpg',
-                photo_id: 'rules-photo-1',
-              },
-            },
-          ],
-        },
-        sender: {
-          user_id: 'user-1',
-          name: 'Тестовый пользователь',
-        },
-        recipient: {
-          chat_id: 152517912,
-          chat_type: 'dialog',
-        },
-      },
-    },
-  };
+  return createPrivatePhotoUpdate({
+    text,
+    photoIds: ['rules-photo-1'],
+  });
 }
 
 function createPrivateFileUpdate(
@@ -1277,7 +1246,9 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastUiText(maxClient)).toContain('Личный кабинет и команды работают через основной бот.');
+    expect(getLastUiText(maxClient)).toContain(
+      'Личный кабинет и команды работают через основной бот.',
+    );
     const buttons = getLastButtons(maxClient).flat();
     expect(buttons).toHaveLength(1);
     expect(buttons[0]).toEqual(
@@ -1335,7 +1306,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
 
     expect(listManagedEntities).not.toHaveBeenCalled();
-    expect(getLastEditedText(maxClient)).toContain('Список чатов и каналов обновляется в приложении.');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Список чатов и каналов обновляется в приложении.',
+    );
     const buttonTexts = getLastEditedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
@@ -2551,9 +2524,7 @@ describe('PrivateControlService', () => {
       '⬇️ Пришлите следующим сообщением текст, фото, видео или подпись к медиа.',
     );
     expect(getLastEditedText(maxClient)).toContain('Можно отправить несколько сообщений подряд');
-    expect(getLastEditedText(maxClient)).toContain(
-      'Если пришлёте новое фото или видео, оно заменит предыдущее в черновике.',
-    );
+    expect(getLastEditedText(maxClient)).toContain('Фото будут добавляться в одну предложку');
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
@@ -2606,7 +2577,7 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain('📰 Предложка');
   });
 
-  it('updates the suggestion preview when subscriber replaces media and later updates text', async () => {
+  it('accumulates suggestion photos in preview and keeps them when text changes', async () => {
     const { service, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-4');
     const imageMock = mockImageFetch();
@@ -2629,7 +2600,11 @@ describe('PrivateControlService', () => {
         ]),
       );
 
-      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(
+        createPrivatePhotoUpdate({
+          photoIds: ['photo-2', 'photo-3'],
+        }),
+      );
 
       previewPayload = getLastCustomMessagePayload(maxClient);
       expect(previewPayload?.text).toBeUndefined();
@@ -2637,7 +2612,15 @@ describe('PrivateControlService', () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: 'image',
+            payload: { token: 'upload-token-1' },
+          }),
+          expect.objectContaining({
+            type: 'image',
             payload: { token: 'upload-token-2' },
+          }),
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-3' },
           }),
         ]),
       );
@@ -2656,7 +2639,15 @@ describe('PrivateControlService', () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: 'image',
+            payload: { token: 'upload-token-1' },
+          }),
+          expect.objectContaining({
+            type: 'image',
             payload: { token: 'upload-token-2' },
+          }),
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-3' },
           }),
         ]),
       );
@@ -2675,7 +2666,15 @@ describe('PrivateControlService', () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: 'image',
+            payload: { token: 'upload-token-1' },
+          }),
+          expect.objectContaining({
+            type: 'image',
             payload: { token: 'upload-token-2' },
+          }),
+          expect.objectContaining({
+            type: 'image',
+            payload: { token: 'upload-token-3' },
           }),
         ]),
       );
@@ -2709,10 +2708,54 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         token: 'cdt-suggest-token-2',
         text: '',
-        mediaType: 'image',
-        mediaPayload: { token: 'upload-token-1' },
-        mediaMimeType: expect.stringMatching(/^image\//),
-        mediaFileName: expect.stringContaining('channel-suggestion'),
+        images: [
+          expect.objectContaining({
+            payload: { token: 'upload-token-1' },
+            mimeType: expect.stringMatching(/^image\//),
+            fileName: expect.stringContaining('channel-suggestion'),
+          }),
+        ],
+      }),
+    );
+    expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+  });
+
+  it('sends several suggestion photos from the bot as one album payload', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-5');
+    const imageMock = mockImageFetch();
+
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleUpdate(
+        createPrivatePhotoUpdate({
+          photoIds: ['photo-10', 'photo-11'],
+        }),
+      );
+      await service.handleUpdate(createPrivatePhotoUpdate({ photoIds: ['photo-12'] }));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+    } finally {
+      imageMock.restore();
+    }
+
+    expect(getLastCustomMessageAttachments(maxClient)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ type: 'image', payload: { token: 'upload-token-1' } }),
+        expect.objectContaining({ type: 'image', payload: { token: 'upload-token-2' } }),
+        expect.objectContaining({ type: 'image', payload: { token: 'upload-token-3' } }),
+      ]),
+    );
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        token: 'cdt-suggest-token-5',
+        text: '',
+        images: [
+          expect.objectContaining({ payload: { token: 'upload-token-1' } }),
+          expect.objectContaining({ payload: { token: 'upload-token-2' } }),
+          expect.objectContaining({ payload: { token: 'upload-token-3' } }),
+        ],
       }),
     );
     expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');

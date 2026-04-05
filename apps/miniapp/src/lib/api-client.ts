@@ -120,6 +120,11 @@ export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
   replyToMessageId?: string | null;
+  images?: Array<{
+    base64: string;
+    mimeType: string;
+    fileName: string;
+  }>;
   imageBase64?: string;
   imageMimeType?: string;
   imageFileName?: string;

@@ -6411,14 +6411,15 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockImplementation(
-      async (...args: unknown[]) => {
+    jest
+      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
+      .mockImplementation(async (...args: unknown[]) => {
         const chatId = args[0] as string;
         return chatId === 'chat-priority' ? { status: 'granted' } : { status: 'user_denied' };
-      },
-    );
-    jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockImplementation(
-      async (...args: unknown[]) => {
+      });
+    jest
+      .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
+      .mockImplementation(async (...args: unknown[]) => {
         const params = args[0] as {
           chatId: string;
           title: string;
@@ -6431,8 +6432,7 @@ describe('AdminService.listChannels', () => {
           createdAt: '2026-03-03T10:00:00.000Z',
           entityType: params.entityType,
         });
-      },
-    );
+      });
 
     const result = await (service as any).runManagedEntitiesDiscovery(
       {
@@ -7603,15 +7603,13 @@ describe('AdminService.listChats', () => {
   it('caps lightweight recent bot_added admin checks on empty default chat lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce(
-        Array.from({ length: 20 }, (_, index) => ({
-          chat_id: `chat-${index + 1}`,
-          chat_title: `Чат ${index + 1}`,
-          is_channel: 'false',
-        })),
-      );
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce(
+      Array.from({ length: 20 }, (_, index) => ({
+        chat_id: `chat-${index + 1}`,
+        chat_title: `Чат ${index + 1}`,
+        is_channel: 'false',
+      })),
+    );
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
@@ -7657,25 +7655,23 @@ describe('AdminService.listChats', () => {
   it('caps lightweight recent bot_added bootstrap by total elapsed time on empty default chat lists', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          chat_id: 'chat-1',
-          chat_title: 'Чат 1',
-          is_channel: 'false',
-        },
-        {
-          chat_id: 'chat-2',
-          chat_title: 'Чат 2',
-          is_channel: 'false',
-        },
-        {
-          chat_id: 'chat-3',
-          chat_title: 'Чат 3',
-          is_channel: 'false',
-        },
-      ]);
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        chat_id: 'chat-1',
+        chat_title: 'Чат 1',
+        is_channel: 'false',
+      },
+      {
+        chat_id: 'chat-2',
+        chat_title: 'Чат 2',
+        is_channel: 'false',
+      },
+      {
+        chat_id: 'chat-3',
+        chat_title: 'Чат 3',
+        is_channel: 'false',
+      },
+    ]);
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
@@ -7689,9 +7685,7 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
     const nowValues = [0, 0, 0, 0, 1_700];
-    const dateNowSpy = jest
-      .spyOn(Date, 'now')
-      .mockImplementation(() => nowValues.shift() ?? 1_700);
+    const dateNowSpy = jest.spyOn(Date, 'now').mockImplementation(() => nowValues.shift() ?? 1_700);
 
     try {
       jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
@@ -7784,15 +7778,13 @@ describe('AdminService.listChats', () => {
   it('does not bootstrap stale recent bot_added chats when MAX denies current admin access', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
-    prisma.$queryRaw
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          chat_id: 'chat-2',
-          chat_title: 'Битый чат',
-          is_channel: 'false',
-        },
-      ]);
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        chat_id: 'chat-2',
+        chat_title: 'Битый чат',
+        is_channel: 'false',
+      },
+    ]);
 
     const maxClient = {
       listBotChats: jest.fn().mockResolvedValue([]),
@@ -7892,7 +7884,9 @@ describe('AdminService.listChats', () => {
 
   it('keeps listChats alive when the allowlist read hits a saturated Prisma pool', async () => {
     const prisma = createPrismaMock();
-    prisma.chatAdminAllowlist.findMany.mockRejectedValueOnce({ code: 'P2024' }).mockResolvedValue([]);
+    prisma.chatAdminAllowlist.findMany
+      .mockRejectedValueOnce({ code: 'P2024' })
+      .mockResolvedValue([]);
     prisma.$queryRaw.mockResolvedValue([]);
 
     const maxClient = {
@@ -8951,7 +8945,9 @@ describe('AdminService.listChats', () => {
 
   it('keeps refresh responses alive when the allowlist read hits a saturated Prisma pool', async () => {
     const prisma = createPrismaMock();
-    prisma.chatAdminAllowlist.findMany.mockRejectedValueOnce({ code: 'P2024' }).mockResolvedValue([]);
+    prisma.chatAdminAllowlist.findMany
+      .mockRejectedValueOnce({ code: 'P2024' })
+      .mockResolvedValue([]);
 
     const managedEntitiesRefreshQueue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -9057,14 +9053,12 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-    jest
-      .spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh')
-      .mockResolvedValue({
-        complete: false,
-        cursor: 0,
-        backoffActive: false,
-        nextPollAfterMs: 1_500,
-      });
+    jest.spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh').mockResolvedValue({
+      complete: false,
+      cursor: 0,
+      backoffActive: false,
+      nextPollAfterMs: 1_500,
+    });
 
     await expect(
       service.listChats(
@@ -9422,7 +9416,9 @@ describe('AdminService.listChats', () => {
         items: ChatSummary[];
         refresh: null;
       }>();
-      jest.spyOn(service as any, 'discoverManagedEntities').mockReturnValue(warmupDiscovery.promise);
+      jest
+        .spyOn(service as any, 'discoverManagedEntities')
+        .mockReturnValue(warmupDiscovery.promise);
       jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(
         createChatSummaryFixture({
           id: 'chat-2',
@@ -9517,12 +9513,10 @@ describe('AdminService.listChats', () => {
       undefined,
       managedEntitiesRefreshQueue as never,
     );
-    const accessSpy = jest
-      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
-      .mockResolvedValue({
-        status: 'unknown',
-        error: new Error('timeout'),
-      });
+    const accessSpy = jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'unknown',
+      error: new Error('timeout'),
+    });
 
     await expect(
       service.listChatsWithRefreshState(
@@ -10879,8 +10873,9 @@ describe('AdminService.listChats', () => {
       undefined,
       undefined,
       {
-        decide: jest.fn().mockImplementation(
-          async (params: { allowRecoveryWindowRun?: boolean }) =>
+        decide: jest
+          .fn()
+          .mockImplementation(async (params: { allowRecoveryWindowRun?: boolean }) =>
             params.allowRecoveryWindowRun
               ? {
                   action: 'slow',
@@ -10892,7 +10887,7 @@ describe('AdminService.listChats', () => {
                   reason: 'recovery window in progress',
                   retryAfterMs: 60_000,
                 },
-        ),
+          ),
       } as never,
     );
 
@@ -11158,15 +11153,13 @@ describe('AdminService.listChats', () => {
 
   it('skips recent bot-added chats when only fallback titles are available', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          chat_id: 'chat-fallback',
-          chat_title: null,
-          is_channel: 'false',
-        },
-      ]);
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        chat_id: 'chat-fallback',
+        chat_title: null,
+        is_channel: 'false',
+      },
+    ]);
     prisma.chat.findUnique.mockResolvedValue({
       title: 'Chat chat-fallback',
     });
@@ -11289,13 +11282,11 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    const accessSpy = jest
-      .spyOn(service as any, 'resolveUserAndBotAdminAccess')
-      .mockResolvedValue({
-        status: 'denied',
-        source: 'remote',
-        reason: 'bot_not_admin',
-      });
+    const accessSpy = jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'denied',
+      source: 'remote',
+      reason: 'bot_not_admin',
+    });
     const fastLaneSpy = jest
       .spyOn(service as any, 'scheduleUserScopedRecentBotAddedFastLane')
       .mockImplementation(() => undefined);
@@ -17938,8 +17929,131 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           payload: expect.objectContaining({
             source: 'private_bot',
             hasImage: true,
-            imageMimeType: 'image/png',
+            imageCount: 1,
             imageFileName: 'suggestion.png',
+            imageFileNames: ['suggestion.png'],
+            images: [
+              expect.objectContaining({
+                fileName: 'suggestion.png',
+                mimeType: 'image/png',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('delivers bot-submitted multi-photo suggestions to admins as image attachments', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-multi-photo-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:12:15.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-7b', url: null }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-admin-3b', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Подборка фото',
+        images: [
+          {
+            payload: { token: 'uploaded-image-1' },
+            mimeType: 'image/png',
+            fileName: 'suggestion-1.png',
+          },
+          {
+            payload: { token: 'uploaded-image-2' },
+            mimeType: 'image/jpeg',
+            fileName: 'suggestion-2.jpg',
+          },
+        ],
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        attachments: [
+          { type: 'image', payload: { token: 'uploaded-image-1' } },
+          { type: 'image', payload: { token: 'uploaded-image-2' } },
+        ],
+        textFormat: 'markdown',
+        buttons: [
+          [
+            expect.objectContaining({ text: '📰 В публикацию', type: 'callback' }),
+            expect.objectContaining({ text: '✖️ Отклонить', type: 'callback' }),
+          ],
+        ],
+      }),
+      { trafficClass: 'background' },
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            source: 'private_bot',
+            hasImage: true,
+            imageCount: 2,
+            imageFileName: 'suggestion-1.png',
+            imageFileNames: ['suggestion-1.png', 'suggestion-2.jpg'],
+            images: [
+              expect.objectContaining({
+                payload: { token: 'uploaded-image-1' },
+                mimeType: 'image/png',
+                fileName: 'suggestion-1.png',
+              }),
+              expect.objectContaining({
+                payload: { token: 'uploaded-image-2' },
+                mimeType: 'image/jpeg',
+                fileName: 'suggestion-2.jpg',
+              }),
+            ],
           }),
         }),
       }),
@@ -18696,6 +18810,138 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           payload: expect.objectContaining({
             messageId: 'mid-channel-photo-post-1',
             threadId: '22222222-2222-4222-8222-222222222222',
+            includeCommentsButton: true,
+            includeSuggestButton: true,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('publishes a reviewed multi-photo suggestion with engagement buttons', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: 'Предложить пост',
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-multi-photo-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-9',
+        authorDisplayName: 'Фотограф',
+        text: 'Фото с места события',
+        threadId: '23232323-2323-4232-8232-232323232323',
+        reviewStatus: 'pending',
+        imageCount: 2,
+        imageFileNames: ['suggestion-1.png', 'suggestion-2.jpg'],
+        images: [
+          {
+            payload: { token: 'uploaded-photo-1' },
+            mimeType: 'image/png',
+            fileName: 'suggestion-1.png',
+          },
+          {
+            payload: { token: 'uploaded-photo-2' },
+            mimeType: 'image/jpeg',
+            fileName: 'suggestion-2.jpg',
+          },
+        ],
+        deliveries: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            messageId: 'mid-admin-review-multi-photo-1',
+          },
+        ],
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-multi-photo-post-1',
+        url: 'https://max.ru/chats/channel-1/message/1011',
+      }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.reviewChannelSuggestionByAdmin(
+      'suggestion-review-multi-photo-1',
+      {
+        userId: 'admin-1',
+        username: 'chief',
+        displayName: 'Главный редактор',
+        chatTitle: null,
+      },
+      'publish',
+    );
+
+    expect(result).toEqual({
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/1011',
+    });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'От подписчика [Фотограф](max://user/user-9)\n\nФото с места события',
+      expect.objectContaining({
+        textFormat: 'markdown',
+        attachments: [
+          { type: 'image', payload: { token: 'uploaded-photo-1' } },
+          { type: 'image', payload: { token: 'uploaded-photo-2' } },
+        ],
+        buttons: [
+          [
+            expect.objectContaining({
+              text: '💬 Комментарии · 0',
+            }),
+          ],
+          [
+            expect.objectContaining({
+              text: 'Предложить пост',
+            }),
+          ],
+        ],
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+          payload: expect.objectContaining({
+            messageId: 'mid-channel-multi-photo-post-1',
+            threadId: '23232323-2323-4232-8232-232323232323',
             includeCommentsButton: true,
             includeSuggestButton: true,
           }),

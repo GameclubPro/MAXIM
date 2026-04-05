@@ -1042,7 +1042,9 @@ function buildPreviewDialogMessage(payload: {
   reviewStatus?: ChannelDialogMessage['reviewStatus'];
   publishedUrl?: string | null;
   hasImage?: boolean;
+  imageCount?: number;
   imageFileName?: string | null;
+  imageFileNames?: string[];
 }): ChannelDialogMessage {
   return channelDialogMessageSchema.parse({
     id: payload.id,
@@ -1065,7 +1067,9 @@ function buildPreviewDialogMessage(payload: {
     ...(payload.reviewStatus !== undefined ? { reviewStatus: payload.reviewStatus } : {}),
     ...(payload.publishedUrl !== undefined ? { publishedUrl: payload.publishedUrl } : {}),
     ...(payload.hasImage !== undefined ? { hasImage: payload.hasImage } : {}),
+    ...(payload.imageCount !== undefined ? { imageCount: payload.imageCount } : {}),
     ...(payload.imageFileName !== undefined ? { imageFileName: payload.imageFileName } : {}),
+    ...(payload.imageFileNames !== undefined ? { imageFileNames: payload.imageFileNames } : {}),
   });
 }
 
@@ -2616,8 +2620,15 @@ async function handleChatRequest(
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
-              hasImage: Boolean(payload.imageBase64),
-              imageFileName: payload.imageFileName || null,
+              hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
+              imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
+              imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,
+              imageFileNames:
+                payload.images.length > 0
+                  ? payload.images.map((image) => image.fileName)
+                  : payload.imageFileName
+                    ? [payload.imageFileName]
+                    : [],
             }
           : {}),
       });
@@ -3171,8 +3182,15 @@ async function handleChannelRequest(
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
-              hasImage: Boolean(payload.imageBase64),
-              imageFileName: payload.imageFileName || null,
+              hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
+              imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
+              imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,
+              imageFileNames:
+                payload.images.length > 0
+                  ? payload.images.map((image) => image.fileName)
+                  : payload.imageFileName
+                    ? [payload.imageFileName]
+                    : [],
             }
           : {}),
       });
