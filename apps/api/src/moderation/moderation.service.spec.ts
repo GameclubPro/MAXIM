@@ -12548,6 +12548,49 @@ describe('ModerationService', () => {
       await expect(lookupPromise).resolves.toEqual({ missingChannelIds: [] });
     });
 
+    it('does not force the active bot for required subscription membership lookups', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const membershipLookupService = {
+        getMembership: jest.fn().mockResolvedValue(true),
+      };
+      const maxBotContextService = {
+        getActiveBotId: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        {} as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        membershipLookupService as never,
+        undefined,
+        maxBotContextService as never,
+      );
+
+      await expect(
+        (
+          service as unknown as {
+            getRequiredSubscriptionMembership: (
+              channelId: string,
+              userId: string,
+            ) => Promise<boolean | null>;
+          }
+        ).getRequiredSubscriptionMembership('channel-1', 'user-1'),
+      ).resolves.toBe(true);
+
+      expect(membershipLookupService.getMembership).toHaveBeenCalledWith(
+        'channel-1',
+        'user-1',
+        'moderation_required_subscription',
+      );
+    });
+
     it('deletes the message, records violation, and sends buttons only for missing channels', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
@@ -12730,6 +12773,90 @@ describe('ModerationService', () => {
         link: 'https://max.ru/channels/news-max',
         participantsCount: 100,
         primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      });
+      expect(channels).toEqual([
+        {
+          id: 'channel-1',
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          usable: true,
+          checkMembership: true,
+        },
+      ]);
+    });
+
+    it('uses the bound channel bot when refreshing required subscription metadata', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      const chatContextCache = {
+        getManagedEntityHeader: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Канал channel-1',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        }),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+      };
+      const maxBotLinkService = {
+        resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        { detect: jest.fn() } as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+
+      const channels = await (
+        service as unknown as {
+          resolveRequiredSubscriptionChannels: (
+            channelIds: string[],
+            options: { allowRemoteFetch: boolean },
+          ) => Promise<Array<{ id: string; title: string; link: string | null; usable: boolean }>>;
+        }
+      ).resolveRequiredSubscriptionChannels(['channel-1'], {
+        allowRemoteFetch: true,
+      });
+
+      expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({
+        chatId: 'channel-1',
+      });
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
+        botId: 'id613002203036_bot',
+      });
+      expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
+        id: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/news-max',
+        participantsCount: 100,
+        primaryBotId: 'id613002203036_bot',
         assignedBots: [],
         sharedMode: 'owned',
       });

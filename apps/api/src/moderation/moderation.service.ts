@@ -7343,12 +7343,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
   ): Promise<boolean | null> {
     if (this.membershipLookupService) {
-      const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
       return this.membershipLookupService.getMembership(
         channelId,
         userId,
         'moderation_required_subscription',
-        activeBotId ? { botId: activeBotId } : {},
       );
     }
 
@@ -7515,11 +7513,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
 
         try {
-          const snapshot = await this.maxClient.getChatSnapshot(channelId, {
-            trafficClass: 'interactive',
-            timeoutMs: 2_500,
-            sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
-          });
+          const metadataBotId =
+            (typeof cached?.primaryBotId === 'string' && cached.primaryBotId.trim().length > 0
+              ? cached.primaryBotId.trim()
+              : await this.resolveChatReadBotId(channelId)) ?? null;
+          const snapshot = metadataBotId
+            ? await this.maxClient.getChatSnapshot(channelId, {
+                trafficClass: 'interactive',
+                timeoutMs: 2_500,
+                sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+                botId: metadataBotId,
+              })
+            : await this.maxClient.getChatSnapshot(channelId, {
+                trafficClass: 'interactive',
+                timeoutMs: 2_500,
+                sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_METADATA,
+              });
           const title =
             this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') ||
             fallbackTitle;
@@ -7540,7 +7549,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             entityType: 'channel',
             link,
             participantsCount: snapshot.participantsCount,
-            primaryBotId: null,
+            primaryBotId: metadataBotId,
             assignedBots: [],
             sharedMode: 'owned',
           });
