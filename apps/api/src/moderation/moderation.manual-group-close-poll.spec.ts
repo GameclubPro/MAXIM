@@ -23,6 +23,18 @@ function createConfigMock(overrides: Partial<Record<string, string | number | bo
   };
 }
 
+function createRedisCounterMock() {
+  const stringCache = new Map<string, string>();
+
+  return {
+    stringCache,
+    getString: jest.fn(async (key: string) => stringCache.get(key) ?? null),
+    setStringWithTtl: jest.fn(async (key: string, value: string) => {
+      stringCache.set(key, value);
+    }),
+  };
+}
+
 describe('ModerationService manual group close polling', () => {
   it('deletes fresh non-admin messages in manually closed chats via background polling', async () => {
     const dateNowSpy = jest
@@ -225,6 +237,160 @@ describe('ModerationService manual group close polling', () => {
             },
           },
         ]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'access denied',
+          },
+        },
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+    await (service as any).processManualGroupCloseChats();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect((service as any).manualGroupCloseScanState.get('chat-1')).toEqual(
+      expect.objectContaining({
+        terminalFailureClosedAtMs: new Date('2026-04-03T23:15:00.000Z').getTime(),
+        terminalFailureReason: 'access denied',
+      }),
+    );
+    expect(prisma.chatSettings.updateMany).not.toHaveBeenCalled();
+    dateNowSpy.mockRestore();
+  });
+
+  it('shares manual group close terminal suppression across worker instances', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const redisCounter = createRedisCounterMock();
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const firstMaxClient = {
+      listMessages: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'access denied',
+          },
+        },
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const secondMaxClient = {
+      listMessages: jest.fn().mockResolvedValue([]),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+
+    const firstService = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      firstMaxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      redisCounter as never,
+    );
+    const secondService = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      secondMaxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      redisCounter as never,
+    );
+
+    await (firstService as any).processManualGroupCloseChats();
+    await (secondService as any).processManualGroupCloseChats();
+
+    expect(firstMaxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect(secondMaxClient.listMessages).not.toHaveBeenCalled();
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      'manual-group-close-terminal:v1:chat-1:1775258100000',
+      'access denied',
+      21600,
+    );
+    expect(redisCounter.getString).toHaveBeenCalledWith(
+      'manual-group-close-terminal:v1:chat-1:1775258100000',
+    );
+    dateNowSpy.mockRestore();
+  });
+
+  it('auto-disables stale manual group close when MAX reports chat not found', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const redisCounter = createRedisCounterMock();
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       moderationEvent: {
         create: jest.fn().mockResolvedValue(undefined),
@@ -255,17 +421,24 @@ describe('ModerationService manual group close polling', () => {
       undefined,
       undefined,
       createConfigMock() as never,
+      redisCounter as never,
     );
 
     await (service as any).processManualGroupCloseChats();
-    await (service as any).processManualGroupCloseChats();
 
-    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
-    expect((service as any).manualGroupCloseScanState.get('chat-1')).toEqual(
-      expect.objectContaining({
-        terminalFailureClosedAtMs: new Date('2026-04-03T23:15:00.000Z').getTime(),
-        terminalFailureReason: 'chat not found',
-      }),
+    expect(prisma.chatSettings.updateMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        nightModeForceCloseEnabled: true,
+      },
+      data: {
+        nightModeForceCloseEnabled: false,
+      },
+    });
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      'manual-group-close-terminal:v1:chat-1:1775258100000',
+      'chat not found',
+      21600,
     );
     dateNowSpy.mockRestore();
   });

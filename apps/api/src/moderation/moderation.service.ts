@@ -305,6 +305,9 @@ const DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS = 2 * 60 * 1_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS = 5_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN = 10;
 const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
+const MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC = Math.ceil(
+  MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS / 1_000,
+);
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
@@ -11077,6 +11080,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!this.isManualGroupCloseScanDue(chatId, params.closedAtMs)) {
       return;
     }
+    const sharedTerminalFailureReason = await this.readManualGroupCloseTerminalMarker(
+      chatId,
+      params.closedAtMs,
+    );
+    if (sharedTerminalFailureReason) {
+      this.manualGroupCloseScanState.set(
+        chatId,
+        this.createManualGroupCloseTerminalBackoffState(
+          existingScanState,
+          params.closedAtMs,
+          sharedTerminalFailureReason,
+        ),
+      );
+      return;
+    }
 
     const scanBotId =
       (await this.maxBotLinkService?.resolveBotIdForCapability({
@@ -11092,12 +11110,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     } catch (error: unknown) {
       if (this.isTerminalManualGroupCloseScanError(error)) {
+        const terminalFailureReason = this.extractMaxErrorMessage(error);
         const nextState = this.createManualGroupCloseTerminalBackoffState(
           existingScanState,
           params.closedAtMs,
-          error,
+          terminalFailureReason,
         );
         this.manualGroupCloseScanState.set(chatId, nextState);
+        await this.writeManualGroupCloseTerminalMarker(
+          chatId,
+          params.closedAtMs,
+          terminalFailureReason,
+        );
+        if (this.isManualGroupCloseStaleChatError(error)) {
+          await this.disableStaleManualGroupClose(chatId, terminalFailureReason);
+          return;
+        }
         this.logger.warn(
           {
             chatId,
@@ -12910,6 +12938,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private isManualGroupCloseStaleChatError(error: unknown): boolean {
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.not.found') {
+      return true;
+    }
+
+    return this.extractMaxErrorMessage(error).includes('chat not found');
+  }
+
   private isMaxApiThrottleError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 429) {
@@ -13484,10 +13521,73 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private buildManualGroupCloseTerminalMarkerKey(chatId: string, closedAtMs: number): string {
+    return `manual-group-close-terminal:v1:${chatId}:${closedAtMs}`;
+  }
+
+  private async readManualGroupCloseTerminalMarker(
+    chatId: string,
+    closedAtMs: number,
+  ): Promise<string | null> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (!getString || !this.redisCounter) {
+      return null;
+    }
+
+    const key = this.buildManualGroupCloseTerminalMarkerKey(chatId, closedAtMs);
+    try {
+      const marker = await getString.call(this.redisCounter, key);
+      return typeof marker === 'string' && marker.trim().length > 0 ? marker.trim() : null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to read manual group close terminal marker from redis',
+      );
+      return null;
+    }
+  }
+
+  private async writeManualGroupCloseTerminalMarker(
+    chatId: string,
+    closedAtMs: number,
+    reason: string,
+  ): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (!setStringWithTtl || !this.redisCounter) {
+      return;
+    }
+
+    const key = this.buildManualGroupCloseTerminalMarkerKey(chatId, closedAtMs);
+    const markerValue =
+      typeof reason === 'string' && reason.trim().length > 0
+        ? reason.trim().slice(0, 256)
+        : 'terminal max access error';
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        key,
+        markerValue,
+        MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to write manual group close terminal marker to redis',
+      );
+    }
+  }
+
   private createManualGroupCloseTerminalBackoffState(
     scanState: ChannelAutoPostScanState | null,
     closedAtMs: number,
-    error: unknown,
+    reason: string,
   ): ChannelAutoPostScanState {
     const current = scanState ?? this.createManualGroupCloseScanState();
     return {
@@ -13495,8 +13595,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       idleStreak: 0,
       nextScanAtMs: Date.now() + MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS,
       terminalFailureClosedAtMs: closedAtMs,
-      terminalFailureReason: this.extractMaxErrorMessage(error),
+      terminalFailureReason: reason,
     };
+  }
+
+  private async disableStaleManualGroupClose(chatId: string, reason: string): Promise<void> {
+    const updateMany = (this.prisma.chatSettings as Partial<typeof this.prisma.chatSettings>)
+      ?.updateMany;
+    if (typeof updateMany !== 'function') {
+      return;
+    }
+
+    try {
+      const result = await updateMany.call(this.prisma.chatSettings, {
+        where: {
+          chatId,
+          nightModeForceCloseEnabled: true,
+        },
+        data: {
+          nightModeForceCloseEnabled: false,
+        },
+      });
+      if (typeof result?.count === 'number' && result.count > 0) {
+        this.logger.warn(
+          {
+            chatId,
+            reason,
+          },
+          'Disabled stale manual group close after terminal MAX chat-not-found error',
+        );
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          reason,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to auto-disable stale manual group close after terminal MAX chat-not-found error',
+      );
+    }
   }
 
   private scheduleManualGroupCloseStartupScan(): void {
