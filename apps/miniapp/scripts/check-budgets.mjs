@@ -17,9 +17,10 @@ const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 3072;
 // Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
 // sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
 // execution-planner control plane, lazy bot diagnostics entrypoint, bot-persona-aware
-// settings previews, managed-chat apply-to-all availability guards, and additive
-// managed-entities snapshot diff transport shared dependencies.
-const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 8192;
+// settings previews, managed-chat apply-to-all availability guards, settings-side chat-list
+// cache/visibility refresh recovery, and additive managed-entities snapshot diff transport
+// shared dependencies.
+const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 8192 + 512;
 // Small headroom for MAX-native comment surfaces, messenger-style wallpaper,
 // shared multi-bot execution planner UI, and cross-environment gzip drift.
 const STARTUP_CSS_BUDGET_GZIP = Math.round(35 * 1024) + 2816;

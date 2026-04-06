@@ -4,7 +4,6 @@ import {
   lazy,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
@@ -17,7 +16,6 @@ import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
-import { shouldRefreshManagedEntitiesOnVisibilityReturn } from '../lib/managed-entities-visibility-refresh';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -27,6 +25,12 @@ import {
   type VisibleLaunchContext,
 } from '../lib/last-chat';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
+import {
+  MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
+  MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+  buildManagedEntitiesSettledMarker,
+  useManagedEntitiesVisibilityRefresh,
+} from '../lib/use-managed-entities-visibility-refresh';
 import {
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
@@ -40,8 +44,6 @@ type ManagedEntitiesReloadRequest = {
   behavior: 'default' | 'manual' | 'recovery';
 };
 
-const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
-const LIST_VISIBILITY_REFRESH_MIN_HIDDEN_MS = 2_000;
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
@@ -164,10 +166,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     chat: { nonce: 0, behavior: 'default' },
     channel: { nonce: 0, behavior: 'default' },
   });
-  const lastRefreshAtRef = useRef(0);
-  const lastSettledRefreshMarkerRef = useRef<string | null>(null);
-  const awaitingReturnRefreshRef = useRef(false);
-  const hiddenAtRef = useRef<number | null>(null);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     launchContextTabHint ?? readLastEntityType(),
@@ -270,10 +268,40 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showEmptyState = isNoEntitiesForTab && !hasVisibleLaunchContext;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
+  const settledRefreshMarker = useMemo(() => buildManagedEntitiesSettledMarker({
+    scopeKey: activeTab,
+    hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+    isSyncComplete: activeEntitiesState.isSyncComplete,
+    isBackoffActive: activeEntitiesState.isBackoffActive,
+    snapshotVersion: activeEntitiesState.snapshot?.version,
+    snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
+    lastSyncedAt: activeEntitiesState.refreshState?.lastSyncedAt,
+  }), [
+    activeEntitiesState.hasLoadedFromServer,
+    activeEntitiesState.isBackoffActive,
+    activeEntitiesState.isSyncComplete,
+    activeEntitiesState.refreshState?.lastSyncedAt,
+    activeEntitiesState.snapshot?.builtAt,
+    activeEntitiesState.snapshot?.version,
+    activeTab,
+  ]);
+  const { noteRefreshRequested } = useManagedEntitiesVisibilityRefresh({
+    enabled: true,
+    hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+    isLoading: activeEntitiesState.isLoading,
+    isRefreshing: activeEntitiesState.isRefreshing,
+    isSyncComplete: activeEntitiesState.isSyncComplete,
+    snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
+    settledMarker: settledRefreshMarker,
+    minIntervalMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+    minHiddenDurationMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
+    onVisibilityReturnRefresh: () => {
+      handleRefresh();
+    },
+  });
 
   function queueRefresh(tab: ManagedTab, behavior: ManagedEntitiesReloadRequest['behavior']) {
-    lastRefreshAtRef.current = Date.now();
-    awaitingReturnRefreshRef.current = false;
+    noteRefreshRequested();
     setRefreshRequestByTab((current) => ({
       ...current,
       [tab]: {
@@ -296,113 +324,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
     queueRefresh(tab, behavior);
   }
-
-  const settledRefreshMarker = useMemo(() => {
-    if (!activeEntitiesState.hasLoadedFromServer) {
-      return null;
-    }
-    if (!activeEntitiesState.isSyncComplete && !activeEntitiesState.isBackoffActive) {
-      return null;
-    }
-
-    return [
-      activeTab,
-      activeEntitiesState.snapshot?.version ?? 'no-snapshot',
-      activeEntitiesState.snapshot?.builtAt ?? '',
-      activeEntitiesState.refreshState?.lastSyncedAt ?? '',
-      activeEntitiesState.isBackoffActive ? 'backoff' : 'complete',
-    ].join(':');
-  }, [
-    activeEntitiesState.hasLoadedFromServer,
-    activeEntitiesState.isBackoffActive,
-    activeEntitiesState.isSyncComplete,
-    activeEntitiesState.refreshState?.lastSyncedAt,
-    activeEntitiesState.snapshot?.builtAt,
-    activeEntitiesState.snapshot?.version,
-    activeTab,
-  ]);
-
-  useEffect(() => {
-    if (!settledRefreshMarker) {
-      return;
-    }
-    if (lastSettledRefreshMarkerRef.current === settledRefreshMarker) {
-      return;
-    }
-
-    lastSettledRefreshMarkerRef.current = settledRefreshMarker;
-    lastRefreshAtRef.current = Date.now();
-  }, [settledRefreshMarker]);
-
-  useEffect(() => {
-    const markRefreshOnReturn = () => {
-      awaitingReturnRefreshRef.current = true;
-      hiddenAtRef.current = Date.now();
-    };
-
-    const refreshAfterReturn = () => {
-      const documentVisible =
-        typeof document === 'undefined' || document.visibilityState === 'visible';
-      const now = Date.now();
-      const hiddenDurationMs =
-        typeof hiddenAtRef.current === 'number' ? Math.max(0, now - hiddenAtRef.current) : null;
-
-      if (
-        !shouldRefreshManagedEntitiesOnVisibilityReturn({
-          awaitingReturnRefresh: awaitingReturnRefreshRef.current,
-          documentVisible,
-          isLoading: activeEntitiesState.isLoading,
-          isRefreshing: activeEntitiesState.isRefreshing,
-          hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-          isSyncComplete: activeEntitiesState.isSyncComplete,
-          snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
-          hiddenDurationMs,
-          lastRefreshAtMs: lastRefreshAtRef.current,
-          nowMs: now,
-          minIntervalMs: LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
-          minHiddenDurationMs: LIST_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
-        })
-      ) {
-        return;
-      }
-
-      awaitingReturnRefreshRef.current = false;
-      hiddenAtRef.current = null;
-      handleRefresh();
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'hidden') {
-        markRefreshOnReturn();
-        return;
-      }
-
-      refreshAfterReturn();
-    };
-
-    window.addEventListener('blur', markRefreshOnReturn);
-    window.addEventListener('pagehide', markRefreshOnReturn);
-    window.addEventListener('focus', refreshAfterReturn);
-    window.addEventListener('pageshow', refreshAfterReturn);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      window.removeEventListener('blur', markRefreshOnReturn);
-      window.removeEventListener('pagehide', markRefreshOnReturn);
-      window.removeEventListener('focus', refreshAfterReturn);
-      window.removeEventListener('pageshow', refreshAfterReturn);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [
-    activeEntitiesState.hasLoadedFromServer,
-    activeEntitiesState.isLoading,
-    activeEntitiesState.isRefreshing,
-    activeEntitiesState.isSyncComplete,
-    activeEntitiesState.snapshot?.stale,
-    activeTab,
-    isFetching,
-    isManualRefreshBlocked,
-  ]);
 
   useEffect(() => {
     const allEntities = [...(chatsState.data ?? []), ...(channelsState.data ?? [])];

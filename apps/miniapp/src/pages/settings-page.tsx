@@ -104,6 +104,12 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
+import {
+  MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
+  MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+  buildManagedEntitiesSettledMarker,
+  useManagedEntitiesVisibilityRefresh,
+} from '../lib/use-managed-entities-visibility-refresh';
 import { describeApiError } from '../lib/api-error';
 import {
   NIGHT_SECTION_SETTING_KEYS,
@@ -2055,6 +2061,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
+  const [chatsListReloadNonce, setChatsListReloadNonce] = useState(0);
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
@@ -2195,6 +2202,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatsList = useManagedEntitiesSync({
     api,
     entityType: 'chat',
+    reloadNonce: chatsListReloadNonce,
+    backgroundRefreshOnFirstLoad: true,
+    persistLocalCache: true,
+    localCacheScope: 'home',
   });
   const channelsList = useManagedEntitiesSync({
     api,
@@ -2217,6 +2228,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isSyncing: channelsList.isRefreshing,
     phase: channelsList.phase,
   };
+  const settledChatsListMarker = useMemo(() => buildManagedEntitiesSettledMarker({
+    hasLoadedFromServer: chatsList.hasLoadedFromServer,
+    isSyncComplete: chatsList.isSyncComplete,
+    isBackoffActive: chatsList.isBackoffActive,
+    snapshotVersion: chatsList.snapshot?.version,
+    snapshotBuiltAt: chatsList.snapshot?.builtAt,
+    lastSyncedAt: chatsList.refreshState?.lastSyncedAt,
+  }), [
+    chatsList.hasLoadedFromServer,
+    chatsList.isBackoffActive,
+    chatsList.isSyncComplete,
+    chatsList.refreshState?.lastSyncedAt,
+    chatsList.snapshot?.builtAt,
+    chatsList.snapshot?.version,
+  ]);
+  useManagedEntitiesVisibilityRefresh({
+    enabled: true,
+    hasLoadedFromServer: chatsList.hasLoadedFromServer,
+    isLoading: chatsList.isLoading,
+    isRefreshing: chatsList.isRefreshing,
+    isSyncComplete: chatsList.isSyncComplete,
+    snapshotStale: chatsList.snapshot?.stale ?? null,
+    settledMarker: settledChatsListMarker,
+    minIntervalMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+    minHiddenDurationMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
+    onVisibilityReturnRefresh: () => {
+      startTransition(() => {
+        setChatsListReloadNonce((current) => current + 1);
+      });
+    },
+  });
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
     isLoading: settingsScreenQuery.isLoading,
@@ -4478,8 +4520,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const chatsCount = chatsList.data?.length ?? 0;
-  const canApplyToAllChats =
-    chatsCount > 1 && (chatsList.isSyncComplete || chatsList.isBackoffActive);
+  const canApplyToAllChats = !chatsList.isSyncComplete || chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
