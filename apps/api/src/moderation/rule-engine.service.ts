@@ -105,6 +105,7 @@ type CommercialSignalState = {
   hasGroupPromoContext: boolean;
   hasCommercialAudienceContext: boolean;
   hasSearchRequestContext: boolean;
+  hasJobSeekingContext: boolean;
   hasServiceContext: boolean;
   hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
@@ -312,6 +313,7 @@ const ADS_SERVICE_SPECIALTY_MARKERS = [
   'логопед',
   'юрист',
   'психолог',
+  'консультац',
   'парикмах',
   'косметолог',
   'массаж',
@@ -461,11 +463,28 @@ const ADS_SEARCH_REQUEST_MARKERS = [
   'нашла канал',
   'это нормальный мастер',
 ];
+const ADS_JOB_SEEKING_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'job-seeking:search',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:ищу|нужна)\s+(?:работ[\p{L}\p{N}_-]*|подработ[\p{L}\p{N}_-]*|вахт[\p{L}\p{N}_-]*|смен[\p{L}\p{N}_-]*|ваканси[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'job-seeking:review',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:рассмотрю|ищу)\s+(?:предложени[\p{L}\p{N}_-]*|ваканси[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'job-seeking:shift',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])ищу\s+(?:вахт[\p{L}\p{N}_-]*|охран[\p{L}\p{N}_-]*|работ[\p{L}\p{N}_-]*)\s+\d{1,2}\/\d{1,2}(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
 const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
   {
     label: 'request:specialist',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:ищу|нуж(?:ен|на|ны)|посоветуйте|порекомендуйте|подскажите)\s+(?:хорош(?:ий|ая|ее|его|ую|ие|их)\s+)?(?:маст[\p{L}\p{N}_-]*|бригад[\p{L}\p{N}_-]*|электрик[\p{L}\p{N}_-]*|сантехник[\p{L}\p{N}_-]*|психолог[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|логопед[\p{L}\p{N}_-]*|маникюр[\p{L}\p{N}_-]*|педикюр[\p{L}\p{N}_-]*|клининг[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|косметолог[\p{L}\p{N}_-]*|массаж[\p{L}\p{N}_-]*|репетитор[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|эвакуатор[\p{L}\p{N}_-]*|грузоперевоз[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:ищу|нуж(?:ен|на|ны)|посоветуйте|порекомендуйте|подскажите)\s+(?:хорош(?:ий|ая|ее|его|ую|ие|их)\s+)?(?:маст[\p{L}\p{N}_-]*|бригад[\p{L}\p{N}_-]*|электрик[\p{L}\p{N}_-]*|сантехник[\p{L}\p{N}_-]*|психолог[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|логопед[\p{L}\p{N}_-]*|маникюр[\p{L}\p{N}_-]*|педикюр[\p{L}\p{N}_-]*|клининг[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|косметолог[\p{L}\p{N}_-]*|массаж[\p{L}\p{N}_-]*|репетитор[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|эвакуатор[\p{L}\p{N}_-]*|грузоперевоз[\p{L}\p{N}_-]*|консультац[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'request:business',
@@ -500,10 +519,14 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
 const ADS_LINK_PATTERN =
   /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
-const ADS_PRICE_PATTERN = /\b\d{2,}\s?(₽|руб(\.|лей)?|р\.|р|₸|\$|€)\b/iu;
-const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|предоплата|доставка|в наличии)\b/iu;
-const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
-const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
+const ADS_PRICE_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_TRANSACTIONAL_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_URGENCY_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:срочно|только сегодня|до конца дня|осталось\s+\d+)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_QUANTITY_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:шт|штук|шт\.|пачк[\p{L}\p{N}_-]*|упак[\p{L}\p{N}_-]*|остатк[\p{L}\p{N}_-]*|места)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const DUPLICATE_EXCLUDED_PHONE_PATTERN =
@@ -945,6 +968,9 @@ export class RuleEngineService {
     const hasSearchRequestContext =
       ADS_QUESTION_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_SEARCH_REQUEST_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_JOB_SEEKING_PATTERNS.some(
+        ({ pattern }) => pattern.test(normalizedText) || pattern.test(rawLoweredText),
+      ) ||
       ADS_SEARCH_REQUEST_PATTERNS.some(
         ({ pattern }) => pattern.test(normalizedText) || pattern.test(rawLoweredText),
       );
@@ -1333,6 +1359,10 @@ export class RuleEngineService {
       return null;
     }
 
+    if (state.hasJobSeekingContext) {
+      return null;
+    }
+
     if (
       appliedThresholds.strictness < 0.35 &&
       !(hasStructuredCommercialContext && hasStrongCommercialEvidence)
@@ -1534,6 +1564,7 @@ export class RuleEngineService {
     let hasGroupPromotionIntent = false;
     let hasGroupPromoContext = false;
     let hasSearchRequestContext = false;
+    let hasJobSeekingContext = false;
     let hasServiceContext = false;
     let hasCallToActionContext = false;
     let hasCommercialContext = false;
@@ -1726,6 +1757,16 @@ export class RuleEngineService {
       hasSearchRequestContext = true;
     }
 
+    for (const { label, pattern } of ADS_JOB_SEEKING_PATTERNS) {
+      if (!(pattern.test(normalizedText) || pattern.test(rawLoweredText))) {
+        continue;
+      }
+
+      addNegative(`job-seeking:${label}`, 26, true);
+      hasJobSeekingContext = true;
+      hasSearchRequestContext = true;
+    }
+
     for (const { label, pattern } of ADS_SEARCH_REQUEST_PATTERNS) {
       if (!(pattern.test(normalizedText) || pattern.test(rawLoweredText))) {
         continue;
@@ -1840,6 +1881,7 @@ export class RuleEngineService {
       hasGroupPromoContext,
       hasCommercialAudienceContext,
       hasSearchRequestContext,
+      hasJobSeekingContext,
       hasServiceContext,
       hasCallToActionContext,
       hasCommercialContext,

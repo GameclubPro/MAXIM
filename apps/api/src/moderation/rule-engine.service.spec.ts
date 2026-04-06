@@ -158,6 +158,47 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
 
 const DUPLICATE_SPAM_TEXT = 'продам курс по маркетингу пишите в личные сообщения сегодня скидка';
 
+const COMMERCIAL_SENSITIVITY_PROFILES = {
+  soft: {
+    commercialAdsSensitivity: 'BALANCED' as const,
+    commercialAdsWarnThreshold: 60,
+    commercialAdsDeleteThreshold: 82,
+  },
+  balanced: {
+    commercialAdsSensitivity: 'BALANCED' as const,
+    commercialAdsWarnThreshold: 45,
+    commercialAdsDeleteThreshold: 65,
+  },
+  strict: {
+    commercialAdsSensitivity: 'STRICT' as const,
+    commercialAdsWarnThreshold: 38,
+    commercialAdsDeleteThreshold: 55,
+  },
+};
+
+function createRuleEngine(): RuleEngineService {
+  return new RuleEngineService(new MockRedisCounterService() as never);
+}
+
+async function detectCommercialViolation(
+  service: RuleEngineService,
+  text: string,
+  overrides: Partial<ChatSettings> = {},
+) {
+  const result = await service.detect({
+    chatId: 'chat-1',
+    userId: 'u-1',
+    text,
+    settings: buildSettings({
+      commercialAdsFilterEnabled: true,
+      ...overrides,
+    }),
+    domainAllowlist: [],
+  });
+
+  return result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+}
+
 describe('RuleEngineService', () => {
   it('ships with 500+ exact profanity and insult variants', () => {
     expect(PROFANITY_EXACT_VARIANT_COUNT).toBeGreaterThanOrEqual(500);
@@ -1176,6 +1217,163 @@ describe('RuleEngineService', () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
 
     expect(service.hasCommercialSpamMarkers('Электрик, звоните 8 999 123 45 67')).toBe(true);
+  });
+
+  it('does not detect job-seeking resume style message from real moderation logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Ищу вахту Охрана 15/15 зп от 6500 смена. 6 разряд водительское удостоверение категория В. все справки имеются предложение пишите в Личные Сообщения!',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('detects commercial audience growth invite from real moderation logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Чат для поиска подписчиков и клиентов для ваших проектов. https://max.ru/join/9_D9-tNFZkd1Nfrp9BuYpKnOdAFes0A5V_AHqn-94rQ',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['group:чат', 'audience:клиент', 'deal-channel:link']),
+    );
+  });
+
+  it('detects product catalog ad from real moderation logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Диваны на прямую от производителя. Самые доступные цены у нас. Пишите скинем каталог. Есть доставка по региону. Оплата при получении.',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'business:каталог',
+        'promo:доставк',
+        'transaction:keywords',
+        'combo:promo+deal',
+        'combo:business+deal',
+      ]),
+    );
+  });
+
+  it('records unicode-safe price, transactional, urgency, and quantity signals', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Продам картофель, срочно, 10 шт, цена 3000 руб, доставка и оплата при получении.',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'intent:продам',
+        'transaction:price',
+        'transaction:keywords',
+        'booster:urgency',
+        'booster:quantity',
+      ]),
+    );
+  });
+
+  describe('commercial sensitivity matrix', () => {
+    const cases = [
+      {
+        label: 'bare service ad',
+        text: 'Маникюр, пишите в личку',
+        expected: {
+          soft: null,
+          balanced: 'MEDIUM',
+          strict: 'HIGH',
+        },
+      },
+      {
+        label: 'consultation leadgen',
+        text: 'Бесплатная консультация, пишите в личку',
+        expected: {
+          soft: null,
+          balanced: 'MEDIUM',
+          strict: 'HIGH',
+        },
+      },
+      {
+        label: 'audience growth chat promo',
+        text: 'Чат для поиска подписчиков и клиентов для ваших проектов. https://max.ru/join/9_D9-tNFZkd1Nfrp9BuYpKnOdAFes0A5V_AHqn-94rQ',
+        expected: {
+          soft: null,
+          balanced: 'MEDIUM',
+          strict: 'HIGH',
+        },
+      },
+      {
+        label: 'catalog delivery product ad',
+        text: 'Диваны на прямую от производителя. Самые доступные цены у нас. Пишите скинем каталог. Есть доставка по региону. Оплата при получении.',
+        expected: {
+          soft: null,
+          balanced: 'HIGH',
+          strict: 'HIGH',
+        },
+      },
+      {
+        label: 'job-seeking resume post',
+        text: 'Ищу вахту Охрана 15/15 зп от 6500 смена. 6 разряд водительское удостоверение категория В. все справки имеются предложение пишите в Личные Сообщения!',
+        expected: {
+          soft: null,
+          balanced: null,
+          strict: null,
+        },
+      },
+      {
+        label: 'recommendation request with site',
+        text: 'Подскажите хороший магазин дверей, кто заказывал? Вот сайт https://dveri.example.ru',
+        expected: {
+          soft: null,
+          balanced: null,
+          strict: null,
+        },
+      },
+      {
+        label: 'free consultation with direct phone',
+        text: 'Запись на бесплатную консультацию +79621548190.',
+        expected: {
+          soft: null,
+          balanced: 'HIGH',
+          strict: 'HIGH',
+        },
+      },
+    ] as const;
+
+    const profileSettings = {
+      soft: COMMERCIAL_SENSITIVITY_PROFILES.soft,
+      balanced: COMMERCIAL_SENSITIVITY_PROFILES.balanced,
+      strict: COMMERCIAL_SENSITIVITY_PROFILES.strict,
+    } as const;
+
+    for (const [profileName, settings] of Object.entries(profileSettings)) {
+      it.each(cases)(
+        `applies ${profileName} profile correctly for $label`,
+        async ({ text, expected }) => {
+          const service = createRuleEngine();
+          const violation = await detectCommercialViolation(service, text, settings);
+          const expectedBand = expected[profileName as keyof typeof expected];
+
+          if (expectedBand === null) {
+            expect(violation).toBeUndefined();
+            return;
+          }
+
+          expect(violation).toBeDefined();
+          expect(violation?.metadata?.decisionBand).toBe(expectedBand);
+        },
+      );
+    }
   });
 
   it('detects COMMERCIAL_AD with mixed latin/cyrillic obfuscation', async () => {
