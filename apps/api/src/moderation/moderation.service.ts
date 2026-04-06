@@ -233,6 +233,7 @@ const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
+const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
@@ -424,6 +425,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       metadata: RequiredSubscriptionChannelMetadata;
     }
   >();
+  private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly globalSpammerExemptionCache = new Map<
@@ -1314,28 +1316,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const messageAgeMs = Date.now() - new Date(createdAt).getTime();
       const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+      let messageDeleted = false;
 
       if (canDeleteMessage) {
-        await this.deleteMessageImmediately(chatId, messageId);
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId: senderId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: `${topViolation.ruleCode}_DELETE`,
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: topViolation.score,
-            operator: Operator.BOT,
-            metadata: {
-              reason: topViolation.reason,
-              ...(topViolation.metadata && typeof topViolation.metadata === 'object'
-                ? topViolation.metadata
-                : {}),
+        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
+        if (messageDeleted) {
+          await this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId: senderId,
+              messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: `${topViolation.ruleCode}_DELETE`,
+              action: SanctionAction.DELETE_MESSAGE,
+              maskedExcerpt: maskText(text),
+              score: topViolation.score,
+              operator: Operator.BOT,
+              metadata: {
+                reason: topViolation.reason,
+                ...(topViolation.metadata && typeof topViolation.metadata === 'object'
+                  ? topViolation.metadata
+                  : {}),
+              },
             },
-          },
-        });
+          });
+        }
       } else {
         await this.maxClient.notifyModerators(
           chatId,
@@ -1475,7 +1480,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             await sendChatBotMessage(
               this.buildLinkExplanation(
                 userLabel,
-                canDeleteMessage,
+                messageDeleted,
                 settings.linkBotMessageText,
                 settings.botSpeechStyle,
               ),
@@ -1527,7 +1532,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               this.buildMessageLimitsExplanation(
                 userLabel,
                 topViolation.ruleCode,
-                canDeleteMessage,
+                messageDeleted,
                 settings.messageCountLimitMessages,
                 settings.messageCountLimitWindowHours,
                 settings.photoMessageCooldownHours,
@@ -1588,7 +1593,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               this.buildTextFilterExplanation(
                 userLabel,
                 topViolation.ruleCode,
-                canDeleteMessage,
+                messageDeleted,
                 textFilterEscalationSettings.botMessageText,
                 settings.botSpeechStyle,
               ),
@@ -1642,7 +1647,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             await sendChatBotMessage(
               this.buildTopicFilterExplanation(
                 userLabel,
-                canDeleteMessage,
+                messageDeleted,
                 this.extractTopicFilterRequiredCodeword(topViolation.metadata),
                 settings.botSpeechStyle,
               ),
@@ -1914,27 +1919,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.deleteMessageImmediately(chatId, messageId);
-        messageDeleted = true;
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: 'DUPLICATE_DELETE',
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: 0.8,
-            operator: Operator.BOT,
-            metadata: {
-              windowSec: decision.windowSec,
-              count: decision.count,
-              threshold: decision.threshold,
-              reason: 'Duplicate message removed',
+        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
+        if (messageDeleted) {
+          await this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId,
+              messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: 'DUPLICATE_DELETE',
+              action: SanctionAction.DELETE_MESSAGE,
+              maskedExcerpt: maskText(text),
+              score: 0.8,
+              operator: Operator.BOT,
+              metadata: {
+                windowSec: decision.windowSec,
+                count: decision.count,
+                threshold: decision.threshold,
+                reason: 'Duplicate message removed',
+              },
             },
-          },
-        });
+          });
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -2075,26 +2081,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.deleteMessageImmediately(chatId, messageId);
-        messageDeleted = true;
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: 'DUPLICATE_DELETE',
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: 0.8,
-            operator: Operator.BOT,
-            metadata: {
-              windowSec: hit.windowSec,
-              count: hit.count,
-              reason: 'Duplicate message removed',
+        messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
+        if (messageDeleted) {
+          await this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId,
+              messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: 'DUPLICATE_DELETE',
+              action: SanctionAction.DELETE_MESSAGE,
+              maskedExcerpt: maskText(text),
+              score: 0.8,
+              operator: Operator.BOT,
+              metadata: {
+                windowSec: hit.windowSec,
+                count: hit.count,
+                reason: 'Duplicate message removed',
+              },
             },
-          },
-        });
+          });
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -2750,8 +2757,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    let memberBanned = false;
     try {
-      await this.banMemberImmediately(chatId, userId);
+      memberBanned = await this.banMemberImmediately(chatId, userId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -2762,6 +2770,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to ban member',
       );
+    }
+
+    if (!memberBanned) {
+      return;
     }
 
     await this.sendBanNoticeMessage({
@@ -2781,33 +2793,81 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     messageId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
-  ) {
+  ): Promise<boolean> {
+    const actionBotId = await this.resolveModerationActionBotId({
+      chatId,
+      action: 'delete_message',
+      botId: options?.botId,
+    });
+    if (actionBotId === null) {
+      this.logSkippedModerationActionDueToPermissions({
+        chatId,
+        action: 'delete_message',
+        messageId,
+      });
+      return false;
+    }
+
     await this.maxClient.deleteMessage(chatId, messageId, {
       ...(options ?? {}),
+      ...(actionBotId ? { botId: actionBotId } : {}),
       immediate: true,
     });
+    return true;
   }
 
   private async kickMemberImmediately(
     chatId: string,
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
-  ) {
+  ): Promise<boolean> {
+    const actionBotId = await this.resolveModerationActionBotId({
+      chatId,
+      action: 'moderate_member',
+      botId: options?.botId,
+    });
+    if (actionBotId === null) {
+      this.logSkippedModerationActionDueToPermissions({
+        chatId,
+        action: 'moderate_member',
+        userId,
+      });
+      return false;
+    }
+
     await this.maxClient.kickMember(chatId, userId, {
       ...(options ?? {}),
+      ...(actionBotId ? { botId: actionBotId } : {}),
       immediate: true,
     });
+    return true;
   }
 
   private async banMemberImmediately(
     chatId: string,
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
-  ) {
+  ): Promise<boolean> {
+    const actionBotId = await this.resolveModerationActionBotId({
+      chatId,
+      action: 'moderate_member',
+      botId: options?.botId,
+    });
+    if (actionBotId === null) {
+      this.logSkippedModerationActionDueToPermissions({
+        chatId,
+        action: 'moderate_member',
+        userId,
+      });
+      return false;
+    }
+
     await this.maxClient.banMember(chatId, userId, {
       ...(options ?? {}),
+      ...(actionBotId ? { botId: actionBotId } : {}),
       immediate: true,
     });
+    return true;
   }
 
   private async sendMuteNotice(params: {
@@ -5146,27 +5206,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.deleteMessageImmediately(chatId, messageId);
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: 'MUTE_ACTIVE_DELETE',
-          action: SanctionAction.DELETE_MESSAGE,
-          maskedExcerpt: maskText(text),
-          score: 1,
-          operator: Operator.BOT,
-          metadata: {
-            reason: 'Message removed during active mute window',
-            muteEventId: mute.eventId,
-            muteIssuedAt: mute.issuedAt.toISOString(),
-            muteExpiresAt: mute.expiresAt.toISOString(),
-            muteDurationHours: mute.durationHours,
+      if (await this.deleteMessageImmediately(chatId, messageId)) {
+        await this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: 'MUTE_ACTIVE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 1,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Message removed during active mute window',
+              muteEventId: mute.eventId,
+              muteIssuedAt: mute.issuedAt.toISOString(),
+              muteExpiresAt: mute.expiresAt.toISOString(),
+              muteDurationHours: mute.durationHours,
+            },
           },
-        },
-      });
+        });
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5203,23 +5264,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.kickMemberImmediately(chatId, userId);
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MEMBER_ACTION,
-          ruleCode: 'BOT_ACCOUNT_KICK',
-          action: SanctionAction.KICK,
-          maskedExcerpt: maskText(text),
-          score: 0.7,
-          operator: Operator.BOT,
-          metadata: {
-            reason: 'Bot account removed because bot accounts are disallowed by chat settings',
+      if (await this.kickMemberImmediately(chatId, userId)) {
+        await this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MEMBER_ACTION,
+            ruleCode: 'BOT_ACCOUNT_KICK',
+            action: SanctionAction.KICK,
+            maskedExcerpt: maskText(text),
+            score: 0.7,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Bot account removed because bot accounts are disallowed by chat settings',
+            },
           },
-        },
-      });
+        });
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5377,26 +5439,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const kickedUserIds = new Set<string>();
 
     for (const userId of botUserIds) {
-      kickedUserIds.add(userId);
       try {
-        await this.kickMemberImmediately(chatId, userId);
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MEMBER_ACTION,
-            ruleCode: 'BOT_ACCOUNT_KICK',
-            action: SanctionAction.KICK,
-            maskedExcerpt: maskText(text),
-            score: 0.7,
-            operator: Operator.BOT,
-            metadata: {
-              reason:
-                'Bot account removed from service event because bot accounts are disallowed by chat settings',
+        if (await this.kickMemberImmediately(chatId, userId)) {
+          kickedUserIds.add(userId);
+          await this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId,
+              messageId,
+              eventType: EventType.MEMBER_ACTION,
+              ruleCode: 'BOT_ACCOUNT_KICK',
+              action: SanctionAction.KICK,
+              maskedExcerpt: maskText(text),
+              score: 0.7,
+              operator: Operator.BOT,
+              metadata: {
+                reason:
+                  'Bot account removed from service event because bot accounts are disallowed by chat settings',
+              },
             },
-          },
-        });
+          });
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -5836,23 +5899,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }) {
     const { chatId, userId, messageId, text, reason } = params;
     try {
-      await this.kickMemberImmediately(chatId, userId);
-      await this.createBotModerationEvent({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MEMBER_ACTION,
-          ruleCode: 'GLOBAL_SPAMMER_KICK',
-          action: SanctionAction.KICK,
-          maskedExcerpt: maskText(text),
-          score: 0.95,
-          operator: Operator.BOT,
-          metadata: {
-            reason,
+      if (await this.kickMemberImmediately(chatId, userId)) {
+        await this.createBotModerationEvent({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MEMBER_ACTION,
+            ruleCode: 'GLOBAL_SPAMMER_KICK',
+            action: SanctionAction.KICK,
+            maskedExcerpt: maskText(text),
+            score: 0.95,
+            operator: Operator.BOT,
+            metadata: {
+              reason,
+            },
           },
-        },
-      });
+        });
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6807,7 +6871,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.deleteMessageImmediately(chatId, messageId);
+        const messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
+        if (!messageDeleted) {
+          return;
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -6875,27 +6942,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (canDeleteMessage) {
       try {
-        await this.deleteMessageImmediately(chatId, messageId);
-        await this.createBotModerationEvent({
-          data: {
-            chatId,
-            userId,
-            messageId,
-            eventType: EventType.MESSAGE,
-            ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
-            action: SanctionAction.DELETE_MESSAGE,
-            maskedExcerpt: maskText(text),
-            score: 0.6,
-            operator: Operator.BOT,
-            metadata: {
-              reason: 'Message removed while group is manually closed',
-              closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
-              closeUntil: params.nightModeForceCloseForever
-                ? null
-                : params.nightModeForceCloseUntil,
+        if (await this.deleteMessageImmediately(chatId, messageId)) {
+          await this.createBotModerationEvent({
+            data: {
+              chatId,
+              userId,
+              messageId,
+              eventType: EventType.MESSAGE,
+              ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+              action: SanctionAction.DELETE_MESSAGE,
+              maskedExcerpt: maskText(text),
+              score: 0.6,
+              operator: Operator.BOT,
+              metadata: {
+                reason: 'Message removed while group is manually closed',
+                closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
+                closeUntil: params.nightModeForceCloseForever
+                  ? null
+                  : params.nightModeForceCloseUntil,
+              },
             },
-          },
-        });
+          });
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -7013,7 +7081,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    await this.deleteMessageImmediately(params.chatId, params.messageId);
+    const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
 
     const missingChannelIdsNeedingRefresh = membership.missingChannelIds.filter((channelId) => {
       const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
@@ -7079,25 +7147,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const isFirstRequiredSubscriptionViolation = requiredSubscriptionViolationCount24h === 1;
 
-    await this.createBotModerationEvent({
-      data: {
-        chatId: params.chatId,
-        userId: params.userId,
-        messageId: params.messageId,
-        eventType: EventType.MESSAGE,
-        ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
-        action: SanctionAction.DELETE_MESSAGE,
-        maskedExcerpt: maskText(params.text),
-        score: 1,
-        operator: Operator.BOT,
-        metadata: {
+    if (messageDeleted) {
+      await this.createBotModerationEvent({
+        data: {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
           action: SanctionAction.DELETE_MESSAGE,
-          requiredChannelIds,
-          missingChannelIds: membership.missingChannelIds,
-          missingChannelTitles,
+          maskedExcerpt: maskText(params.text),
+          score: 1,
+          operator: Operator.BOT,
+          metadata: {
+            action: SanctionAction.DELETE_MESSAGE,
+            requiredChannelIds,
+            missingChannelIds: membership.missingChannelIds,
+            missingChannelTitles,
+          },
         },
-      },
-    });
+      });
+    }
 
     const requiredSubscriptionMessageOptions =
       this.buildRequiredSubscriptionMessageOptions(
@@ -7130,7 +7200,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             await sendRequiredSubscriptionBotMessage(
               this.buildRequiredSubscriptionExplanation(
                 params.userLabel,
-                canDeleteMessage,
+                messageDeleted,
                 missingChannelTitles,
                 params.settings.requiredSubscriptionBotMessageText,
                 params.settings.botSpeechStyle,
@@ -8962,6 +9032,55 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async resolveChatReadBotId(chatId: string): Promise<string | null> {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? null;
+  }
+
+  private async resolveModerationActionBotId(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    botId?: string | null;
+  }): Promise<string | null | undefined> {
+    const explicitBotId =
+      typeof params.botId === 'string' && params.botId.trim().length > 0
+        ? params.botId.trim()
+        : null;
+    if (explicitBotId) {
+      return explicitBotId;
+    }
+
+    if (typeof this.maxBotLinkService?.resolveBotIdForModerationAction !== 'function') {
+      return undefined;
+    }
+
+    return this.maxBotLinkService.resolveBotIdForModerationAction({
+      chatId: params.chatId,
+      action: params.action,
+      fallbackToPrimary: false,
+    });
+  }
+
+  private logSkippedModerationActionDueToPermissions(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    messageId?: string;
+    userId?: string;
+  }): void {
+    const cacheKey = `${params.chatId}:${params.action}`;
+    const now = Date.now();
+    const lastLoggedAtMs = this.moderationActionPermissionSkipLogAtMs.get(cacheKey) ?? 0;
+    if (now - lastLoggedAtMs < MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.moderationActionPermissionSkipLogAtMs.set(cacheKey, now);
+    this.logger.warn(
+      {
+        chatId: params.chatId,
+        action: params.action,
+        messageId: params.messageId,
+        userId: params.userId,
+      },
+      'Skipped moderation action because no active bot has the required MAX permissions in this chat',
+    );
   }
 
   private resolveBotContactId(botId?: string | null): string | null {

@@ -16,6 +16,35 @@ import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
 const ACTIONABLE_BOT_LIFECYCLE_STATES = new Set(['active', 'draining']);
+const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
+  'delete',
+  'delete_message',
+  'delete_messages',
+  'can_delete_message',
+  'can_delete_messages',
+  'post_edit_delete_message',
+  'post_edit_delete_messages',
+  'can_post_edit_delete_message',
+  'can_post_edit_delete_messages',
+]);
+const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
+  'add_remove_members',
+  'can_add_remove_members',
+  'remove_members',
+  'can_remove_members',
+  'manage_members',
+  'can_manage_members',
+  'kick_members',
+  'can_kick_members',
+  'ban_members',
+  'can_ban_members',
+  'ban_users',
+  'can_ban_users',
+  'delete_members',
+  'can_delete_members',
+]);
+
+type ModerationActionPermission = 'delete_message' | 'moderate_member';
 
 type ChatBotBindingCacheEntry = {
   botId: string;
@@ -25,6 +54,7 @@ type ChatBotBindingCacheEntry = {
 type MembershipAccessSnapshot = {
   isAdmin: boolean;
   isOwner: boolean;
+  permissions: string[];
 };
 
 export type ChatBotExecutionBinding = {
@@ -466,6 +496,95 @@ export class MaxBotLinkService {
     return primaryBotId ?? activeKnownMemberships[0]?.botId ?? null;
   }
 
+  async resolveBotIdForModerationAction(params: {
+    chatId: string;
+    action: ModerationActionPermission;
+    fallbackToPrimary?: boolean;
+  }): Promise<string | null> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        primaryBotId: true,
+        botId: true,
+        botMemberships: {
+          select: {
+            botId: true,
+            role: true,
+            status: true,
+            permissionsSnapshot: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    const primaryBotId =
+      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+    const activeActionableMemberships = (chat?.botMemberships ?? []).filter((membership) => {
+      if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+        return false;
+      }
+
+      const bot = this.botRegistry.getBotById(membership.botId);
+      return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
+    });
+    const actionCapableMembership =
+      activeActionableMemberships.find((membership) => {
+        if (membership.botId !== primaryBotId) {
+          return false;
+        }
+
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return this.hasModerationActionPermission(snapshot, params.action);
+      }) ??
+      activeActionableMemberships.find((membership) => {
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return this.hasModerationActionPermission(snapshot, params.action);
+      }) ??
+      null;
+    if (actionCapableMembership) {
+      return actionCapableMembership.botId;
+    }
+
+    const primaryActiveMembership =
+      primaryBotId !== null
+        ? activeActionableMemberships.find((membership) => membership.botId === primaryBotId) ??
+          null
+        : null;
+    if (
+      primaryActiveMembership &&
+      !this.membershipExplicitlyLacksModerationAction(
+        primaryActiveMembership.permissionsSnapshot,
+        params.action,
+      )
+    ) {
+      return primaryActiveMembership.botId;
+    }
+
+    const alternateMembership =
+      activeActionableMemberships.find(
+        (membership) =>
+          membership.botId !== primaryBotId &&
+          !this.membershipExplicitlyLacksModerationAction(
+            membership.permissionsSnapshot,
+            params.action,
+          ),
+      ) ?? null;
+    if (alternateMembership) {
+      return alternateMembership.botId;
+    }
+
+    if (params.fallbackToPrimary === false) {
+      return null;
+    }
+
+    return primaryBotId ?? activeActionableMemberships[0]?.botId ?? null;
+  }
+
   async resolveBotIdForCapability(params: {
     chatId: string;
     capability: ManagedEntityBotCapability;
@@ -707,15 +826,93 @@ export class MaxBotLinkService {
     }
 
     const row = value as Record<string, unknown>;
+    const permissions = Array.isArray(row.permissions)
+      ? Array.from(
+          new Set(
+            row.permissions
+              .map((permission) => this.normalizePermissionName(permission))
+              .filter((permission): permission is string => permission.length > 0),
+          ),
+        )
+      : [];
     return {
       isAdmin: row.isAdmin === true,
       isOwner: row.isOwner === true,
+      permissions,
     };
   }
 
   private membershipExplicitlyLacksAccess(value: unknown): boolean {
     const snapshot = this.normalizeMembershipAccessSnapshot(value);
     return Boolean(snapshot && !snapshot.isAdmin && !snapshot.isOwner);
+  }
+
+  private hasModerationActionPermission(
+    snapshot: MembershipAccessSnapshot | null,
+    action: ModerationActionPermission,
+  ): boolean {
+    if (!snapshot) {
+      return false;
+    }
+
+    if (snapshot.isOwner) {
+      return true;
+    }
+
+    if (snapshot.permissions.length === 0) {
+      return snapshot.isAdmin;
+    }
+
+    return snapshot.permissions.some((permission) =>
+      this.isModerationActionPermission(permission, action),
+    );
+  }
+
+  private membershipExplicitlyLacksModerationAction(
+    value: unknown,
+    action: ModerationActionPermission,
+  ): boolean {
+    const snapshot = this.normalizeMembershipAccessSnapshot(value);
+    if (!snapshot) {
+      return false;
+    }
+
+    if (snapshot.isOwner) {
+      return false;
+    }
+
+    if (snapshot.permissions.length === 0) {
+      return !snapshot.isAdmin;
+    }
+
+    return !snapshot.permissions.some((permission) =>
+      this.isModerationActionPermission(permission, action),
+    );
+  }
+
+  private isModerationActionPermission(
+    permission: string,
+    action: ModerationActionPermission,
+  ): boolean {
+    const normalized = this.normalizePermissionName(permission);
+    if (!normalized) {
+      return false;
+    }
+
+    return action === 'delete_message'
+      ? DELETE_MESSAGE_PERMISSION_ALIASES.has(normalized)
+      : MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
+  }
+
+  private normalizePermissionName(permission: unknown): string {
+    if (typeof permission !== 'string') {
+      return '';
+    }
+
+    return permission
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/gu, '_');
   }
 
   private async promoteActiveChatBotMembership(

@@ -2315,6 +2315,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-4', 'msg-4', 'Текст 4'));
     await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Текст 5'));
     await service.handleUpdate(createSpamUpdate('chat-6', 'msg-6', 'Текст 6'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
@@ -11999,6 +12000,159 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'VIDEO_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('routes delete moderation through the bot with confirmed delete permission', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ videoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasVideoAttachment?: boolean }) => {
+        if (params.hasVideoAttachment) {
+          return {
+            violations: [{ ruleCode: 'VIDEO_BLOCKED', score: 0.88, reason: 'Video disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const maxBotLinkService = {
+      isKnownBotUserId: jest.fn().mockReturnValue(false),
+      resolveBotIdForModerationAction: jest.fn().mockResolvedValue('id613002203036_4_bot'),
+      resolveContactIdSync: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.handleUpdate(createVideoAttachmentUpdate());
+
+    expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      action: 'delete_message',
+      fallbackToPrimary: false,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-video-1', {
+      botId: 'id613002203036_4_bot',
+      immediate: true,
+    });
+  });
+
+  it('skips delete moderation cleanly when no bot has delete permission in the chat', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ videoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasVideoAttachment?: boolean }) => {
+        if (params.hasVideoAttachment) {
+          return {
+            violations: [{ ruleCode: 'VIDEO_BLOCKED', score: 0.88, reason: 'Video disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const maxBotLinkService = {
+      isKnownBotUserId: jest.fn().mockReturnValue(false),
+      resolveBotIdForModerationAction: jest.fn().mockResolvedValue(null),
+      resolveContactIdSync: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await expect(service.handleUpdate(createVideoAttachmentUpdate())).resolves.toBeUndefined();
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         ruleCode: 'VIDEO_BLOCKED',
         action: SanctionAction.NONE,

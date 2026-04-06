@@ -456,6 +456,110 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
+  it('routes delete moderation actions through the bot with delete permissions', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-3', {
+      id: 'chat-3',
+      title: 'Moderated chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-3',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:00:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages', 'change_chat_info'],
+        },
+        createdAt: new Date('2026-04-06T21:00:00.000Z'),
+        updatedAt: new Date('2026-04-06T21:00:00.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:00:00.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:00:00.000Z'),
+      },
+      {
+        chatId: 'chat-3',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        },
+        createdAt: new Date('2026-04-06T21:00:01.000Z'),
+        updatedAt: new Date('2026-04-06T21:00:01.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:00:01.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'chat-3',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('returns null for moderation actions when every active bot explicitly lacks the permission', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-4', {
+      id: 'chat-4',
+      title: 'Restricted chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-4',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:10:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-04-06T21:10:00.000Z'),
+        updatedAt: new Date('2026-04-06T21:10:00.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:10:00.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:10:00.000Z'),
+      },
+      {
+        chatId: 'chat-4',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:10:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['change_chat_info'],
+        },
+        createdAt: new Date('2026-04-06T21:10:01.000Z'),
+        updatedAt: new Date('2026-04-06T21:10:01.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:10:01.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:10:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'chat-4',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it('builds entry mini app links through the canonical entry bot', () => {
     const fixture = createServiceFixture();
 
