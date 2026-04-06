@@ -1,8 +1,6 @@
 import { ModerationService } from './moderation.service';
 
-function createConfigMock(
-  overrides: Partial<Record<string, string | number | boolean>> = {},
-) {
+function createConfigMock(overrides: Partial<Record<string, string | number | boolean>> = {}) {
   return {
     get: jest.fn((key: string) => {
       if (key in overrides) {
@@ -27,6 +25,9 @@ function createConfigMock(
 
 describe('ModerationService manual group close polling', () => {
   it('deletes fresh non-admin messages in manually closed chats via background polling', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
     const prisma = {
       chatSettings: {
         findMany: jest.fn().mockResolvedValue([
@@ -136,9 +137,13 @@ describe('ModerationService manual group close polling', () => {
         }),
       }),
     );
+    dateNowSpy.mockRestore();
   });
 
   it('does not re-delete the same message after the scan state advances', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
     const prisma = {
       chatSettings: {
         findMany: jest.fn().mockResolvedValue([
@@ -199,5 +204,69 @@ describe('ModerationService manual group close polling', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
       immediate: true,
     });
+    dateNowSpy.mockRestore();
+  });
+
+  it('backs off manual group close scans after terminal MAX access errors', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockRejectedValue({
+        response: {
+          status: 404,
+          data: {
+            code: 'chat.not.found',
+            message: 'chat not found',
+          },
+        },
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+    await (service as any).processManualGroupCloseChats();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect((service as any).manualGroupCloseScanState.get('chat-1')).toEqual(
+      expect.objectContaining({
+        terminalFailureClosedAtMs: new Date('2026-04-03T23:15:00.000Z').getTime(),
+        terminalFailureReason: 'chat not found',
+      }),
+    );
+    dateNowSpy.mockRestore();
   });
 });

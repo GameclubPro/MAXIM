@@ -154,6 +154,8 @@ type ChannelAutoPostScanState = {
   latestMessageIdsAtTimestamp: string[];
   idleStreak: number;
   nextScanAtMs: number;
+  terminalFailureClosedAtMs: number | null;
+  terminalFailureReason: string | null;
 };
 
 type PendingChatAdminLookup = {
@@ -301,6 +303,7 @@ const DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS = 150;
 const DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS = 2 * 60 * 1_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS = 5_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN = 10;
+const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
@@ -324,6 +327,7 @@ const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
 const GLOBAL_SPAMMER_LOCAL_CHAT_OBSERVATION_TTL_MS = GLOBAL_SPAMMER_REDIS_TTL_SEC * 1_000;
+const GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS = 60_000;
 const GLOBAL_SPAMMER_WARN_MIN_CHATS = 5;
 const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 6;
 const GLOBAL_SPAMMER_WARN_THRESHOLD = 2;
@@ -422,6 +426,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
+  private readonly globalSpammerExemptionCache = new Map<
+    string,
+    {
+      expiresAtMs: number;
+      exempt: boolean;
+    }
+  >();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private webhookHotChatSkipLogAtMs = 0;
   private requiredSubscriptionPressureSkipLogAtMs = 0;
@@ -1094,7 +1105,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const mediaFlags = this.detectMediaFlags(update);
       const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
-        ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds)
+        ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
+            chatId,
+          })
         : new Set<string>();
       this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
       const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
@@ -5793,6 +5806,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const exemptUserIds = await this.resolveGlobalSpammerExemptUserIds(
       rows.map((row) => row.userId),
       adminUserIds,
+      {
+        chatId,
+      },
     );
 
     for (const row of rows) {
@@ -6314,13 +6330,45 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async resolveGlobalSpammerExemptUserIds(
     userIds: readonly string[],
     adminUserIds: readonly string[] | undefined,
+    options: {
+      chatId?: string;
+    } = {},
   ): Promise<Set<string>> {
     if (!Array.isArray(adminUserIds) || adminUserIds.length === 0 || userIds.length === 0) {
       return new Set<string>();
     }
 
+    const normalizedAdminUserIds = [
+      ...new Set(adminUserIds.map((item) => item.trim()).filter(Boolean)),
+    ].sort();
+    const cacheScopeKey = this.buildGlobalSpammerExemptionCacheScopeKey(
+      options.chatId ?? null,
+      normalizedAdminUserIds,
+    );
+    const cachedExemptUserIds = new Set<string>();
+    const unresolvedUserIds: string[] = [];
+    for (const rawUserId of userIds) {
+      const normalizedUserId = rawUserId.trim();
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      const cached = this.readGlobalSpammerExemptionCache(cacheScopeKey, normalizedUserId);
+      if (cached === null) {
+        unresolvedUserIds.push(normalizedUserId);
+        continue;
+      }
+      if (cached) {
+        cachedExemptUserIds.add(normalizedUserId);
+      }
+    }
+
+    if (unresolvedUserIds.length === 0) {
+      return cachedExemptUserIds;
+    }
+
     const adminUserVariants = new Set<string>();
-    for (const adminUserId of adminUserIds) {
+    for (const adminUserId of normalizedAdminUserIds) {
       for (const variant of this.buildUserIdVariants(adminUserId)) {
         adminUserVariants.add(variant);
       }
@@ -6331,12 +6379,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const userIdVariants = new Set<string>();
     const variantToUserIds = new Map<string, Set<string>>();
-    for (const rawUserId of userIds) {
-      const normalizedUserId = rawUserId.trim();
-      if (!normalizedUserId) {
-        continue;
-      }
-
+    for (const normalizedUserId of unresolvedUserIds) {
       for (const variant of this.buildUserIdVariants(normalizedUserId)) {
         userIdVariants.add(variant);
         const matchingUserIds = variantToUserIds.get(variant) ?? new Set<string>();
@@ -6346,7 +6389,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (userIdVariants.size === 0) {
-      return new Set<string>();
+      return cachedExemptUserIds;
     }
 
     const prismaWithAdminGlobalSpammerExemption = this.prisma as unknown as {
@@ -6363,7 +6406,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const adminGlobalSpammerExemptionModel =
       prismaWithAdminGlobalSpammerExemption.adminGlobalSpammerExemption ?? {};
     if (typeof adminGlobalSpammerExemptionModel.findMany !== 'function') {
-      return new Set<string>();
+      return cachedExemptUserIds;
     }
 
     const rows = await adminGlobalSpammerExemptionModel.findMany({
@@ -6380,7 +6423,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const exemptUserIds = new Set<string>();
+    const exemptUserIds = new Set<string>(cachedExemptUserIds);
     for (const row of rows) {
       const matchingUserIds = variantToUserIds.get(row.userId);
       if (!matchingUserIds) {
@@ -6392,7 +6435,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    for (const normalizedUserId of unresolvedUserIds) {
+      this.writeGlobalSpammerExemptionCache(
+        cacheScopeKey,
+        normalizedUserId,
+        exemptUserIds.has(normalizedUserId),
+      );
+    }
+
     return exemptUserIds;
+  }
+
+  private buildGlobalSpammerExemptionCacheScopeKey(
+    chatId: string | null,
+    adminUserIds: readonly string[],
+  ): string {
+    return `${chatId?.trim() || 'global'}|${adminUserIds.join(',')}`;
+  }
+
+  private readGlobalSpammerExemptionCache(scopeKey: string, userId: string): boolean | null {
+    const cacheKey = `${scopeKey}|${userId}`;
+    const cached = this.globalSpammerExemptionCache.get(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    if (cached.expiresAtMs <= Date.now()) {
+      this.globalSpammerExemptionCache.delete(cacheKey);
+      return null;
+    }
+
+    return cached.exempt;
+  }
+
+  private writeGlobalSpammerExemptionCache(
+    scopeKey: string,
+    userId: string,
+    exempt: boolean,
+  ): void {
+    this.globalSpammerExemptionCache.set(`${scopeKey}|${userId}`, {
+      expiresAtMs: Date.now() + GLOBAL_SPAMMER_EXEMPTION_CACHE_TTL_MS,
+      exempt,
+    });
   }
 
   private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
@@ -10863,7 +10946,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<void> {
     const { chatId } = params;
     const existingScanState = this.manualGroupCloseScanState.get(chatId) ?? null;
-    if (existingScanState && Date.now() < existingScanState.nextScanAtMs) {
+    if (!this.isManualGroupCloseScanDue(chatId, params.closedAtMs)) {
       return;
     }
 
@@ -10872,11 +10955,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         capability: 'background_scans',
       })) ?? undefined;
-    const messages = await this.maxClient.listMessages(chatId, {
-      count: 20,
-      trafficClass: 'background',
-      ...(scanBotId ? { botId: scanBotId } : {}),
-    });
+    let messages: Record<string, unknown>[];
+    try {
+      messages = await this.maxClient.listMessages(chatId, {
+        count: 20,
+        trafficClass: 'background',
+        ...(scanBotId ? { botId: scanBotId } : {}),
+      });
+    } catch (error: unknown) {
+      if (this.isTerminalManualGroupCloseScanError(error)) {
+        const nextState = this.createManualGroupCloseTerminalBackoffState(
+          existingScanState,
+          params.closedAtMs,
+          error,
+        );
+        this.manualGroupCloseScanState.set(chatId, nextState);
+        this.logger.warn(
+          {
+            chatId,
+            nextRetryAt: new Date(nextState.nextScanAtMs).toISOString(),
+            reason: nextState.terminalFailureReason,
+          },
+          'Paused manual group close chat scan after a terminal MAX access error',
+        );
+        return;
+      }
+      throw error;
+    }
     const normalizedMessages = messages
       .map((message) => this.parseManualGroupCloseListedMessage(message))
       .filter(
@@ -12658,6 +12763,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return message.includes('bot is not a chat member') || message.includes('not accessible');
   }
 
+  private isTerminalManualGroupCloseScanError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found')
+    );
+  }
+
   private isMaxApiThrottleError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 429) {
@@ -13059,6 +13183,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestMessageIdsAtTimestamp: [],
       idleStreak: 0,
       nextScanAtMs: 0,
+      terminalFailureClosedAtMs: null,
+      terminalFailureReason: null,
     };
   }
 
@@ -13102,12 +13228,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.channelAutoPostStartupTimer.unref();
   }
 
-  private selectManualGroupCloseScanBatch<T extends { chatId: string }>(
+  private selectManualGroupCloseScanBatch<T extends { chatId: string; updatedAt: Date }>(
     chats: T[],
     maxChats = this.manualGroupCloseScanMaxChats,
   ): T[] {
     const normalizedMaxChats = Math.max(1, Math.min(maxChats, this.manualGroupCloseScanMaxChats));
-    const dueChats = chats.filter((chat) => this.isManualGroupCloseScanDue(chat.chatId));
+    const dueChats = chats.filter((chat) =>
+      this.isManualGroupCloseScanDue(chat.chatId, chat.updatedAt.getTime()),
+    );
     if (dueChats.length === 0) {
       return [];
     }
@@ -13126,9 +13254,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return batch;
   }
 
-  private isManualGroupCloseScanDue(chatId: string): boolean {
+  private isManualGroupCloseScanDue(chatId: string, closedAtMs: number): boolean {
     const current = this.manualGroupCloseScanState.get(chatId) ?? null;
-    return !current || Date.now() >= current.nextScanAtMs;
+    if (!current) {
+      return true;
+    }
+    if (
+      current.terminalFailureClosedAtMs !== null &&
+      current.terminalFailureClosedAtMs !== closedAtMs
+    ) {
+      return true;
+    }
+
+    return Date.now() >= current.nextScanAtMs;
   }
 
   private isManualGroupCloseScanMessageNew(
@@ -13202,6 +13340,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...current,
       idleStreak,
       nextScanAtMs: Date.now() + nextDelayMs,
+      terminalFailureClosedAtMs: null,
+      terminalFailureReason: null,
     };
   }
 
@@ -13211,6 +13351,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestMessageIdsAtTimestamp: [],
       idleStreak: 0,
       nextScanAtMs: 0,
+      terminalFailureClosedAtMs: null,
+      terminalFailureReason: null,
+    };
+  }
+
+  private createManualGroupCloseTerminalBackoffState(
+    scanState: ChannelAutoPostScanState | null,
+    closedAtMs: number,
+    error: unknown,
+  ): ChannelAutoPostScanState {
+    const current = scanState ?? this.createManualGroupCloseScanState();
+    return {
+      ...current,
+      idleStreak: 0,
+      nextScanAtMs: Date.now() + MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS,
+      terminalFailureClosedAtMs: closedAtMs,
+      terminalFailureReason: this.extractMaxErrorMessage(error),
     };
   }
 

@@ -404,7 +404,7 @@ describe('ChatContextCacheService', () => {
       ChatContextCacheService.adminAccessKey('chat-1', 'user-1'),
       'granted',
       'EX',
-      300,
+      900,
     );
 
     redisInstance.get.mockResolvedValueOnce('bot_denied');
@@ -628,7 +628,10 @@ describe('ChatContextCacheService', () => {
       multi: jest.Mock;
       del: jest.Mock;
     };
-    const exec = jest.fn().mockResolvedValue([[null, 3], [null, 1]]);
+    const exec = jest.fn().mockResolvedValue([
+      [null, 3],
+      [null, 1],
+    ]);
     redisInstance.multi.mockReturnValue({
       incr: jest.fn().mockReturnThis(),
       expire: jest.fn().mockReturnThis(),

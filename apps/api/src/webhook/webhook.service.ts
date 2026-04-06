@@ -23,6 +23,13 @@ const BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS = 60 * 1_000;
 const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
+const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
+  'message_created',
+  'message_callback',
+  'bot_started',
+  'bot_added',
+]);
+const MEMBERSHIP_ACTIVITY_UPDATE_TYPES = new Set(['user_added', 'user_removed']);
 
 @Injectable()
 export class WebhookService {
@@ -146,6 +153,7 @@ export class WebhookService {
         status: WebhookStatus.RECEIVED,
       },
     });
+    await this.persistAdminReadModels(update);
   }
 
   private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<string | null> {
@@ -173,12 +181,14 @@ export class WebhookService {
         entityType,
         botId: update.botId,
       });
-      const executionOwnerBotId = await this.maybeFailOverExecutionOwner({
-        update,
-        chatId,
-        incomingBotId: update.botId ?? null,
-        currentOwnerBotId: boundBotId,
-      });
+      const executionOwnerBotId = this.shouldRefreshExecutionOwnerFromWebhook(update, boundBotId)
+        ? await this.maybeFailOverExecutionOwner({
+            update,
+            chatId,
+            incomingBotId: update.botId ?? null,
+            currentOwnerBotId: boundBotId,
+          })
+        : boundBotId;
       this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
       return executionOwnerBotId;
     } catch (error: unknown) {
@@ -252,6 +262,222 @@ export class WebhookService {
     return reassignedBotId ?? params.currentOwnerBotId;
   }
 
+  private shouldRefreshExecutionOwnerFromWebhook(
+    update: MaxUpdate,
+    currentOwnerBotId: string | null,
+  ): boolean {
+    const normalizedType = update.type.trim().toLowerCase();
+    if (
+      normalizedType === 'bot_added' ||
+      normalizedType === 'bot_started' ||
+      normalizedType === 'chat_title_changed'
+    ) {
+      return true;
+    }
+
+    if (normalizedType !== 'message_created' && normalizedType !== 'message_callback') {
+      return false;
+    }
+
+    const incomingBotId = update.botId?.trim() ?? '';
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!incomingBotId || !currentOwnerBotId || !chatId || incomingBotId === currentOwnerBotId) {
+      return false;
+    }
+
+    return (
+      this.readCachedBotSelfAccess(this.buildBotSelfAccessCacheKey(chatId, currentOwnerBotId)) ===
+      false
+    );
+  }
+
+  private async persistAdminReadModels(update: MaxUpdate): Promise<void> {
+    const writes: Promise<unknown>[] = [];
+
+    const membershipProjection = this.buildMembershipActivityProjection(update);
+    const membershipModel = (
+      this.prisma as PrismaService & {
+        chatMembershipActivityEvent?: {
+          createMany?: (args: {
+            data: Array<{
+              id: string;
+              dedupeKey: string;
+              botId?: string | null;
+              chatId: string;
+              eventType: string;
+              userId?: string | null;
+              senderName?: string | null;
+              eventAt: Date;
+              createdAt: Date;
+            }>;
+            skipDuplicates?: boolean;
+          }) => Promise<unknown>;
+        };
+      }
+    ).chatMembershipActivityEvent;
+    if (membershipProjection && typeof membershipModel?.createMany === 'function') {
+      writes.push(
+        membershipModel.createMany({
+          data: [membershipProjection],
+          skipDuplicates: true,
+        }),
+      );
+    }
+
+    const managedProjection = this.buildManagedEntityLocalActivityProjection(update);
+    const managedModel = (
+      this.prisma as PrismaService & {
+        managedEntityLocalActivity?: {
+          upsert?: (args: {
+            where: {
+              userId_chatId: {
+                userId: string;
+                chatId: string;
+              };
+            };
+            create: {
+              userId: string;
+              chatId: string;
+              entityType: ChatEntityType;
+              chatTitle?: string | null;
+              sourceEventType: string;
+              botId?: string | null;
+              lastEventAt: Date;
+            };
+            update: {
+              entityType: ChatEntityType;
+              chatTitle?: string | null;
+              sourceEventType: string;
+              botId?: string | null;
+              lastEventAt: Date;
+            };
+          }) => Promise<unknown>;
+        };
+      }
+    ).managedEntityLocalActivity;
+    if (managedProjection && typeof managedModel?.upsert === 'function') {
+      const baseWrite = {
+        entityType: managedProjection.entityType,
+        sourceEventType: managedProjection.sourceEventType,
+        botId: managedProjection.botId ?? null,
+        lastEventAt: managedProjection.lastEventAt,
+        ...(managedProjection.chatTitle ? { chatTitle: managedProjection.chatTitle } : {}),
+      };
+      writes.push(
+        managedModel.upsert({
+          where: {
+            userId_chatId: {
+              userId: managedProjection.userId,
+              chatId: managedProjection.chatId,
+            },
+          },
+          create: {
+            userId: managedProjection.userId,
+            chatId: managedProjection.chatId,
+            ...baseWrite,
+          },
+          update: baseWrite,
+        }),
+      );
+    }
+
+    if (writes.length === 0) {
+      return;
+    }
+
+    const settled = await Promise.allSettled(writes);
+    for (const result of settled) {
+      if (result.status === 'fulfilled') {
+        continue;
+      }
+
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          type: update.type,
+          err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        },
+        'Failed to persist admin read model during webhook ingest',
+      );
+    }
+  }
+
+  private buildMembershipActivityProjection(update: MaxUpdate): {
+    id: string;
+    dedupeKey: string;
+    botId?: string | null;
+    chatId: string;
+    eventType: string;
+    userId?: string | null;
+    senderName?: string | null;
+    eventAt: Date;
+    createdAt: Date;
+  } | null {
+    const normalizedType = update.type.trim().toLowerCase();
+    if (!MEMBERSHIP_ACTIVITY_UPDATE_TYPES.has(normalizedType)) {
+      return null;
+    }
+
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!chatId) {
+      return null;
+    }
+
+    const eventAt = this.resolveUpdateEventAt(update);
+    return {
+      id: update.updateId,
+      dedupeKey: update.updateId,
+      botId: update.botId?.trim() || null,
+      chatId,
+      eventType: normalizedType,
+      userId: update.message?.senderId?.trim() || null,
+      senderName: update.message?.senderName?.trim() || null,
+      eventAt,
+      createdAt: eventAt,
+    };
+  }
+
+  private buildManagedEntityLocalActivityProjection(update: MaxUpdate): {
+    userId: string;
+    chatId: string;
+    entityType: ChatEntityType;
+    chatTitle?: string | null;
+    sourceEventType: string;
+    botId?: string | null;
+    lastEventAt: Date;
+  } | null {
+    const normalizedType = update.type.trim().toLowerCase();
+    if (!MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES.has(normalizedType)) {
+      return null;
+    }
+
+    const userId = update.message?.senderId?.trim() ?? '';
+    const chatId = update.message?.chatId?.trim() ?? '';
+    if (!userId || !chatId) {
+      return null;
+    }
+
+    return {
+      userId,
+      chatId,
+      entityType: this.readWebhookChatEntityType(update) ?? ChatEntityType.CHAT,
+      chatTitle: update.message?.chatTitle?.trim() || null,
+      sourceEventType: normalizedType,
+      botId: update.botId?.trim() || null,
+      lastEventAt: this.resolveUpdateEventAt(update),
+    };
+  }
+
+  private resolveUpdateEventAt(update: MaxUpdate): Date {
+    const createdAtIso = update.message?.createdAt?.trim() ?? '';
+    const parsedTimestamp = createdAtIso ? Date.parse(createdAtIso) : Number.NaN;
+    if (Number.isFinite(parsedTimestamp)) {
+      return new Date(parsedTimestamp);
+    }
+
+    return new Date();
+  }
+
   private async getBotSelfModerationAccessState(
     chatId: string,
     botId: string,
@@ -310,7 +536,9 @@ export class WebhookService {
       canHandleUserFacing,
       expiresAtMs:
         Date.now() +
-        (canHandleUserFacing ? BOT_SELF_ACCESS_CACHE_TTL_MS : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
+        (canHandleUserFacing
+          ? BOT_SELF_ACCESS_CACHE_TTL_MS
+          : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
     });
     this.botSelfAccessBackoffUntilMs.delete(cacheKey);
     await this.persistBotSelfAccessSnapshot(chatId, botId, access);
@@ -387,7 +615,12 @@ export class WebhookService {
     const permissions = Array.from(
       new Set(
         (access.permissions ?? [])
-          .map((permission) => permission.trim().toLowerCase().replace(/[-\s]+/gu, '_'))
+          .map((permission) =>
+            permission
+              .trim()
+              .toLowerCase()
+              .replace(/[-\s]+/gu, '_'),
+          )
           .filter((permission) => permission.length > 0),
       ),
     );

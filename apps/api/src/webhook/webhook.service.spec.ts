@@ -11,8 +11,11 @@ describe('WebhookService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    maxBotLinkService.bindChatToBot.mockReset();
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
+    maxBotLinkService.markChatBotRemoved.mockReset();
     maxBotLinkService.markChatBotRemoved.mockResolvedValue(undefined);
+    maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockReset();
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockResolvedValue(true);
   });
 
@@ -181,7 +184,6 @@ describe('WebhookService', () => {
         '127.0.0.1',
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
-
     await expect(
       service.ingest(
         {
@@ -206,6 +208,99 @@ describe('WebhookService', () => {
       'user-10',
     ]);
     expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists admin read models for membership and managed-entities activity when projection tables are available', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-read-models' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedEntityLocalActivity: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-read-models-1',
+          type: 'user_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-read-models-1',
+            chatId: '-100200',
+            chatTitle: 'Новый чат',
+            entityType: 'channel',
+            senderId: 'user-77',
+            senderName: 'Пользователь',
+            text: '',
+            createdAt: new Date('2026-04-06T00:00:00.000Z').toISOString(),
+          },
+          membership: {
+            action: 'added',
+            memberUserIds: ['user-77'],
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-read-models-2',
+          type: 'message_created',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'mid-read-models-2',
+            chatId: '-100200',
+            chatTitle: 'Новый чат',
+            entityType: 'channel',
+            senderId: 'user-77',
+            senderName: 'Пользователь',
+            text: 'hello',
+            createdAt: new Date('2026-04-06T00:01:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          id: 'u-read-models-1',
+          dedupeKey: 'u-read-models-1',
+          chatId: '-100200',
+          eventType: 'user_added',
+          userId: 'user-77',
+          senderName: 'Пользователь',
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    expect(prisma.managedEntityLocalActivity.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          userId_chatId: {
+            userId: 'user-77',
+            chatId: '-100200',
+          },
+        },
+      }),
+    );
   });
 
   it('marks bot membership removed instead of rebinding it on bot_removed updates', async () => {
@@ -258,7 +353,7 @@ describe('WebhookService', () => {
     );
   });
 
-  it('fails over execution owner to the incoming bot when the stored primary loses moderation access', async () => {
+  it('fails over execution owner to the incoming bot when the current owner is already cached as stale', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-5' }),
@@ -272,20 +367,12 @@ describe('WebhookService', () => {
       get: jest.fn().mockReturnValue(1),
     };
     const maxClient = {
-      getCurrentChatMemberAccess: jest
-        .fn()
-        .mockResolvedValueOnce({
-          userId: 'id613002203036_bot',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['can_call'],
-        })
-        .mockResolvedValueOnce({
-          userId: 'id613002203036_4_bot',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['write', 'read_all_messages'],
-        }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValueOnce({
+        userId: 'id613002203036_4_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['write', 'read_all_messages'],
+      }),
     };
     maxBotLinkService.bindChatToBot
       .mockResolvedValueOnce('id613002203036_bot')
@@ -298,6 +385,10 @@ describe('WebhookService', () => {
       undefined,
       maxClient as never,
     );
+    (service as any).botSelfAccessCache.set('-100123:id613002203036_bot', {
+      canHandleUserFacing: false,
+      expiresAtMs: Date.now() + 60_000,
+    });
 
     await expect(
       service.ingest(
@@ -318,17 +409,9 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
       1,
-      '-100123',
-      expect.objectContaining({
-        botId: 'id613002203036_bot',
-        trafficClass: 'interactive',
-        timeoutMs: 900,
-      }),
-    );
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenNthCalledWith(
-      2,
       '-100123',
       expect.objectContaining({
         botId: 'id613002203036_4_bot',
@@ -353,10 +436,10 @@ describe('WebhookService', () => {
         }),
       }),
     );
-    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(2);
+    expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the current owner when it still has moderation access', async () => {
+  it('keeps the current owner on ordinary message updates without running a live failover check', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-6' }),
@@ -406,7 +489,7 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
-    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledTimes(1);
     expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -415,6 +498,78 @@ describe('WebhookService', () => {
             executionOwnerBotId: 'id613002203036_bot',
           }),
         }),
+      }),
+    );
+  });
+
+  it('re-evaluates execution owner on bot lifecycle updates', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-6b' }),
+        updateMany: jest.fn(),
+      },
+      chatBotMembership: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const maxClient = {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['can_call'],
+        })
+        .mockResolvedValueOnce({
+          userId: 'id613002203036_4_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        }),
+    };
+    maxBotLinkService.bindChatToBot
+      .mockResolvedValueOnce('id613002203036_bot')
+      .mockResolvedValueOnce('id613002203036_4_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      maxClient as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-failover-1',
+          type: 'bot_added',
+          botId: 'id613002203036_4_bot',
+          message: {
+            messageId: 'mid-bot-added-1',
+            chatId: '-100140',
+            chatTitle: 'Shared chat',
+            entityType: 'channel',
+            senderId: 'id613002203036_4_bot',
+            text: '',
+            createdAt: new Date('2026-04-06T00:10:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        chatId: '-100140',
+        botId: 'id613002203036_4_bot',
+        allowReassign: true,
       }),
     );
   });

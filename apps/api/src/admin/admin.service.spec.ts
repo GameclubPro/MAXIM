@@ -2982,11 +2982,10 @@ describe('AdminService.getLogsDashboard', () => {
         ['user_added', 'user_removed'],
       ),
     );
-    expect(dedupeSqlText).toContain('SELECT DISTINCT ON (');
-    expect(dedupeSqlText).toContain("normalized_payload->'message'->>'senderId'");
-    expect(dedupeSqlText).toContain("normalized_payload->'message'->>'createdAt'");
-    expect(dedupeSqlText).toContain('ORDER BY');
-    expect(dedupeSqlText).toContain('created_at DESC');
+    expect(dedupeSqlText).toContain('FROM chat_membership_activity_events');
+    expect(dedupeSqlText).toContain('event_at AS created_at');
+    expect(dedupeSqlText).toContain('event_type IN');
+    expect(dedupeSqlText).toContain('ORDER BY event_at DESC, id DESC');
 
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(membershipSqlText).toContain('WITH membership_events AS (');

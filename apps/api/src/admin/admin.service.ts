@@ -437,9 +437,9 @@ const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
-const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 5_000;
+const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
 const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
-const EVENTS_FEED_PAGE_CACHE_TTL_MS = 5_000;
+const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
@@ -1837,14 +1837,17 @@ export class AdminService implements OnModuleDestroy {
       }>
     >`
       SELECT
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
-        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
-      FROM webhook_events
-      WHERE normalized_payload->>'type' = 'bot_added'
-        AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
-        AND created_at >= ${lookbackFrom}
-      ORDER BY created_at DESC
+        chat_id,
+        chat_title,
+        CASE entity_type
+          WHEN 'CHANNEL' THEN 'true'
+          ELSE 'false'
+        END AS is_channel
+      FROM managed_entity_local_activities
+      WHERE user_id = ${normalizedUserId}
+        AND source_event_type = 'bot_added'
+        AND last_event_at >= ${lookbackFrom}
+      ORDER BY last_event_at DESC
       LIMIT ${RECENT_BOT_ADDED_USER_SCOPED_WEBHOOK_SCAN_LIMIT}
     `;
     const globalRows = await managedEntitiesReadPrisma.$queryRaw<
@@ -1855,12 +1858,23 @@ export class AdminService implements OnModuleDestroy {
       }>
     >`
       SELECT
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
-        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
-        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
-      FROM webhook_events
-      WHERE normalized_payload->>'type' = 'bot_added'
-      ORDER BY created_at DESC
+        recent_rows.chat_id,
+        recent_rows.chat_title,
+        recent_rows.is_channel
+      FROM (
+        SELECT DISTINCT ON (chat_id)
+          chat_id,
+          chat_title,
+          CASE entity_type
+            WHEN 'CHANNEL' THEN 'true'
+            ELSE 'false'
+          END AS is_channel,
+          last_event_at
+        FROM managed_entity_local_activities
+        WHERE source_event_type = 'bot_added'
+        ORDER BY chat_id, last_event_at DESC
+      ) AS recent_rows
+      ORDER BY recent_rows.last_event_at DESC
       LIMIT ${RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT}
     `;
 
@@ -3514,7 +3528,89 @@ export class AdminService implements OnModuleDestroy {
 
     const lookbackFrom = new Date(Date.now() - MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS);
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
+    const limit = Math.max(1, options.limit);
     const rows = await managedEntitiesReadPrisma.$queryRaw<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        chat_type: string | null;
+        created_at: Date;
+      }>
+    >`
+      SELECT
+        activities.chat_id,
+        COALESCE(NULLIF(BTRIM(activities.chat_title), ''), chats.title) AS chat_title,
+        COALESCE(
+          CASE activities.entity_type
+            WHEN 'CHANNEL' THEN 'channel'
+            ELSE 'chat'
+          END,
+          CASE chats.entity_type
+            WHEN 'CHANNEL' THEN 'channel'
+            ELSE 'chat'
+          END
+        ) AS chat_type,
+        activities.last_event_at AS created_at
+      FROM managed_entity_local_activities AS activities
+      LEFT JOIN chats ON chats.id = activities.chat_id
+      WHERE activities.user_id = ${normalizedUserId}
+        AND activities.last_event_at >= ${lookbackFrom}
+      ORDER BY activities.last_event_at DESC
+      LIMIT ${limit}
+    `;
+
+    const sourceRows =
+      rows.length > 0
+        ? rows
+        : await this.loadManagedEntitiesLocalDiscoverySnapshotFromWebhookEvents(
+            managedEntitiesReadPrisma,
+            normalizedUserId,
+            lookbackFrom,
+            limit,
+          );
+
+    const snapshot: ManagedEntitiesDiscoverySnapshot = [];
+    for (const row of Array.isArray(sourceRows) ? sourceRows : []) {
+      const chatId = this.readTrimmedString(row.chat_id);
+      if (!chatId) {
+        continue;
+      }
+
+      const hintedEntityType = this.normalizeManagedEntityTypeHint(row.chat_type) ?? 'chat';
+      if (hintedEntityType === 'chat' && this.isPrivateDirectChat(chatId)) {
+        continue;
+      }
+      if (entityType !== 'all' && hintedEntityType !== entityType) {
+        continue;
+      }
+
+      snapshot.push({
+        chatId,
+        title: this.readTrimmedString(row.chat_title) ?? chatId,
+        lastEventTime: row.created_at instanceof Date ? row.created_at.getTime() : 0,
+        entityType: hintedEntityType,
+        link: null,
+        avatarUrl: null,
+      });
+    }
+
+    return snapshot;
+  }
+
+  private async loadManagedEntitiesLocalDiscoverySnapshotFromWebhookEvents(
+    prisma: PrismaClient | Pick<PrismaService, 'chatAdminAllowlist' | '$queryRaw' | 'chat'>,
+    normalizedUserId: string,
+    lookbackFrom: Date,
+    limit: number,
+  ): Promise<
+    Array<{
+      chat_id: string | null;
+      chat_title: string | null;
+      chat_type: string | null;
+      created_at: Date;
+    }>
+  > {
+    return prisma.$queryRaw<
       Array<{
         chat_id: string | null;
         chat_title: string | null;
@@ -3573,35 +3669,8 @@ export class AdminService implements OnModuleDestroy {
       FROM local_candidates
       LEFT JOIN chats ON chats.id = local_candidates.chat_id
       ORDER BY local_candidates.created_at DESC
-      LIMIT ${Math.max(1, options.limit)}
+      LIMIT ${limit}
     `;
-
-    const snapshot: ManagedEntitiesDiscoverySnapshot = [];
-    for (const row of Array.isArray(rows) ? rows : []) {
-      const chatId = this.readTrimmedString(row.chat_id);
-      if (!chatId) {
-        continue;
-      }
-
-      const hintedEntityType = this.normalizeManagedEntityTypeHint(row.chat_type) ?? 'chat';
-      if (hintedEntityType === 'chat' && this.isPrivateDirectChat(chatId)) {
-        continue;
-      }
-      if (entityType !== 'all' && hintedEntityType !== entityType) {
-        continue;
-      }
-
-      snapshot.push({
-        chatId,
-        title: this.readTrimmedString(row.chat_title) ?? chatId,
-        lastEventTime: row.created_at instanceof Date ? row.created_at.getTime() : 0,
-        entityType: hintedEntityType,
-        link: null,
-        avatarUrl: null,
-      });
-    }
-
-    return snapshot;
   }
 
   private async loadManagedEntitiesDeltaPrioritySnapshot(
@@ -4083,7 +4152,9 @@ export class AdminService implements OnModuleDestroy {
     if (preferredBotId) {
       candidateBotIds.add(preferredBotId);
     }
-    for (const botId of await this.resolveCandidateBotIdsForChat(chat.id)) {
+    for (const botId of await this.resolveCandidateBotIdsForChat(chat.id, {
+      includeDiscoveryFallback: true,
+    })) {
       candidateBotIds.add(botId);
     }
 
@@ -7732,7 +7803,9 @@ export class AdminService implements OnModuleDestroy {
           ...((options.observedBotIds ?? []).map(
             (botId) => this.maxBotRegistry?.getBotById(botId)?.id ?? null,
           ) as Array<string | null>),
-          ...(await this.resolveCandidateBotIdsForChat(chatId)),
+          ...(await this.resolveCandidateBotIdsForChat(chatId, {
+            includeDiscoveryFallback: true,
+          })),
         ].filter((botId): botId is string => Boolean(botId)),
       ),
     );
@@ -11884,9 +11957,7 @@ export class AdminService implements OnModuleDestroy {
     query: unknown,
   ): Promise<LogsDashboardResponse> {
     const startedAtMs = Date.now();
-    await this.assertChatAdmin(chatId, user.userId, null, {
-      syncPersistedAccess: false,
-    });
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, null);
     const adminCheckedAtMs = Date.now();
     const parsed = logsDashboardQuerySchema.safeParse(query);
     if (!parsed.success) {
@@ -12150,9 +12221,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<MembershipActivityPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat', {
-      syncPersistedAccess: false,
-    });
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const parsed = membershipActivityQuerySchema.safeParse(query);
@@ -12178,9 +12247,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     query: unknown,
   ): Promise<ModerationFeedPage> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat', {
-      syncPersistedAccess: false,
-    });
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const parsed = moderationFeedQuerySchema.safeParse(query);
@@ -14285,6 +14352,29 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async assertReadOnlyChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType | null = null,
+  ): Promise<void> {
+    const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
+    if (cached === 'granted') {
+      return;
+    }
+
+    if (
+      (await this.hasPersistedChatAccess(chatId, userId)) &&
+      (await this.canUsePersistedChatAccessFallback(chatId))
+    ) {
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+      return;
+    }
+
+    await this.assertChatAdmin(chatId, userId, entityType, {
+      syncPersistedAccess: false,
+    });
+  }
+
   private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
     const toTimestamp = to.getTime();
 
@@ -14768,46 +14858,18 @@ export class AdminService implements OnModuleDestroy {
     eventTypes: readonly string[],
   ): Prisma.Sql {
     return Prisma.sql`
-      SELECT DISTINCT ON (
-        normalized_payload->>'type',
-        normalized_payload->'message'->>'chatId',
-        COALESCE(
-          NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), ''),
-          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), ''),
-          CONCAT('row:', id)
-        ),
-        COALESCE(
-          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
-          CONCAT('row:', id)
-        )
-      )
+      SELECT
         id,
-        COALESCE(
-          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
-          TO_CHAR(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
-        ) AS created_at,
-        normalized_payload->>'type' AS event_type,
-        NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') AS user_id,
-        NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name
-      FROM webhook_events
-      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-        AND normalized_payload->>'type' IN (${Prisma.join(eventTypes)})
-        AND created_at >= ${from}
-        AND created_at <= ${to}
-      ORDER BY
-        normalized_payload->>'type',
-        normalized_payload->'message'->>'chatId',
-        COALESCE(
-          NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), ''),
-          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), ''),
-          CONCAT('row:', id)
-        ),
-        COALESCE(
-          NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), ''),
-          CONCAT('row:', id)
-        ),
-        created_at DESC,
-        id DESC
+        event_at AS created_at,
+        event_type,
+        user_id,
+        sender_name
+      FROM chat_membership_activity_events
+      WHERE chat_id = ${chatId}
+        AND event_type IN (${Prisma.join(eventTypes)})
+        AND event_at >= ${from}
+        AND event_at <= ${to}
+      ORDER BY event_at DESC, id DESC
     `;
   }
 
@@ -15127,20 +15189,14 @@ export class AdminService implements OnModuleDestroy {
     const rows = await this.prisma.$queryRaw<
       Array<{ user_id: string | null; sender_name: string | null }>
     >`
-      SELECT DISTINCT ON (sender_id)
-        sender_id AS user_id,
+      SELECT DISTINCT ON (user_id)
+        user_id,
         sender_name
-      FROM (
-        SELECT
-          normalized_payload->'message'->>'senderId' AS sender_id,
-          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name,
-          created_at
-        FROM webhook_events
-        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
-          AND normalized_payload->'message'->>'senderId' IN (${Prisma.join(normalizedUserIds)})
-      ) AS sender_rows
-      WHERE sender_id IS NOT NULL AND sender_name IS NOT NULL
-      ORDER BY sender_id, created_at DESC
+      FROM chat_membership_activity_events
+      WHERE chat_id = ${chatId}
+        AND user_id IN (${Prisma.join(normalizedUserIds)})
+        AND sender_name IS NOT NULL
+      ORDER BY user_id, event_at DESC
     `;
 
     const byUserId = new Map<string, string>();
@@ -18791,7 +18847,12 @@ export class AdminService implements OnModuleDestroy {
     return null;
   }
 
-  private async resolveCandidateBotIdsForChat(chatId: string): Promise<string[]> {
+  private async resolveCandidateBotIdsForChat(
+    chatId: string,
+    options: {
+      includeDiscoveryFallback?: boolean;
+    } = {},
+  ): Promise<string[]> {
     const persisted = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
@@ -18822,8 +18883,10 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    for (const bot of this.maxBotRegistry?.getDiscoveryBots() ?? []) {
-      resolved.add(bot.id);
+    if (options.includeDiscoveryFallback === true) {
+      for (const bot of this.maxBotRegistry?.getDiscoveryBots() ?? []) {
+        resolved.add(bot.id);
+      }
     }
 
     return [...resolved];
@@ -18944,7 +19007,9 @@ export class AdminService implements OnModuleDestroy {
       timeoutMs?: number;
     } = {},
   ): Promise<AdminAccessResolution> {
-    const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId);
+    const candidateBotIds = await this.resolveCandidateBotIdsForChat(chatId, {
+      includeDiscoveryFallback: false,
+    });
     if (candidateBotIds.length === 0) {
       const resolution = await this.loadRemoteAdminAccessForBot(chatId, userId, null, options);
       if (resolution.status === 'granted') {
