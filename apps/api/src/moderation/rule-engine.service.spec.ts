@@ -1045,7 +1045,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
-  it('does not detect COMMERCIAL_AD for private sale with phone only even on strict sensitivity', async () => {
+  it('detects COMMERCIAL_AD for private sale with phone only on strict sensitivity', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -1058,7 +1058,11 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['contact:phone', 'combo:strict-intent+direct-deal']),
+    );
   });
 
   it('does not detect COMMERCIAL_AD for non-sales request without contacts', async () => {
@@ -1181,6 +1185,48 @@ describe('RuleEngineService', () => {
       expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
     },
   );
+
+  it('detects strict service ad from production-style phone log', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      '8-993-126-15-74 откачка септика 5 кубов. Выезжаем по Вашему звонку !',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'contact:phone',
+        'service-specialty:септик',
+        'service-specialty:откачк',
+        'combo:strict-phone+self-promo',
+      ]),
+    );
+  });
+
+  it('detects strict resale ad with price and phone from production-style log', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Продам Опель Цена 70000 Звонить 89237272466',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'intent:продам',
+        'contact:phone',
+        'transaction:keywords',
+        'combo:strict-intent+direct-deal',
+      ]),
+    );
+  });
 
   it.each([
     'Ремонт квартир, звоните 8 999 123 45 67',

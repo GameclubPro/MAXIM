@@ -322,6 +322,9 @@ const ADS_SERVICE_SPECIALTY_MARKERS = [
   'сиделк',
   'эвакуатор',
   'грузоперевоз',
+  'септик',
+  'откачк',
+  'ассениз',
 ];
 const ADS_RECRUITMENT_MARKERS = [
   'ваканси',
@@ -401,7 +404,9 @@ const ADS_CONTACT_MARKERS = [
   'в директ',
   'директ',
   'звоните',
+  'звонить',
   'обращайтесь',
+  'по телефону',
   'ватсап',
   'whatsapp',
   'вацап',
@@ -528,9 +533,9 @@ const ADS_URGENCY_PATTERN =
 const ADS_QUANTITY_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:шт|штук|шт\.|пачк[\p{L}\p{N}_-]*|упак[\p{L}\p{N}_-]*|остатк[\p{L}\p{N}_-]*|места)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PHONE_PATTERN =
-  /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
+  /(?:^|[^\d])(?:\+7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const DUPLICATE_EXCLUDED_PHONE_PATTERN =
-  /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
+  /(?:^|[^\d])(?:\+7|8)[\s-]*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const THEMATIC_CODEWORD_MIN_LENGTH = 90;
 const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
@@ -1816,6 +1821,35 @@ export class RuleEngineService {
       );
       hasServiceContext = true;
       hasCommercialContext = true;
+    }
+
+    if (
+      profile.sensitivity === 'STRICT' &&
+      hasIntent &&
+      !hasSearchRequestContext &&
+      (hasPhoneContact || hasPrice || hasTransactional || hasDealChannel)
+    ) {
+      addPositive('combo:strict-intent+direct-deal', 16);
+      hasCommercialContext = true;
+    }
+
+    if (
+      profile.sensitivity === 'STRICT' &&
+      hasPhoneContact &&
+      !hasSearchRequestContext &&
+      (hasServiceSpecialtyContext ||
+        hasPromoContext ||
+        hasBusinessContext ||
+        hasBuyoutContext ||
+        hasRecruitmentContext ||
+        hasInfoProductContext ||
+        hasCallToActionContext)
+    ) {
+      addPositive('combo:strict-phone+self-promo', 18);
+      hasCommercialContext = true;
+      if (hasServiceSpecialtyContext) {
+        hasServiceContext = true;
+      }
     }
 
     if (
