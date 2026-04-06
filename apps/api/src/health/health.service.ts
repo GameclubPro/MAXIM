@@ -61,6 +61,7 @@ const READINESS_CACHE_TTL_MS = 2_000;
 const DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 2_000;
 const DEFAULT_READINESS_BUILD_TIMEOUT_MS = 2_500;
 const DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS = 1_500;
+const DEFAULT_READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS = 250;
 const DEFAULT_READINESS_FRESH_HEALTHY_DEPENDENCY_MAX_AGE_MS = 10_000;
 const DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS = 30_000;
 const DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS = 5 * 60_000;
@@ -82,6 +83,7 @@ export class HealthService implements OnModuleDestroy {
   private readonly queueSnapshotMaxAgeMs: number;
   private readonly readinessBuildTimeoutMs: number;
   private readonly readinessDependencyTimeoutMs: number;
+  private readonly readinessOptionalDiagnosticsTimeoutMs: number;
   private readonly readinessFreshHealthyDependencyMaxAgeMs: number;
   private readonly readinessStaleFallbackMaxAgeMs: number;
   private readonly readinessDependencyFallbackMaxAgeMs: number;
@@ -126,6 +128,16 @@ export class HealthService implements OnModuleDestroy {
     this.readinessDependencyTimeoutMs = configService.get<number>(
       'READINESS_DEPENDENCY_TIMEOUT_MS',
       DEFAULT_READINESS_DEPENDENCY_TIMEOUT_MS,
+    );
+    this.readinessOptionalDiagnosticsTimeoutMs = Math.max(
+      1,
+      Math.min(
+        this.readinessBuildTimeoutMs,
+        configService.get<number>(
+          'READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS',
+          DEFAULT_READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS,
+        ),
+      ),
     );
     this.readinessStaleFallbackMaxAgeMs = configService.get<number>(
       'READINESS_STALE_FALLBACK_MAX_AGE_MS',
@@ -173,7 +185,8 @@ export class HealthService implements OnModuleDestroy {
             (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
             this.queueLagThresholdSec,
           queuedEvents:
-            botMetrics.userFacingWebhookEvents?.queued.count ?? botMetrics.webhookEvents.queued.count,
+            botMetrics.userFacingWebhookEvents?.queued.count ??
+            botMetrics.webhookEvents.queued.count,
           receivedEvents:
             botMetrics.userFacingWebhookEvents?.received.count ??
             botMetrics.webhookEvents.received.count,
@@ -208,11 +221,7 @@ export class HealthService implements OnModuleDestroy {
     }
 
     try {
-      return await this.withTimeout(
-        buildPromise,
-        this.readinessBuildTimeoutMs,
-        'readiness build',
-      );
+      return await this.withTimeout(buildPromise, this.readinessBuildTimeoutMs, 'readiness build');
     } catch (error: unknown) {
       if (this.readyPromise === buildPromise) {
         this.readyPromise = null;
@@ -267,20 +276,25 @@ export class HealthService implements OnModuleDestroy {
       null;
     const queueMetricsFallbackDetail = queueMetricsResult.fallbackDetail;
     if (queueMetrics) {
-      await this.runtimeDiagnosticsService?.recordQueueLagSnapshot({
-        queues: queueMetrics,
-        mode: systemMode,
-      });
+      void this.runtimeDiagnosticsService
+        ?.recordQueueLagSnapshot({
+          queues: queueMetrics,
+          mode: systemMode,
+        })
+        .catch(() => undefined);
     }
-    const runtimeDiagnostics = await this.runtimeDiagnosticsService?.getDashboardSnapshot();
+    const runtimeDiagnostics = await this.tryGetRuntimeDiagnosticsSnapshot();
 
     const effectiveLagSec =
-      queueMetrics?.userFacingEffectiveLagSec ?? queueMetrics?.effectiveLagSec ?? systemMode.queueLagSec ?? 0;
+      queueMetrics?.userFacingEffectiveLagSec ??
+      queueMetrics?.effectiveLagSec ??
+      systemMode.queueLagSec ??
+      0;
     const queuedMetrics = queueMetrics
-      ? queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued
+      ? (queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued)
       : { count: 0 };
     const receivedMetrics = queueMetrics
-      ? queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received
+      ? (queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received)
       : { count: 0 };
     const oldestQueuedEventId =
       queueMetrics?.userFacingOldestQueuedEventId ?? queueMetrics?.oldestQueuedEventId ?? null;
@@ -291,7 +305,9 @@ export class HealthService implements OnModuleDestroy {
     const oldestReceivedEventId =
       queueMetrics?.userFacingOldestReceivedEventId ?? queueMetrics?.oldestReceivedEventId ?? null;
     const oldestReceivedCreatedAt =
-      queueMetrics?.userFacingOldestReceivedCreatedAt ?? queueMetrics?.oldestReceivedCreatedAt ?? null;
+      queueMetrics?.userFacingOldestReceivedCreatedAt ??
+      queueMetrics?.oldestReceivedCreatedAt ??
+      null;
     const oldestReceivedLagSec =
       queueMetrics?.userFacingOldestReceivedLagSec ?? queueMetrics?.oldestReceivedLagSec ?? 0;
     const evaluatedAtMs = Date.now();
@@ -425,10 +441,7 @@ export class HealthService implements OnModuleDestroy {
     this.backgroundQueueMetricsRefreshPromise = refreshPromise;
   }
 
-  private updateQueueLagBreachState(
-    rawQueueLagOk: boolean,
-    evaluatedAtMs: number,
-  ): number | null {
+  private updateQueueLagBreachState(rawQueueLagOk: boolean, evaluatedAtMs: number): number | null {
     if (rawQueueLagOk) {
       this.queueLagBreachStartedAtMs = null;
       return null;
@@ -525,7 +538,7 @@ export class HealthService implements OnModuleDestroy {
       timestamp: new Date().toISOString(),
       bots: Object.keys(cachedQueueSnapshot?.bots ?? {}).length
         ? this.mapQueueMetricsBots(cachedQueueSnapshot)
-        : this.readyCache?.bots ?? {},
+        : (this.readyCache?.bots ?? {}),
       systemMode: {
         ...systemMode,
         degraded: systemMode.mode === 'degrade',
@@ -615,6 +628,24 @@ export class HealthService implements OnModuleDestroy {
   private describeReadinessFallback(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
     return `Serving stale readiness data because live readiness evaluation did not finish in ${this.readinessBuildTimeoutMs}ms: ${detail}`;
+  }
+
+  private async tryGetRuntimeDiagnosticsSnapshot(): Promise<Awaited<
+    ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>
+  > | null> {
+    if (!this.runtimeDiagnosticsService) {
+      return null;
+    }
+
+    try {
+      return await this.withTimeout(
+        this.runtimeDiagnosticsService.getDashboardSnapshot(),
+        this.readinessOptionalDiagnosticsTimeoutMs,
+        'runtime diagnostics snapshot',
+      );
+    } catch {
+      return null;
+    }
   }
 
   private async safeDependencyFallbackCheck(
