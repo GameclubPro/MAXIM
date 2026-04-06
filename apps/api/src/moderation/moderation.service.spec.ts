@@ -1,5 +1,6 @@
 import type { MaxUpdate } from '@maxim/contracts';
 import { ChatEntityType, EventType, Operator, SanctionAction } from '@prisma/client';
+import { buildActiveMuteStateKey } from './moderation-state.util';
 import { ModerationService } from './moderation.service';
 
 declare global {
@@ -4273,7 +4274,9 @@ describe('ModerationService', () => {
       maxClient as never,
     );
 
-    await expect(service.handleUpdate(createPrivateCommandUpdate('привет'))).resolves.toBeUndefined();
+    await expect(
+      service.handleUpdate(createPrivateCommandUpdate('привет')),
+    ).resolves.toBeUndefined();
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
@@ -5205,6 +5208,163 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('uses cached active mute state before hitting prisma', async () => {
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1000);
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest.fn(),
+      },
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          eventId: 'cached-mute-1',
+          issuedAt: issuedAt.toISOString(),
+          expiresAt: expiresAt.toISOString(),
+          durationHours: 6,
+        }),
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    const result = await (
+      service as unknown as {
+        getActiveMute: (
+          chatId: string,
+          userId: string,
+          fallbackMuteDurationHours: number,
+        ) => Promise<{
+          eventId: string;
+          durationHours: number;
+          issuedAt: Date;
+          expiresAt: Date;
+        } | null>;
+      }
+    ).getActiveMute('chat-1', 'user-1', 6);
+
+    expect(result).toEqual({
+      eventId: 'cached-mute-1',
+      durationHours: 6,
+      issuedAt,
+      expiresAt,
+    });
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('hydrates active mute cache from prisma fallback', async () => {
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: 'evt-mute-1',
+            createdAt: new Date(Date.now() - 60 * 60 * 1000),
+            metadata: null,
+            action: SanctionAction.MUTE,
+            ruleCode: 'COMMERCIAL_AD',
+          })
+          .mockResolvedValueOnce(null),
+      },
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    const result = await (
+      service as unknown as {
+        getActiveMute: (
+          chatId: string,
+          userId: string,
+          fallbackMuteDurationHours: number,
+        ) => Promise<{
+          eventId: string;
+          durationHours: number;
+          issuedAt: Date;
+          expiresAt: Date;
+        } | null>;
+      }
+    ).getActiveMute('chat-1', 'user-1', 6);
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        eventId: 'evt-mute-1',
+        durationHours: 6,
+        issuedAt: expect.any(Date),
+        expiresAt: expect.any(Date),
+      }),
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildActiveMuteStateKey('chat-1', 'user-1'),
+      expect.stringContaining('"eventId":"evt-mute-1"'),
+      expect.any(Number),
+    );
+  });
+
+  it('prefers cached system mode snapshot in moderation hot path', async () => {
+    const cachedSnapshot = {
+      mode: 'degrade' as const,
+      source: 'auto' as const,
+      reason: 'cached snapshot',
+      updatedAt: '2026-04-06T09:00:00.000Z',
+      manualMode: null,
+      queueLagSec: 2,
+      action: {
+        windowSec: 60,
+        total: 10,
+        success: 10,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+    const systemModeService = {
+      peekCachedSnapshot: jest.fn().mockReturnValue(cachedSnapshot),
+      getEffectiveSnapshot: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      systemModeService as never,
+    );
+
+    const result = await (
+      service as unknown as {
+        resolveSystemModeSnapshot: () => Promise<typeof cachedSnapshot>;
+      }
+    ).resolveSystemModeSnapshot();
+
+    expect(result).toBe(cachedSnapshot);
+    expect(systemModeService.getEffectiveSnapshot).not.toHaveBeenCalled();
   });
 
   it('deletes messages during night mode silently when bot notice is disabled', async () => {
@@ -7519,7 +7679,9 @@ describe('ModerationService', () => {
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(
       sentTexts.some((text) =>
-        text.includes('Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.'),
+        text.includes(
+          'Правила привязаны к этому сообщению. Кнопка «Правила» в нарушениях включена.',
+        ),
       ),
     ).toBe(true);
   });
@@ -14171,16 +14333,18 @@ describe('ModerationService', () => {
     let releaseFirstAnswer: VoidFunction | undefined;
     let firstAnswerStarted = false;
     const maxClient = {
-      answerCallback: jest.fn().mockImplementation(async (callbackId: string, _notification, edit) => {
-        if (callbackId === 'callback-poll-1') {
-          firstAnswerStarted = true;
-          await new Promise<void>((resolve) => {
-            releaseFirstAnswer = resolve;
-          });
-        }
+      answerCallback: jest
+        .fn()
+        .mockImplementation(async (callbackId: string, _notification, edit) => {
+          if (callbackId === 'callback-poll-1') {
+            firstAnswerStarted = true;
+            await new Promise<void>((resolve) => {
+              releaseFirstAnswer = resolve;
+            });
+          }
 
-        return edit;
-      }),
+          return edit;
+        }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -14203,9 +14367,14 @@ describe('ModerationService', () => {
       senderId: 'user-2',
       senderName: 'Олег',
     };
-    if (secondUpdate.raw && typeof secondUpdate.raw === 'object' && 'callback' in secondUpdate.raw) {
-      const callback = (secondUpdate.raw as { callback: { callback_id: string; user: { user_id: string } } })
-        .callback;
+    if (
+      secondUpdate.raw &&
+      typeof secondUpdate.raw === 'object' &&
+      'callback' in secondUpdate.raw
+    ) {
+      const callback = (
+        secondUpdate.raw as { callback: { callback_id: string; user: { user_id: string } } }
+      ).callback;
       callback.callback_id = 'callback-poll-2';
       callback.user.user_id = 'user-2';
     }

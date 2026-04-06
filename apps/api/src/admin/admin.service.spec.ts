@@ -12,6 +12,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
+import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { AdminService } from './admin.service';
 
 type ManagedEntityType = 'chat' | 'channel';
@@ -3594,12 +3595,17 @@ describe('AdminService.applyManualModerationAction', () => {
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       kickMember: jest.fn().mockResolvedValue(undefined),
     };
+    const redisCounter = {
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
+      undefined,
+      redisCounter as never,
     );
 
     const result = await service.applyManualModerationAction(
@@ -3640,6 +3646,17 @@ describe('AdminService.applyManualModerationAction', () => {
           actorUserId: 'admin-1',
           action: 'MANUAL_MUTE_MEMBER',
         }),
+      }),
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildActiveMuteStateKey('chat-1', 'user-2'),
+      expect.any(String),
+      expect.any(Number),
+    );
+    const cachedMuteState = JSON.parse(redisCounter.setStringWithTtl.mock.calls[0]?.[1]);
+    expect(cachedMuteState).toEqual(
+      expect.objectContaining({
+        durationHours: 6,
       }),
     );
     expect(result).toEqual({
@@ -4039,6 +4056,7 @@ describe('AdminService.applyManualModerationAction', () => {
     };
     const redisCounter = {
       deleteKeysByPattern: jest.fn().mockResolvedValue(4),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -4066,6 +4084,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
     expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
       buildDuplicateUserPattern('chat-1', 'user-4'),
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildActiveMuteStateKey('chat-1', 'user-4'),
+      '0',
+      expect.any(Number),
     );
     expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
       where: {
@@ -4376,6 +4399,7 @@ describe('AdminService.applyManualModerationAction', () => {
     };
     const redisCounter = {
       deleteKeysByPattern: jest.fn().mockResolvedValue(2),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -4403,6 +4427,11 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
     expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
       buildDuplicateUserPattern('chat-1', 'user-4'),
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      buildActiveMuteStateKey('chat-1', 'user-4'),
+      '0',
+      expect.any(Number),
     );
     expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
       where: {

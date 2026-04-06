@@ -171,6 +171,12 @@ import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
+import {
+  ACTIVE_MUTE_CACHE_SLACK_SEC,
+  ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+  buildActiveMuteStateKey,
+  type CachedActiveMuteState,
+} from '../moderation/moderation-state.util';
 import { RedisCounterService } from '../moderation/redis-counter.service';
 import {
   canUserAccessSystem,
@@ -13777,6 +13783,82 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private async syncManualActiveMuteRuntimeState(params: {
+    chatId: string;
+    targetUserId: string;
+    ruleCode: 'MANUAL_MUTE' | 'MANUAL_UNMUTE' | 'MANUAL_BAN' | 'MANUAL_UNBAN';
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    const cacheKey = buildActiveMuteStateKey(params.chatId, params.targetUserId);
+    if (params.ruleCode === 'MANUAL_MUTE') {
+      const muteDurationHours = params.metadata.muteDurationHours;
+      const muteExpiresAt = params.metadata.muteExpiresAt;
+      const expiresAtMs =
+        typeof muteExpiresAt === 'string' ? Date.parse(muteExpiresAt) : Number.NaN;
+      if (
+        typeof muteDurationHours !== 'number' ||
+        !Number.isInteger(muteDurationHours) ||
+        muteDurationHours < 1 ||
+        !Number.isFinite(expiresAtMs)
+      ) {
+        return;
+      }
+
+      const ttlSec = Math.ceil((expiresAtMs - Date.now()) / 1_000) + ACTIVE_MUTE_CACHE_SLACK_SEC;
+      if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
+        return;
+      }
+
+      try {
+        await setStringWithTtl.call(
+          this.redisCounter,
+          cacheKey,
+          JSON.stringify({
+            eventId: `manual:${params.chatId}:${params.targetUserId}:${expiresAtMs}`,
+            issuedAt: new Date().toISOString(),
+            expiresAt: new Date(expiresAtMs).toISOString(),
+            durationHours: muteDurationHours,
+          } satisfies CachedActiveMuteState),
+          ttlSec,
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            userId: params.targetUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to cache manual active mute runtime state',
+        );
+      }
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        cacheKey,
+        '0',
+        ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to clear manual active mute runtime state',
+      );
+    }
+  }
+
   private async recordManualModerationAction(params: {
     chatId: string;
     targetUserId: string;
@@ -13823,6 +13905,12 @@ export class AdminService implements OnModuleDestroy {
         },
       }),
     ]);
+    await this.syncManualActiveMuteRuntimeState({
+      chatId,
+      targetUserId,
+      ruleCode,
+      metadata,
+    });
     this.invalidateLogsDashboardResponseCache(chatId);
     this.invalidateModerationFeedPageCache(chatId);
   }

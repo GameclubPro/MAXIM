@@ -66,6 +66,12 @@ import {
 } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
+import {
+  ACTIVE_MUTE_CACHE_SLACK_SEC,
+  ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+  buildActiveMuteStateKey,
+  type CachedActiveMuteState,
+} from './moderation-state.util';
 import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -99,6 +105,11 @@ type ActiveMute = {
   expiresAt: Date;
   durationHours: number;
 };
+
+type ActiveMuteCacheReadResult =
+  | { status: 'active'; mute: ActiveMute }
+  | { status: 'inactive' }
+  | { status: 'miss' };
 
 type ChatAdminCheckSource = 'remote' | 'local' | 'remote+local' | 'local_fallback';
 
@@ -2687,6 +2698,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       trackAsGlobalSpammer = true,
     } = params;
     if (action === SanctionAction.MUTE) {
+      await this.rememberActiveMuteState(chatId, userId, {
+        eventId: `runtime:${chatId}:${userId}:${Date.now()}`,
+        issuedAt: new Date(),
+        expiresAt: new Date(Date.now() + muteDurationHours * 60 * 60 * 1000),
+        durationHours: muteDurationHours,
+      });
       await this.sendMuteNotice({
         chatId,
         userId,
@@ -2705,6 +2722,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (action !== SanctionAction.BAN) {
       return;
     }
+
+    await this.rememberInactiveActiveMuteState(chatId, userId);
 
     if (trackAsGlobalSpammer) {
       await this.upsertGlobalSpammerEntry({
@@ -4212,6 +4231,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     fallbackMuteDurationHours: number,
   ): Promise<ActiveMute | null> {
+    const cachedState = await this.readCachedActiveMute(chatId, userId);
+    if (cachedState.status === 'active') {
+      return cachedState.mute;
+    }
+    if (cachedState.status === 'inactive') {
+      return null;
+    }
+
     const [latestSanctionEvent, latestManualLiftEvent] = await Promise.all([
       this.prisma.moderationEvent.findFirst({
         where: {
@@ -4250,6 +4277,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ]);
 
     if (!latestSanctionEvent) {
+      await this.rememberInactiveActiveMuteState(chatId, userId);
       return null;
     }
 
@@ -4257,6 +4285,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestManualLiftEvent &&
       latestManualLiftEvent.createdAt.getTime() > latestSanctionEvent.createdAt.getTime()
     ) {
+      await this.rememberInactiveActiveMuteState(chatId, userId);
       return null;
     }
 
@@ -4269,6 +4298,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (latestAction === SanctionAction.BAN && storedDurationHours !== null);
 
     if (!isTimedMute) {
+      await this.rememberInactiveActiveMuteState(chatId, userId);
       return null;
     }
 
@@ -4277,15 +4307,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       latestSanctionEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
     );
     if (expiresAt.getTime() <= Date.now()) {
+      await this.rememberInactiveActiveMuteState(chatId, userId);
       return null;
     }
 
-    return {
+    const activeMute = {
       eventId: latestSanctionEvent.id,
       issuedAt: latestSanctionEvent.createdAt,
       expiresAt,
       durationHours,
     };
+    await this.rememberActiveMuteState(chatId, userId, activeMute);
+    return activeMute;
   }
 
   private async handleAdminForwardedModerationCommand(params: {
@@ -13335,15 +13368,156 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${safeHours}ч`;
   }
 
+  private async readCachedActiveMute(
+    chatId: string,
+    userId: string,
+  ): Promise<ActiveMuteCacheReadResult> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (typeof getString !== 'function') {
+      return { status: 'miss' };
+    }
+
+    try {
+      const raw = await getString.call(this.redisCounter, buildActiveMuteStateKey(chatId, userId));
+      if (raw === null) {
+        return { status: 'miss' };
+      }
+      if (raw === '0') {
+        return { status: 'inactive' };
+      }
+
+      const parsed = JSON.parse(raw) as Partial<CachedActiveMuteState>;
+      const eventId = typeof parsed.eventId === 'string' ? parsed.eventId.trim() : '';
+      const durationHours =
+        typeof parsed.durationHours === 'number' && Number.isFinite(parsed.durationHours)
+          ? Math.trunc(parsed.durationHours)
+          : Number.NaN;
+      const issuedAtMs =
+        typeof parsed.issuedAt === 'string' ? Date.parse(parsed.issuedAt) : Number.NaN;
+      const expiresAtMs =
+        typeof parsed.expiresAt === 'string' ? Date.parse(parsed.expiresAt) : Number.NaN;
+      if (
+        !eventId ||
+        !Number.isInteger(durationHours) ||
+        durationHours < 1 ||
+        durationHours > MAX_ACTIVE_MUTE_DURATION_HOURS ||
+        !Number.isFinite(issuedAtMs) ||
+        !Number.isFinite(expiresAtMs)
+      ) {
+        return { status: 'miss' };
+      }
+
+      const mute: ActiveMute = {
+        eventId,
+        issuedAt: new Date(issuedAtMs),
+        expiresAt: new Date(expiresAtMs),
+        durationHours,
+      };
+      if (mute.expiresAt.getTime() <= Date.now()) {
+        await this.rememberInactiveActiveMuteState(chatId, userId);
+        return { status: 'miss' };
+      }
+
+      return {
+        status: 'active',
+        mute,
+      };
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read cached active mute state',
+      );
+      return { status: 'miss' };
+    }
+  }
+
+  private async rememberActiveMuteState(
+    chatId: string,
+    userId: string,
+    mute: ActiveMute,
+  ): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    const ttlSec =
+      Math.ceil((mute.expiresAt.getTime() - Date.now()) / 1_000) + ACTIVE_MUTE_CACHE_SLACK_SEC;
+    if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        buildActiveMuteStateKey(chatId, userId),
+        JSON.stringify({
+          eventId: mute.eventId,
+          issuedAt: mute.issuedAt.toISOString(),
+          expiresAt: mute.expiresAt.toISOString(),
+          durationHours: mute.durationHours,
+        } satisfies CachedActiveMuteState),
+        ttlSec,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to cache active mute state',
+      );
+    }
+  }
+
+  private async rememberInactiveActiveMuteState(chatId: string, userId: string): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        buildActiveMuteStateKey(chatId, userId),
+        '0',
+        ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to cache inactive active mute state',
+      );
+    }
+  }
+
   private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
     if (!this.systemModeService) {
       return this.createFallbackSystemModeSnapshot();
     }
 
     const systemModeService = this.systemModeService as SystemModeService & {
+      peekCachedSnapshot?: (maxAgeMs?: number) => SystemModeSnapshot | null;
       getEffectiveSnapshot?: () => Promise<SystemModeSnapshot>;
       getSnapshot?: () => SystemModeSnapshot;
     };
+    if (typeof systemModeService.peekCachedSnapshot === 'function') {
+      const cachedSnapshot = systemModeService.peekCachedSnapshot(30_000);
+      if (cachedSnapshot) {
+        return cachedSnapshot;
+      }
+    }
     if (typeof systemModeService.getEffectiveSnapshot === 'function') {
       return systemModeService.getEffectiveSnapshot();
     }
