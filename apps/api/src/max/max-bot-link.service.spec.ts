@@ -706,6 +706,58 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
+  it('returns ordered moderation action candidates so callers can retry another bot after a terminal failure', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-7', {
+      id: 'chat-7',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-7',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-07T00:40:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-04-07T00:40:00.000Z'),
+        updatedAt: new Date('2026-04-07T00:40:00.000Z'),
+        lastSeenAt: new Date('2026-04-07T00:40:00.000Z'),
+        lastWebhookAt: new Date('2026-04-07T00:40:00.000Z'),
+      },
+      {
+        chatId: 'chat-7',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-07T00:40:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        },
+        createdAt: new Date('2026-04-07T00:40:01.000Z'),
+        updatedAt: new Date('2026-04-07T00:40:01.000Z'),
+        lastSeenAt: new Date('2026-04-07T00:40:01.000Z'),
+        lastWebhookAt: new Date('2026-04-07T00:40:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdsForModerationAction({
+        chatId: 'chat-7',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toEqual(['id613002203036_bot', 'id613002203036_4_bot']);
+  });
+
   it('builds entry mini app links through the canonical entry bot', () => {
     const fixture = createServiceFixture();
 

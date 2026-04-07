@@ -234,6 +234,7 @@ const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
+const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 5 * 60 * 1_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
@@ -429,6 +430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   >();
   private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
+  private readonly moderationActionBotBackoffUntilMs = new Map<string, number>();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly globalSpammerExemptionCache = new Map<
@@ -2797,26 +2799,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
-    const actionBotId = await this.resolveModerationActionBotId({
+    return this.executeModerationActionWithFallback({
       chatId,
       action: 'delete_message',
-      botId: options?.botId,
+      messageId,
+      explicitBotId: options?.botId,
+      operation: async (botId) => {
+        await this.maxClient.deleteMessage(chatId, messageId, {
+          ...(options ?? {}),
+          ...(botId ? { botId } : {}),
+          immediate: true,
+        });
+      },
     });
-    if (actionBotId === null) {
-      this.logSkippedModerationActionDueToPermissions({
-        chatId,
-        action: 'delete_message',
-        messageId,
-      });
-      return false;
-    }
-
-    await this.maxClient.deleteMessage(chatId, messageId, {
-      ...(options ?? {}),
-      ...(actionBotId ? { botId: actionBotId } : {}),
-      immediate: true,
-    });
-    return true;
   }
 
   private async kickMemberImmediately(
@@ -2824,26 +2819,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
-    const actionBotId = await this.resolveModerationActionBotId({
+    return this.executeModerationActionWithFallback({
       chatId,
       action: 'moderate_member',
-      botId: options?.botId,
+      userId,
+      explicitBotId: options?.botId,
+      operation: async (botId) => {
+        await this.maxClient.kickMember(chatId, userId, {
+          ...(options ?? {}),
+          ...(botId ? { botId } : {}),
+          immediate: true,
+        });
+      },
     });
-    if (actionBotId === null) {
-      this.logSkippedModerationActionDueToPermissions({
-        chatId,
-        action: 'moderate_member',
-        userId,
-      });
-      return false;
-    }
-
-    await this.maxClient.kickMember(chatId, userId, {
-      ...(options ?? {}),
-      ...(actionBotId ? { botId: actionBotId } : {}),
-      immediate: true,
-    });
-    return true;
   }
 
   private async banMemberImmediately(
@@ -2851,26 +2839,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     options?: Omit<MaxActionDispatchOptions, 'immediate'>,
   ): Promise<boolean> {
-    const actionBotId = await this.resolveModerationActionBotId({
+    return this.executeModerationActionWithFallback({
       chatId,
       action: 'moderate_member',
-      botId: options?.botId,
+      userId,
+      explicitBotId: options?.botId,
+      operation: async (botId) => {
+        await this.maxClient.banMember(chatId, userId, {
+          ...(options ?? {}),
+          ...(botId ? { botId } : {}),
+          immediate: true,
+        });
+      },
     });
-    if (actionBotId === null) {
-      this.logSkippedModerationActionDueToPermissions({
-        chatId,
-        action: 'moderate_member',
-        userId,
-      });
-      return false;
-    }
-
-    await this.maxClient.banMember(chatId, userId, {
-      ...(options ?? {}),
-      ...(actionBotId ? { botId: actionBotId } : {}),
-      immediate: true,
-    });
-    return true;
   }
 
   private async sendMuteNotice(params: {
@@ -9037,28 +9018,235 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? null;
   }
 
-  private async resolveModerationActionBotId(params: {
+  private async executeModerationActionWithFallback(params: {
     chatId: string;
     action: 'delete_message' | 'moderate_member';
-    botId?: string | null;
-  }): Promise<string | null | undefined> {
-    const explicitBotId =
-      typeof params.botId === 'string' && params.botId.trim().length > 0
-        ? params.botId.trim()
-        : null;
-    if (explicitBotId) {
-      return explicitBotId;
+    explicitBotId?: string | null;
+    messageId?: string;
+    userId?: string;
+    operation: (botId?: string) => Promise<void>;
+  }): Promise<boolean> {
+    const candidateBotIds = await this.resolveModerationActionBotIds(params);
+    if (candidateBotIds.length === 0) {
+      this.logSkippedModerationActionDueToPermissions({
+        chatId: params.chatId,
+        action: params.action,
+        messageId: params.messageId,
+        userId: params.userId,
+      });
+      return false;
     }
 
-    if (typeof this.maxBotLinkService?.resolveBotIdForModerationAction !== 'function') {
-      return undefined;
+    let terminalError: unknown = null;
+    const attemptedBotIds: string[] = [];
+
+    for (const candidateBotId of candidateBotIds) {
+      if (
+        candidateBotId &&
+        this.isModerationActionBotBackoffActive(params.chatId, params.action, candidateBotId)
+      ) {
+        continue;
+      }
+
+      if (candidateBotId) {
+        attemptedBotIds.push(candidateBotId);
+      }
+
+      try {
+        await params.operation(candidateBotId ?? undefined);
+        if (candidateBotId) {
+          this.clearModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
+        }
+        return true;
+      } catch (error: unknown) {
+        if (!this.isTerminalModerationActionPermissionError(error)) {
+          throw error;
+        }
+
+        terminalError = error;
+        if (candidateBotId) {
+          this.rememberModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
+        }
+      }
     }
 
-    return this.maxBotLinkService.resolveBotIdForModerationAction({
+    if (terminalError) {
+      this.logSkippedModerationActionAfterTerminalError({
+        chatId: params.chatId,
+        action: params.action,
+        messageId: params.messageId,
+        userId: params.userId,
+        attemptedBotIds,
+        error: terminalError,
+      });
+      return false;
+    }
+
+    this.logSkippedModerationActionDueToPermissions({
       chatId: params.chatId,
       action: params.action,
-      fallbackToPrimary: false,
+      messageId: params.messageId,
+      userId: params.userId,
     });
+    return false;
+  }
+
+  private async resolveModerationActionBotIds(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    explicitBotId?: string | null;
+  }): Promise<Array<string | null>> {
+    const explicitBotId =
+      typeof params.explicitBotId === 'string' && params.explicitBotId.trim().length > 0
+        ? params.explicitBotId.trim()
+        : null;
+    if (explicitBotId) {
+      return [explicitBotId];
+    }
+
+    const maxBotLinkService = this.maxBotLinkService as unknown as {
+      resolveBotIdsForModerationAction?: (params: {
+        chatId: string;
+        action: 'delete_message' | 'moderate_member';
+        fallbackToPrimary?: boolean;
+      }) => Promise<string[]>;
+      resolveBotIdForModerationAction?: (params: {
+        chatId: string;
+        action: 'delete_message' | 'moderate_member';
+        fallbackToPrimary?: boolean;
+      }) => Promise<string | null>;
+    };
+
+    if (typeof maxBotLinkService?.resolveBotIdsForModerationAction === 'function') {
+      const resolvedBotIds = await maxBotLinkService.resolveBotIdsForModerationAction({
+        chatId: params.chatId,
+        action: params.action,
+        fallbackToPrimary: false,
+      });
+      return Array.from(
+        new Set(
+          resolvedBotIds
+            .map((botId) => (typeof botId === 'string' ? botId.trim() : ''))
+            .filter((botId) => botId.length > 0),
+        ),
+      );
+    }
+
+    if (typeof maxBotLinkService?.resolveBotIdForModerationAction === 'function') {
+      const resolvedBotId = await maxBotLinkService.resolveBotIdForModerationAction({
+        chatId: params.chatId,
+        action: params.action,
+        fallbackToPrimary: false,
+      });
+      return resolvedBotId ? [resolvedBotId] : [];
+    }
+
+    return [null];
+  }
+
+  private buildModerationActionBotBackoffKey(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+    botId: string,
+  ): string {
+    return `${chatId}:${action}:${botId}`;
+  }
+
+  private isModerationActionBotBackoffActive(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+    botId: string,
+  ): boolean {
+    const cacheKey = this.buildModerationActionBotBackoffKey(chatId, action, botId);
+    const backoffUntilMs = this.moderationActionBotBackoffUntilMs.get(cacheKey) ?? 0;
+    if (backoffUntilMs <= Date.now()) {
+      if (backoffUntilMs > 0) {
+        this.moderationActionBotBackoffUntilMs.delete(cacheKey);
+      }
+      return false;
+    }
+
+    return true;
+  }
+
+  private rememberModerationActionBotBackoff(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+    botId: string,
+  ): void {
+    this.moderationActionBotBackoffUntilMs.set(
+      this.buildModerationActionBotBackoffKey(chatId, action, botId),
+      Date.now() + MODERATION_ACTION_PERMISSION_BACKOFF_MS,
+    );
+  }
+
+  private clearModerationActionBotBackoff(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+    botId: string,
+  ): void {
+    this.moderationActionBotBackoffUntilMs.delete(
+      this.buildModerationActionBotBackoffKey(chatId, action, botId),
+    );
+  }
+
+  private isTerminalModerationActionPermissionError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (
+      code === 'chat.denied' ||
+      code === 'chat.not.found' ||
+      code === 'message.not.found' ||
+      code === 'member.not.found'
+    ) {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found') ||
+      message.includes('message not found') ||
+      message.includes('sufficient rights') ||
+      message.includes('already been deleted') ||
+      message.includes('already deleted')
+    );
+  }
+
+  private logSkippedModerationActionAfterTerminalError(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    messageId?: string;
+    userId?: string;
+    attemptedBotIds: string[];
+    error: unknown;
+  }): void {
+    const cacheKey = `${params.chatId}:${params.action}`;
+    const now = Date.now();
+    const lastLoggedAtMs = this.moderationActionPermissionSkipLogAtMs.get(cacheKey) ?? 0;
+    if (now - lastLoggedAtMs < MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.moderationActionPermissionSkipLogAtMs.set(cacheKey, now);
+    this.logger.warn(
+      {
+        chatId: params.chatId,
+        action: params.action,
+        messageId: params.messageId,
+        userId: params.userId,
+        attemptedBotIds: params.attemptedBotIds,
+        status: this.extractStatusCode(params.error),
+        code: this.extractMaxErrorCode(params.error),
+        error: params.error instanceof Error ? params.error.message : 'Unknown error',
+      },
+      'Skipped moderation action after terminal MAX API error',
+    );
   }
 
   private logSkippedModerationActionDueToPermissions(params: {

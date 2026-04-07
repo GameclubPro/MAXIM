@@ -12871,6 +12871,166 @@ describe('ModerationService', () => {
       );
     });
 
+    it('retries a required-subscription delete with the next eligible bot after a terminal 403', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest
+          .fn()
+          .mockRejectedValueOnce(
+            createMaxApiError(403, 'Request failed with status code 403', 'chat.denied'),
+          )
+          .mockResolvedValueOnce(undefined),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const maxBotLinkService = {
+        getDefaultBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+        getResolvedBotSync: jest.fn().mockReturnValue({
+          id: 'id613002203036_bot',
+          label: 'Майор Максимов',
+          characterName: 'Майор Максимов',
+          speechPersona: 'male',
+        }),
+        isKnownBotUserId: jest.fn().mockReturnValue(false),
+        resolveBotId: jest.fn().mockResolvedValue(null),
+        resolveContactIdSync: jest.fn().mockReturnValue(null),
+        resolveBotIdsForModerationAction: jest
+          .fn()
+          .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+
+      await expect(service.handleUpdate(createUpdate())).resolves.toBeUndefined();
+
+      expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(1, 'chat-1', 'msg-1', {
+        botId: 'id613002203036_bot',
+        immediate: true,
+      });
+      expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(2, 'chat-1', 'msg-1', {
+        botId: 'id613002203036_4_bot',
+        immediate: true,
+      });
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) => args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION_DELETE',
+        ),
+      ).toBe(true);
+    });
+
+    it('fails open for required-subscription deletes after terminal 403 errors from every candidate bot', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest
+          .fn()
+          .mockRejectedValue(
+            createMaxApiError(403, 'Request failed with status code 403', 'chat.denied'),
+          ),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+      const maxBotLinkService = {
+        getDefaultBotId: jest.fn().mockReturnValue('id613002203036_bot'),
+        getResolvedBotSync: jest.fn().mockReturnValue({
+          id: 'id613002203036_bot',
+          label: 'Майор Максимов',
+          characterName: 'Майор Максимов',
+          speechPersona: 'male',
+        }),
+        isKnownBotUserId: jest.fn().mockReturnValue(false),
+        resolveBotId: jest.fn().mockResolvedValue(null),
+        resolveContactIdSync: jest.fn().mockReturnValue(null),
+        resolveBotIdsForModerationAction: jest
+          .fn()
+          .mockResolvedValue(['id613002203036_bot', 'id613002203036_4_bot']),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        maxBotLinkService as never,
+      );
+
+      await expect(service.handleUpdate(createUpdate())).resolves.toBeUndefined();
+
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
+      expect(prisma.violation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-1',
+          ruleCode: 'REQUIRED_SUBSCRIPTION',
+          score: 1,
+        }),
+      });
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) => args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION_DELETE',
+        ),
+      ).toBe(false);
+      expect(
+        prisma.moderationEvent.create.mock.calls.some(
+          ([args]) =>
+            args?.data?.ruleCode === 'REQUIRED_SUBSCRIPTION' &&
+            args?.data?.action === SanctionAction.NONE,
+        ),
+      ).toBe(true);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
     it('refreshes fallback required subscription metadata before naming channels in the bot notice', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const chatContextCache = {

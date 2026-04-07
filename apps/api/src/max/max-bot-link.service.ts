@@ -57,6 +57,20 @@ type MembershipAccessSnapshot = {
   permissions: string[];
 };
 
+type ModerationActionChatRecord =
+  | {
+      entityType: ChatEntityType | null;
+      primaryBotId: string | null;
+      botId: string | null;
+      botMemberships: Array<{
+        botId: string;
+        role: ChatBotMembershipRole;
+        status: ChatBotMembershipStatus;
+        permissionsSnapshot: unknown;
+      }>;
+    }
+  | null;
+
 export type ChatBotExecutionBinding = {
   chatId: string;
   activeBotId: string | null;
@@ -501,9 +515,18 @@ export class MaxBotLinkService {
     action: ModerationActionPermission;
     fallbackToPrimary?: boolean;
   }): Promise<string | null> {
+    const candidateBotIds = await this.resolveBotIdsForModerationAction(params);
+    return candidateBotIds[0] ?? null;
+  }
+
+  async resolveBotIdsForModerationAction(params: {
+    chatId: string;
+    action: ModerationActionPermission;
+    fallbackToPrimary?: boolean;
+  }): Promise<string[]> {
     const chatId = params.chatId.trim();
     if (!chatId) {
-      return null;
+      return [];
     }
 
     const chat = await this.prisma.chat.findUnique({
@@ -523,6 +546,14 @@ export class MaxBotLinkService {
         },
       },
     });
+    return this.buildModerationActionCandidateBotIds(chat, params.action, params.fallbackToPrimary);
+  }
+
+  private buildModerationActionCandidateBotIds(
+    chat: ModerationActionChatRecord,
+    action: ModerationActionPermission,
+    fallbackToPrimary = true,
+  ): string[] {
     const chatEntityType = chat?.entityType ?? null;
     const primaryBotId =
       this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
@@ -534,22 +565,30 @@ export class MaxBotLinkService {
       const bot = this.botRegistry.getBotById(membership.botId);
       return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
     });
-    const actionCapableMembership =
+    const candidateBotIds: string[] = [];
+    const pushCandidate = (botId: string | null | undefined) => {
+      const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+      if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
+        return;
+      }
+      candidateBotIds.push(normalizedBotId);
+    };
+
+    pushCandidate(
       activeActionableMemberships.find((membership) => {
         if (membership.botId !== primaryBotId) {
           return false;
         }
 
         const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return this.hasModerationActionPermission(snapshot, params.action, chatEntityType);
-      }) ??
-      activeActionableMemberships.find((membership) => {
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return this.hasModerationActionPermission(snapshot, params.action, chatEntityType);
-      }) ??
-      null;
-    if (actionCapableMembership) {
-      return actionCapableMembership.botId;
+        return this.hasModerationActionPermission(snapshot, action, chatEntityType);
+      })?.botId ?? null,
+    );
+    for (const membership of activeActionableMemberships) {
+      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      if (this.hasModerationActionPermission(snapshot, action, chatEntityType)) {
+        pushCandidate(membership.botId);
+      }
     }
 
     const primaryActiveMembership =
@@ -561,32 +600,33 @@ export class MaxBotLinkService {
       primaryActiveMembership &&
       !this.membershipExplicitlyLacksModerationAction(
         primaryActiveMembership.permissionsSnapshot,
-        params.action,
+        action,
         chatEntityType,
       )
     ) {
-      return primaryActiveMembership.botId;
+      pushCandidate(primaryActiveMembership.botId);
     }
 
-    const alternateMembership =
-      activeActionableMemberships.find(
-        (membership) =>
-          membership.botId !== primaryBotId &&
-          !this.membershipExplicitlyLacksModerationAction(
-            membership.permissionsSnapshot,
-            params.action,
-            chatEntityType,
-          ),
-      ) ?? null;
-    if (alternateMembership) {
-      return alternateMembership.botId;
+    for (const membership of activeActionableMemberships) {
+      if (
+        membership.botId === primaryBotId ||
+        this.membershipExplicitlyLacksModerationAction(
+          membership.permissionsSnapshot,
+          action,
+          chatEntityType,
+        )
+      ) {
+        continue;
+      }
+      pushCandidate(membership.botId);
     }
 
-    if (params.fallbackToPrimary === false) {
-      return null;
+    if (fallbackToPrimary !== false) {
+      pushCandidate(primaryBotId);
+      pushCandidate(activeActionableMemberships[0]?.botId ?? null);
     }
 
-    return primaryBotId ?? activeActionableMemberships[0]?.botId ?? null;
+    return candidateBotIds;
   }
 
   async resolveBotIdForCapability(params: {
