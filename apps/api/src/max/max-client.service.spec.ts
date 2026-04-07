@@ -336,6 +336,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    mid: 'mid-edit-1',
                     text: 'Текст',
                     format: 'html',
                     attachments: [],
@@ -694,6 +695,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    mid: 'mid-edit-markup-1',
                     text: 'Привет мир',
                     markup: [
                       {
@@ -746,6 +748,98 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('falls back to direct message lookup when batch lookup returns a different message', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-other-1',
+                    text: 'Не тот пост',
+                    attachments: [
+                      {
+                        type: 'image',
+                        payload: { token: 'wrong-image-token' },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              body: {
+                mid: 'mid-edit-fallback-1',
+                text: 'Старый опрос',
+                attachments: [
+                  {
+                    type: 'inline_keyboard',
+                    payload: {
+                      buttons: [[{ type: 'callback', text: 'Да (1)', payload: 'poll|poll-1|1|0' }]],
+                    },
+                  },
+                ],
+              },
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              success: true,
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-fallback-1', 'Итоги опроса', {
+      buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'poll|poll-1|1|0' }]],
+    });
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages/mid-edit-fallback-1',
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          message_id: 'mid-edit-fallback-1',
+        },
+        data: {
+          text: 'Итоги опроса',
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [[{ type: 'callback', text: 'Да (2)', payload: 'poll|poll-1|1|0' }]],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('honors explicit html text format when editing an existing message', async () => {
     const httpService = {
       request: jest
@@ -757,6 +851,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    mid: 'mid-edit-html-1',
                     text: 'Старый текст',
                     attachments: [],
                   },
@@ -810,6 +905,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    mid: 'mid-edit-forward-1',
                     text: '',
                     attachments: [],
                   },
@@ -1273,6 +1369,57 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('recovers the correct post link when batch lookup returns a different message id', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-4b',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-other-4b' },
+                  url: 'https://max.ru/chats/chat-1/message/wrong',
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-4b',
+              url: 'https://max.ru/chats/chat-1/message/correct',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-4b',
+      url: 'https://max.ru/chats/chat-1/message/correct',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages/mid-rules-4b',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('builds chat post link from message id tail when MAX omits direct url fields', async () => {
     const httpService = {
       request: jest
@@ -1294,7 +1441,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     chat_type: 'chat',
                   },
                   body: {
-                    mid: 'mid.ffffbeba0de977f9019cd37c90d90068',
+                    mid: 'mid-rules-5',
                     seq: '116200222364336232',
                   },
                 },

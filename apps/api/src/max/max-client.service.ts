@@ -697,9 +697,18 @@ export class MaxClientService implements OnModuleDestroy {
   ) {
     const message = await this.getMessageById(messageId, requestOptions);
     const attachments = this.buildEditableMessageAttachments(message, options);
+    const sourceBody = this.asRecord(message?.body);
+    const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
+    const shouldForceReplacementText =
+      typeof text === 'string' && text !== sourceText && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
     const messageTextPayload =
       typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
-        ? this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
+        ? shouldForceReplacementText
+          ? {
+              text,
+              textFormat: options?.textFormat ?? null,
+            }
+          : this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
         : null;
 
     await this.executeMutation(
@@ -1864,10 +1873,20 @@ export class MaxClientService implements OnModuleDestroy {
       requestOptions,
     );
     const messages = Array.isArray(data.messages) ? data.messages : [];
-    const firstMessage = messages[0];
-    return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
-      ? (firstMessage as Record<string, unknown>)
-      : null;
+    const matchedMessage = messages.find((message) => {
+      if (!message || typeof message !== 'object' || Array.isArray(message)) {
+        return false;
+      }
+
+      return this.extractMessageIdFromSendResponse(message) === normalizedMessageId;
+    });
+    if (matchedMessage && typeof matchedMessage === 'object' && !Array.isArray(matchedMessage)) {
+      return matchedMessage as Record<string, unknown>;
+    }
+
+    // Some MAX installations ignore `message_ids` filtering and return recent messages instead.
+    // Fall back to the direct message path so edits target the intended post.
+    return this.getMessageByPath(normalizedMessageId, requestOptions);
   }
 
   private async getMessageByPath(
