@@ -8,6 +8,7 @@ type SettingsDrilldownPanelProps = {
   open: boolean;
   title: string;
   summary?: string;
+  tone?: 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
   onClose: () => void;
   children: ReactNode;
   className?: string;
@@ -34,6 +35,7 @@ export function SettingsDrilldownPanel({
   open,
   title,
   summary,
+  tone = 'sky',
   onClose,
   children,
   className,
@@ -113,7 +115,7 @@ export function SettingsDrilldownPanel({
       />
 
       <section
-        className={cn('settings-drilldown__panel', className)}
+        className={cn('settings-drilldown__panel', `settings-drilldown__panel--tone-${tone}`, className)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

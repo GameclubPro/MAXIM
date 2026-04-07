@@ -1190,6 +1190,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           open={expandedSections.comments}
           title="Обсуждение"
           summary={commentsCardSummary}
+          tone="sky"
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
         >
@@ -1295,6 +1296,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           open={expandedSections.postSuggestions}
           title="Предложка"
           summary={postSuggestionsCardSummary}
+          tone="mint"
           onClose={() => toggleSection('postSuggestions')}
           footer={renderChannelSectionFooter('postSuggestions')}
         >
@@ -1404,6 +1406,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           open={expandedSections.broadcast}
           title="Рассылки"
           summary={broadcastHeaderSummary}
+          tone="sky"
           onClose={() => toggleSection('broadcast')}
           footer={showBroadcastPrimaryAction ? broadcastDrilldownFooter : undefined}
         >
@@ -1573,6 +1576,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             open={expandedSections.poll}
             title="Опросы"
             summary="Голосование отдельным постом"
+            tone="ink"
             onClose={() => toggleSection('poll')}
           >
             <div
@@ -1609,6 +1613,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             open={expandedSections.giveaway}
             title="Розыгрыши"
             summary="Управление через бота"
+            tone="amber"
             className="settings-drilldown__panel--giveaway"
             onClose={() => toggleSection('giveaway')}
           >

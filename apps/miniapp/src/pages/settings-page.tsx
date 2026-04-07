@@ -5015,6 +5015,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             id="settings-bot-speech-style"
             open={pendingSpeechStyle !== null}
             title={pendingSpeechStyleMeta?.label ?? 'Стиль речи'}
+            tone="mint"
             onClose={() => {
               if (!isSavingSpeechStyle) {
                 setPendingSpeechStyle(null);
@@ -5138,6 +5139,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.links}
                 title="Ссылки"
                 summary={linksHeaderSummary}
+                tone="sky"
                 onClose={() => toggleSection('links')}
                 footer={renderSectionSaveFooter('links', {
                   note: isLinksKeyboardOpen ? null : undefined,
@@ -5832,6 +5834,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.rules}
                 title="Правила"
                 summary={rulesHeaderSummary}
+                tone="ink"
                 onClose={() => toggleSection('rules')}
               >
                 <div
@@ -6162,6 +6165,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.poll}
                   title="Опросы"
                   summary="Голосование в отдельном посте"
+                  tone="ink"
                   onClose={() => toggleSection('poll')}
                 >
                   <div
@@ -6202,6 +6206,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
                   summary="Создание и управление в личке бота"
+                  tone="amber"
                   className="settings-drilldown__panel--giveaway"
                   onClose={() => toggleSection('giveaway')}
                 >
@@ -6243,6 +6248,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.greeting}
                 title="Приветствие"
                 summary={greetingHeaderSummary}
+                tone="mint"
                 onClose={() => toggleSection('greeting')}
                 footer={renderSectionSaveFooter('greeting')}
               >
@@ -6574,6 +6580,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.profanityFilter}
                 title="Мат и оскорбления"
                 summary={profanityFilterHeaderSummary}
+                tone="rose"
                 onClose={() => toggleSection('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
               >
@@ -6766,6 +6773,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.commercialFilter}
                 title="Коммерческая реклама"
                 summary={commercialFilterHeaderSummary}
+                tone="amber"
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
               >
@@ -7205,6 +7213,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.thematicFilters}
                   title="Кодовые слова"
                   summary={thematicFiltersHeaderSummary}
+                  tone="sky"
                   onClose={() => toggleSection('thematicFilters')}
                   footer={renderSectionSaveFooter('thematicFilters')}
                 >
@@ -7467,6 +7476,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.duplicates}
                 title="Повторы"
                 summary={duplicatesHeaderSummary}
+                tone="rose"
                 onClose={() => toggleSection('duplicates')}
                 footer={renderSectionSaveFooter('duplicates')}
               >
@@ -7857,6 +7867,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.limits}
                 title="Ограничения"
                 summary={`${limitsRulesEnabledCount} ограничений активно`}
+                tone="ink"
                 onClose={() => toggleSection('limits')}
                 footer={renderSectionSaveFooter('limits')}
               >
@@ -8736,6 +8747,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.night}
                 title="Ночной режим"
                 summary={nightHeaderSummary}
+                tone="ink"
                 onClose={() => toggleSection('night')}
                 footer={renderSectionSaveFooter('night')}
               >
@@ -9405,6 +9417,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.mailing}
                 title="Рассылки"
                 summary={mailingHeaderSummary}
+                tone="sky"
                 onClose={() => toggleSection('mailing')}
                 footer={showMailingPrimaryAction ? mailingDrilldownFooter : undefined}
               >
@@ -9776,6 +9789,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.comments}
                 title="Комментарии"
                 summary={commentsCardSummary}
+                tone="mint"
                 onClose={() => toggleSection('comments')}
               >
                 <div
@@ -9923,8 +9937,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       ) : null}
 
                       <p className="settings-drilldown__footer-note">
-                        Изменения сохраняются автоматически после переключения. Кнопка ниже нужна,
-                        если хотите сохранить сразу.
+                        Сохраняется после переключения. Кнопка ниже сохраняет сразу.
                       </p>
                       <div className="settings-drilldown__footer-actions">
                         <button
@@ -9963,9 +9976,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.requiredSubscription}
                 title="Подписка на канал"
                 summary={requiredSubscriptionHeaderSummary}
+                tone="sky"
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  note: 'Сначала сохраните в этом чате, затем при необходимости примените во все чаты.',
+                  note: 'Сначала сохраните в этом чате. Потом можно применить во все чаты.',
                   applyToAllLabel: 'Применить во всех чатах',
                   emphasize: 'save',
                 })}
@@ -10494,6 +10508,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.extra}
                 title="Сервис"
                 summary={extraHeaderSummary}
+                tone="amber"
                 onClose={() => toggleSection('extra')}
                 footer={renderSectionSaveFooter('extra')}
               >
