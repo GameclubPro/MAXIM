@@ -456,7 +456,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
-  it('routes delete moderation actions through the bot with delete permissions', async () => {
+  it('prefers the primary admin bot for group-chat deletes even when a standby bot has an explicit delete alias', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-3', {
       id: 'chat-3',
@@ -505,10 +505,10 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toBe('id613002203036_4_bot');
+    ).resolves.toBe('id613002203036_bot');
   });
 
-  it('returns null for moderation actions when every active bot explicitly lacks the permission', async () => {
+  it('treats a primary admin bot as delete-capable in group chats even without an explicit delete alias', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-4', {
       id: 'chat-4',
@@ -557,10 +557,62 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
+    ).resolves.toBe('id613002203036_bot');
+  });
+
+  it('returns null for member moderation when every active bot explicitly lacks the permission', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-4', {
+      id: 'chat-4',
+      title: 'Restricted chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-4',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:10:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-04-06T21:10:00.000Z'),
+        updatedAt: new Date('2026-04-06T21:10:00.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:10:00.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:10:00.000Z'),
+      },
+      {
+        chatId: 'chat-4',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-06T21:10:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['change_chat_info'],
+        },
+        createdAt: new Date('2026-04-06T21:10:01.000Z'),
+        updatedAt: new Date('2026-04-06T21:10:01.000Z'),
+        lastSeenAt: new Date('2026-04-06T21:10:01.000Z'),
+        lastWebhookAt: new Date('2026-04-06T21:10:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForModerationAction({
+        chatId: 'chat-4',
+        action: 'moderate_member',
+        fallbackToPrimary: false,
+      }),
     ).resolves.toBeNull();
   });
 
-  it('falls back to a standby bot with unknown permissions when the active primary explicitly lacks the action', async () => {
+  it('falls back to a standby bot with unknown permissions when the active primary is not an admin', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-5', {
       id: 'chat-5',
@@ -576,9 +628,9 @@ describe('MaxBotLinkService', () => {
         status: ChatBotMembershipStatus.ACTIVE,
         permissionsSnapshot: {
           checkedAt: '2026-04-07T00:20:00.000Z',
-          isAdmin: true,
+          isAdmin: false,
           isOwner: false,
-          permissions: ['add_remove_members', 'read_all_messages'],
+          permissions: [],
         },
         createdAt: new Date('2026-04-07T00:20:00.000Z'),
         updatedAt: new Date('2026-04-07T00:20:00.000Z'),

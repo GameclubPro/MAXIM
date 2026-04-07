@@ -509,6 +509,7 @@ export class MaxBotLinkService {
     const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
+        entityType: true,
         primaryBotId: true,
         botId: true,
         botMemberships: {
@@ -522,6 +523,7 @@ export class MaxBotLinkService {
         },
       },
     });
+    const chatEntityType = chat?.entityType ?? null;
     const primaryBotId =
       this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
     const activeActionableMemberships = (chat?.botMemberships ?? []).filter((membership) => {
@@ -539,11 +541,11 @@ export class MaxBotLinkService {
         }
 
         const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return this.hasModerationActionPermission(snapshot, params.action);
+        return this.hasModerationActionPermission(snapshot, params.action, chatEntityType);
       }) ??
       activeActionableMemberships.find((membership) => {
         const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return this.hasModerationActionPermission(snapshot, params.action);
+        return this.hasModerationActionPermission(snapshot, params.action, chatEntityType);
       }) ??
       null;
     if (actionCapableMembership) {
@@ -560,6 +562,7 @@ export class MaxBotLinkService {
       !this.membershipExplicitlyLacksModerationAction(
         primaryActiveMembership.permissionsSnapshot,
         params.action,
+        chatEntityType,
       )
     ) {
       return primaryActiveMembership.botId;
@@ -572,6 +575,7 @@ export class MaxBotLinkService {
           !this.membershipExplicitlyLacksModerationAction(
             membership.permissionsSnapshot,
             params.action,
+            chatEntityType,
           ),
       ) ?? null;
     if (alternateMembership) {
@@ -850,6 +854,7 @@ export class MaxBotLinkService {
   private hasModerationActionPermission(
     snapshot: MembershipAccessSnapshot | null,
     action: ModerationActionPermission,
+    entityType: ChatEntityType | null,
   ): boolean {
     if (!snapshot) {
       return false;
@@ -857,6 +862,12 @@ export class MaxBotLinkService {
 
     if (snapshot.isOwner) {
       return true;
+    }
+
+    // MAX group-chat membership snapshots often omit explicit delete aliases
+    // even when the admin bot can delete offending user messages.
+    if (action === 'delete_message' && this.adminImpliesDeleteMessage(entityType)) {
+      return snapshot.isAdmin;
     }
 
     if (snapshot.permissions.length === 0) {
@@ -871,6 +882,7 @@ export class MaxBotLinkService {
   private membershipExplicitlyLacksModerationAction(
     value: unknown,
     action: ModerationActionPermission,
+    entityType: ChatEntityType | null,
   ): boolean {
     const snapshot = this.normalizeMembershipAccessSnapshot(value);
     if (!snapshot) {
@@ -879,6 +891,10 @@ export class MaxBotLinkService {
 
     if (snapshot.isOwner) {
       return false;
+    }
+
+    if (action === 'delete_message' && this.adminImpliesDeleteMessage(entityType)) {
+      return !snapshot.isAdmin;
     }
 
     if (snapshot.permissions.length === 0) {
@@ -902,6 +918,10 @@ export class MaxBotLinkService {
     return action === 'delete_message'
       ? DELETE_MESSAGE_PERMISSION_ALIASES.has(normalized)
       : MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
+  }
+
+  private adminImpliesDeleteMessage(entityType: ChatEntityType | null): boolean {
+    return entityType !== ChatEntityType.CHANNEL;
   }
 
   private normalizePermissionName(permission: unknown): string {
