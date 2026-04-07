@@ -1012,38 +1012,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (senderChatAdminCheck.isAdmin) {
-        const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
+        await this.handleChatAdminModerationBypass({
           update,
           chatId,
           chatTitle,
           senderId,
           senderName,
           messageId,
+          text,
           settings,
+          source: senderChatAdminCheck.source,
         });
-        if (handledAdminCommand) {
-          return;
-        }
-
-        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, true)) {
-          await this.tryAutoAttachChatMessageComments({
-            chatId,
-            messageId,
-            text: typeof text === 'string' && text.trim() ? text : null,
-            senderId,
-            senderIsAdmin: true,
-            update,
-          });
-        }
-
-        this.logger.debug(
-          {
-            chatId,
-            userId: senderId,
-            source: senderChatAdminCheck.source,
-          },
-          'Moderation bypassed for chat admin',
-        );
         return;
       }
 
@@ -1292,6 +1271,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
         }
 
+        return;
+      }
+
+      const violationSenderAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
+        chatId,
+        chat.adminUserIds,
+        senderId,
+        senderChatAdminCheck,
+      );
+      if (violationSenderAdminCheck.isAdmin) {
+        await this.handleChatAdminModerationBypass({
+          update,
+          chatId,
+          chatTitle,
+          senderId,
+          senderName,
+          messageId,
+          text,
+          settings,
+          source: violationSenderAdminCheck.source,
+        });
         return;
       }
 
@@ -9415,6 +9415,115 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
       'admin-check.local-fallback',
       startedAtMs,
+    );
+  }
+
+  private async recheckSenderChatAdminBeforeModeration(
+    chatId: string,
+    localAdminUserIds: string[] | undefined,
+    userId: string,
+    initialResult: ChatAdminCheckResult,
+  ): Promise<ChatAdminCheckResult> {
+    if (initialResult.isAdmin || initialResult.source !== 'local_fallback') {
+      return initialResult;
+    }
+
+    const localAdminsKnown = Array.isArray(localAdminUserIds) && localAdminUserIds.length > 0;
+    if (!localAdminsKnown) {
+      return initialResult;
+    }
+
+    const startedAtMs = Date.now();
+    const cachedRemoteAdminAccess = await this.getRemoteChatAdminAccess(chatId, userId, {
+      allowLookup: false,
+    });
+    if (cachedRemoteAdminAccess === 'granted') {
+      return this.finalizeAdminCheckResult(
+        { isAdmin: true, source: 'remote+local' },
+        'admin-check.violation-cache',
+        startedAtMs,
+      );
+    }
+    if (cachedRemoteAdminAccess === 'user_denied') {
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'remote' },
+        'admin-check.violation-cache',
+        startedAtMs,
+      );
+    }
+
+    const remoteAdminAccess = await this.getRemoteChatAdminAccessWithin(chatId, userId, {
+      maxWaitMs: CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
+    });
+    if (remoteAdminAccess === 'granted') {
+      return this.finalizeAdminCheckResult(
+        { isAdmin: true, source: 'remote+local' },
+        'admin-check.violation-recheck',
+        startedAtMs,
+      );
+    }
+    if (remoteAdminAccess === 'user_denied') {
+      return this.finalizeAdminCheckResult(
+        { isAdmin: false, source: 'remote' },
+        'admin-check.violation-recheck',
+        startedAtMs,
+      );
+    }
+
+    return this.finalizeAdminCheckResult(
+      initialResult,
+      'admin-check.violation-fallback',
+      startedAtMs,
+    );
+  }
+
+  private async handleChatAdminModerationBypass(params: {
+    update: MaxUpdate;
+    chatId: string;
+    chatTitle: string | undefined;
+    senderId: string;
+    senderName: string | undefined;
+    messageId: string | undefined;
+    text: string | undefined;
+    settings: ChatSettings;
+    source: ChatAdminCheckSource;
+  }): Promise<void> {
+    const { update, chatId, chatTitle, senderId, senderName, messageId, text, settings, source } =
+      params;
+
+    if (messageId) {
+      const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
+        update,
+        chatId,
+        senderId,
+        messageId,
+        settings,
+        ...(chatTitle !== undefined ? { chatTitle } : {}),
+        ...(senderName !== undefined ? { senderName } : {}),
+      });
+      if (handledAdminCommand) {
+        return;
+      }
+    }
+
+    if (messageId && this.shouldAutoAttachChatCommentsButton(settings, true)) {
+      await this.tryAutoAttachChatMessageComments({
+        chatId,
+        messageId,
+        text: typeof text === 'string' && text.trim() ? text : null,
+        senderId,
+        senderIsAdmin: true,
+        update,
+      });
+    }
+
+    this.logger.debug(
+      {
+        chatId,
+        userId: senderId,
+        source,
+      },
+      'Moderation bypassed for chat admin',
     );
   }
 
