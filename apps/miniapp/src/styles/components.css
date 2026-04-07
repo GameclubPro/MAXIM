@@ -549,10 +549,10 @@
 
 .channel-settings-screen {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
   align-items: stretch;
-  gap: 8px;
-  width: min(100%, 880px);
+  gap: 10px;
+  width: min(100%, 760px);
   margin: 0 auto;
 }
 
@@ -595,7 +595,7 @@
   gap: 0;
   background: transparent;
   min-width: 0;
-  height: 100%;
+  height: auto;
 }
 
 .glass-card.settings-section,
@@ -4433,4 +4433,3 @@
   font-size: 1.15rem;
   line-height: 1.1;
 }
-

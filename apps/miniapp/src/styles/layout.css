@@ -420,6 +420,20 @@ body.settings-home-page-open .bottom-nav__label {
   grid-column: 1 / -1;
 }
 
+@media (max-width: 720px) {
+  .settings-sections-shell {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 10px;
+  }
+
+  .settings-home-group-head,
+  .settings-home-entry,
+  .settings-home-entry--list,
+  .settings-home-entry--speech {
+    grid-column: 1 / -1;
+  }
+}
+
 .logs-head {
   display: grid;
   gap: var(--space-2);

@@ -31,6 +31,26 @@ type SettingsSectionToggleProps = {
   onClick: () => void;
 };
 
+function ChevronIcon() {
+  return (
+    <svg
+      className="settings-section__chevron-icon"
+      viewBox="0 0 16 16"
+      fill="none"
+      aria-hidden
+      focusable="false"
+    >
+      <path
+        d="m5 6 3 3 3-3"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
   if (name === 'links') {
     return (
@@ -364,34 +384,33 @@ export function SettingsSectionToggle({
   onClick,
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
-  const hasSummary = trimmedSummary.length > 0;
   const trimmedStatus = status?.trim() ?? '';
   const hasStatus = trimmedStatus.length > 0;
+  const accessibleLabel = [title, trimmedStatus, trimmedSummary].filter(Boolean).join('. ');
 
   return (
     <button
       type="button"
-      className={cn(
-        'settings-section__toggle',
-        !hasSummary && 'is-compact',
-        !hasStatus && 'is-stateless',
-      )}
+      className={cn('settings-section__toggle', !hasStatus && 'is-stateless')}
       aria-expanded={open}
       aria-controls={controls}
+      aria-label={accessibleLabel || title}
       onClick={onClick}
     >
-      <span className="settings-section__toggle-top">
-        <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
-          <SettingsSectionIcon name={icon} />
-        </span>
-        {hasStatus ? (
-          <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
-        ) : null}
+      <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
+        <SettingsSectionIcon name={icon} />
       </span>
 
       <span className="settings-section__toggle-main">
         <h3>{title}</h3>
-        {hasSummary ? <small>{trimmedSummary}</small> : null}
+      </span>
+
+      {hasStatus ? (
+        <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
+      ) : null}
+
+      <span className={cn('settings-section__chevron', open && 'is-open')} aria-hidden>
+        <ChevronIcon />
       </span>
     </button>
   );
