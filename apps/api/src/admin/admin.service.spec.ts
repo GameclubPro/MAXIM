@@ -2402,6 +2402,136 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('applies the full night section to every cached chat', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-2',
+      title: 'Клуб соседей',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-03-02T00:00:00.000Z'),
+    });
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Клуб соседей',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'getSettings').mockResolvedValue(
+      chatSettingsSchema.parse({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 6 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+        nightModeBotMessageEnabled: true,
+        nightModeBotMessageText: 'Чат закрыт до утра.',
+        nightModeCommentsEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeOpenMessageText: 'Чат снова открыт.',
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/maxim',
+        nightModeBotButtonText: 'Профиль',
+        nightModeRulesButtonEnabled: true,
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 8,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
+      }),
+    );
+
+    const result = await service.applySettingsSectionToAllChats('chat-1', actor, {
+      section: 'night',
+    });
+
+    expect(result.section).toBe('night');
+    expect(result.updatedChats).toBe(2);
+    expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
+
+    const chat2Call = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-2',
+    )?.[0];
+    expect(chat2Call).toBeDefined();
+    expect(chat2Call?.create?.settings?.create).toEqual(
+      expect.objectContaining({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 6 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+        nightModeBotMessageEnabled: true,
+        nightModeBotMessageText: 'Чат закрыт до утра.',
+        nightModeCommentsEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeOpenMessageText: 'Чат снова открыт.',
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/maxim',
+        nightModeBotButtonText: 'Профиль',
+        nightModeRulesButtonEnabled: true,
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 8,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
+      }),
+    );
+    expect(chat2Call?.update?.settings?.upsert?.update).toEqual(
+      expect.objectContaining({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 6 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+        nightModeBotMessageEnabled: true,
+        nightModeBotMessageText: 'Чат закрыт до утра.',
+        nightModeCommentsEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeOpenMessageText: 'Чат снова открыт.',
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/maxim',
+        nightModeBotButtonText: 'Профиль',
+        nightModeRulesButtonEnabled: true,
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 8,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
+      }),
+    );
+    expect(chat2Call?.update?.settings?.upsert?.create).toEqual(
+      expect.objectContaining({
+        nightModeEnabled: true,
+        nightModeStartTimeMinutes: 23 * 60,
+        nightModeEndTimeMinutes: 6 * 60,
+        nightModeTimezone: 'Europe/Moscow',
+        nightModeBotMessageEnabled: true,
+        nightModeBotMessageText: 'Чат закрыт до утра.',
+        nightModeCommentsEnabled: true,
+        nightModeOpenMessageEnabled: true,
+        nightModeOpenMessageText: 'Чат снова открыт.',
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/maxim',
+        nightModeBotButtonText: 'Профиль',
+        nightModeRulesButtonEnabled: true,
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 8,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: '2099-03-05T03:00:00.000Z',
+      }),
+    );
+  });
+
   it('uses the full mass-action scan when applying settings to all chats', async () => {
     const prisma = createPrismaMock();
     const service = new AdminService(
