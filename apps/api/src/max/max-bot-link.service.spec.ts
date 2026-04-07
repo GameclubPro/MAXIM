@@ -560,7 +560,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBeNull();
   });
 
-  it('does not route moderation actions through a standby bot with unknown permissions when the active primary explicitly lacks the action', async () => {
+  it('falls back to a standby bot with unknown permissions when the active primary explicitly lacks the action', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-5', {
       id: 'chat-5',
@@ -604,7 +604,7 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe('id613002203036_4_bot');
   });
 
   it('still falls back to a standby bot with unknown permissions when there is no active primary membership', async () => {

@@ -566,16 +566,14 @@ export class MaxBotLinkService {
     }
 
     const alternateMembership =
-      primaryActiveMembership === null
-        ? activeActionableMemberships.find(
-            (membership) =>
-              membership.botId !== primaryBotId &&
-              !this.membershipExplicitlyLacksModerationAction(
-                membership.permissionsSnapshot,
-                params.action,
-              ),
-          ) ?? null
-        : null;
+      activeActionableMemberships.find(
+        (membership) =>
+          membership.botId !== primaryBotId &&
+          !this.membershipExplicitlyLacksModerationAction(
+            membership.permissionsSnapshot,
+            params.action,
+          ),
+      ) ?? null;
     if (alternateMembership) {
       return alternateMembership.botId;
     }
