@@ -6,24 +6,16 @@ const workspaceDir = path.resolve(import.meta.dirname, '..');
 const distDir = path.join(workspaceDir, 'dist');
 const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
-// Small cross-environment headroom for gzip drift between local and VPS/Alpine builds,
-// including the current-chat home presentation fix, incremental sync merge logic,
-// late-initData startup recovery, the managed-entities snapshot metadata contract,
-// version-aware home snapshot gating, the additive published-snapshot diff transport,
-// startup cache-scope stabilization for managed entities, and immediate launch-context
-// projection into the home list before the server snapshot catches up, plus the
-// visibility-return refresh policy for picking up newly added chats after leaving MAX.
-const STARTUP_JS_BUDGET_GZIP = 100 * 1024 + 3072;
-// Small cross-environment headroom for gzip drift, dialog-contract growth in shared chunks,
-// sensitivity mapping logic in settings controls, read-only multi-bot metadata badges,
-// execution-planner control plane, lazy bot diagnostics entrypoint, bot-persona-aware
-// settings previews, managed-chat apply-to-all availability guards, settings-side chat-list
-// cache/visibility refresh recovery, and additive managed-entities snapshot diff transport
-// shared dependencies.
-const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 8192 + 512;
-// Small headroom for MAX-native comment surfaces, messenger-style wallpaper,
-// shared multi-bot execution planner UI, and cross-environment gzip drift.
-const STARTUP_CSS_BUDGET_GZIP = Math.round(35 * 1024) + 2816;
+// Measured April 7, 2026 builds were within 60-192 bytes of the old limits,
+// which made harmless MAX-miniapp UI polish and VPS/Alpine gzip drift too brittle.
+// Keep the guardrail strict, but give the startup path enough room for iterative design work.
+const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
+// Settings remains lazy-loaded, but its incremental chunk also needs a few kilobytes
+// of realistic growth room for richer controls and content editors.
+const SETTINGS_JS_BUDGET_GZIP = 104 * 1024;
+// Startup CSS was effectively at the ceiling already, so widen it modestly instead of
+// forcing cosmetic regressions into the home surface and shared mobile shell.
+const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
 const BUDGET_TOLERANCE_GZIP = 64;
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));

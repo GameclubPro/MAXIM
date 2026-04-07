@@ -3,6 +3,7 @@ import type {
   ChannelSettings,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
+import '../styles/lazy-pages.css';
 import {
   startTransition,
   useEffect,

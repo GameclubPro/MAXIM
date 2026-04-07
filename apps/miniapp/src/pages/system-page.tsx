@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import '../styles/lazy-pages.css';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';

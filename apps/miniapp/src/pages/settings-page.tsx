@@ -30,6 +30,7 @@ import {
   type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import '../styles/lazy-pages.css';
 import {
   Suspense,
   lazy,

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
+import '../styles/lazy-pages.css';
 import type { CSSProperties } from 'react';
 import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
