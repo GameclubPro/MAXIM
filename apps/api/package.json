@@ -24,7 +24,8 @@
     "prisma:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts",
-    "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts"
+    "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
+    "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts"
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",
