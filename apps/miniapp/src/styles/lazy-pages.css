@@ -989,11 +989,13 @@
 }
 
 .settings-drilldown .settings-section__collapse {
-  display: flex;
-  flex: 1 1 auto;
-  min-height: 0;
-  grid-template-rows: 1fr;
+  display: block;
+  flex: 0 0 auto;
+  min-height: max-content;
+  height: auto;
+  grid-template-rows: none;
   opacity: 1;
+  overflow: visible;
 }
 
 .settings-drilldown .settings-section__collapse-inner {
