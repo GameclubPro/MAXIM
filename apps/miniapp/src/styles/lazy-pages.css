@@ -1065,12 +1065,7 @@
 }
 
 .settings-drilldown .field::before {
-  content: '';
-  position: absolute;
-  inset: 0 0 auto;
-  height: 6px;
-  border-radius: 24px 24px 0 0;
-  background: linear-gradient(90deg, var(--settings-panel-accent-soft-strong), transparent 68%);
+  content: none;
 }
 
 .settings-drilldown .field > span,
@@ -10328,10 +10323,6 @@
       rgba(255, 255, 255, 0.95);
   }
 
-  .settings-drilldown__panel--ladder .field::before {
-    content: none;
-  }
-
   .settings-drilldown__panel--ladder .settings-native-toggle--nested {
     margin-left: 12px;
     padding-left: 12px;
@@ -10418,10 +10409,6 @@
     min-height: 48px;
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.92);
-  }
-
-  .settings-drilldown__panel--time .field::before {
-    content: none;
   }
 
   .settings-drilldown__panel--night .settings-native-toggle__hint {
