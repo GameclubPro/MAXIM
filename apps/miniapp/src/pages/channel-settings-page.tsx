@@ -1191,6 +1191,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Обсуждение"
           summary={commentsCardSummary}
           tone="sky"
+          className="settings-drilldown__panel--board settings-drilldown__panel--channel-comments"
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
         >
@@ -1297,6 +1298,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Предложка"
           summary={postSuggestionsCardSummary}
           tone="mint"
+          className="settings-drilldown__panel--notice settings-drilldown__panel--post-suggestions"
           onClose={() => toggleSection('postSuggestions')}
           footer={renderChannelSectionFooter('postSuggestions')}
         >
@@ -1407,6 +1409,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Рассылки"
           summary={broadcastHeaderSummary}
           tone="sky"
+          className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast"
           onClose={() => toggleSection('broadcast')}
           footer={showBroadcastPrimaryAction ? broadcastDrilldownFooter : undefined}
         >
@@ -1577,6 +1580,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             title="Опросы"
             summary="Голосование отдельным постом"
             tone="ink"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--poll"
             onClose={() => toggleSection('poll')}
           >
             <div
@@ -1614,7 +1618,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             title="Розыгрыши"
             summary="Управление через бота"
             tone="amber"
-            className="settings-drilldown__panel--giveaway"
+            className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
             onClose={() => toggleSection('giveaway')}
           >
             <div
