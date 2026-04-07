@@ -1075,6 +1075,8 @@
 
 .settings-drilldown .field > span,
 .settings-drilldown .field__label {
+  display: inline-flex;
+  align-items: center;
   width: fit-content;
   max-width: 100%;
   min-height: 24px;
@@ -10139,6 +10141,8 @@
       .settings-drilldown__panel--time,
       .settings-drilldown__panel--campaign
     ) .settings-drilldown__summary {
+    display: inline-flex;
+    align-items: center;
     width: fit-content;
     max-width: 100%;
     padding: 7px 12px;
@@ -10203,11 +10207,7 @@
       .channel-settings-toggle-card,
       .allowlist-panel
     )::before {
-    content: '';
-    position: absolute;
-    inset: 0 0 auto;
-    height: 7px;
-    background: linear-gradient(90deg, var(--settings-mobile-mode-soft), transparent 76%);
+    content: none;
   }
 
   .settings-drilldown__panel--board .policy-grid {
@@ -10264,15 +10264,12 @@
       .bot-message-editor,
       .field
     )::before {
-    content: '';
-    position: absolute;
-    inset: 0 0 auto;
-    height: 6px;
-    background: linear-gradient(90deg, var(--settings-mobile-mode-soft), transparent 82%);
+    content: none;
   }
 
   .settings-drilldown__panel--notice .field {
-    padding: 13px;
+    gap: 14px;
+    padding: 16px 14px 14px;
   }
 
   .settings-drilldown__panel--notice .field input,
@@ -10386,7 +10383,7 @@
   }
 
   .settings-drilldown__panel--time .night-window-grid__field {
-    padding: 12px;
+    padding: 14px 12px 12px;
     border-radius: 22px;
     border: 1px solid var(--settings-mobile-mode-border);
     background:
@@ -10411,6 +10408,10 @@
     min-height: 48px;
     border-radius: 16px;
     background: rgba(255, 255, 255, 0.92);
+  }
+
+  .settings-drilldown__panel--time .field::before {
+    content: none;
   }
 
   .settings-drilldown__panel--night .settings-native-toggle__hint {
@@ -10459,11 +10460,7 @@
       .managed-giveaway__surface,
       .managed-giveaway__subsection
     )::before {
-    content: '';
-    position: absolute;
-    inset: 0 0 auto;
-    height: 8px;
-    background: linear-gradient(90deg, var(--settings-mobile-mode-soft), transparent 78%);
+    content: none;
   }
 
   .settings-drilldown__panel--campaign .broadcast-stage-card__status,
