@@ -751,7 +751,7 @@
 }
 
 .settings-drilldown__body {
-  display: flex;
+  display: block;
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -990,7 +990,8 @@
 
 .settings-drilldown .settings-section__collapse {
   display: block;
-  flex: 0 0 auto;
+  width: 100%;
+  min-width: 0;
   min-height: max-content;
   height: auto;
   grid-template-rows: none;
@@ -1284,6 +1285,9 @@
 }
 
 .settings-drilldown .settings-native-toggle__hint {
+  width: 100%;
+  max-width: 100%;
+  overflow-wrap: anywhere;
   border-color: var(--settings-panel-accent-border);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.76), var(--settings-panel-accent-soft)),
