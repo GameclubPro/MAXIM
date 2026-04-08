@@ -1,6 +1,7 @@
 jest.mock('ioredis', () =>
   jest.fn().mockImplementation(() => ({
     get: jest.fn(),
+    mget: jest.fn(),
     pttl: jest.fn().mockResolvedValue(-2),
     set: jest.fn().mockResolvedValue('OK'),
     del: jest.fn().mockResolvedValue(1),
@@ -485,6 +486,37 @@ describe('ChatContextCacheService', () => {
 
     redisInstance.get.mockResolvedValueOnce('bot_denied');
     await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe('bot_denied');
+  });
+
+  it('reads admin access decisions in batch with a single redis roundtrip', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      {} as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      mget: jest.Mock;
+    };
+    redisInstance.mget.mockResolvedValueOnce(['granted', '0', null]);
+
+    await expect(
+      service.getAdminAccessBatch('chat-1', ['user-1', 'user-2', 'user-3']),
+    ).resolves.toEqual(
+      new Map([
+        ['user-1', 'granted'],
+        ['user-2', 'user_denied'],
+        ['user-3', null],
+      ]),
+    );
+    expect(redisInstance.mget).toHaveBeenCalledWith(
+      ChatContextCacheService.adminAccessKey('chat-1', 'user-1'),
+      ChatContextCacheService.adminAccessKey('chat-1', 'user-2'),
+      ChatContextCacheService.adminAccessKey('chat-1', 'user-3'),
+    );
   });
 
   it('patches cached chat admins without reloading chat context from prisma', async () => {

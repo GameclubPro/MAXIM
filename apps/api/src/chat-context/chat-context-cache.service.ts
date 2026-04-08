@@ -208,23 +208,39 @@ export class ChatContextCacheService implements OnModuleDestroy {
       ChatContextCacheService.adminAccessKey(chatId, userId),
       ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
     );
-    if (raw === null) {
-      return null;
+    return this.parseAdminAccessState(raw);
+  }
+
+  async getAdminAccessBatch(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, ChatAdminAccessState | null>> {
+    const normalizedChatId = chatId.trim();
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
+    );
+    const results = new Map<string, ChatAdminAccessState | null>();
+    if (!normalizedChatId || normalizedUserIds.length === 0) {
+      return results;
     }
 
-    if (raw === 'granted' || raw === 'user_denied' || raw === 'bot_denied') {
-      return raw;
+    const rawStates = await this.readRedisStringsWithin(
+      normalizedUserIds.map((userId) =>
+        ChatContextCacheService.adminAccessKey(normalizedChatId, userId),
+      ),
+      ChatContextCacheService.ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS,
+    );
+    if (!rawStates) {
+      for (const normalizedUserId of normalizedUserIds) {
+        results.set(normalizedUserId, null);
+      }
+      return results;
     }
 
-    if (raw === '1') {
-      return 'granted';
-    }
-
-    if (raw === '0') {
-      return 'user_denied';
-    }
-
-    return null;
+    normalizedUserIds.forEach((normalizedUserId, index) => {
+      results.set(normalizedUserId, this.parseAdminAccessState(rawStates[index] ?? null));
+    });
+    return results;
   }
 
   async setAdminAccess(chatId: string, userId: string, state: ChatAdminAccessState): Promise<void> {
@@ -1220,6 +1236,38 @@ export class ChatContextCacheService implements OnModuleDestroy {
   private async readRedisStringWithin(key: string, maxWaitMs: number): Promise<string | null> {
     const readPromise = this.redis.get(key).catch(() => null);
     return this.runRedisReadWithin(readPromise, maxWaitMs);
+  }
+
+  private async readRedisStringsWithin(
+    keys: readonly string[],
+    maxWaitMs: number,
+  ): Promise<Array<string | null> | null> {
+    if (keys.length === 0) {
+      return [];
+    }
+
+    const readPromise = this.redis.mget(...keys).catch(() => null);
+    return this.runRedisReadWithin(readPromise, maxWaitMs);
+  }
+
+  private parseAdminAccessState(raw: string | null): ChatAdminAccessState | null {
+    if (raw === null) {
+      return null;
+    }
+
+    if (raw === 'granted' || raw === 'user_denied' || raw === 'bot_denied') {
+      return raw;
+    }
+
+    if (raw === '1') {
+      return 'granted';
+    }
+
+    if (raw === '0') {
+      return 'user_denied';
+    }
+
+    return null;
   }
 
   private async runRedisReadWithin<T>(operation: Promise<T>, maxWaitMs: number): Promise<T | null> {

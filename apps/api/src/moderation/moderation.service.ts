@@ -171,6 +171,32 @@ type PendingChatAdminLookupBatch = {
   scheduled: boolean;
 };
 
+type PendingChatAdminSharedCacheRead = {
+  cacheKey: string;
+  userId: string;
+  resolve: (value: RemoteChatAdminAccessState | null) => void;
+  reject: (reason?: unknown) => void;
+};
+
+type PendingChatAdminSharedCacheBatch = {
+  chatId: string;
+  reads: Map<string, PendingChatAdminSharedCacheRead>;
+  scheduled: boolean;
+};
+
+type PendingGlobalSpammerExemptionLookup = {
+  userId: string;
+  resolve: (value: boolean) => void;
+  reject: (reason?: unknown) => void;
+};
+
+type PendingGlobalSpammerExemptionLookupBatch = {
+  scopeKey: string;
+  adminUserIds: string[];
+  lookups: Map<string, PendingGlobalSpammerExemptionLookup>;
+  scheduled: boolean;
+};
+
 type WebhookHotPathProfile = {
   startedAtMs: number;
   lastMarkedAtMs: number;
@@ -403,12 +429,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       state: RemoteChatAdminAccessState;
     }
   >();
+  private readonly chatAdminSharedCacheReadInFlight = new Map<
+    string,
+    Promise<RemoteChatAdminAccessState | null>
+  >();
   private readonly chatAdminLookupInFlight = new Map<
     string,
     Promise<RemoteChatAdminAccessState | null>
   >();
   private readonly chatAdminLookupBackoffUntilMs = new Map<string, number>();
   private readonly chatAdminChatBackoffUntilMs = new Map<string, number>();
+  private readonly pendingChatAdminSharedCacheBatches = new Map<
+    string,
+    PendingChatAdminSharedCacheBatch
+  >();
   private readonly pendingChatAdminLookupBatches = new Map<string, PendingChatAdminLookupBatch>();
   private readonly requiredSubscriptionMembershipCache = new Map<
     string,
@@ -439,6 +473,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       expiresAtMs: number;
       exempt: boolean;
     }
+  >();
+  private readonly globalSpammerExemptionLookupInFlight = new Map<string, Promise<boolean>>();
+  private readonly pendingGlobalSpammerExemptionLookupBatches = new Map<
+    string,
+    PendingGlobalSpammerExemptionLookupBatch
   >();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private webhookHotChatSkipLogAtMs = 0;
@@ -6415,6 +6454,117 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return cachedExemptUserIds;
     }
 
+    const exemptUserIds = new Set<string>(cachedExemptUserIds);
+    const unresolvedLookups = await Promise.all(
+      [...new Set(unresolvedUserIds)].map(async (normalizedUserId) => ({
+        userId: normalizedUserId,
+        exempt: await this.enqueueGlobalSpammerExemptionLookupBatch(
+          cacheScopeKey,
+          normalizedAdminUserIds,
+          normalizedUserId,
+        ),
+      })),
+    );
+
+    for (const lookup of unresolvedLookups) {
+      if (lookup.exempt) {
+        exemptUserIds.add(lookup.userId);
+      }
+    }
+
+    return exemptUserIds;
+  }
+
+  private enqueueGlobalSpammerExemptionLookupBatch(
+    scopeKey: string,
+    adminUserIds: readonly string[],
+    userId: string,
+  ): Promise<boolean> {
+    const cacheKey = `${scopeKey}|${userId}`;
+    const inFlight = this.globalSpammerExemptionLookupInFlight.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
+
+    let batch = this.pendingGlobalSpammerExemptionLookupBatches.get(scopeKey);
+    if (!batch) {
+      batch = {
+        scopeKey,
+        adminUserIds: [...adminUserIds],
+        lookups: new Map(),
+        scheduled: false,
+      };
+      this.pendingGlobalSpammerExemptionLookupBatches.set(scopeKey, batch);
+    }
+
+    const lookupPromise = new Promise<boolean>((resolve, reject) => {
+      batch!.lookups.set(cacheKey, {
+        userId,
+        resolve,
+        reject,
+      });
+    });
+
+    let trackedLookupPromise!: Promise<boolean>;
+    trackedLookupPromise = lookupPromise.finally(() => {
+      if (this.globalSpammerExemptionLookupInFlight.get(cacheKey) === trackedLookupPromise) {
+        this.globalSpammerExemptionLookupInFlight.delete(cacheKey);
+      }
+    });
+
+    this.globalSpammerExemptionLookupInFlight.set(cacheKey, trackedLookupPromise);
+
+    if (!batch.scheduled) {
+      batch.scheduled = true;
+      void Promise.resolve().then(() => this.flushPendingGlobalSpammerExemptionLookupBatch(scopeKey));
+    }
+
+    return trackedLookupPromise;
+  }
+
+  private async flushPendingGlobalSpammerExemptionLookupBatch(scopeKey: string): Promise<void> {
+    const batch = this.pendingGlobalSpammerExemptionLookupBatches.get(scopeKey);
+    if (!batch) {
+      return;
+    }
+
+    this.pendingGlobalSpammerExemptionLookupBatches.delete(scopeKey);
+    const lookups = [...batch.lookups.values()];
+    if (lookups.length === 0) {
+      return;
+    }
+
+    try {
+      const exemptUserIds = await this.loadGlobalSpammerExemptionBatch(
+        batch.adminUserIds,
+        lookups.map((lookup) => lookup.userId),
+      );
+
+      for (const lookup of lookups) {
+        const exempt = exemptUserIds.has(lookup.userId);
+        this.writeGlobalSpammerExemptionCache(scopeKey, lookup.userId, exempt);
+        lookup.resolve(exempt);
+      }
+    } catch (error: unknown) {
+      for (const lookup of lookups) {
+        lookup.reject(error);
+      }
+    }
+  }
+
+  private async loadGlobalSpammerExemptionBatch(
+    adminUserIds: readonly string[],
+    userIds: readonly string[],
+  ): Promise<Set<string>> {
+    const normalizedAdminUserIds = [
+      ...new Set(adminUserIds.map((item) => item.trim()).filter(Boolean)),
+    ].sort();
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    const exemptUserIds = new Set<string>();
+    if (normalizedAdminUserIds.length === 0 || normalizedUserIds.length === 0) {
+      return exemptUserIds;
+    }
+
     const adminUserVariants = new Set<string>();
     for (const adminUserId of normalizedAdminUserIds) {
       for (const variant of this.buildUserIdVariants(adminUserId)) {
@@ -6422,12 +6572,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
     if (adminUserVariants.size === 0) {
-      return new Set<string>();
+      return exemptUserIds;
     }
 
     const userIdVariants = new Set<string>();
     const variantToUserIds = new Map<string, Set<string>>();
-    for (const normalizedUserId of unresolvedUserIds) {
+    for (const normalizedUserId of normalizedUserIds) {
       for (const variant of this.buildUserIdVariants(normalizedUserId)) {
         userIdVariants.add(variant);
         const matchingUserIds = variantToUserIds.get(variant) ?? new Set<string>();
@@ -6435,9 +6585,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         variantToUserIds.set(variant, matchingUserIds);
       }
     }
-
     if (userIdVariants.size === 0) {
-      return cachedExemptUserIds;
+      return exemptUserIds;
     }
 
     const prismaWithAdminGlobalSpammerExemption = this.prisma as unknown as {
@@ -6454,7 +6603,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const adminGlobalSpammerExemptionModel =
       prismaWithAdminGlobalSpammerExemption.adminGlobalSpammerExemption ?? {};
     if (typeof adminGlobalSpammerExemptionModel.findMany !== 'function') {
-      return cachedExemptUserIds;
+      return exemptUserIds;
     }
 
     const rows = await adminGlobalSpammerExemptionModel.findMany({
@@ -6471,7 +6620,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const exemptUserIds = new Set<string>(cachedExemptUserIds);
     for (const row of rows) {
       const matchingUserIds = variantToUserIds.get(row.userId);
       if (!matchingUserIds) {
@@ -6481,14 +6629,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       for (const matchingUserId of matchingUserIds) {
         exemptUserIds.add(matchingUserId);
       }
-    }
-
-    for (const normalizedUserId of unresolvedUserIds) {
-      this.writeGlobalSpammerExemptionCache(
-        cacheScopeKey,
-        normalizedUserId,
-        exemptUserIds.has(normalizedUserId),
-      );
     }
 
     return exemptUserIds;
@@ -9921,26 +10061,174 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     nowMs: number,
   ): Promise<RemoteChatAdminAccessState | null> {
-    if (!this.chatContextCache?.getAdminAccess) {
+    const chatContextCache = this.chatContextCache as
+      | (ChatContextCacheService & {
+          getAdminAccessBatch?: (chatId: string, userIds: readonly string[]) => Promise<
+            Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>
+          >;
+        })
+      | undefined;
+    if (
+      typeof chatContextCache?.getAdminAccess !== 'function' &&
+      typeof chatContextCache?.getAdminAccessBatch !== 'function'
+    ) {
       return null;
     }
 
-    const variants = [...this.buildUserIdVariants(userId)];
-    const cachedStates = await Promise.all(
-      variants.map((variant) => this.chatContextCache!.getAdminAccess(chatId, variant)),
-    );
+    const cacheKey = this.buildChatAdminAccessLookupKey(chatId, userId);
+    const inFlight = this.chatAdminSharedCacheReadInFlight.get(cacheKey);
+    if (inFlight) {
+      return inFlight;
+    }
 
-    for (const cached of cachedStates) {
-      if (cached === 'granted' || cached === 'user_denied') {
-        this.chatAdminAccessCache.set(this.buildChatAdminAccessLookupKey(chatId, userId), {
-          expiresAt: nowMs + CHAT_ADMIN_CACHE_TTL_MS,
-          state: cached,
-        });
-        return cached;
+    return this.enqueueChatAdminSharedCacheReadBatch(chatId, userId, cacheKey, nowMs);
+  }
+
+  private enqueueChatAdminSharedCacheReadBatch(
+    chatId: string,
+    userId: string,
+    cacheKey: string,
+    nowMs: number,
+  ): Promise<RemoteChatAdminAccessState | null> {
+    let batch = this.pendingChatAdminSharedCacheBatches.get(chatId);
+    if (!batch) {
+      batch = {
+        chatId,
+        reads: new Map(),
+        scheduled: false,
+      };
+      this.pendingChatAdminSharedCacheBatches.set(chatId, batch);
+    }
+
+    const readPromise = new Promise<RemoteChatAdminAccessState | null>((resolve, reject) => {
+      batch!.reads.set(cacheKey, {
+        cacheKey,
+        userId,
+        resolve,
+        reject,
+      });
+    });
+
+    let trackedReadPromise!: Promise<RemoteChatAdminAccessState | null>;
+    trackedReadPromise = readPromise.finally(() => {
+      if (this.chatAdminSharedCacheReadInFlight.get(cacheKey) === trackedReadPromise) {
+        this.chatAdminSharedCacheReadInFlight.delete(cacheKey);
+      }
+    });
+
+    this.chatAdminSharedCacheReadInFlight.set(cacheKey, trackedReadPromise);
+
+    if (!batch.scheduled) {
+      batch.scheduled = true;
+      void Promise.resolve().then(() => this.flushPendingChatAdminSharedCacheReadBatch(chatId, nowMs));
+    }
+
+    return trackedReadPromise;
+  }
+
+  private async flushPendingChatAdminSharedCacheReadBatch(
+    chatId: string,
+    nowMs: number,
+  ): Promise<void> {
+    const batch = this.pendingChatAdminSharedCacheBatches.get(chatId);
+    if (!batch) {
+      return;
+    }
+
+    this.pendingChatAdminSharedCacheBatches.delete(chatId);
+    const reads = [...batch.reads.values()];
+    if (reads.length === 0) {
+      return;
+    }
+
+    try {
+      const accessStates = await this.loadSharedChatAdminAccessBatch(
+        chatId,
+        reads.map((read) => read.userId),
+      );
+
+      for (const read of reads) {
+        const normalizedUserId = read.userId.trim();
+        const cached = accessStates.get(normalizedUserId) ?? null;
+        if (cached === 'granted' || cached === 'user_denied') {
+          this.chatAdminAccessCache.set(read.cacheKey, {
+            expiresAt: nowMs + CHAT_ADMIN_CACHE_TTL_MS,
+            state: cached,
+          });
+        }
+        read.resolve(cached);
+      }
+    } catch (error: unknown) {
+      for (const read of reads) {
+        read.reject(error);
+      }
+    }
+  }
+
+  private async loadSharedChatAdminAccessBatch(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, RemoteChatAdminAccessState>> {
+    const chatContextCache = this.chatContextCache as
+      | (ChatContextCacheService & {
+          getAdminAccessBatch?: (chatId: string, userIds: readonly string[]) => Promise<
+            Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>
+          >;
+        })
+      | undefined;
+    const normalizedUserIds = Array.from(
+      new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
+    );
+    const results = new Map<string, RemoteChatAdminAccessState>();
+    if (normalizedUserIds.length === 0 || !chatContextCache) {
+      return results;
+    }
+
+    const userIdVariants = new Map<string, string[]>();
+    const normalizedVariantUserIds: string[] = [];
+    const variantSeen = new Set<string>();
+    for (const normalizedUserId of normalizedUserIds) {
+      const variants = [...this.buildUserIdVariants(normalizedUserId)];
+      userIdVariants.set(normalizedUserId, variants);
+      for (const variant of variants) {
+        if (variantSeen.has(variant)) {
+          continue;
+        }
+        variantSeen.add(variant);
+        normalizedVariantUserIds.push(variant);
       }
     }
 
-    return null;
+    const variantStates = new Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>();
+    if (typeof chatContextCache.getAdminAccessBatch === 'function') {
+      const cachedStates = await chatContextCache.getAdminAccessBatch(
+        chatId,
+        normalizedVariantUserIds,
+      );
+      for (const variant of normalizedVariantUserIds) {
+        variantStates.set(variant, cachedStates.get(variant) ?? null);
+      }
+    } else if (typeof chatContextCache.getAdminAccess === 'function') {
+      const cachedStates = await Promise.all(
+        normalizedVariantUserIds.map((variant) => chatContextCache.getAdminAccess!(chatId, variant)),
+      );
+      normalizedVariantUserIds.forEach((variant, index) => {
+        variantStates.set(variant, cachedStates[index] ?? null);
+      });
+    }
+
+    for (const normalizedUserId of normalizedUserIds) {
+      const variants = userIdVariants.get(normalizedUserId) ?? [];
+      for (const variant of variants) {
+        const cached = variantStates.get(variant);
+        if (cached === 'granted' || cached === 'user_denied') {
+          results.set(normalizedUserId, cached);
+          break;
+        }
+      }
+    }
+
+    return results;
   }
 
   private async writeChatAdminAccessToSharedCache(

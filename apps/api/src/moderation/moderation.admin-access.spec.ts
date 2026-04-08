@@ -276,6 +276,132 @@ describe('ModerationService chat admin access lookups', () => {
     expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
   });
 
+  it('batches shared-cache admin reads within the same chat before remote lookup', async () => {
+    const maxClient = {
+      getChatMembersAccess: jest.fn(),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccess: jest.fn(),
+      getAdminAccessBatch: jest.fn().mockResolvedValue(
+        new Map([
+          ['user-1', 'granted'],
+          ['iduser-1', null],
+          ['user-2', null],
+          ['iduser-2', 'user_denied'],
+        ]),
+      ),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    const [first, second] = await Promise.all([
+      (
+        service as unknown as {
+          getRemoteChatAdminAccess: (
+            chatId: string,
+            userId: string,
+            options?: {
+              allowLookup?: boolean;
+            },
+          ) => Promise<'granted' | 'user_denied' | null>;
+        }
+      ).getRemoteChatAdminAccess('chat-1', 'user-1', {
+        allowLookup: false,
+      }),
+      (
+        service as unknown as {
+          getRemoteChatAdminAccess: (
+            chatId: string,
+            userId: string,
+            options?: {
+              allowLookup?: boolean;
+            },
+          ) => Promise<'granted' | 'user_denied' | null>;
+        }
+      ).getRemoteChatAdminAccess('chat-1', 'user-2', {
+        allowLookup: false,
+      }),
+    ]);
+
+    expect(first).toBe('granted');
+    expect(second).toBe('user_denied');
+    expect(chatContextCache.getAdminAccessBatch).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.getAdminAccessBatch).toHaveBeenCalledWith(
+      'chat-1',
+      expect.arrayContaining(['user-1', 'iduser-1', 'user-2', 'iduser-2']),
+    );
+    expect(chatContextCache.getAdminAccess).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+  });
+
+  it('batches concurrent global spammer exemption lookups within the same admin scope', async () => {
+    const prisma = {
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'iduser-1' }]),
+      },
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const [first, second] = await Promise.all([
+      (
+        service as unknown as {
+          resolveGlobalSpammerExemptUserIds: (
+            userIds: readonly string[],
+            adminUserIds: readonly string[] | undefined,
+            options?: {
+              chatId?: string;
+            },
+          ) => Promise<Set<string>>;
+        }
+      ).resolveGlobalSpammerExemptUserIds(['user-1'], ['admin-1'], {
+        chatId: 'chat-1',
+      }),
+      (
+        service as unknown as {
+          resolveGlobalSpammerExemptUserIds: (
+            userIds: readonly string[],
+            adminUserIds: readonly string[] | undefined,
+            options?: {
+              chatId?: string;
+            },
+          ) => Promise<Set<string>>;
+        }
+      ).resolveGlobalSpammerExemptUserIds(['user-2'], ['admin-1'], {
+        chatId: 'chat-1',
+      }),
+    ]);
+
+    expect(first).toEqual(new Set(['user-1']));
+    expect(second).toEqual(new Set());
+    expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.adminGlobalSpammerExemption.findMany).toHaveBeenCalledWith({
+      where: {
+        adminUserId: {
+          in: expect.arrayContaining(['admin-1', 'idadmin-1']),
+        },
+        userId: {
+          in: expect.arrayContaining(['user-1', 'iduser-1', 'user-2', 'iduser-2']),
+        },
+      },
+      select: {
+        userId: true,
+      },
+    });
+  });
+
   it('patches cached chat context after persisting a remotely confirmed admin grant', async () => {
     const chatContextCache = {
       rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
