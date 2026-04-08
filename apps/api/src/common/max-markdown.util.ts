@@ -11,6 +11,7 @@ type RenderMarkdownOptions = {
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const SUPPORTED_MARKDOWN_PATTERN =
   /(?:^#{1,6}\s+\S.*$|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
+const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
 
 export function containsSupportedMarkdownSyntax(source: string): boolean {
   return SUPPORTED_MARKDOWN_PATTERN.test(source.replace(/\r/g, '').trim());
@@ -122,6 +123,16 @@ function parseInlineTokens(source: string): InlineToken[] {
   };
 
   while (cursor < source.length) {
+    if (
+      source[cursor] === '\\' &&
+      cursor + 1 < source.length &&
+      ESCAPABLE_MARKDOWN_CHARACTERS.has(source[cursor + 1] ?? '')
+    ) {
+      plainText += source[cursor + 1];
+      cursor += 2;
+      continue;
+    }
+
     const token = matchToken(source.slice(cursor));
     if (!token) {
       plainText += source[cursor];

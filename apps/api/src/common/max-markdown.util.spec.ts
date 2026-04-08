@@ -59,6 +59,15 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
+  it('renders escaped markdown punctuation as literal text', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_'),
+    ).toBe('<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>');
+    expect(stripSupportedMarkdownToPlainText('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_')).toBe(
+      'Анонс C++ [beta] (v2) _raw_',
+    );
+  });
+
   it('strips supported markdown to plain text', () => {
     expect(
       stripSupportedMarkdownToPlainText(

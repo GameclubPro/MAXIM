@@ -15091,6 +15091,82 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
   });
 
+  it('renders escaped markdown punctuation as literal text in channel broadcasts', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: false,
+      postSuggestionsButtonText: '📰 Предложить пост',
+      commentsEnabled: false,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'channel-1',
+      '<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>',
+      {
+        textFormat: 'html',
+      },
+      { immediate: true },
+    );
+  });
+
   it('stores scheduled broadcast text without trimming surrounding whitespace', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 

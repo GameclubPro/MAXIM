@@ -207,6 +207,19 @@ function createPrivateFormattedTextUpdate(
   };
 }
 
+function countCodePoints(value: string): number {
+  return Array.from(value).length;
+}
+
+function codePointIndexOf(source: string, value: string): number {
+  const index = source.indexOf(value);
+  if (index < 0) {
+    return -1;
+  }
+
+  return countCodePoints(source.slice(0, index));
+}
+
 function createPrivatePhotoUpdate(options: { text?: string; photoIds?: string[] } = {}): MaxUpdate {
   const text = options.text ?? '';
   const photoIds = options.photoIds && options.photoIds.length > 0 ? options.photoIds : ['photo-1'];
@@ -1899,6 +1912,9 @@ describe('PrivateControlService', () => {
     const secondUrl = 'https://wa.me/79362615370';
     const thirdUrl = 'https://linku.su/ekp4z9j';
     const sourceText = `🔗 ${firstUrl}\n📱 ${secondUrl}\nMAX: ${thirdUrl}`;
+    const firstUrlFrom = codePointIndexOf(sourceText, firstUrl);
+    const secondUrlFrom = codePointIndexOf(sourceText, secondUrl);
+    const thirdUrlFrom = codePointIndexOf(sourceText, thirdUrl);
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -1907,20 +1923,20 @@ describe('PrivateControlService', () => {
       createPrivateFormattedTextUpdate(sourceText, [
         {
           type: 'link',
-          from: sourceText.indexOf(firstUrl),
-          length: firstUrl.length,
+          from: firstUrlFrom,
+          length: countCodePoints(firstUrl),
           url: firstUrl,
         },
         {
           type: 'link',
-          from: sourceText.indexOf(secondUrl),
-          length: secondUrl.length,
+          from: secondUrlFrom,
+          length: countCodePoints(secondUrl),
           url: secondUrl,
         },
         {
           type: 'link',
-          from: sourceText.indexOf(thirdUrl),
-          length: thirdUrl.length,
+          from: thirdUrlFrom,
+          length: countCodePoints(thirdUrl),
           url: thirdUrl,
         },
       ]),
@@ -1940,6 +1956,8 @@ describe('PrivateControlService', () => {
   it('preserves formatted links after emoji prefixes when saving rules from private bot', async () => {
     const { service, adminService, chats } = createHarness();
     const sourceText = '🔥MAX Docs';
+    const prefixLength = countCodePoints('🔥');
+    const labelLength = countCodePoints('MAX Docs');
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -1948,23 +1966,23 @@ describe('PrivateControlService', () => {
       createPrivateFormattedTextUpdate(sourceText, [
         {
           type: 'strong',
-          from: '🔥'.length,
-          length: 'MAX Docs'.length,
+          from: prefixLength,
+          length: labelLength,
         },
         {
           type: 'emphasized',
-          from: '🔥'.length,
-          length: 'MAX Docs'.length,
+          from: prefixLength,
+          length: labelLength,
         },
         {
           type: 'underline',
-          from: '🔥'.length,
-          length: 'MAX Docs'.length,
+          from: prefixLength,
+          length: labelLength,
         },
         {
           type: 'link',
-          from: '🔥'.length,
-          length: 'MAX Docs'.length,
+          from: prefixLength,
+          length: labelLength,
           url: 'https://dev.max.ru/docs-api',
         },
       ]),
@@ -2237,6 +2255,39 @@ describe('PrivateControlService', () => {
         text: '**Важный** анонс\n\n  Второй абзац с  пробелом',
         textFormat: 'markdown',
         applyToAllChats: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('preserves emoji-prefixed formatted broadcast text with code-point offsets', async () => {
+    const { service, adminService, channels } = createHarness();
+    const sourceText = '🔥MAX Docs';
+    const prefixLength = countCodePoints('🔥');
+    const labelLength = countCodePoints('MAX Docs');
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'strong',
+          from: prefixLength,
+          length: labelLength,
+        },
+      ]),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: '🔥**MAX Docs**',
+        textFormat: 'markdown',
       }),
       'private_bot',
     );
