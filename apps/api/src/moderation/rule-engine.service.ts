@@ -152,7 +152,7 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
   /^pizd[a-z0-9]*$/i,
-  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo|y)(?:y|i|e|ya|yu)?[a-z0-9]*$/i,
+  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo)(?:y|i|e|ya|yu)?[a-z0-9]*$/i,
   /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a|o|i|y|e|u|l|n|t|s|k|sh|zh)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
   /^mraz[a-z0-9]*$/i,
@@ -163,6 +163,28 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^tvar(?:in)?[a-z0-9]*$/i,
   /^urod[a-z0-9]*$/i,
   /^g[ao]nd(?:on|osh)[a-z0-9]*$/i,
+];
+const PROFANITY_CANINE_FEMALE_FORMS = new Set([
+  'сука',
+  'суки',
+  'суке',
+  'суку',
+  'сукой',
+  'сукою',
+]);
+const PROFANITY_CANINE_CONTEXT_MARKERS = [
+  'собак',
+  'щен',
+  'стерилиз',
+  'кастрир',
+  'привит',
+  'в добрые руки',
+  'отдается',
+  'отдаётся',
+  'охранниц',
+  'кошк',
+  'котят',
+  'питомник',
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -1145,12 +1167,14 @@ export class RuleEngineService {
   }
 
   private hasProfanity(text: string): boolean {
+    const normalizedContext = this.normalizeForDetection(stripUrlsFromText(text));
     const candidates = this.extractProfanityCandidates(text);
     for (const candidate of candidates) {
       const normalizedCandidate = this.normalizeProfanityCandidate(candidate);
       if (
         normalizedCandidate &&
         !this.isProfanityException(normalizedCandidate) &&
+        !this.isContextualProfanityException(normalizedCandidate, normalizedContext) &&
         (this.isProfanityToken(normalizedCandidate) || isExactProfanityVariant(normalizedCandidate))
       ) {
         return true;
@@ -1178,6 +1202,26 @@ export class RuleEngineService {
 
   private isProfanityException(token: string): boolean {
     return PROFANITY_EXCEPTIONS.some((exception) => token.startsWith(exception));
+  }
+
+  private isContextualProfanityException(token: string, normalizedContext: string): boolean {
+    if (!normalizedContext || !PROFANITY_CANINE_FEMALE_FORMS.has(token)) {
+      return false;
+    }
+
+    let matchedMarkers = 0;
+    for (const marker of PROFANITY_CANINE_CONTEXT_MARKERS) {
+      if (!normalizedContext.includes(marker)) {
+        continue;
+      }
+
+      matchedMarkers += 1;
+      if (matchedMarkers >= 2) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private escapeRegExp(value: string): string {
