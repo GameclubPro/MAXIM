@@ -178,46 +178,24 @@ export class ChatContextCacheService implements OnModuleDestroy {
     const normalizedTitle = chatTitle?.trim() || null;
     const localCached = this.readLocalChatContext(chatId);
     if (localCached) {
-      if (normalizedTitle && localCached.title !== normalizedTitle) {
-        void this.updateTitle(chatId, normalizedTitle);
-      }
-      return localCached;
-    }
-
-    const key = ChatContextCacheService.cacheKey(chatId);
-    const cached = await this.readRedisStringWithin(
-      key,
-      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
-    );
-    if (cached) {
-      try {
-        const parsed = JSON.parse(cached) as ChatContext;
-        this.writeLocalChatContext(chatId, parsed);
-        if (normalizedTitle && parsed.title !== normalizedTitle) {
-          void this.updateTitle(chatId, normalizedTitle);
-        }
-        return parsed;
-      } catch (error: unknown) {
-        this.logger.warn(
-          { chatId, err: error instanceof Error ? error.message : String(error) },
-          'Failed to parse chat context cache',
-        );
-      }
+      return this.reconcileCachedChatTitle(chatId, localCached, normalizedTitle);
     }
 
     const existingLoad = this.chatContextInFlightLoads.get(chatId);
     if (existingLoad) {
-      return existingLoad;
+      const resolved = await existingLoad;
+      return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
     }
 
     let loadPromise!: Promise<ChatContext>;
-    loadPromise = this.loadAndCache(chatId, chatTitle).finally(() => {
+    loadPromise = this.loadCachedOrSource(chatId, normalizedTitle).finally(() => {
       if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
         this.chatContextInFlightLoads.delete(chatId);
       }
     });
     this.chatContextInFlightLoads.set(chatId, loadPromise);
-    return loadPromise;
+    const resolved = await loadPromise;
+    return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
   }
 
   async invalidate(chatId: string) {
@@ -824,19 +802,19 @@ export class ChatContextCacheService implements OnModuleDestroy {
       throw new Error(`Chat context missing for chat ${chatId}`);
     }
 
-    if (title && chat.title !== title) {
-      void this.updateTitle(chatId, title);
-    }
-
     if (!chat.settings) {
       throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
     }
 
     this.maxBotLinkService.rememberChatBotBinding?.(chat.id, chat.primaryBotId ?? chat.botId);
+    const resolvedTitle = title || chat.title;
+    if (title && chat.title !== title) {
+      void this.persistTitle(chatId, title);
+    }
 
     const value: ChatContext = {
       chatId: chat.id,
-      title: chat.title,
+      title: resolvedTitle,
       settings: chat.settings,
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
@@ -847,6 +825,30 @@ export class ChatContextCacheService implements OnModuleDestroy {
     this.writeLocalChatContext(chatId, value);
     this.writeChatContextToRedis(chatId, value);
     return value;
+  }
+
+  private async loadCachedOrSource(
+    chatId: string,
+    normalizedTitle: string | null,
+  ): Promise<ChatContext> {
+    const key = ChatContextCacheService.cacheKey(chatId);
+    const cached = await this.readRedisStringWithin(
+      key,
+      ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
+    );
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached) as ChatContext;
+        return this.reconcileCachedChatTitle(chatId, parsed, normalizedTitle);
+      } catch (error: unknown) {
+        this.logger.warn(
+          { chatId, err: error instanceof Error ? error.message : String(error) },
+          'Failed to parse chat context cache',
+        );
+      }
+    }
+
+    return this.loadAndCache(chatId, normalizedTitle);
   }
 
   private async findChatContextRow(chatId: string) {
@@ -924,19 +926,43 @@ export class ChatContextCacheService implements OnModuleDestroy {
     });
   }
 
-  private async updateTitle(chatId: string, title: string) {
+  private async persistTitle(chatId: string, title: string) {
     try {
-      await this.prisma.chat.update({
-        where: { id: chatId },
+      await this.prisma.chat.updateMany({
+        where: {
+          id: chatId,
+          title: {
+            not: title,
+          },
+        },
         data: { title },
       });
-      await this.invalidate(chatId);
     } catch (error: unknown) {
       this.logger.warn(
         { chatId, err: error instanceof Error ? error.message : String(error) },
-        'Failed to refresh chat title from cache hit',
+        'Failed to persist chat title from cache hit',
       );
     }
+  }
+
+  private reconcileCachedChatTitle(
+    chatId: string,
+    value: ChatContext,
+    normalizedTitle: string | null,
+  ): ChatContext {
+    if (!normalizedTitle || value.title === normalizedTitle) {
+      this.writeLocalChatContext(chatId, value);
+      return value;
+    }
+
+    const nextValue: ChatContext = {
+      ...value,
+      title: normalizedTitle,
+    };
+    this.writeLocalChatContext(chatId, nextValue);
+    this.writeChatContextToRedis(chatId, nextValue);
+    void this.persistTitle(chatId, normalizedTitle);
+    return nextValue;
   }
 
   private isManagedEntitiesDiscoverySnapshot(

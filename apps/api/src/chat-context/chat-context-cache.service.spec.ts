@@ -329,6 +329,7 @@ describe('ChatContextCacheService', () => {
       rulesPublishedUrl: null,
       rulesPublishedMessageId: null,
     });
+    expect(redisInstance.get).toHaveBeenCalledTimes(1);
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
   });
@@ -380,6 +381,81 @@ describe('ChatContextCacheService', () => {
       rulesPublishedMessageId: null,
     });
 
+    expect(redisInstance.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('patches cached chat titles without invalidating the full chat context', async () => {
+    const chatId = 'chat-1';
+    const cachedSettings = JSON.parse(JSON.stringify(buildSettings(chatId))) as ChatSettings;
+    const prisma = {
+      chat: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+      set: jest.Mock;
+      del: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValueOnce(
+      JSON.stringify({
+        chatId,
+        title: 'Chat 1',
+        settings: cachedSettings,
+        domainAllowlist: ['example.com'],
+        adminUserIds: ['user-1'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+    );
+
+    await expect(service.getChatContext(chatId, 'Fresh title')).resolves.toEqual({
+      chatId,
+      title: 'Fresh title',
+      settings: cachedSettings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+
+    await expect(service.getChatContext(chatId)).resolves.toEqual({
+      chatId,
+      title: 'Fresh title',
+      settings: cachedSettings,
+      domainAllowlist: ['example.com'],
+      adminUserIds: ['user-1'],
+      rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
+    });
+
+    expect(prisma.chat.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: chatId,
+        title: {
+          not: 'Fresh title',
+        },
+      },
+      data: {
+        title: 'Fresh title',
+      },
+    });
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.cacheKey(chatId),
+      expect.stringContaining('"title":"Fresh title"'),
+      'EX',
+      60,
+    );
+    expect(redisInstance.del).not.toHaveBeenCalled();
     expect(redisInstance.get).toHaveBeenCalledTimes(1);
   });
 
