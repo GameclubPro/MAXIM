@@ -95,11 +95,7 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import {
-  maxNotify,
-  openMaxBotLink,
-  setMaxClosingConfirmation,
-} from '../lib/max-bridge';
+import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -423,6 +419,9 @@ type HintKey =
   | 'mailingButton'
   | 'mailingSchedule'
   | 'mailingCycle'
+  | 'rulesAutoFill'
+  | 'rulesPostButton'
+  | 'rulesViolationsButton'
   | 'mailingSend';
 type BotMessageEditorKey =
   | 'link'
@@ -2228,21 +2227,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isSyncing: channelsList.isRefreshing,
     phase: channelsList.phase,
   };
-  const settledChatsListMarker = useMemo(() => buildManagedEntitiesSettledMarker({
-    hasLoadedFromServer: chatsList.hasLoadedFromServer,
-    isSyncComplete: chatsList.isSyncComplete,
-    isBackoffActive: chatsList.isBackoffActive,
-    snapshotVersion: chatsList.snapshot?.version,
-    snapshotBuiltAt: chatsList.snapshot?.builtAt,
-    lastSyncedAt: chatsList.refreshState?.lastSyncedAt,
-  }), [
-    chatsList.hasLoadedFromServer,
-    chatsList.isBackoffActive,
-    chatsList.isSyncComplete,
-    chatsList.refreshState?.lastSyncedAt,
-    chatsList.snapshot?.builtAt,
-    chatsList.snapshot?.version,
-  ]);
+  const settledChatsListMarker = useMemo(
+    () =>
+      buildManagedEntitiesSettledMarker({
+        hasLoadedFromServer: chatsList.hasLoadedFromServer,
+        isSyncComplete: chatsList.isSyncComplete,
+        isBackoffActive: chatsList.isBackoffActive,
+        snapshotVersion: chatsList.snapshot?.version,
+        snapshotBuiltAt: chatsList.snapshot?.builtAt,
+        lastSyncedAt: chatsList.refreshState?.lastSyncedAt,
+      }),
+    [
+      chatsList.hasLoadedFromServer,
+      chatsList.isBackoffActive,
+      chatsList.isSyncComplete,
+      chatsList.refreshState?.lastSyncedAt,
+      chatsList.snapshot?.builtAt,
+      chatsList.snapshot?.version,
+    ],
+  );
   useManagedEntitiesVisibilityRefresh({
     enabled: true,
     hasLoadedFromServer: chatsList.hasLoadedFromServer,
@@ -5961,6 +5964,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           {rulesAutoFillSummary}
                                         </span>
                                       </div>
+                                      <button
+                                        type="button"
+                                        className={cn(
+                                          'settings-info-button',
+                                          openHintKey === 'rulesAutoFill' && 'is-open',
+                                        )}
+                                        aria-label="Пояснение для автозаполнения правил из настроек"
+                                        aria-controls="rules-auto-fill-hint"
+                                        aria-expanded={openHintKey === 'rulesAutoFill'}
+                                        onClick={() => toggleHint('rulesAutoFill')}
+                                      >
+                                        <span aria-hidden>i</span>
+                                      </button>
                                     </div>
 
                                     <label
@@ -5986,6 +6002,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       </span>
                                     </label>
                                   </div>
+
+                                  {openHintKey === 'rulesAutoFill' ? (
+                                    <p
+                                      id="rules-auto-fill-hint"
+                                      className="settings-native-toggle__hint"
+                                    >
+                                      Если свой текст не задан, соберём правила из текущих настроек
+                                      чата.
+                                    </p>
+                                  ) : null}
                                 </div>
 
                                 <div className="settings-native-toggle rules-native-card">
@@ -5999,6 +6025,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           {rulesPostButtonSummary}
                                         </span>
                                       </div>
+                                      <button
+                                        type="button"
+                                        className={cn(
+                                          'settings-info-button',
+                                          openHintKey === 'rulesPostButton' && 'is-open',
+                                        )}
+                                        aria-label="Пояснение для пользовательской кнопки в посте правил"
+                                        aria-controls="rules-post-button-hint"
+                                        aria-expanded={openHintKey === 'rulesPostButton'}
+                                        onClick={() => toggleHint('rulesPostButton')}
+                                      >
+                                        <span aria-hidden>i</span>
+                                      </button>
                                     </div>
 
                                     <label
@@ -6030,6 +6069,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       </span>
                                     </label>
                                   </div>
+
+                                  {openHintKey === 'rulesPostButton' ? (
+                                    <p
+                                      id="rules-post-button-hint"
+                                      className="settings-native-toggle__hint"
+                                    >
+                                      Добавляет в пост правил отдельную кнопку со ссылкой на нужную
+                                      страницу.
+                                    </p>
+                                  ) : null}
 
                                   {rulesDraft.buttonEnabled ? (
                                     <div className="rules-native-card__body">
@@ -6112,6 +6161,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           {rulesViolationButtonSummary}
                                         </span>
                                       </div>
+                                      <button
+                                        type="button"
+                                        className={cn(
+                                          'settings-info-button',
+                                          openHintKey === 'rulesViolationsButton' && 'is-open',
+                                        )}
+                                        aria-label="Пояснение для кнопки Правила в сообщениях о нарушениях"
+                                        aria-controls="rules-violations-button-hint"
+                                        aria-expanded={openHintKey === 'rulesViolationsButton'}
+                                        onClick={() => toggleHint('rulesViolationsButton')}
+                                      >
+                                        <span aria-hidden>i</span>
+                                      </button>
                                     </div>
 
                                     <label
@@ -6131,6 +6193,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       </span>
                                     </label>
                                   </div>
+
+                                  {openHintKey === 'rulesViolationsButton' ? (
+                                    <p
+                                      id="rules-violations-button-hint"
+                                      className="settings-native-toggle__hint"
+                                    >
+                                      Добавляет кнопку «Правила» в сообщения о нарушениях, чтобы
+                                      участник мог сразу открыть правила.
+                                    </p>
+                                  ) : null}
                                 </div>
                               </div>
                             </div>
@@ -9488,9 +9560,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <div
-                                  className="mailing-target-card"
-                                >
+                                <div className="mailing-target-card">
                                   <div className="mailing-target-card__row">
                                     <span className="mailing-target-card__title">Все чаты</span>
 
