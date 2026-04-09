@@ -15,6 +15,7 @@ export type AdminManualMuteFanoutJob = {
   jobId: string;
   sourceChatId: string;
   targetUserId: string;
+  cleanupSourceChatMessages?: boolean;
   actor: AdminManualFanoutActor;
   muteDurationHours: number;
   muteExpiresAt: string;
