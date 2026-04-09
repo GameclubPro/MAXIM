@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { ManagedLinkButtonFields } from './managed-link-button-fields';
 import type { ApiTransport } from '../lib/api/transport';
@@ -16,6 +17,7 @@ type BroadcastLinkButtonsEditorProps = {
   buttons: BroadcastLinkButton[];
   errors?: BroadcastLinkButtonFieldErrors[];
   disabled?: boolean;
+  revealNextStepSignal?: number;
   contextEntityType?: 'chat' | 'channel';
   title?: string;
   subtitle?: string;
@@ -29,6 +31,7 @@ export function BroadcastLinkButtonsEditor({
   buttons,
   errors = [],
   disabled = false,
+  revealNextStepSignal = 0,
   contextEntityType = 'chat',
   title = 'Сетка кнопок',
   subtitle = 'До 8 ссылочных кнопок. MAX покажет их рядами по 3.',
@@ -36,8 +39,59 @@ export function BroadcastLinkButtonsEditor({
   textPlaceholder = 'Открыть',
   onChange,
 }: BroadcastLinkButtonsEditorProps) {
+  const addButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousCountRef = useRef(buttons.length);
   const previewRows = chunkBroadcastLinkButtons(buttons);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
+  const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
+  const nextButtonLabel =
+    buttons.length === 0
+      ? 'Добавить первую кнопку'
+      : buttons.length === 1
+        ? 'Добавить вторую кнопку'
+        : buttons.length === 2
+          ? 'Добавить третью кнопку'
+          : 'Добавить ещё кнопку';
+  const nextButtonHint =
+    buttons.length === 0
+      ? 'Запустит каскадный редактор снизу.'
+      : buttons.length === 1
+        ? 'Вторая появится сразу под первой. Это следующий шаг.'
+        : `Осталось ${MAX_BROADCAST_LINK_BUTTONS - buttons.length}.`;
+
+  useEffect(() => {
+    const previousCount = previousCountRef.current;
+    const shouldRevealAddButton =
+      buttons.length > 0 &&
+      buttons.length < MAX_BROADCAST_LINK_BUTTONS &&
+      buttons.length !== previousCount;
+
+    previousCountRef.current = buttons.length;
+
+    if (!shouldRevealAddButton || !addButtonRef.current) {
+      return;
+    }
+
+    addButtonRef.current.scrollIntoView({
+      block: 'nearest',
+      behavior: previousCount === 0 ? 'smooth' : 'auto',
+    });
+  }, [buttons.length]);
+
+  useEffect(() => {
+    if (!shouldSpotlightNextStep || !addButtonRef.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      addButtonRef.current?.scrollIntoView({
+        block: 'end',
+        behavior: 'smooth',
+      });
+    }, 140);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [revealNextStepSignal, shouldSpotlightNextStep]);
 
   function handleChange(index: number, patch: Partial<BroadcastLinkButton>) {
     onChange(
@@ -156,21 +210,22 @@ export function BroadcastLinkButtonsEditor({
 
       {canAddMore ? (
         <button
+          ref={addButtonRef}
           type="button"
-          className="broadcast-link-editor__add"
+          className={cn(
+            'broadcast-link-editor__add',
+            shouldSpotlightNextStep && 'is-spotlighted',
+          )}
           onClick={handleAdd}
           disabled={disabled}
         >
           <span className="broadcast-link-editor__add-icon">+</span>
           <span className="broadcast-link-editor__add-copy">
-            <strong>
-              {buttons.length === 0 ? 'Добавить первую кнопку' : 'Добавить ещё кнопку'}
-            </strong>
-            <small>
-              {buttons.length === 0
-                ? 'Запустит каскадный редактор снизу.'
-                : `Осталось ${MAX_BROADCAST_LINK_BUTTONS - buttons.length}.`}
-            </small>
+            {shouldSpotlightNextStep ? (
+              <span className="broadcast-link-editor__add-step">Следующий шаг</span>
+            ) : null}
+            <strong>{nextButtonLabel}</strong>
+            <small>{nextButtonHint}</small>
           </span>
         </button>
       ) : (

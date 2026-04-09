@@ -443,6 +443,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastText, setBroadcastText] = useState('');
   const [, setBroadcastTextError] = useState('');
   const [broadcastButtons, setBroadcastButtons] = useState<BroadcastLinkButton[]>([]);
+  const [broadcastButtonRevealSignal, setBroadcastButtonRevealSignal] = useState(0);
   const [broadcastButtonErrors, setBroadcastButtonErrors] = useState<
     BroadcastLinkButtonFieldErrors[]
   >([]);
@@ -1479,14 +1480,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 className="settings-native-switch"
                                 aria-label="Добавить кнопку в пост канала"
                               >
-                                <input
-                                  type="checkbox"
-                                  checked={broadcastHasButton}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setBroadcastButtons((current) =>
-                                      enabled
-                                        ? current.length > 0
+                                  <input
+                                    type="checkbox"
+                                    checked={broadcastHasButton}
+                                    onChange={(event) => {
+                                      const enabled = event.target.checked;
+                                      if (enabled && broadcastButtons.length === 0) {
+                                        setBroadcastButtonRevealSignal((current) => current + 1);
+                                      }
+                                      setBroadcastButtons((current) =>
+                                        enabled
+                                          ? current.length > 0
                                           ? current
                                           : [createEmptyBroadcastLinkButton()]
                                         : [],
@@ -1509,6 +1513,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   contextEntityType="channel"
                                   buttons={broadcastButtons}
                                   errors={broadcastButtonErrors}
+                                  revealNextStepSignal={broadcastButtonRevealSignal}
                                   onChange={(nextButtons) => {
                                     setBroadcastButtons(nextButtons);
                                     if (broadcastButtonErrors.length > 0) {

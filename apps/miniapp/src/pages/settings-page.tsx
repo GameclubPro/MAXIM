@@ -2030,6 +2030,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingText, setMailingText] = useState('');
   const [mailingApplyToAllChats, setMailingApplyToAllChats] = useState(false);
   const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
+  const [mailingButtonRevealSignal, setMailingButtonRevealSignal] = useState(0);
   const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
   const [mailingImageBase64, setMailingImageBase64] = useState('');
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
@@ -9644,6 +9645,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           checked={mailingButtonEnabled}
                                           onChange={(event) => {
                                             const enabled = event.target.checked;
+                                            if (enabled && mailingButtons.length === 0) {
+                                              setMailingButtonRevealSignal((current) => current + 1);
+                                            }
                                             setMailingButtons((current) =>
                                               enabled
                                                 ? current.length > 0
@@ -9669,6 +9673,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           api={api}
                                           buttons={mailingButtons}
                                           errors={mailingButtonErrors}
+                                          revealNextStepSignal={mailingButtonRevealSignal}
                                           onChange={(nextButtons) => {
                                             setMailingButtons(nextButtons);
                                             if (mailingButtonErrors.length > 0) {
