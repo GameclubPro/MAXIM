@@ -28,6 +28,18 @@
 - Legacy REG.RU fallback alias: `ssh maxim-vps-legacy`
 - `maxim-vps` should point to the Yandex prod VM and use SSH multiplexing: `ControlMaster auto`, `ControlPersist 10m`, `Compression yes`.
 - `maxim-vps-edge` points to the public edge VM on `84.201.186.244`; `maxim-vps` remains the main Yandex prod VM on `158.160.179.30`.
+- Yandex Cloud fallback access is available locally through `~/.local/yandex-cloud/bin/yc` with the configured profile from `~/.config/yandex-cloud/config.yaml`; use it when public SSH hangs before banner exchange.
+- Current Yandex Cloud inventory:
+  - cloud: `b1gjv3sr1tmb6c0p08um`
+  - folder: `b1go2mndnq5orif32ami`
+  - prod VM: `maxim-prod-1` (`fv4ujtg5qln445qip9uv`, `158.160.179.30`, `10.130.0.29`)
+  - edge VM: `maxim-site-edge-1` (`fv462spp3r1ortgbt3l9`, `84.201.186.244`, `10.130.0.11`)
+- Useful Yandex Cloud recovery commands:
+  - `~/.local/yandex-cloud/bin/yc compute instance list --folder-id b1go2mndnq5orif32ami`
+  - `~/.local/yandex-cloud/bin/yc compute instance get maxim-prod-1 --full`
+  - `~/.local/yandex-cloud/bin/yc compute instance update maxim-prod-1 --metadata serial-port-enable=1 --serial-port-settings ssh-authorization=instance_metadata`
+  - `~/.local/yandex-cloud/bin/yc compute connect-to-serial-port --instance-name maxim-prod-1 --user maximadmin --ssh-key ~/.ssh/id_ed25519`
+- Serial console is the current verified fallback for `maxim-prod-1`; direct SSH to `158.160.179.30:22` and `84.201.186.244:22` can accept TCP while stalling before the SSH banner, so prefer `yc` recovery when that happens.
 - Current public prod routing:
   - `maxim.play-team.ru` is the canonical public domain for both mini app/API traffic and MAX webhook subscriptions
   - `maxim.play-team.ru` resolves to `84.201.186.244` via `maxim-site-edge-1`
