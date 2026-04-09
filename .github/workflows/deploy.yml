@@ -18,13 +18,24 @@ jobs:
       - name: Add VPS host key
         run: |
           mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+          chmod 700 ~/.ssh
+          cat >> ~/.ssh/known_hosts <<'EOF'
+          |1|97a4WMn7yX4SrWNZ1P0VisINiR0=|ifKo4Wsuqnq/zopb3H8fmVX8lqs= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOVQjSSJayIsncooPq9K+lQta7eoT18CITzjUJmK+s88
+          |1|SOZGHrYJ4748YQOvYVCu73LPvk0=|W77O+FAiMQVYWlftExOPsBqrc7o= ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQDKwqixbkIQEQoQg0W+MaTmJztiG+arCA+D/l7tXNPPmlPRP1eoFxZZA9L3Jtb9Tm45QKT9xawfp/K6WbhOOXJjL1ADTlqc6ZDCOnLDfPk0+FM3drN2CC8ectY071CueOqMO3Bx/1AucPudH5u625hjDMBNidqLhw+Jp7isWIgmd/RUq1hmgTM8ijPXfFOKUJjW0Y1lPijsUYs/G3M/MNSM4aJ1ju0Q2umcEThMOxJ32OAaR0KCmrc+u9ZynWd1l4V+diwaHpLCIfxsrIqeekLRTe687lUIu4dZqAXjZ4f3BNwHR/aaVvomh6a83WShraXfn1CxLnqaeeC5MjgHrWFTBiJigqIJ4Xb1tNuEKWDWcRg4nHTRjxq/En23c33U4HC1c4Eehn4KdG2IlEE/lZxvikgHg53GgsHURn51gFgGCTQJqV3LmXvbpdwvo1oV6RuFLn7yPHlHeup9SvhyS8aMDKxjnd9s8P06No0HG4HkS0dK3HccJJFspisbPrMApn0=
+          |1|uwLn89MsePa+zvlMQ704Glcy2NI=|3cYQBeFwSfqTN6DHBsMsr9NIU1Q= ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBNspkGDub5kCLjRnCLBM7/9HPfU3tUMKFxgY7p75Su5DnVkgIqd3aBDIyECjEwFkiSAELTmYELNPxRslkY8Z2no=
+          |1|6OniX/GXXUrfezHMGGy692M50iA=|ev9sn/wdf1hBfoAr8zRET2qfLWk= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINsUPRi/uU/hYyMMHeXReJpODY+mQh5W9zAxspQPtDFk
+          |1|BZiQ2B2lDYOiEsxyPdWAUnli43A=|QbXMj4ln2je4FpcO5T7Y6cfQQyE= ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCoGDymUgDWVc1ByslhhTXtq0OhE82LGT9yKHbWv06t7LOTTqg9U8eeyd2AHIuNoNTXOSV5eviaHe6nH/w4zf7WQY/WM2GRD5wQsSrtpPnnXZM6Kg7fkvwnjO7+fQhxSWCkDzM5eDxkMruebvaJ92lwsNgYS8q/JowxP4Ri1OUcjy6Ec1hsWaoqiZrAcTj3JNgHNcERXR2QPnp2gS4ye7xeV+QfkvndNBH0IquJe7C7EhfXtzHB2ZVJX4pgRYSDgqGBIads5ul/4JamOmm4fs3det3n0Sy643Wbriy8qCCGdy/S/fv+5W/PQ2RaV10rTRHHWzV15bMr/1LpxQ6nqkQ2yZEE6uu0yHLidUIHfUvKYE4Mb+OLrxlUCJg3ZgGiLSLBEDZGabYAPZR4WTJ4eS6p51nIJFkvhk0qLIlV0IHt1+Rap5Mo9AI6ai3Vkb70PFlWYXIBa2oW77kJvLArL2Wh6zbD3XX8qoxNco6oXoV4j1x0Ek1OujOP+s49dlwCrCk=
+          |1|m3kGKva5hpFWUA5uFp1u9BFwevQ=|yox5G1dshzqU4eVmk2ZUlx+nz2s= ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKoTVRNOVzJj1f9EEQY3PyRVPBvGL4R/ibW0xns2ZCjzrutEZD/Bc1uwxaeKut0DD0lVHTonPKQ/jPKHSBIuwTU=
+          EOF
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Upload repository
         run: |
-          rsync -az --delete --exclude .git ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_PATH }}
+          SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
+          rsync -az --delete --exclude .git -e "ssh $SSH_OPTS" ./ ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_PATH }}
 
       - name: Deploy on VPS
         run: |
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+          SSH_OPTS="-o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3"
+          ssh $SSH_OPTS ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
             "cd ${{ secrets.VPS_PATH }} && ./infra/scripts/deploy.sh"
