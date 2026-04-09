@@ -12672,6 +12672,222 @@ describe('ModerationService', () => {
       };
     }
 
+    describe('moderation action fallback', () => {
+      it('refreshes bot access snapshots when stale member-moderation snapshots leave no candidates', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              botMemberships: [{ botId: 'id613002203036_4_bot', status: 'ACTIVE' }],
+            }),
+          },
+          chatBotMembership: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const maxClient = {
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036_4',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['add_remove_members'],
+          }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce(['id613002203036_4_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const operation = jest.fn().mockResolvedValue(undefined);
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'moderate_member',
+            userId: 'user-1',
+            operation,
+          }),
+        ).resolves.toBe(true);
+
+        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('chat-1', {
+          botId: 'id613002203036_4_bot',
+          trafficClass: 'background',
+          actionHealthLane: 'background',
+          timeoutMs: 1_500,
+        });
+        expect(prisma.chatBotMembership.updateMany).toHaveBeenCalledWith({
+          where: {
+            chatId: 'chat-1',
+            botId: 'id613002203036_4_bot',
+          },
+          data: expect.objectContaining({
+            lastSeenAt: expect.any(Date),
+            permissionsSnapshot: expect.objectContaining({
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['add_remove_members'],
+            }),
+          }),
+        });
+        expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+      });
+
+      it('clears stale moderation action backoff after a successful permission refresh', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              botMemberships: [{ botId: 'id613002203036_4_bot', status: 'ACTIVE' }],
+            }),
+          },
+          chatBotMembership: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const maxClient = {
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036_4',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['delete_messages'],
+          }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValue(['id613002203036_4_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const operation = jest.fn().mockResolvedValue(undefined);
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        (service as any).rememberModerationActionBotBackoff(
+          'chat-1',
+          'delete_message',
+          'id613002203036_4_bot',
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'delete_message',
+            messageId: 'msg-1',
+            operation,
+          }),
+        ).resolves.toBe(true);
+
+        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
+        expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+        expect(
+          (service as any).isModerationActionBotBackoffActive(
+            'chat-1',
+            'delete_message',
+            'id613002203036_4_bot',
+          ),
+        ).toBe(false);
+      });
+
+      it('refreshes snapshots after a terminal moderation error and retries a newly eligible bot', async () => {
+        const prisma = {
+          chat: {
+            findUnique: jest.fn().mockResolvedValue({
+              botMemberships: [
+                { botId: 'id613002203036_bot', status: 'ACTIVE' },
+                { botId: 'id613002203036_4_bot', status: 'ACTIVE' },
+              ],
+            }),
+          },
+          chatBotMembership: {
+            updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          },
+        };
+        const maxClient = {
+          getCurrentChatMemberAccess: jest
+            .fn()
+            .mockResolvedValue({
+              userId: '613002203036',
+              isAdmin: true,
+              isOwner: false,
+              permissions: ['add_remove_members'],
+            }),
+        };
+        const maxBotLinkService = {
+          resolveBotIdsForModerationAction: jest
+            .fn()
+            .mockResolvedValueOnce(['id613002203036_bot'])
+            .mockResolvedValueOnce(['id613002203036_bot', 'id613002203036_4_bot']),
+          getResolvedBotSync: jest.fn((botId?: string | null) => ({
+            id: botId ?? 'id613002203036_bot',
+          })),
+        };
+        const operation = jest.fn().mockImplementation(async (botId?: string) => {
+          if (botId === 'id613002203036_bot') {
+            throw createMaxApiError(403, 'Request failed with status code 403', 'chat.denied');
+          }
+        });
+        const service = new ModerationService(
+          prisma as never,
+          {} as never,
+          {} as never,
+          maxClient as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-1',
+            action: 'moderate_member',
+            userId: 'user-1',
+            operation,
+          }),
+        ).resolves.toBe(true);
+
+        expect(operation.mock.calls).toEqual([
+          ['id613002203036_bot'],
+          ['id613002203036_4_bot'],
+        ]);
+        expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
+      });
+    });
+
     it('passes message through when the user is subscribed to all required channels', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,

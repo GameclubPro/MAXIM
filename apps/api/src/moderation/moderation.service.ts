@@ -37,6 +37,7 @@ import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
   type MaxActionDispatchOptions,
+  type MaxChatMemberAccess,
   type MaxLinkButton,
   type MaxMessageButton,
   type MaxSendMessageOptions,
@@ -212,6 +213,16 @@ type RulesButtonReference = {
 
 type ChannelDialogType = 'comments' | 'suggest';
 
+type ModerationActionAttemptResult =
+  | { status: 'success' }
+  | { status: 'no_candidates' }
+  | { status: 'backoff_blocked' }
+  | {
+      status: 'terminal_error';
+      attemptedBotIds: string[];
+      error: unknown;
+    };
+
 type AdminForwardedModerationCommand =
   | {
       action: 'BAN';
@@ -261,6 +272,8 @@ const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 5 * 60 * 1_000;
+const MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS = 1_500;
+const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
@@ -465,6 +478,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
   private readonly moderationActionBotBackoffUntilMs = new Map<string, number>();
+  private readonly moderationActionSnapshotRefreshUntilMs = new Map<string, number>();
+  private readonly moderationActionSnapshotRefreshInFlight = new Map<string, Promise<void>>();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly globalSpammerExemptionCache = new Map<
@@ -9166,18 +9181,100 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId?: string;
     operation: (botId?: string) => Promise<void>;
   }): Promise<boolean> {
-    const candidateBotIds = await this.resolveModerationActionBotIds(params);
-    if (candidateBotIds.length === 0) {
-      this.logSkippedModerationActionDueToPermissions({
+    let attempt = await this.attemptModerationActionWithCandidateBots(
+      params,
+      await this.resolveModerationActionBotIds(params),
+    );
+
+    let forcedSnapshotRefreshPerformed = false;
+    if (
+      !params.explicitBotId &&
+      (attempt.status === 'no_candidates' || attempt.status === 'backoff_blocked')
+    ) {
+      const forceRefresh = attempt.status === 'backoff_blocked';
+      const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
+        chatId: params.chatId,
+        action: params.action,
+        force: forceRefresh,
+      });
+      forcedSnapshotRefreshPerformed = forceRefresh;
+      if (refreshedCandidateBotIds.length > 0) {
+        attempt = await this.attemptModerationActionWithCandidateBots(params, refreshedCandidateBotIds);
+        if (attempt.status === 'success') {
+          return true;
+        }
+      }
+    }
+
+    if (!params.explicitBotId && attempt.status === 'terminal_error' && !forcedSnapshotRefreshPerformed) {
+      const attemptedBotIds = attempt.attemptedBotIds;
+      const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
+        chatId: params.chatId,
+        action: params.action,
+        force: true,
+        skipBackoffClearBotIds: attemptedBotIds,
+      });
+      const retryCandidateBotIds = refreshedCandidateBotIds.filter(
+        (botId) => !attemptedBotIds.includes(botId),
+      );
+      if (retryCandidateBotIds.length > 0) {
+        const retryAttempt = await this.attemptModerationActionWithCandidateBots(
+          params,
+          retryCandidateBotIds,
+        );
+        if (retryAttempt.status === 'success') {
+          return true;
+        }
+        if (retryAttempt.status === 'terminal_error') {
+          attempt = {
+            status: 'terminal_error',
+            attemptedBotIds: Array.from(
+              new Set([...attemptedBotIds, ...retryAttempt.attemptedBotIds]),
+            ),
+            error: retryAttempt.error,
+          };
+        }
+      }
+    }
+
+    if (attempt.status === 'terminal_error') {
+      this.logSkippedModerationActionAfterTerminalError({
         chatId: params.chatId,
         action: params.action,
         messageId: params.messageId,
         userId: params.userId,
+        attemptedBotIds: attempt.attemptedBotIds,
+        error: attempt.error,
       });
       return false;
     }
 
+    this.logSkippedModerationActionDueToPermissions({
+      chatId: params.chatId,
+      action: params.action,
+      messageId: params.messageId,
+      userId: params.userId,
+    });
+    return false;
+  }
+
+  private async attemptModerationActionWithCandidateBots(
+    params: {
+      chatId: string;
+      action: 'delete_message' | 'moderate_member';
+      explicitBotId?: string | null;
+      messageId?: string;
+      userId?: string;
+      operation: (botId?: string) => Promise<void>;
+    },
+    candidateBotIds: Array<string | null>,
+  ): Promise<ModerationActionAttemptResult> {
+    if (candidateBotIds.length === 0) {
+      return { status: 'no_candidates' };
+    }
+
     let terminalError: unknown = null;
+    let skippedDueToBackoff = false;
     const attemptedBotIds: string[] = [];
 
     for (const candidateBotId of candidateBotIds) {
@@ -9185,6 +9282,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         candidateBotId &&
         this.isModerationActionBotBackoffActive(params.chatId, params.action, candidateBotId)
       ) {
+        skippedDueToBackoff = true;
         continue;
       }
 
@@ -9197,7 +9295,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         if (candidateBotId) {
           this.clearModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
         }
-        return true;
+        return { status: 'success' };
       } catch (error: unknown) {
         if (!this.isTerminalModerationActionPermissionError(error)) {
           throw error;
@@ -9211,24 +9309,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (terminalError) {
-      this.logSkippedModerationActionAfterTerminalError({
-        chatId: params.chatId,
-        action: params.action,
-        messageId: params.messageId,
-        userId: params.userId,
+      return {
+        status: 'terminal_error',
         attemptedBotIds,
         error: terminalError,
-      });
-      return false;
+      };
     }
 
-    this.logSkippedModerationActionDueToPermissions({
-      chatId: params.chatId,
-      action: params.action,
-      messageId: params.messageId,
-      userId: params.userId,
-    });
-    return false;
+    return skippedDueToBackoff ? { status: 'backoff_blocked' } : { status: 'no_candidates' };
   }
 
   private async resolveModerationActionBotIds(params: {
@@ -9284,12 +9372,202 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return [null];
   }
 
+  private async refreshModerationActionCandidateBotIds(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    force?: boolean;
+    skipBackoffClearBotIds?: readonly string[];
+  }): Promise<string[]> {
+    await this.refreshModerationActionBotSnapshots(params);
+    const candidateBotIds = (await this.resolveModerationActionBotIds({
+      chatId: params.chatId,
+      action: params.action,
+    })).filter((botId): botId is string => typeof botId === 'string' && botId.trim().length > 0);
+    const skippedBackoffClearBotIds = new Set(
+      (params.skipBackoffClearBotIds ?? [])
+        .map((botId) => botId.trim())
+        .filter((botId) => botId.length > 0),
+    );
+    for (const botId of candidateBotIds) {
+      if (skippedBackoffClearBotIds.has(botId)) {
+        continue;
+      }
+      this.clearModerationActionBotBackoff(params.chatId, params.action, botId);
+    }
+    return candidateBotIds;
+  }
+
+  private async refreshModerationActionBotSnapshots(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    force?: boolean;
+  }): Promise<void> {
+    const refreshKey = this.buildModerationActionSnapshotRefreshKey(params.chatId, params.action);
+    const inFlightRefresh = this.moderationActionSnapshotRefreshInFlight.get(refreshKey);
+    if (inFlightRefresh) {
+      await inFlightRefresh;
+      return;
+    }
+
+    const refreshAllowedAtMs = this.moderationActionSnapshotRefreshUntilMs.get(refreshKey) ?? 0;
+    if (!params.force && refreshAllowedAtMs > Date.now()) {
+      return;
+    }
+
+    const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(params.chatId).finally(() => {
+      this.moderationActionSnapshotRefreshInFlight.delete(refreshKey);
+      this.moderationActionSnapshotRefreshUntilMs.set(
+        refreshKey,
+        Date.now() + MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
+      );
+    });
+    this.moderationActionSnapshotRefreshInFlight.set(refreshKey, refreshPromise);
+    await refreshPromise;
+  }
+
+  private async refreshModerationActionBotSnapshotsInternal(chatId: string): Promise<void> {
+    const botIds = await this.loadModerationActionSnapshotRefreshBotIds(chatId);
+    if (botIds.length === 0) {
+      return;
+    }
+
+    await Promise.all(
+      botIds.map(async (botId) => {
+        try {
+          const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+            botId,
+            trafficClass: 'background',
+            actionHealthLane: 'background',
+            timeoutMs: MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,
+          });
+          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access);
+        } catch (error: unknown) {
+          if (this.isTerminalModerationActionPermissionError(error)) {
+            await this.persistModerationActionBotAccessSnapshot(chatId, botId, null);
+            return;
+          }
+
+          this.logger.debug(
+            {
+              chatId,
+              botId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to refresh bot self access snapshot for moderation action fallback',
+          );
+        }
+      }),
+    );
+  }
+
+  private async loadModerationActionSnapshotRefreshBotIds(chatId: string): Promise<string[]> {
+    if (typeof this.prisma.chat?.findUnique !== 'function') {
+      return [];
+    }
+
+    try {
+      const chat = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: {
+          botMemberships: {
+            select: {
+              botId: true,
+              status: true,
+            },
+            orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
+          },
+        },
+      });
+      const candidateBotIds: string[] = [];
+      const getResolvedBotSync = this.maxBotLinkService?.getResolvedBotSync;
+      for (const membership of chat?.botMemberships ?? []) {
+        if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+          continue;
+        }
+
+        const botId = membership.botId.trim();
+        if (!botId || candidateBotIds.includes(botId)) {
+          continue;
+        }
+
+        if (typeof getResolvedBotSync === 'function') {
+          const resolvedBotId = getResolvedBotSync.call(this.maxBotLinkService, botId)?.id ?? null;
+          if (resolvedBotId !== botId) {
+            continue;
+          }
+        }
+
+        candidateBotIds.push(botId);
+      }
+      return candidateBotIds;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load bot memberships for moderation action snapshot refresh',
+      );
+      return [];
+    }
+  }
+
+  private async persistModerationActionBotAccessSnapshot(
+    chatId: string,
+    botId: string,
+    access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
+  ): Promise<void> {
+    if (typeof this.prisma.chatBotMembership?.updateMany !== 'function') {
+      return;
+    }
+
+    try {
+      await this.prisma.chatBotMembership.updateMany({
+        where: {
+          chatId,
+          botId,
+        },
+        data: {
+          ...(access ? { lastSeenAt: new Date() } : {}),
+          permissionsSnapshot: {
+            checkedAt: new Date().toISOString(),
+            isAdmin: access?.isAdmin === true,
+            isOwner: access?.isOwner === true,
+            permissions: Array.from(
+              new Set(
+                (access?.permissions ?? [])
+                  .map((permission) => permission.trim())
+                  .filter((permission) => permission.length > 0),
+              ),
+            ),
+          } satisfies Prisma.InputJsonValue,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist bot self access snapshot for moderation action fallback',
+      );
+    }
+  }
+
   private buildModerationActionBotBackoffKey(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
     botId: string,
   ): string {
     return `${chatId}:${action}:${botId}`;
+  }
+
+  private buildModerationActionSnapshotRefreshKey(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+  ): string {
+    return `${chatId}:${action}`;
   }
 
   private isModerationActionBotBackoffActive(
