@@ -61,6 +61,7 @@ import {
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
   type UpdateManagedGiveawayRequest,
+  type BroadcastLinkButton,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
   type SendBroadcastResult,
@@ -86,6 +87,7 @@ export type SendBroadcastPayload = {
   text: string;
   textFormat: BroadcastTextFormat;
   applyToAllChats: boolean;
+  buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
   buttonUrl: string;
   buttonText: string;
@@ -107,6 +109,7 @@ export type ManagedGiveawayHandoffPayload = {
 
 export type BroadcastHandoffPayload = {
   applyToAllChats: boolean;
+  buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
   buttonUrl: string;
   buttonText: string;

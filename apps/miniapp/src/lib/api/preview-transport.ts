@@ -709,6 +709,7 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     applyToAllChats: details.applyToAllChats,
     targetChats: details.targetChatIds.length || 1,
     hasImage: details.imageEnabled,
+    buttons: details.buttons,
     buttonEnabled: details.buttonEnabled,
     scheduleMode: details.scheduleMode,
     scheduleTimezone: details.scheduleTimezone,
@@ -756,6 +757,7 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
 function buildBroadcastHandoffState(details: ManagedBroadcastDetails): BroadcastHandoffState {
   return broadcastHandoffStateSchema.parse({
     applyToAllChats: details.applyToAllChats,
+    buttons: details.buttons,
     buttonEnabled: details.buttonEnabled,
     buttonUrl: details.buttonUrl,
     buttonText: details.buttonText,
@@ -1510,6 +1512,12 @@ function createInitialState(): PreviewState {
       textFormat: 'plain',
       applyToAllChats: false,
       targetChatIds: [PREVIEW_CHAT_ID],
+      buttons: [
+        {
+          text: 'Подробности',
+          url: 'https://maxim.play-team.ru/help',
+        },
+      ],
       buttonEnabled: true,
       buttonUrl: 'https://maxim.play-team.ru/help',
       buttonText: 'Подробности',
@@ -1645,6 +1653,12 @@ function createInitialState(): PreviewState {
       textFormat: 'markdown',
       applyToAllChats: false,
       targetChatIds: [PREVIEW_CHANNEL_ID],
+      buttons: [
+        {
+          text: 'Открыть канал',
+          url: 'https://max.ru/channels/yuzhnoe-news',
+        },
+      ],
       buttonEnabled: true,
       buttonUrl: 'https://max.ru/channels/yuzhnoe-news',
       buttonText: 'Открыть канал',

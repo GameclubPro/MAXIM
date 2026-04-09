@@ -72,6 +72,7 @@ import {
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
+  type BroadcastLinkButton,
   type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
   type ManagedEntitiesResponseDiff,
@@ -102,6 +103,9 @@ import {
   updateChannelDialogMessageResponseSchema,
   type AllowlistMatchType,
   type BroadcastScheduleMode,
+  DEFAULT_BROADCAST_BUTTON_TEXT,
+  MAX_BROADCAST_LINK_BUTTONS,
+  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -8443,6 +8447,7 @@ export class AdminService implements OnModuleDestroy {
       existing.sentCount,
       existing.id,
     );
+    const buttonState = this.buildManagedBroadcastButtonState(request.payload.buttons);
     const nextOccurrenceIndex = schedulePlan.sentCount + 1;
     const isCalendarPlanComplete =
       schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
@@ -8456,13 +8461,10 @@ export class AdminService implements OnModuleDestroy {
           textFormat: request.payload.textFormat,
           applyToAllChats: request.payload.applyToAllChats,
           targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-          buttonEnabled: request.payload.buttonEnabled,
-          buttonUrl: request.payload.buttonEnabled
-            ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
-            : '',
-          buttonText: request.payload.buttonEnabled
-            ? request.payload.buttonText.trim() || 'Открыть'
-            : 'Открыть',
+          buttons: buttonState.buttons as Prisma.InputJsonValue,
+          buttonEnabled: buttonState.buttonEnabled,
+          buttonUrl: buttonState.buttonUrl,
+          buttonText: buttonState.buttonText,
           imageEnabled: request.payload.imageEnabled,
           imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
           imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
@@ -9064,6 +9066,7 @@ export class AdminService implements OnModuleDestroy {
       0,
       null,
     );
+    const buttonState = this.buildManagedBroadcastButtonState(request.payload.buttons);
     const nextOccurrenceIndex = schedulePlan.sentCount + 1;
     const isCalendarPlanComplete =
       schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
@@ -9078,13 +9081,10 @@ export class AdminService implements OnModuleDestroy {
           textFormat: request.payload.textFormat,
           applyToAllChats: request.payload.applyToAllChats,
           targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-          buttonEnabled: request.payload.buttonEnabled,
-          buttonUrl: request.payload.buttonEnabled
-            ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
-            : '',
-          buttonText: request.payload.buttonEnabled
-            ? request.payload.buttonText.trim() || 'Открыть'
-            : 'Открыть',
+          buttons: buttonState.buttons as Prisma.InputJsonValue,
+          buttonEnabled: buttonState.buttonEnabled,
+          buttonUrl: buttonState.buttonUrl,
+          buttonText: buttonState.buttonText,
           imageEnabled: request.payload.imageEnabled,
           imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
           imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
@@ -9274,9 +9274,11 @@ export class AdminService implements OnModuleDestroy {
           text: row.text,
           textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
           applyToAllChats: row.applyToAllChats,
-          buttonEnabled: row.buttonEnabled,
-          buttonUrl: row.buttonEnabled ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl) : '',
-          buttonText: row.buttonText,
+          ...this.buildManagedBroadcastButtonState(row.buttons, {
+            buttonEnabled: row.buttonEnabled,
+            buttonUrl: row.buttonUrl,
+            buttonText: row.buttonText,
+          }),
           imageEnabled: row.imageEnabled,
           imageBase64: row.imageBase64,
           imageMimeType: row.imageMimeType,
@@ -9518,6 +9520,7 @@ export class AdminService implements OnModuleDestroy {
       | undefined;
   }> {
     const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
+      customButtons: payload.buttons,
       includeCustomButton: payload.buttonEnabled,
       customButtonText: payload.buttonText.trim(),
       customButtonUrl: payload.buttonUrl.trim(),
@@ -10435,6 +10438,11 @@ export class AdminService implements OnModuleDestroy {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
+    const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
+      buttonEnabled: row.buttonEnabled,
+      buttonUrl: row.buttonUrl,
+      buttonText: row.buttonText,
+    });
 
     return {
       id: row.id,
@@ -10448,7 +10456,8 @@ export class AdminService implements OnModuleDestroy {
       applyToAllChats: row.applyToAllChats,
       targetChats: targetChatIds.length,
       hasImage: row.imageEnabled,
-      buttonEnabled: row.buttonEnabled,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
       scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
       scheduleTimezone: row.scheduleTimezone,
       scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
@@ -10476,6 +10485,11 @@ export class AdminService implements OnModuleDestroy {
   ): ManagedBroadcastDetails {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
+    const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
+      buttonEnabled: row.buttonEnabled,
+      buttonUrl: row.buttonUrl,
+      buttonText: row.buttonText,
+    });
 
     return {
       id: row.id,
@@ -10484,9 +10498,10 @@ export class AdminService implements OnModuleDestroy {
       textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
       applyToAllChats: row.applyToAllChats,
       targetChatIds,
-      buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonEnabled ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl) : '',
-      buttonText: row.buttonText,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
       imageEnabled: row.imageEnabled,
       imageBase64: row.imageBase64,
       imageMimeType: row.imageMimeType,
@@ -10806,29 +10821,126 @@ export class AdminService implements OnModuleDestroy {
     return 'broadcast-image.jpg';
   }
 
+  private normalizeManagedBroadcastButtons(
+    rawButtons: unknown,
+    legacy?: {
+      buttonEnabled?: boolean;
+      buttonUrl?: string | null;
+      buttonText?: string | null;
+    },
+  ): BroadcastLinkButton[] {
+    const normalizedButtons: BroadcastLinkButton[] = [];
+
+    if (Array.isArray(rawButtons)) {
+      for (const item of rawButtons) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+
+        const row = item as { text?: unknown; url?: unknown };
+        const url = this.normalizeLegacyProfileButtonUrl(
+          typeof row.url === 'string' ? row.url : '',
+        );
+
+        if (!url) {
+          continue;
+        }
+
+        normalizedButtons.push({
+          text:
+            typeof row.text === 'string' && row.text.trim().length > 0
+              ? row.text.trim()
+              : DEFAULT_BROADCAST_BUTTON_TEXT,
+          url,
+        });
+
+        if (normalizedButtons.length >= MAX_BROADCAST_LINK_BUTTONS) {
+          break;
+        }
+      }
+    }
+
+    if (normalizedButtons.length > 0) {
+      return normalizedButtons;
+    }
+
+    if (legacy?.buttonEnabled !== true) {
+      return [];
+    }
+
+    const legacyUrl = this.normalizeLegacyProfileButtonUrl(legacy.buttonUrl ?? '');
+    if (!legacyUrl) {
+      return [];
+    }
+
+    return [
+      {
+        text: legacy.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
+        url: legacyUrl,
+      },
+    ];
+  }
+
+  private buildManagedBroadcastButtonState(
+    rawButtons: unknown,
+    legacy?: {
+      buttonEnabled?: boolean;
+      buttonUrl?: string | null;
+      buttonText?: string | null;
+    },
+  ): {
+    buttons: BroadcastLinkButton[];
+    buttonEnabled: boolean;
+    buttonUrl: string;
+    buttonText: string;
+  } {
+    const buttons = this.normalizeManagedBroadcastButtons(rawButtons, legacy);
+    const primaryButton = buttons[0];
+
+    return {
+      buttons,
+      buttonEnabled: buttons.length > 0,
+      buttonUrl: primaryButton?.url ?? '',
+      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+    };
+  }
+
+  private buildBroadcastLinkButtonRows(buttons: BroadcastLinkButton[]): MaxMessageButton[][] {
+    const rows: MaxMessageButton[][] = [];
+
+    for (let index = 0; index < buttons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
+      rows.push(
+        buttons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW).map((button) => ({
+          type: 'link',
+          text: button.text,
+          url: button.url,
+        })),
+      );
+    }
+
+    return rows;
+  }
+
   private async resolveBroadcastButtons(
     chatId: string,
     entityType: ManagedEntityType,
     options: {
+      customButtons?: BroadcastLinkButton[];
+      buttonEnabled?: boolean;
+      buttonUrl?: string;
+      buttonText?: string;
       includeCustomButton: boolean;
       customButtonText: string;
       customButtonUrl: string;
     },
   ): Promise<MaxMessageButton[][]> {
-    const rows: MaxMessageButton[][] = [];
-
-    if (options.includeCustomButton) {
-      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(
-        options.customButtonUrl,
-      );
-      rows.push([
-        {
-          type: 'link',
-          text: options.customButtonText,
-          url: normalizedCustomButtonUrl,
-        },
-      ]);
-    }
+    const rows = this.buildBroadcastLinkButtonRows(
+      this.normalizeManagedBroadcastButtons(options.customButtons, {
+        buttonEnabled: options.includeCustomButton,
+        buttonUrl: options.customButtonUrl,
+        buttonText: options.customButtonText,
+      }),
+    );
 
     if (entityType === 'chat') {
       const chatSettings = await this.prisma.chatSettings.upsert({
@@ -12299,33 +12411,8 @@ export class AdminService implements OnModuleDestroy {
         resolvedBotId,
       );
       const muteExpiresAt = new Date(Date.now() + muteDurationHours * ONE_HOUR_MS);
-      let sourceCleanup = {
-        candidateMessageIds: [] as string[],
-        deletedMessageIds: [] as string[],
-        failedMessageIds: [] as string[],
-      };
-      if (shouldFanoutCommandMute) {
-        try {
-          sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(
-            chatId,
-            targetUserId,
-          );
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              targetUserId,
-              actorUserId: user.userId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to run recent message cleanup after manual mute',
-          );
-        }
-      }
-
-      const sourceMessageCleanup = this.summarizeManualModerationCleanup(sourceCleanup);
-      const crossChatMuteFanout = shouldFanoutCommandMute
-        ? await this.resolveManualMuteFanoutSummary({
+      const { sourceMessageCleanup, crossChatMuteFanout } = shouldFanoutCommandMute
+        ? await this.resolveManualMuteCommandFollowUpSummaries({
             sourceChatId: chatId,
             targetUserId,
             actor: user,
@@ -12333,11 +12420,18 @@ export class AdminService implements OnModuleDestroy {
             muteExpiresAt,
             source,
           })
-        : this.summarizeManualMuteFanout({
-            mutedChatIds: [],
-            skippedChatIds: [],
-            failedChatIds: [],
-          });
+        : {
+            sourceMessageCleanup: this.summarizeManualModerationCleanup({
+              candidateMessageIds: [],
+              deletedMessageIds: [],
+              failedMessageIds: [],
+            }),
+            crossChatMuteFanout: this.summarizeManualMuteFanout({
+              mutedChatIds: [],
+              skippedChatIds: [],
+              failedChatIds: [],
+            }),
+          };
 
       await this.recordManualModerationAction({
         chatId,
@@ -12775,6 +12869,14 @@ export class AdminService implements OnModuleDestroy {
 
   async processManualModerationFanoutJob(job: AdminManualFanoutJob): Promise<void> {
     if (job.kind === 'manual_mute_fanout') {
+      if (job.cleanupSourceChatMessages) {
+        await this.runDeferredManualModerationSourceCleanup(
+          job.sourceChatId,
+          job.targetUserId,
+          job.actor.userId,
+          'Failed to run deferred recent message cleanup after manual mute',
+        );
+      }
       await this.applyManualMuteFanout({
         sourceChatId: job.sourceChatId,
         targetUserId: job.targetUserId,
@@ -12809,22 +12911,56 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
-  private async resolveManualMuteFanoutSummary(params: {
+  private async resolveManualMuteCommandFollowUpSummaries(params: {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
     muteDurationHours: number;
     muteExpiresAt: Date;
     source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
-  }) {
-    const queuedJob = this.buildManualMuteFanoutJob(params);
+  }): Promise<{
+    sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
+    crossChatMuteFanout: ReturnType<AdminService['summarizeManualMuteFanout']>;
+  }> {
+    const queuedJob = this.buildManualMuteFanoutJob({
+      ...params,
+      cleanupSourceChatMessages: true,
+    });
     if (await this.enqueueManualModerationFanout(queuedJob)) {
-      return this.buildQueuedManualMuteFanoutSummary(queuedJob.jobId);
+      return {
+        sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
+        crossChatMuteFanout: this.buildQueuedManualMuteFanoutSummary(queuedJob.jobId),
+      };
+    }
+
+    let sourceCleanup = {
+      candidateMessageIds: [] as string[],
+      deletedMessageIds: [] as string[],
+      failedMessageIds: [] as string[],
+    };
+    try {
+      sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(
+        params.sourceChatId,
+        params.targetUserId,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.sourceChatId,
+          targetUserId: params.targetUserId,
+          actorUserId: params.actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run recent message cleanup after manual mute',
+      );
     }
 
     try {
       const fanout = await this.applyManualMuteFanout(params);
-      return this.summarizeManualMuteFanout(fanout);
+      return {
+        sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
+        crossChatMuteFanout: this.summarizeManualMuteFanout(fanout),
+      };
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -12835,11 +12971,14 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to run manual mute fanout after source chat mute',
       );
-      return this.summarizeManualMuteFanout({
-        mutedChatIds: [],
-        skippedChatIds: [],
-        failedChatIds: [],
-      });
+      return {
+        sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
+        crossChatMuteFanout: this.summarizeManualMuteFanout({
+          mutedChatIds: [],
+          skippedChatIds: [],
+          failedChatIds: [],
+        }),
+      };
     }
   }
 
@@ -12880,6 +13019,7 @@ export class AdminService implements OnModuleDestroy {
   private buildManualMuteFanoutJob(params: {
     sourceChatId: string;
     targetUserId: string;
+    cleanupSourceChatMessages?: boolean;
     actor: AuthUser;
     muteDurationHours: number;
     muteExpiresAt: Date;
@@ -12895,6 +13035,7 @@ export class AdminService implements OnModuleDestroy {
       ),
       sourceChatId: params.sourceChatId,
       targetUserId: params.targetUserId,
+      cleanupSourceChatMessages: params.cleanupSourceChatMessages,
       actor: {
         userId: params.actor.userId,
         username: params.actor.username ?? null,
@@ -13030,6 +13171,24 @@ export class AdminService implements OnModuleDestroy {
     deletedMessageIds: string[];
     failedMessageIds: string[];
   }> {
+    return this.runDeferredManualModerationSourceCleanup(
+      chatId,
+      targetUserId,
+      actorUserId,
+      options.logMessage ?? 'Failed to run recent message cleanup after manual system ban',
+    );
+  }
+
+  private async runDeferredManualModerationSourceCleanup(
+    chatId: string,
+    targetUserId: string,
+    actorUserId: string,
+    logMessage: string,
+  ): Promise<{
+    candidateMessageIds: string[];
+    deletedMessageIds: string[];
+    failedMessageIds: string[];
+  }> {
     try {
       return await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
     } catch (error: unknown) {
@@ -13040,7 +13199,7 @@ export class AdminService implements OnModuleDestroy {
           actorUserId,
           err: error instanceof Error ? error.message : String(error),
         },
-        options.logMessage ?? 'Failed to run recent message cleanup after manual system ban',
+        logMessage,
       );
       return {
         candidateMessageIds: [],
@@ -17229,9 +17388,7 @@ export class AdminService implements OnModuleDestroy {
           })
         ).filter(
           (id) =>
-            id.trim().length > 0 &&
-            !knownBotUserIds.has(id.trim()) &&
-            !this.isOwnBotUserId(id),
+            id.trim().length > 0 && !knownBotUserIds.has(id.trim()) && !this.isOwnBotUserId(id),
         ),
       ),
     );
@@ -18826,7 +18983,9 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const currentContextBotUserId = this.readTrimmedString(await this.resolveCurrentBotUserId(chatId));
+    const currentContextBotUserId = this.readTrimmedString(
+      await this.resolveCurrentBotUserId(chatId),
+    );
     if (currentContextBotUserId) {
       knownBotUserIds.add(currentContextBotUserId);
     }

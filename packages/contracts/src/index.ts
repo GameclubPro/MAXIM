@@ -115,6 +115,9 @@ export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 500;
+export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
+export const MAX_BROADCAST_LINK_BUTTONS = 8;
+export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
 export const DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES = 0.5;
 export const DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES = 60;
 export const DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES = 2;
@@ -135,9 +138,32 @@ const deleteBotMessagesDelayMinutesSchema = z
   })
   .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
-const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
+const botButtonTextSchema = z.string().trim().max(32).default(DEFAULT_BROADCAST_BUTTON_TEXT);
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+export const broadcastLinkButtonSchema = z
+  .object({
+    text: botButtonTextSchema,
+    url: botButtonUrlSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (!isValidBotButtonUrl(value.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['url'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (!isValidBotButtonText(value.text)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['text'],
+        message: 'Введите название кнопки.',
+      });
+    }
+  });
+export type BroadcastLinkButton = z.infer<typeof broadcastLinkButtonSchema>;
 const messageLimitsBlockedWordSchema = z.string().trim().max(32);
 const messageLimitsBlockedWordsSchema = z
   .array(messageLimitsBlockedWordSchema)
@@ -2240,6 +2266,35 @@ function normalizeBroadcastScheduledSlots(values: string[]): string[] {
   );
 }
 
+function normalizeBroadcastLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
+  return values.map((value) => ({
+    text: value.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
+    url: value.url.trim(),
+  }));
+}
+
+function resolveBroadcastLinkButtons(value: {
+  buttons?: BroadcastLinkButton[];
+  buttonEnabled?: boolean;
+  buttonUrl?: string;
+  buttonText?: string;
+}): BroadcastLinkButton[] {
+  if (Array.isArray(value.buttons) && value.buttons.length > 0) {
+    return normalizeBroadcastLinkButtons(value.buttons);
+  }
+
+  if (!value.buttonEnabled) {
+    return [];
+  }
+
+  return normalizeBroadcastLinkButtons([
+    {
+      text: value.buttonText ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      url: value.buttonUrl ?? '',
+    },
+  ]);
+}
+
 export const sendBroadcastRequestSchema = z
   .object({
     text: z
@@ -2248,6 +2303,7 @@ export const sendBroadcastRequestSchema = z
       .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
     applyToAllChats: z.boolean().default(false),
+    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
@@ -2278,7 +2334,11 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+    if (
+      value.buttons.length === 0 &&
+      value.buttonEnabled &&
+      !isValidBotButtonUrl(value.buttonUrl)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
@@ -2286,7 +2346,11 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+    if (
+      value.buttons.length === 0 &&
+      value.buttonEnabled &&
+      !isValidBotButtonText(value.buttonText)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonText'],
@@ -2338,16 +2402,26 @@ export const sendBroadcastRequestSchema = z
       }
     }
   })
-  .transform((value) => ({
-    ...value,
-    cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
-    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
-  }));
+  .transform((value) => {
+    const buttons = resolveBroadcastLinkButtons(value);
+    const primaryButton = buttons[0];
+
+    return {
+      ...value,
+      buttons,
+      buttonEnabled: buttons.length > 0,
+      buttonUrl: primaryButton?.url ?? '',
+      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+      scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+    };
+  });
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
 export const broadcastHandoffRequestSchema = z
   .object({
     applyToAllChats: z.boolean().default(false),
+    buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
@@ -2366,7 +2440,11 @@ export const broadcastHandoffRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
-    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+    if (
+      value.buttons.length === 0 &&
+      value.buttonEnabled &&
+      !isValidBotButtonUrl(value.buttonUrl)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
@@ -2374,7 +2452,11 @@ export const broadcastHandoffRequestSchema = z
       });
     }
 
-    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+    if (
+      value.buttons.length === 0 &&
+      value.buttonEnabled &&
+      !isValidBotButtonText(value.buttonText)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonText'],
@@ -2408,11 +2490,20 @@ export const broadcastHandoffRequestSchema = z
       }
     }
   })
-  .transform((value) => ({
-    ...value,
-    cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
-    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
-  }));
+  .transform((value) => {
+    const buttons = resolveBroadcastLinkButtons(value);
+    const primaryButton = buttons[0];
+
+    return {
+      ...value,
+      buttons,
+      buttonEnabled: buttons.length > 0,
+      buttonUrl: primaryButton?.url ?? '',
+      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+      scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
+    };
+  });
 export type BroadcastHandoffRequest = z.infer<typeof broadcastHandoffRequestSchema>;
 
 export const broadcastHandoffResponseSchema = z.object({
@@ -2427,6 +2518,7 @@ export type ProfileMentionHandoffRequest = z.infer<typeof profileMentionHandoffR
 
 export const broadcastHandoffStateSchema = z.object({
   applyToAllChats: z.boolean(),
+  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
@@ -2479,6 +2571,7 @@ export const managedBroadcastSummarySchema = z.object({
   applyToAllChats: z.boolean(),
   targetChats: z.number().int().min(1),
   hasImage: z.boolean(),
+  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
   scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
@@ -2507,6 +2600,7 @@ export const managedBroadcastDetailsSchema = z.object({
   textFormat: broadcastTextFormatSchema,
   applyToAllChats: z.boolean(),
   targetChatIds: z.array(z.string()),
+  buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,

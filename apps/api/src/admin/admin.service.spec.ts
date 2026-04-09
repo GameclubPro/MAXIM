@@ -94,6 +94,7 @@ function createPrismaMock() {
     textFormat: 'plain',
     applyToAllChats: false,
     targetChatIds: ['chat-1'],
+    buttons: [],
     buttonEnabled: false,
     buttonUrl: '',
     buttonText: 'Открыть',
@@ -4985,6 +4986,7 @@ describe('AdminService.applyManualSystemBan', () => {
         kind: 'manual_mute_fanout',
         sourceChatId: 'chat-1',
         targetUserId: 'user-2',
+        cleanupSourceChatMessages: true,
         muteDurationHours: 6,
         source: 'group_command',
       }),
@@ -5003,6 +5005,11 @@ describe('AdminService.applyManualSystemBan', () => {
         data: expect.objectContaining({
           chatId: 'chat-1',
           metadata: expect.objectContaining({
+            sourceMessageCleanup: expect.objectContaining({
+              mode: 'queued',
+              candidateCount: 0,
+              deletedCount: 0,
+            }),
             crossChatMuteFanout: expect.objectContaining({
               mode: 'queued',
               mutedChatsCount: 0,
@@ -5018,6 +5025,7 @@ describe('AdminService.applyManualSystemBan', () => {
           (call[0] as { data?: { chatId?: string } }).data?.chatId === 'chat-2',
       ),
     ).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(result).toEqual({
       ok: true,
       action: 'MUTE',
@@ -5026,6 +5034,70 @@ describe('AdminService.applyManualSystemBan', () => {
       muteExpiresAt: expect.any(String),
       message: 'Мут на 6ч.',
     });
+  });
+
+  it('deletes source chat messages during queued manual mute fanout processing', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+
+    const maxClient = {
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_mute_fanout',
+      jobId: 'job-mute-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-2',
+      cleanupSourceChatMessages: true,
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: null,
+        chatTitle: null,
+      },
+      muteDurationHours: 6,
+      muteExpiresAt: '2026-04-08T22:18:25.418Z',
+      source: 'group_command',
+    });
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
+      immediate: true,
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-2',
+          ruleCode: 'MANUAL_MUTE',
+        }),
+      }),
+    );
   });
 
   it('queues manual ban fanout for group commands when background queue is available', async () => {
@@ -14284,6 +14356,7 @@ describe('AdminService.sendBroadcast', () => {
         textFormat: 'plain',
         applyToAllChats: false,
         targetChatIds: ['chat-1'],
+        buttons: [],
         buttonEnabled: false,
         buttonUrl: '',
         buttonText: 'Открыть',
@@ -14462,6 +14535,54 @@ describe('AdminService.sendBroadcast', () => {
       c: 'chat-1',
       m: 'comments',
     });
+  });
+
+  it('splits custom broadcast link buttons into MAX-safe rows before the comments button', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.upsert.mockResolvedValue({
+      chatId: 'chat-1',
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const buttons = await (
+      service as unknown as Pick<AdminServicePrivateAccess, 'resolveBroadcastButtons'>
+    ).resolveBroadcastButtons('chat-1', 'chat', {
+      includeCustomButton: false,
+      customButtonText: '',
+      customButtonUrl: '',
+      customButtons: [
+        { text: 'Кнопка 1', url: 'https://max.ru/one' },
+        { text: 'Кнопка 2', url: 'https://max.ru/two' },
+        { text: 'Кнопка 3', url: 'https://max.ru/three' },
+        { text: 'Кнопка 4', url: 'https://max.ru/four' },
+      ],
+    });
+
+    expect(buttons.slice(0, 2)).toEqual([
+      [
+        { type: 'link', text: 'Кнопка 1', url: 'https://max.ru/one' },
+        { type: 'link', text: 'Кнопка 2', url: 'https://max.ru/two' },
+        { type: 'link', text: 'Кнопка 3', url: 'https://max.ru/three' },
+      ],
+      [{ type: 'link', text: 'Кнопка 4', url: 'https://max.ru/four' }],
+    ]);
+    expect(buttons[2]?.[0]?.text).toBe('💬 Комментарии · 0');
   });
 
   it('stores and queries chat dialog messages inside the thread encoded in the button token', async () => {
@@ -18597,8 +18718,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['209468578', '214634783', '98315271']),
-      getCurrentChatMemberAccess: jest.fn().mockImplementation(
-        async (_chatId: string, options?: { botId?: string }) => {
+      getCurrentChatMemberAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, options?: { botId?: string }) => {
           if (options?.botId === 'id613002203036_4_bot') {
             return {
               userId: '214634783',
@@ -18623,8 +18745,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             isOwner: false,
             permissions: [],
           };
-        },
-      ),
+        }),
       sendMessageImmediateWithId: jest.fn(),
       sendMessageImmediateToUser: jest.fn().mockResolvedValue({
         messageId: 'mid-suggestion-human-admin-1',

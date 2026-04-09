@@ -9,6 +9,7 @@ import {
   managedGiveawayHandoffRequestSchema,
   profileMentionHandoffRequestSchema,
   stepDeleteBotMessagesDelayMinutes,
+  type BroadcastLinkButton,
   type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -28,6 +29,7 @@ import {
   type MaxUpdate,
   type SendBroadcastResult,
   type UpdateManagedGiveawayRequest,
+  DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
@@ -139,6 +141,7 @@ type PrivateBroadcastDraft = {
   text: string;
   textFormat: BroadcastTextFormat;
   applyToAllChats: boolean;
+  buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
   buttonUrl: string;
   buttonText: string;
@@ -1121,9 +1124,10 @@ const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   text: '',
   textFormat: 'plain',
   applyToAllChats: false,
+  buttons: [],
   buttonEnabled: false,
   buttonUrl: '',
-  buttonText: 'Открыть',
+  buttonText: DEFAULT_BROADCAST_BUTTON_TEXT,
   imageEnabled: false,
   imageBase64: '',
   imageMimeType: '',
@@ -1455,10 +1459,11 @@ export class PrivateControlService {
       imageMimeType: preservedDraft.imageMimeType,
       imageFileName: preservedDraft.imageFileName,
       applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
+      buttons: parsed.data.buttons,
       buttonEnabled: parsed.data.buttonEnabled,
       buttonUrl: parsed.data.buttonEnabled ? parsed.data.buttonUrl.trim() : '',
       buttonText: parsed.data.buttonEnabled
-        ? parsed.data.buttonText.trim() || 'Открыть'
+        ? parsed.data.buttonText.trim() || DEFAULT_BROADCAST_BUTTON_TEXT
         : DEFAULT_BROADCAST_DRAFT.buttonText,
       scheduleMode,
       scheduleTimezone:
@@ -1513,6 +1518,7 @@ export class PrivateControlService {
 
     return broadcastHandoffStateSchema.parse({
       applyToAllChats: entityType === 'channel' ? false : draft.applyToAllChats,
+      buttons: draft.buttons,
       buttonEnabled: draft.buttonEnabled,
       buttonUrl: draft.buttonUrl,
       buttonText: draft.buttonText,
@@ -6022,6 +6028,7 @@ export class PrivateControlService {
   private cloneBroadcastDraft(draft: PrivateBroadcastDraft): PrivateBroadcastDraft {
     return {
       ...draft,
+      buttons: draft.buttons.map((button) => ({ ...button })),
       scheduledSlots: [...draft.scheduledSlots],
     };
   }
@@ -6187,6 +6194,7 @@ export class PrivateControlService {
       text: draft.text,
       textFormat: draft.textFormat,
       applyToAllChats: draft.applyToAllChats,
+      buttons: draft.buttons,
       buttonEnabled: draft.buttonEnabled,
       buttonUrl: draft.buttonUrl.trim(),
       buttonText: draft.buttonText,
@@ -9437,6 +9445,7 @@ export class PrivateControlService {
       const next = !session.broadcastDraft.buttonEnabled;
       session.broadcastDraft.buttonEnabled = next;
       if (!next) {
+        session.broadcastDraft.buttons = [];
         session.broadcastDraft.buttonUrl = '';
         session.broadcastDraft.buttonText = '';
       }
@@ -12481,17 +12490,47 @@ export class PrivateControlService {
     }
 
     const row = raw as Partial<PrivateBroadcastDraft>;
+    const buttons = Array.isArray(row.buttons)
+      ? row.buttons
+          .filter((item): item is BroadcastLinkButton => {
+            if (!item || typeof item !== 'object') {
+              return false;
+            }
+
+            const candidate = item as { text?: unknown; url?: unknown };
+            return (
+              typeof candidate.url === 'string' &&
+              candidate.url.trim().length > 0 &&
+              typeof candidate.text === 'string'
+            );
+          })
+          .map((item) => ({
+            text: item.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
+            url: item.url.trim(),
+          }))
+      : row.buttonEnabled === true &&
+          typeof row.buttonUrl === 'string' &&
+          row.buttonUrl.trim().length > 0
+        ? [
+            {
+              text:
+                typeof row.buttonText === 'string' && row.buttonText.trim().length > 0
+                  ? row.buttonText.trim()
+                  : DEFAULT_BROADCAST_BUTTON_TEXT,
+              url: row.buttonUrl.trim(),
+            },
+          ]
+        : [];
+    const primaryButton = buttons[0];
 
     return {
       text: typeof row.text === 'string' ? row.text : '',
       textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
       applyToAllChats: row.applyToAllChats === true,
-      buttonEnabled: row.buttonEnabled === true,
-      buttonUrl: typeof row.buttonUrl === 'string' ? row.buttonUrl : '',
-      buttonText:
-        typeof row.buttonText === 'string' && row.buttonText.trim().length > 0
-          ? row.buttonText
-          : 'Открыть',
+      buttons,
+      buttonEnabled: buttons.length > 0,
+      buttonUrl: primaryButton?.url ?? '',
+      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
       imageEnabled: row.imageEnabled === true,
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
       imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',

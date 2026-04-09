@@ -586,6 +586,7 @@ model ManagedBroadcast {
   textFormat       String                 @default("plain") @map("text_format")
   applyToAllChats  Boolean                @default(false) @map("apply_to_all_chats")
   targetChatIds    Json                   @map("target_chat_ids")
+  buttons          Json                   @map("buttons")
   buttonEnabled    Boolean                @default(false) @map("button_enabled")
   buttonUrl        String                 @default("") @map("button_url")
   buttonText       String                 @default("Открыть") @map("button_text")

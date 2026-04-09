@@ -1,24 +1,18 @@
 import type {
+  BroadcastLinkButton,
   ChannelAutoPostButtonsMode,
   ChannelSettings,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
-import {
-  startTransition,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type MouseEvent,
-} from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
+import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
-import { ManagedLinkButtonFields } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -36,6 +30,15 @@ import {
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
+import {
+  buildBroadcastLinkButtonLegacyFields,
+  createEmptyBroadcastLinkButton,
+  formatBroadcastButtonsStatus,
+  hasBroadcastLinkButtonErrors,
+  trimBroadcastLinkButtons,
+  validateBroadcastLinkButtons,
+  type BroadcastLinkButtonFieldErrors,
+} from '../lib/broadcast-link-buttons';
 import {
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
@@ -439,11 +442,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
   const [, setBroadcastTextError] = useState('');
-  const [broadcastButtonEnabled, setBroadcastButtonEnabled] = useState(false);
-  const [broadcastButtonUrl, setBroadcastButtonUrl] = useState('');
-  const [broadcastButtonText, setBroadcastButtonText] = useState('Открыть');
-  const [broadcastButtonUrlError, setBroadcastButtonUrlError] = useState('');
-  const [broadcastButtonTextError, setBroadcastButtonTextError] = useState('');
+  const [broadcastButtons, setBroadcastButtons] = useState<BroadcastLinkButton[]>([]);
+  const [broadcastButtonErrors, setBroadcastButtonErrors] = useState<
+    BroadcastLinkButtonFieldErrors[]
+  >([]);
   const [broadcastImageEnabled, setBroadcastImageEnabled] = useState(false);
   const [, setBroadcastImageBase64] = useState('');
   const [, setBroadcastImageMimeType] = useState('');
@@ -538,9 +540,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     appliedBroadcastHandoffSignatureRef.current = signature;
-    setBroadcastButtonEnabled(broadcastHandoffStateQuery.data.buttonEnabled);
-    setBroadcastButtonUrl(broadcastHandoffStateQuery.data.buttonUrl);
-    setBroadcastButtonText(broadcastHandoffStateQuery.data.buttonText || 'Открыть');
+    setBroadcastButtons(broadcastHandoffStateQuery.data.buttons);
     setBroadcastScheduledSlots(
       sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
     );
@@ -550,6 +550,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastButtonErrors([]);
     setBroadcastScheduleError('');
     setBroadcastCycleError('');
     resetBroadcastPlanner();
@@ -566,12 +567,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     setBroadcastText('');
     setBroadcastTextError('');
-    setBroadcastButtonEnabled(false);
-    setBroadcastButtonUrl('');
-    setBroadcastButtonText('Открыть');
+    setBroadcastButtons([]);
     setBroadcastBotHasContent(false);
-    setBroadcastButtonUrlError('');
-    setBroadcastButtonTextError('');
+    setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
@@ -900,7 +898,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showHeaderStatus = headerStatusTone !== 'saved';
   const compactHeaderStatusLabel =
     headerStatusTone === 'error' ? 'Ошибка' : headerStatusTone === 'saving' ? 'Сохр.' : 'Черн.';
-  const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
+  const normalizedBroadcastButtons = trimBroadcastLinkButtons(broadcastButtons);
+  const broadcastHasButton = normalizedBroadcastButtons.length > 0;
   const broadcastSlotsLabel = formatChannelCountLabel(
     broadcastScheduledSlots.length,
     'слот',
@@ -909,15 +908,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const broadcastSlotsSummary =
     broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : 'без слотов';
-  const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
-  const normalizedBroadcastButtonText = broadcastButtonText.trim();
   const normalizedBroadcastText = broadcastText.trim();
   const broadcastContentReady = broadcastBotHasContent;
-  const broadcastButtonDraftValid =
-    !broadcastButtonEnabled ||
-    (isHttpUrl(normalizedBroadcastButtonUrl) &&
-      normalizedBroadcastButtonText.length > 0 &&
-      normalizedBroadcastButtonText.length <= 32);
+  const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
+    validateBroadcastLinkButtons(normalizedBroadcastButtons),
+  );
   const broadcastPlannerPending =
     broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
   const broadcastScheduleReady = broadcastScheduledSlots.length > 0 && !broadcastPlannerPending;
@@ -932,7 +927,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
-    broadcastButtonEnabled;
+    broadcastHasButton;
   const broadcastHeaderSummary = [broadcastSlotsSummary, broadcastContentReady ? 'готово' : null]
     .filter(Boolean)
     .join(' · ');
@@ -951,7 +946,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : 'ручная публикация кнопки';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
-    broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
+    broadcastScheduledSlots.length > 0
+      ? 'Календ'
+      : broadcastHasButton
+        ? `${broadcastButtons.length} CTA`
+        : 'Бот';
   const broadcastDrilldownFooter = (
     <>
       <div className="settings-drilldown__footer-actions is-single-action">
@@ -976,11 +975,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastText('');
     setBroadcastTextError('');
     setBroadcastBotHasContent(false);
-    setBroadcastButtonEnabled(false);
-    setBroadcastButtonUrl('');
-    setBroadcastButtonText('Открыть');
-    setBroadcastButtonUrlError('');
-    setBroadcastButtonTextError('');
+    setBroadcastButtons([]);
+    setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
@@ -1030,35 +1026,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function validateBroadcastButtonDraft() {
-    let hasError = false;
-    const normalizedButtonUrl = broadcastButtonUrl.trim();
-    const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
-
-    setBroadcastButtonUrlError('');
-    setBroadcastButtonTextError('');
-
-    if (broadcastButtonEnabled) {
-      if (!isHttpUrl(normalizedButtonUrl)) {
-        setBroadcastButtonUrlError('Укажите корректную ссылку (http/https).');
-        hasError = true;
-      }
-      if (!normalizedButtonText || normalizedButtonText.length > 32) {
-        setBroadcastButtonTextError('Введите название кнопки до 32 символов.');
-        hasError = true;
-      }
-    }
-
-    return !hasError;
+    const nextErrors = validateBroadcastLinkButtons(normalizedBroadcastButtons);
+    setBroadcastButtonErrors(nextErrors);
+    return !hasBroadcastLinkButtonErrors(nextErrors);
   }
 
   function buildBroadcastHandoffPayload(): BroadcastHandoffPayload {
     const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
+    const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedBroadcastButtons);
 
     return {
       applyToAllChats: false,
-      buttonEnabled: broadcastButtonEnabled,
-      buttonUrl: broadcastButtonUrl.trim(),
-      buttonText: broadcastButtonText.trim() || 'Открыть',
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
       scheduleMode: 'calendar',
       scheduleTimezone: resolveBroadcastScheduleTimezone(),
       scheduledSlots,
@@ -1350,14 +1332,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <textarea
                       rows={3}
                       value={draft.engagementMessageText}
-                      onChange={(event) =>
-                        patchDraft('engagementMessageText', event.target.value)
-                      }
+                      onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
                       placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
                     />
                     <span className="field__hint">
-                      Используется, когда бот публикует CTA-пост с кнопками обсуждения и
-                      предложки.
+                      Используется, когда бот публикует CTA-пост с кнопками обсуждения и предложки.
                     </span>
                   </label>
 
@@ -1480,7 +1459,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             broadcastHasButton ? 'is-ready' : 'is-muted',
                           )}
                         >
-                          {broadcastHasButton ? 'Есть' : 'Нет'}
+                          {formatBroadcastButtonsStatus(normalizedBroadcastButtons)}
                         </span>
                       </div>
 
@@ -1489,9 +1468,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           <div
                             className={cn(
                               'mailing-option-card',
-                              broadcastButtonEnabled && 'is-enabled',
-                              (broadcastButtonUrlError || broadcastButtonTextError) &&
-                                'field--error',
+                              broadcastHasButton && 'is-enabled',
+                              hasBroadcastLinkButtonErrors(broadcastButtonErrors) && 'field--error',
                             )}
                           >
                             <div className="mailing-option-card__head">
@@ -1503,13 +1481,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               >
                                 <input
                                   type="checkbox"
-                                  checked={broadcastButtonEnabled}
+                                  checked={broadcastHasButton}
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
-                                    setBroadcastButtonEnabled(enabled);
+                                    setBroadcastButtons((current) =>
+                                      enabled
+                                        ? current.length > 0
+                                          ? current
+                                          : [createEmptyBroadcastLinkButton()]
+                                        : [],
+                                    );
                                     if (!enabled) {
-                                      setBroadcastButtonUrlError('');
-                                      setBroadcastButtonTextError('');
+                                      setBroadcastButtonErrors([]);
                                     }
                                   }}
                                 />
@@ -1519,29 +1502,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               </label>
                             </div>
 
-                            {broadcastButtonEnabled ? (
+                            {broadcastHasButton ? (
                               <div className="mailing-option-card__body">
-                                <ManagedLinkButtonFields
+                                <BroadcastLinkButtonsEditor
                                   api={api}
                                   contextEntityType="channel"
-                                  urlValue={broadcastButtonUrl}
-                                  onUrlChange={(nextValue) => {
-                                    setBroadcastButtonUrl(nextValue);
-                                    if (broadcastButtonUrlError) {
-                                      setBroadcastButtonUrlError('');
+                                  buttons={broadcastButtons}
+                                  errors={broadcastButtonErrors}
+                                  onChange={(nextButtons) => {
+                                    setBroadcastButtons(nextButtons);
+                                    if (broadcastButtonErrors.length > 0) {
+                                      setBroadcastButtonErrors([]);
                                     }
                                   }}
-                                  textValue={broadcastButtonText}
-                                  onTextChange={(nextValue) => {
-                                    setBroadcastButtonText(nextValue);
-                                    if (broadcastButtonTextError) {
-                                      setBroadcastButtonTextError('');
-                                    }
-                                  }}
-                                  urlError={broadcastButtonUrlError}
-                                  textError={broadcastButtonTextError}
-                                  urlLabel="Ссылка"
-                                  textLabel="Текст"
                                   urlPlaceholder="https://max.ru/channel/..."
                                   textPlaceholder="Открыть"
                                 />

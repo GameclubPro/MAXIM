@@ -6,6 +6,7 @@ import {
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
+  type BroadcastLinkButton,
   chatRulesSchema,
   chatSettingsSchema,
   formatDeleteBotMessagesDelayLabel,
@@ -50,6 +51,7 @@ import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
+import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -89,6 +91,15 @@ import type {
   SendBroadcastPayload,
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
+import {
+  buildBroadcastLinkButtonLegacyFields,
+  createEmptyBroadcastLinkButton,
+  formatBroadcastButtonsStatus,
+  hasBroadcastLinkButtonErrors,
+  trimBroadcastLinkButtons,
+  validateBroadcastLinkButtons,
+  type BroadcastLinkButtonFieldErrors,
+} from '../lib/broadcast-link-buttons';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import {
   resolveBroadcastScheduleTimezone,
@@ -1505,7 +1516,12 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
       : broadcast.cycleEnabled
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';
-  const extras = [broadcast.buttonEnabled ? 'CTA' : null, broadcast.hasImage ? 'Фото' : null]
+  const extras = [
+    broadcast.buttonEnabled
+      ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
+      : null,
+    broadcast.hasImage ? 'Фото' : null,
+  ]
     .filter((item): item is string => Boolean(item))
     .join(' · ');
 
@@ -2013,9 +2029,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [scheduleError, setScheduleError] = useState('');
   const [mailingText, setMailingText] = useState('');
   const [mailingApplyToAllChats, setMailingApplyToAllChats] = useState(false);
-  const [mailingButtonEnabled, setMailingButtonEnabled] = useState(false);
-  const [mailingButtonUrl, setMailingButtonUrl] = useState('');
-  const [mailingButtonText, setMailingButtonText] = useState('Открыть');
+  const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
   const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
   const [mailingImageBase64, setMailingImageBase64] = useState('');
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
@@ -2034,8 +2048,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [, setMailingCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
   const [, setMailingCycleCount] = useState(2);
   const [, setMailingTextError] = useState('');
-  const [mailingButtonUrlError, setMailingButtonUrlError] = useState('');
-  const [mailingButtonTextError, setMailingButtonTextError] = useState('');
+  const [mailingButtonErrors, setMailingButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>(
+    [],
+  );
   const [, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [, setMailingCycleError] = useState('');
@@ -2139,9 +2154,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesFailedSnapshot('');
     setMailingApplyToAllChats(false);
     setMailingText('');
-    setMailingButtonEnabled(false);
-    setMailingButtonUrl('');
-    setMailingButtonText('Открыть');
+    setMailingButtons([]);
     setMailingImageEnabled(false);
     setMailingImageBase64('');
     setMailingImageMimeType('');
@@ -2156,8 +2169,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setMailingCycleCount(2);
     setMailingTextError('');
-    setMailingButtonUrlError('');
-    setMailingButtonTextError('');
+    setMailingButtonErrors([]);
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
@@ -2409,9 +2421,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     appliedBroadcastHandoffSignatureRef.current = signature;
     setEditingManagedBroadcast(null);
     setMailingApplyToAllChats(broadcastHandoffStateQuery.data.applyToAllChats);
-    setMailingButtonEnabled(broadcastHandoffStateQuery.data.buttonEnabled);
-    setMailingButtonUrl(broadcastHandoffStateQuery.data.buttonUrl);
-    setMailingButtonText(broadcastHandoffStateQuery.data.buttonText || 'Открыть');
+    setMailingButtons(broadcastHandoffStateQuery.data.buttons);
     setMailingScheduledSlots(
       sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
     );
@@ -2424,6 +2434,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingButtonErrors([]);
     setMailingScheduleError('');
     setMailingCycleError('');
     resetMailingPlanner();
@@ -2999,9 +3010,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingApplyToAllChats(broadcast.applyToAllChats);
       setMailingText(broadcast.text);
       setMailingBotHasContent(false);
-      setMailingButtonEnabled(broadcast.buttonEnabled);
-      setMailingButtonUrl(broadcast.buttonUrl);
-      setMailingButtonText(broadcast.buttonText || 'Открыть');
+      setMailingButtons(broadcast.buttons);
+      setMailingButtonErrors([]);
       setMailingImageEnabled(broadcast.imageEnabled);
       setMailingImageBase64(broadcast.imageBase64);
       setMailingImageMimeType(broadcast.imageMimeType);
@@ -3011,8 +3021,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       );
       setMailingTextError('');
-      setMailingButtonUrlError('');
-      setMailingButtonTextError('');
+      setMailingButtonErrors([]);
       setMailingImageError('');
       setMailingScheduleError('');
       setMailingCycleError('');
@@ -3796,9 +3805,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingApplyToAllChats(false);
     setMailingText('');
     setMailingBotHasContent(false);
-    setMailingButtonEnabled(false);
-    setMailingButtonUrl('');
-    setMailingButtonText('Открыть');
+    setMailingButtons([]);
     setMailingImageEnabled(false);
     setMailingImageBase64('');
     setMailingImageMimeType('');
@@ -3812,8 +3819,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setMailingCycleCount(2);
     setMailingTextError('');
-    setMailingButtonUrlError('');
-    setMailingButtonTextError('');
+    setMailingButtonErrors([]);
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
@@ -3857,42 +3863,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function validateMailingButtonDraft() {
-    let hasError = false;
-    const normalizedButtonUrl = mailingButtonUrl.trim();
-    const normalizedButtonText = mailingButtonText.trim();
-
-    if (mailingButtonEnabled) {
-      if (!isValidHttpUrl(normalizedButtonUrl)) {
-        setMailingButtonUrlError('Укажите корректную ссылку (http/https).');
-        hasError = true;
-      } else {
-        setMailingButtonUrlError('');
-      }
-
-      if (!normalizedButtonText || normalizedButtonText.length > 32) {
-        setMailingButtonTextError('Введите название кнопки до 32 символов.');
-        hasError = true;
-      } else {
-        setMailingButtonTextError('');
-      }
-    } else {
-      setMailingButtonUrlError('');
-      setMailingButtonTextError('');
-    }
-
-    return !hasError;
+    const nextErrors = validateBroadcastLinkButtons(normalizedMailingButtons);
+    setMailingButtonErrors(nextErrors);
+    return !hasBroadcastLinkButtonErrors(nextErrors);
   }
 
   function buildMailingHandoffPayload(): BroadcastHandoffPayload {
-    const normalizedButtonUrl = mailingButtonUrl.trim();
-    const normalizedButtonText = mailingButtonText.trim();
+    const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedMailingButtons);
     const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
 
     return {
       applyToAllChats: mailingApplyToAllChats,
-      buttonEnabled: mailingButtonEnabled,
-      buttonUrl: normalizedButtonUrl,
-      buttonText: normalizedButtonText || 'Открыть',
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
       scheduleMode: 'calendar',
       scheduleTimezone: mailingScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       scheduledSlots,
@@ -4604,8 +4589,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     'слотов',
   );
   const normalizedMailingText = mailingText.trim();
-  const normalizedMailingButtonUrl = mailingButtonUrl.trim();
-  const normalizedMailingButtonText = mailingButtonText.trim();
+  const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
+  const mailingButtonEnabled = normalizedMailingButtons.length > 0;
   const mailingContentReady = editingManagedBroadcast
     ? normalizedMailingText.length > 0 || mailingImageEnabled
     : mailingBotHasContent;
@@ -4622,11 +4607,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingText.trim().length > 0 ||
     mailingImageEnabled ||
     mailingButtonEnabled;
-  const mailingButtonDraftValid =
-    !mailingButtonEnabled ||
-    (isValidHttpUrl(normalizedMailingButtonUrl) &&
-      normalizedMailingButtonText.length > 0 &&
-      normalizedMailingButtonText.length <= 32);
+  const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
+    validateBroadcastLinkButtons(normalizedMailingButtons),
+  );
   const mailingPlannerPending =
     mailingPlannerState.pickedDayCount > 0 || mailingPlannerState.isDaySheetOpen;
   const mailingScheduleReady = mailingScheduledSlots.length > 0 && !mailingPlannerPending;
@@ -6912,9 +6895,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             className="settings-native-toggle__hint"
                           >
                             Бот ищет именно рекламную подачу: массовые объявления, услуги с
-                            контактами, продажи со скидками, доставкой, ссылками и призывом
-                            написать или позвонить. Частные объявления и бытовые разовые продажи
-                            старается пропускать.
+                            контактами, продажи со скидками, доставкой, ссылками и призывом написать
+                            или позвонить. Частные объявления и бытовые разовые продажи старается
+                            пропускать.
                           </p>
                         ) : null}
                       </div>
@@ -6981,9 +6964,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               >
                                 Сейчас бот считает объявление подозрительным с{' '}
                                 {draft.commercialAdsWarnThreshold} баллов, а как явную рекламу
-                                удаляет с {draft.commercialAdsDeleteThreshold}. `Мягко` реже
-                                трогает спорные частные объявления, `Строго` быстрее режет
-                                саморекламу и повторные коммерческие посты.
+                                удаляет с {draft.commercialAdsDeleteThreshold}. `Мягко` реже трогает
+                                спорные частные объявления, `Строго` быстрее режет саморекламу и
+                                повторные коммерческие посты.
                               </p>
                             ) : null}
                           </div>
@@ -9633,7 +9616,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     mailingButtonEnabled ? 'is-ready' : 'is-muted',
                                   )}
                                 >
-                                  {mailingButtonEnabled ? 'Есть' : 'Нет'}
+                                  {formatBroadcastButtonsStatus(normalizedMailingButtons)}
                                 </span>
                               </div>
 
@@ -9643,7 +9626,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     className={cn(
                                       'mailing-option-card',
                                       mailingButtonEnabled && 'is-enabled',
-                                      (mailingButtonUrlError || mailingButtonTextError) &&
+                                      hasBroadcastLinkButtonErrors(mailingButtonErrors) &&
                                         'field--error',
                                     )}
                                   >
@@ -9661,10 +9644,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           checked={mailingButtonEnabled}
                                           onChange={(event) => {
                                             const enabled = event.target.checked;
-                                            setMailingButtonEnabled(enabled);
+                                            setMailingButtons((current) =>
+                                              enabled
+                                                ? current.length > 0
+                                                  ? current
+                                                  : [createEmptyBroadcastLinkButton()]
+                                                : [],
+                                            );
                                             if (!enabled) {
-                                              setMailingButtonUrlError('');
-                                              setMailingButtonTextError('');
+                                              setMailingButtonErrors([]);
                                             }
                                           }}
                                           disabled={isMailingBusy}
@@ -9677,27 +9665,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                                     {mailingButtonEnabled ? (
                                       <div className="mailing-option-card__body">
-                                        <ManagedLinkButtonFieldsSlot
+                                        <BroadcastLinkButtonsEditor
                                           api={api}
-                                          urlValue={mailingButtonUrl}
-                                          onUrlChange={(nextValue) => {
-                                            setMailingButtonUrl(nextValue);
-                                            if (mailingButtonUrlError) {
-                                              setMailingButtonUrlError('');
+                                          buttons={mailingButtons}
+                                          errors={mailingButtonErrors}
+                                          onChange={(nextButtons) => {
+                                            setMailingButtons(nextButtons);
+                                            if (mailingButtonErrors.length > 0) {
+                                              setMailingButtonErrors([]);
                                             }
                                           }}
-                                          textValue={mailingButtonText}
-                                          onTextChange={(nextValue) => {
-                                            setMailingButtonText(nextValue);
-                                            if (mailingButtonTextError) {
-                                              setMailingButtonTextError('');
-                                            }
-                                          }}
-                                          urlError={mailingButtonUrlError}
-                                          textError={mailingButtonTextError}
                                           disabled={isMailingBusy}
-                                          urlLabel="Ссылка"
-                                          textLabel="Текст"
                                           urlPlaceholder="https://max.ru/channel/..."
                                           textPlaceholder="Открыть"
                                         />
