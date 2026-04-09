@@ -118,6 +118,12 @@ type AllowlistMatchers = {
   domains: Set<string>;
 };
 
+type CommercialMarkerContext = {
+  normalizedTextWithoutUrls: string;
+  rawLoweredTextWithoutUrls: string;
+  normalizedTokensWithoutUrls: string[];
+};
+
 type TopicFilterDetection = {
   mode: 'CODEWORD';
   messageLength: number;
@@ -293,7 +299,6 @@ const ADS_PROMO_MARKERS = [
 ];
 const ADS_BUSINESS_MARKERS = [
   'коммерция',
-  'магазин',
   'салон',
   'студия',
   'компания',
@@ -313,6 +318,23 @@ const ADS_BUSINESS_MARKERS = [
   'wildberries',
   'озон',
   'ozon',
+];
+const ADS_BUSINESS_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'магазин',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])интернет[\s-]*магазин(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'магазин',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])магазин(?:[\s"«][\p{L}\p{N}]|-[\p{L}\p{N}])/u,
+  },
+  {
+    label: 'магазин',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])в\s+магазин[\p{L}\p{N}\s"«»_-]{0,40}привез/u,
+  },
 ];
 const ADS_SERVICE_SPECIALTY_MARKERS = [
   'ремонт',
@@ -353,11 +375,21 @@ const ADS_RECRUITMENT_MARKERS = [
   'подработк',
   'зарплат',
   'доход',
-  'требует',
-  'набор',
   'сотрудничеств',
   'смена',
   'отклик',
+];
+const ADS_RECRUITMENT_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'требуется',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])треб(?:уется|уются|ует|уют)\s+(?:менеджер|сотрудник|работник|специалист|мастер|бригада|подрядчик|водитель|курьер|продавец|оператор|администратор|охранник|грузчик|разнорабоч[\p{L}\p{N}_-]*|нян[\p{L}\p{N}_-]*|сиделк[\p{L}\p{N}_-]*|повар[\p{L}\p{N}_-]*|шве[\p{L}\p{N}_-]*|парикмах[\p{L}\p{N}_-]*|маркетолог[\p{L}\p{N}_-]*|копирайтер[\p{L}\p{N}_-]*|бухгалтер[\p{L}\p{N}_-]*|юрист[\p{L}\p{N}_-]*|риелтор[\p{L}\p{N}_-]*|сварщик[\p{L}\p{N}_-]*|монтажник[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'набор',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:вед[её]т(?:ся)?\s+)?набор\s+(?:сотрудник[\p{L}\p{N}_-]*|персонал[\p{L}\p{N}_-]*|люд[\p{L}\p{N}_-]*|команд[\p{L}\p{N}_-]*|мастер[\p{L}\p{N}_-]*|водител[\p{L}\p{N}_-]*|курьер[\p{L}\p{N}_-]*|оператор[\p{L}\p{N}_-]*|охранник[\p{L}\p{N}_-]*|грузчик[\p{L}\p{N}_-]*|администратор[\p{L}\p{N}_-]*|менеджер[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
 ];
 const ADS_INFO_PRODUCT_MARKERS = ['курс', 'вебинар', 'марафон', 'обучени', 'интенсив', 'наставнич'];
 const ADS_CALL_TO_ACTION_MARKERS = [
@@ -404,7 +436,7 @@ const ADS_GROUP_SELF_REFERENCE_MARKERS = [
 const ADS_GROUP_TRADE_MARKERS = [
   'покупать',
   'продавать',
-  'объявлен',
+  'объявления',
   'обмениваться',
   'купля',
   'продажа',
@@ -421,8 +453,11 @@ const ADS_COMMERCIAL_AUDIENCE_MARKERS = [
 const ADS_CONTACT_MARKERS = [
   'пишите в лс',
   'пишите в лич',
+  'пишите в личные сообщения',
   'в лс',
   'в личк',
+  'в личные сообщения',
+  'личные сообщения',
   'в директ',
   'директ',
   'звоните',
@@ -543,6 +578,37 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:это|он|она)\s+нормальн[\p{L}\p{N}_-]+\s+(?:мастер|специалист|салон|магазин)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
+const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'кому нужно сделать',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])кому\s+нужно\s+(?:сделать|изготовить|построить|отремонтировать|починить|пробурить|сварить|сшить|связать|нарисовать|собрать)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'сделаю',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:сделаю|изготовлю|построю|отремонтирую|починю|пробурю|сварю|сошью|свяжу|соберу)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
+const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'property-sale',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:прода(?:м|ется|ётся)|сда(?:м|ется|ётся)|аренда|ипотек[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,80})(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'property-listing',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,100})(?:этаж|балкон|лоджи|сануз|ипотек|собственник|жк|дкп|обремен|ремонт)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
+const PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS = new Set([
+  'ремонт',
+  'сантехник',
+  'сборк',
+  'установк',
+]);
+const PROPERTY_LISTING_NOISE_BUSINESS_MARKERS = new Set(['магазин', 'студия']);
 const ADS_LINK_PATTERN =
   /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
@@ -965,21 +1031,40 @@ export class RuleEngineService {
       return false;
     }
 
-    const hasMarker = (marker: string): boolean =>
-      normalizedText.includes(marker) || rawLoweredText.includes(marker);
+    const markerContext = this.buildCommercialMarkerContext(normalizedText, rawLoweredText);
+    const hasMarker = (marker: string): boolean => this.hasCommercialMarker(marker, markerContext);
+    const matchesPattern = (pattern: RegExp): boolean =>
+      this.matchesCommercialPattern(pattern, markerContext);
+    const hasPropertyPrivateContext = ADS_PROPERTY_PRIVATE_PATTERNS.some(({ pattern }) =>
+      matchesPattern(pattern),
+    );
 
     const hasCommercialContext =
       ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_BUSINESS_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_BUSINESS_MARKERS.some(
+        (marker) =>
+          !(
+            hasPropertyPrivateContext &&
+            PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)
+          ) && hasMarker(marker),
+      ) ||
+      ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
       ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
       ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
     const hasIntentContext = ADS_INTENT_MARKERS.some((marker) => hasMarker(marker));
     const hasServiceOfferContext = [...ADS_SERVICE_INTENT_MARKERS].some((marker) =>
       hasMarker(marker),
-    );
-    const hasServiceSpecialtyContext = ADS_SERVICE_SPECIALTY_MARKERS.some((marker) =>
-      hasMarker(marker),
+    )
+      || ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasServiceSpecialtyContext = ADS_SERVICE_SPECIALTY_MARKERS.some(
+      (marker) =>
+        !(
+          hasPropertyPrivateContext &&
+          !hasServiceOfferContext &&
+          PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+        ) && hasMarker(marker),
     );
     const hasGroupContext = ADS_GROUP_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasGroupPromotionIntent =
@@ -1046,6 +1131,46 @@ export class RuleEngineService {
       state.hasCallToActionContext ||
       state.hasGroupPromotionIntent ||
       state.hasCommercialAudienceContext
+    );
+  }
+
+  private buildCommercialMarkerContext(
+    normalizedText: string,
+    rawLoweredText: string,
+  ): CommercialMarkerContext {
+    const rawLoweredTextWithoutUrls = stripUrlsFromText(rawLoweredText);
+    const normalizedTextWithoutUrls =
+      rawLoweredTextWithoutUrls === rawLoweredText
+        ? normalizedText
+        : this.normalizeForDetection(rawLoweredTextWithoutUrls);
+
+    return {
+      normalizedTextWithoutUrls,
+      rawLoweredTextWithoutUrls,
+      normalizedTokensWithoutUrls: normalizedTextWithoutUrls.match(/[\p{L}\p{N}]+/gu) ?? [],
+    };
+  }
+
+  private hasCommercialMarker(marker: string, context: CommercialMarkerContext): boolean {
+    const normalizedMarker = this.normalizeForDetection(marker);
+    if (!normalizedMarker) {
+      return false;
+    }
+
+    if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
+      return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
+    }
+
+    return (
+      context.normalizedTextWithoutUrls.includes(normalizedMarker) ||
+      context.rawLoweredTextWithoutUrls.includes(marker.toLowerCase())
+    );
+  }
+
+  private matchesCommercialPattern(pattern: RegExp, context: CommercialMarkerContext): boolean {
+    return (
+      pattern.test(context.normalizedTextWithoutUrls) ||
+      pattern.test(context.rawLoweredTextWithoutUrls)
     );
   }
 
@@ -1622,9 +1747,12 @@ export class RuleEngineService {
     let hasGroupContext = false;
     let hasGroupTradeContext = false;
     let hasCommercialAudienceContext = false;
+    let hasPropertyPrivateContext = false;
 
-    const hasMarker = (marker: string): boolean =>
-      normalizedText.includes(marker) || rawLoweredText.includes(marker);
+    const markerContext = this.buildCommercialMarkerContext(normalizedText, rawLoweredText);
+    const hasMarker = (marker: string): boolean => this.hasCommercialMarker(marker, markerContext);
+    const matchesPattern = (pattern: RegExp): boolean =>
+      this.matchesCommercialPattern(pattern, markerContext);
 
     const intentHits = ADS_INTENT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of intentHits.slice(0, 3)) {
@@ -1636,6 +1764,16 @@ export class RuleEngineService {
       hasDealSignal = true;
     }
 
+    const serviceOfferHits = ADS_SERVICE_OFFER_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of serviceOfferHits.slice(0, 2)) {
+      addPositive(`intent:${label}`, 10);
+      hasIntent = true;
+      hasServiceOfferContext = true;
+      hasDealSignal = true;
+    }
+
     const promoHits = ADS_PROMO_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of promoHits.slice(0, 3)) {
       addPositive(`promo:${marker}`, 12);
@@ -1643,8 +1781,28 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const businessHits = ADS_BUSINESS_MARKERS.filter((marker) => hasMarker(marker));
-    for (const marker of businessHits.slice(0, 2)) {
+    const propertyPrivateHits = ADS_PROPERTY_PRIVATE_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    if (propertyPrivateHits.length > 0) {
+      addNegative('private:property-sale', 26, true);
+      hasPrivateSaleContext = true;
+      hasPropertyPrivateContext = true;
+    }
+
+    const businessHits = [
+      ...ADS_BUSINESS_MARKERS.filter(
+        (marker) =>
+          !(
+            hasPropertyPrivateContext &&
+            PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)
+          ) && hasMarker(marker),
+      ),
+      ...ADS_BUSINESS_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
+    for (const marker of [...new Set(businessHits)].slice(0, 2)) {
       addPositive(`business:${marker}`, 16);
       hasBusinessContext = true;
       hasCommercialContext = true;
@@ -1658,8 +1816,13 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const recruitmentHits = ADS_RECRUITMENT_MARKERS.filter((marker) => hasMarker(marker));
-    for (const marker of recruitmentHits.slice(0, 2)) {
+    const recruitmentHits = [
+      ...ADS_RECRUITMENT_MARKERS.filter((marker) => hasMarker(marker)),
+      ...ADS_RECRUITMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
+    for (const marker of [...new Set(recruitmentHits)].slice(0, 2)) {
       addPositive(`recruitment:${marker}`, 14);
       hasRecruitmentContext = true;
       hasCommercialContext = true;
@@ -1672,8 +1835,13 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const serviceSpecialtyHits = ADS_SERVICE_SPECIALTY_MARKERS.filter((marker) =>
-      hasMarker(marker),
+    const serviceSpecialtyHits = ADS_SERVICE_SPECIALTY_MARKERS.filter(
+      (marker) =>
+        !(
+          hasPropertyPrivateContext &&
+          !hasServiceOfferContext &&
+          PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+        ) && hasMarker(marker),
     );
     for (const marker of serviceSpecialtyHits.slice(0, 3)) {
       addPositive(`service-specialty:${marker}`, 8);

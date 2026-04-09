@@ -6868,7 +6868,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">
-                              Фильтровать коммерческую рекламу (RU)
+                              Фильтровать коммерческую рекламу
                             </span>
                             <button
                               type="button"
@@ -6876,7 +6876,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 'settings-info-button',
                                 openHintKey === 'textFiltersCommercial' && 'is-open',
                               )}
-                              aria-label='Пояснение для "Фильтровать коммерческую рекламу (RU)"'
+                              aria-label='Пояснение для "Фильтровать коммерческую рекламу"'
                               aria-controls="commercial-ads-filter-enabled-hint"
                               aria-expanded={openHintKey === 'textFiltersCommercial'}
                               onClick={() => toggleHint('textFiltersCommercial')}
@@ -6887,7 +6887,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                           <label
                             className="settings-native-switch"
-                            aria-label="Фильтровать коммерческую рекламу (RU)"
+                            aria-label="Фильтровать коммерческую рекламу"
                           >
                             <input
                               type="checkbox"
@@ -6911,9 +6911,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="commercial-ads-filter-enabled-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Удаляет явную коммерческую промо-подачу: акции, витрины и ссылки на
-                            продажу. Частные объявления и разовые бытовые услуги старается не
-                            трогать.
+                            Бот ищет именно рекламную подачу: массовые объявления, услуги с
+                            контактами, продажи со скидками, доставкой, ссылками и призывом
+                            написать или позвонить. Частные объявления и бытовые разовые продажи
+                            старается пропускать.
                           </p>
                         ) : null}
                       </div>
@@ -6978,8 +6979,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="commercial-sensitivity-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                WARN {draft.commercialAdsWarnThreshold} • DELETE{' '}
-                                {draft.commercialAdsDeleteThreshold}.
+                                Сейчас бот считает объявление подозрительным с{' '}
+                                {draft.commercialAdsWarnThreshold} баллов, а как явную рекламу
+                                удаляет с {draft.commercialAdsDeleteThreshold}. `Мягко` реже
+                                трогает спорные частные объявления, `Строго` быстрее режет
+                                саморекламу и повторные коммерческие посты.
                               </p>
                             ) : null}
                           </div>

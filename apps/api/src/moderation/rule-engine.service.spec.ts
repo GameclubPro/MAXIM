@@ -1084,6 +1084,39 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
+  it('does not detect private kit sale from real logs just because it says набор', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'ПРОДАМ набор инструментов. 89029673914',
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('does not detect bobrovaya stream ad from real logs by confusing it with eyebrow services', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'БОБРОВАЯ СТРУЯ 🦫 БАРСУЧИЙ ЖИР 🦡 Тел.89179343764',
+    );
+
+    expect(violation).toBeUndefined();
+    expect(service.hasCommercialSpamMarkers('БОБРОВАЯ СТРУЯ 🦫 БАРСУЧИЙ ЖИР 🦡 Тел.89179343764')).toBe(
+      false,
+    );
+  });
+
+  it('does not detect private property listing from real logs when store mention is just area context', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Продается 2х комнатная квартира п 41.8 кв. м. По адресу: Самарская обл., Волжский р-н, п. Придорожный. Квартира на первом этаже, теплая, индивидуальное отопление. В поселке есть магазин. Поселок тихий. Звонить 89608477286',
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
   it('detects COMMERCIAL_AD for private sale with phone only on strict sensitivity', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -1327,6 +1360,23 @@ describe('RuleEngineService', () => {
     expect(violation).toBeDefined();
     expect(violation?.metadata?.matchedSignals).toEqual(
       expect.arrayContaining(['group:чат', 'audience:клиент', 'deal-channel:link']),
+    );
+  });
+
+  it('detects self-promotional craft offer from real logs when contact is in personal messages and phone', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Кому нужно сделать иконостас, пишите в личные сообщения +79253552639 Отправлю в любой населённый пункт Большая просьба поделится объявлением! Сохраняйте номер телефона!',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'intent:кому нужно сделать',
+        'contact:пишите в личные сообщения',
+        'contact:phone',
+      ]),
     );
   });
 
