@@ -6019,15 +6019,6 @@ export class PrivateControlService {
         : 'Текст публикации обновлён. Фото можно добавить позже.';
   }
 
-  private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
-    return this.sendBroadcastDraft({
-      selectedChatId: session.selectedChatId!,
-      selectedEntityType: session.selectedEntityType === 'channel' ? 'channel' : 'chat',
-      actor: context.actor,
-      draft: session.broadcastDraft,
-    });
-  }
-
   private cloneBroadcastDraft(draft: PrivateBroadcastDraft): PrivateBroadcastDraft {
     return {
       ...draft,
@@ -6213,28 +6204,6 @@ export class PrivateControlService {
     });
   }
 
-  private async respondToSuccessfulBroadcast(
-    context: PrivateContext,
-    session: PrivateSession,
-    result: SendBroadcastResult,
-  ): Promise<void> {
-    const view = await this.renderBroadcastScreen(
-      context,
-      session,
-      this.buildBroadcastCompletionNotice(result),
-    );
-    await this.respond(context, session, view, {
-      callbackId: context.callbackId,
-      notification: 'Рассылка отправлена',
-    });
-
-    if (result.failedChats > 0) {
-      return;
-    }
-
-    await this.sendImmediate(context.chatId, this.buildBroadcastSuccessMessage(result));
-  }
-
   private createDefaultGiveawayDraft(): UpdateManagedGiveawayRequest {
     return {
       title: 'Новый розыгрыш',
@@ -6273,25 +6242,6 @@ export class PrivateControlService {
         title: prize.title,
       })),
     };
-  }
-
-  private formatGiveawayStatusLabel(status: ManagedGiveawayDetails['status']): string {
-    if (status === 'ACTIVE') {
-      return 'Активен';
-    }
-    if (status === 'SCHEDULED') {
-      return 'По таймеру';
-    }
-    if (status === 'COMPLETED') {
-      return 'Завершён';
-    }
-    if (status === 'DRAWING') {
-      return 'Подводим итоги';
-    }
-    if (status === 'CANCELED') {
-      return 'Отменён';
-    }
-    return 'Черновик';
   }
 
   private async createManagedGiveawayDraftForSession(
@@ -6746,88 +6696,6 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Разделы', this.cb('open_settings_hub')),
     ]);
-    rows.push(...this.buildFooterButtons());
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
-  }
-
-  private async renderMainMenu(
-    context: PrivateContext,
-    session: PrivateSession,
-  ): Promise<PrivateView> {
-    return this.renderHomeScreen(context, session);
-  }
-
-  private async renderSection(
-    context: PrivateContext,
-    session: PrivateSession,
-    section: PrivateSectionKey,
-  ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
-    const settings = await this.adminService.getSettings(session.selectedChatId, context.actor);
-    const fieldConfigs = SECTION_FIELDS[section];
-
-    const lines: string[] = [
-      `${SECTION_LABELS[section]}`,
-      '',
-      ...fieldConfigs.map(
-        (field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`,
-      ),
-      '',
-      'Нажмите на параметр, чтобы изменить его.',
-      'Чтобы очистить текст или ссылку, отправьте `-` во время ввода.',
-    ];
-
-    const rows: MaxMessageButton[][] = [];
-    for (const field of fieldConfigs) {
-      if (field.type === 'boolean') {
-        rows.push([
-          this.callbackButton(
-            `${settings[field.key] ? '✅' : '⬜'} ${field.label}`,
-            this.cb('toggle', section, String(field.key)),
-          ),
-        ]);
-        continue;
-      }
-
-      if (field.type === 'enum') {
-        rows.push([this.callbackButton(`🎛 ${field.label}`, this.cb('noop'))]);
-        for (const enumValue of field.enumValues ?? []) {
-          rows.push([
-            this.callbackButton(
-              `${settings[field.key] === enumValue ? '✅' : '◻️'} ${this.formatEnumValue(enumValue)}`,
-              this.cb('set_enum', section, String(field.key), enumValue),
-            ),
-          ]);
-        }
-        continue;
-      }
-
-      rows.push([
-        this.callbackButton(`✏️ ${field.label}`, this.cb('set_input', section, String(field.key))),
-      ]);
-    }
-
-    if (section === 'links') {
-      rows.push([this.callbackButton('Разрешённые домены', this.cb('open_domains'))]);
-    }
-
-    rows.push([
-      this.callbackButton(
-        'Применить раздел ко всем чатам',
-        this.cb('apply_section_preview', section),
-        'positive',
-      ),
-    ]);
-    rows.push([this.callbackButton('⬅️ Главное меню', this.cb('main'))]);
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -8566,41 +8434,6 @@ export class PrivateControlService {
     }
 
     return rows;
-  }
-
-  private describeSectionShortSummary(section: PrivateSectionKey, settings: ChatSettings): string {
-    switch (section) {
-      case 'links':
-        return this.describeLinkPolicy(settings.linkPolicy);
-      case 'greeting':
-        return settings.greetingEnabled ? 'включено' : 'выключено';
-      case 'profanityFilter':
-        return settings.russianProfanityFilterEnabled ? 'включено' : 'выключено';
-      case 'commercialFilter':
-        return settings.commercialAdsFilterEnabled
-          ? `активен, ${this.formatEnumValue(settings.commercialAdsSensitivity).toLowerCase()}`
-          : 'выключено';
-      case 'thematicFilters':
-        return settings.thematicCodewordEnabled
-          ? settings.thematicCodeword || 'кодовое слово не задано'
-          : 'выключено';
-      case 'duplicates':
-        return settings.antiDuplicateEnabled ? 'активны штрафы за повторы' : 'выключено';
-      case 'limits':
-        if (settings.messageLimitsBlockedWords.length > 0) {
-          return `${settings.messageLimitsBlockedWords.length} стоп-слов`;
-        }
-        if (settings.messageCountLimitEnabled) {
-          return `${settings.messageCountLimitMessages} сообщ. за ${settings.messageCountLimitWindowHours}ч`;
-        }
-        return settings.antiSpamEnabled ? 'антиспам включен' : 'выключено';
-      case 'night':
-        return settings.nightModeEnabled
-          ? `${this.formatTime(settings.nightModeStartTimeMinutes)}-${this.formatTime(settings.nightModeEndTimeMinutes)}`
-          : 'выключено';
-      case 'extra':
-        return settings.deleteSpammersEnabled ? 'автоудаление спаммеров активно' : 'доп. опции';
-    }
   }
 
   private describeLinkPolicy(value: ChatSettings['linkPolicy']): string {
@@ -10362,15 +10195,6 @@ export class PrivateControlService {
     return value.replace(/([\\`*_[\]()~+])/g, '\\$1');
   }
 
-  private escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
   private withDebugContext(
     options: MaxSendMessageOptions | undefined,
     session: PrivateSession,
@@ -10543,18 +10367,6 @@ export class PrivateControlService {
     }
 
     return `${this.appBaseUrl}/app/`;
-  }
-
-  private buildEntitySettingsMiniappUrl(
-    chatId: string,
-    entityType: ManagedEntityType,
-    focus?: string | null,
-  ): string | null {
-    if (!this.appBaseUrl) {
-      return null;
-    }
-
-    return `${this.appBaseUrl}/app${this.buildEntitySettingsMiniappRoute(chatId, entityType, focus)}`;
   }
 
   private buildEntitySettingsMiniappRoute(
@@ -11486,31 +11298,9 @@ export class PrivateControlService {
     return this.extractImageSourceAttachments(update)[0] ?? null;
   }
 
-  private extractFirstImageAttachment(update: MaxUpdate): ParsedImageAttachment | null {
-    for (const row of this.collectMessageAttachments(update)) {
-      const parsed = this.parseImageAttachment(row);
-      if (parsed) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
-
   private extractFirstFileAttachment(update: MaxUpdate): ParsedFileAttachment | null {
     for (const row of this.collectMessageAttachments(update)) {
       const parsed = this.parseFileAttachment(row);
-      if (parsed) {
-        return parsed;
-      }
-    }
-
-    return null;
-  }
-
-  private extractFirstImageFileAttachment(update: MaxUpdate): ParsedImageFileAttachment | null {
-    for (const row of this.collectMessageAttachments(update)) {
-      const parsed = this.parseImageFileAttachment(row);
       if (parsed) {
         return parsed;
       }
@@ -11631,31 +11421,6 @@ export class PrivateControlService {
     }
 
     return null;
-  }
-
-  private parseAttachmentUrlMetadata(url: string | null): {
-    host: string | null;
-    path: string | null;
-  } {
-    if (!url) {
-      return {
-        host: null,
-        path: null,
-      };
-    }
-
-    try {
-      const parsed = new URL(url);
-      return {
-        host: parsed.host || null,
-        path: parsed.pathname || null,
-      };
-    } catch {
-      return {
-        host: null,
-        path: null,
-      };
-    }
   }
 
   private hasVideoAttachment(update: MaxUpdate): boolean {
@@ -13036,19 +12801,6 @@ export class PrivateControlService {
     }
 
     return this.formatIsoDate(iso, timeZone);
-  }
-
-  private formatBroadcastCalendarSummary(slots: string[], timeZone?: string | null): string {
-    if (slots.length === 0) {
-      return 'не настроен';
-    }
-
-    const preview = slots
-      .slice(0, 3)
-      .map((slot) => this.formatIsoDate(slot, timeZone))
-      .join(' • ');
-    const extraCount = slots.length - 3;
-    return extraCount > 0 ? `${preview} • +${extraCount}` : preview;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

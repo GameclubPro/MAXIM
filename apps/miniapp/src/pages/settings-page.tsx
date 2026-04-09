@@ -111,7 +111,6 @@ import {
   buildManagedEntitiesSettledMarker,
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
-import { describeApiError } from '../lib/api-error';
 import {
   NIGHT_SECTION_SETTING_KEYS,
   applyNightModeBotMessageEnabledChange,

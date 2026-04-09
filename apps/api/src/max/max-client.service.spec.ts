@@ -2575,7 +2575,7 @@ describe('MaxClientService delayed member actions', () => {
         }
         throw new Error(`Unexpected key ${key}`);
       }),
-      get: jest.fn((key: string, fallback?: unknown) => fallback),
+      get: jest.fn((_key: string, fallback?: unknown) => fallback),
     };
     const actionHealthService = {
       recordSuccess: jest.fn(),
@@ -2641,7 +2641,7 @@ describe('MaxClientService delayed member actions', () => {
         }
         throw new Error(`Unexpected key ${key}`);
       }),
-      get: jest.fn((key: string, fallback?: unknown) => fallback),
+      get: jest.fn((_key: string, fallback?: unknown) => fallback),
     };
     const actionHealthService = {
       recordSuccess: jest.fn(),

@@ -16,7 +16,6 @@ import {
 } from '../runtime/default-webhook-dynamic-leases';
 import {
   DEFAULT_WEBHOOK_WORKER_GROUP_NAMES,
-  getDefaultWebhookHomeOwnerByQueue,
   getDefaultWebhookShardConcurrencies,
   getDefaultWebhookWorkerGroupQueues,
   getWebhookDynamicLeaseCanaryQueues,
