@@ -18576,6 +18576,155 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('filters every bot user id from multi-bot channel suggestion delivery even without explicit contact ids', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+      botMemberships: [
+        {
+          botId: 'id613002203036_4_bot',
+        },
+        {
+          botId: 'id613002203036_bot',
+        },
+      ],
+    });
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['209468578', '214634783', '98315271']),
+      getCurrentChatMemberAccess: jest.fn().mockImplementation(
+        async (_chatId: string, options?: { botId?: string }) => {
+          if (options?.botId === 'id613002203036_4_bot') {
+            return {
+              userId: '214634783',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            };
+          }
+
+          if (options?.botId === 'id613002203036_bot') {
+            return {
+              userId: '209468578',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            };
+          }
+
+          return {
+            userId: '214634783',
+            isAdmin: true,
+            isOwner: false,
+            permissions: [],
+          };
+        },
+      ),
+      sendMessageImmediateWithId: jest.fn(),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'mid-suggestion-human-admin-1',
+        url: null,
+        chatId: '165176099',
+      }),
+    };
+    const config = {
+      getOrThrow: jest.fn((key: string) => {
+        if (key === 'MAX_BOT_TOKEN') {
+          return 'test-max-bot-token';
+        }
+        throw new Error(`Missing key: ${key}`);
+      }),
+      get: jest.fn((key: string) => {
+        if (key === 'APP_BASE_URL') {
+          return 'https://maxim.play-team.ru';
+        }
+        if (key === 'MAX_BOT_ID') {
+          return 'id613002203036_bot';
+        }
+        if (key === 'MAX_BOT_CONTACT_ID') {
+          return null;
+        }
+        return null;
+      }),
+    };
+    const maxBotRegistry = {
+      getBotById: jest.fn((botId?: string | null) =>
+        typeof botId === 'string' && botId.trim().length > 0 ? { id: botId.trim() } : null,
+      ),
+      getEntryBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      config as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotRegistry as never,
+    );
+
+    const delivery = await (service as any).deliverSuggestionToAdminPrivates(
+      'suggestion-multi-bot-filter-1',
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        avatarUrl: null,
+      },
+      {
+        text: 'Предложка',
+      },
+    );
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+      }),
+    );
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      'channel-1',
+      expect.objectContaining({
+        botId: 'id613002203036_bot',
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      '98315271',
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+        botId: 'id613002203036_bot',
+      }),
+    );
+    expect(delivery).toMatchObject({
+      delivered: true,
+      deliveredToUserId: '98315271',
+      deliveredToUserIds: ['98315271'],
+      deliveries: [
+        expect.objectContaining({
+          adminUserId: '98315271',
+          privateChatId: '165176099',
+          messageId: 'mid-suggestion-human-admin-1',
+        }),
+      ],
+    });
+  });
+
   it('falls back to send-to-user when the cached admin private chat id is stale', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

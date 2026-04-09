@@ -17219,7 +17219,7 @@ export class AdminService implements OnModuleDestroy {
   }> {
     const deliveryBotId = await this.resolveAssistBotAssignment(chatId, 'suggestion_delivery');
     const privateDeliveryBotId = this.resolvePrivateDeliveryBotId(deliveryBotId);
-    const currentBotUserId = await this.resolveCurrentBotUserId(chatId, deliveryBotId);
+    const knownBotUserIds = await this.resolveKnownBotUserIdsForChat(chatId, [deliveryBotId]);
     const adminIds = Array.from(
       new Set(
         (
@@ -17230,8 +17230,8 @@ export class AdminService implements OnModuleDestroy {
         ).filter(
           (id) =>
             id.trim().length > 0 &&
-            !this.isOwnBotUserId(id) &&
-            (!currentBotUserId || id.trim() !== currentBotUserId),
+            !knownBotUserIds.has(id.trim()) &&
+            !this.isOwnBotUserId(id),
         ),
       ),
     );
@@ -18797,6 +18797,60 @@ export class AdminService implements OnModuleDestroy {
       );
       return null;
     }
+  }
+
+  private async resolveKnownBotUserIdsForChat(
+    chatId: string,
+    preferredBotIds: ReadonlyArray<string | null | undefined> = [],
+  ): Promise<Set<string>> {
+    const knownBotUserIds = new Set<string>();
+    const candidateBotIds = new Set<string>();
+
+    for (const preferredBotId of preferredBotIds) {
+      const normalizedBotId =
+        this.maxBotRegistry?.getBotById(preferredBotId)?.id ??
+        this.readTrimmedString(preferredBotId);
+      if (normalizedBotId) {
+        candidateBotIds.add(normalizedBotId);
+      }
+    }
+
+    for (const candidateBotId of await this.resolveCandidateBotIdsForChat(chatId)) {
+      candidateBotIds.add(candidateBotId);
+    }
+
+    for (const botUserId of [this.explicitBotContactId, this.ownBotUserId]) {
+      const normalizedBotUserId = this.readTrimmedString(botUserId);
+      if (normalizedBotUserId) {
+        knownBotUserIds.add(normalizedBotUserId);
+      }
+    }
+
+    const currentContextBotUserId = this.readTrimmedString(await this.resolveCurrentBotUserId(chatId));
+    if (currentContextBotUserId) {
+      knownBotUserIds.add(currentContextBotUserId);
+    }
+
+    for (const candidateBotId of candidateBotIds) {
+      const resolvedContactId = this.resolveBotContactId(candidateBotId);
+      if (resolvedContactId) {
+        knownBotUserIds.add(resolvedContactId);
+      }
+    }
+
+    const resolvedBotUserIds = await this.mapWithConcurrencyLimit(
+      [...candidateBotIds],
+      3,
+      async (candidateBotId) => this.resolveCurrentBotUserId(chatId, candidateBotId),
+    );
+    for (const resolvedBotUserId of resolvedBotUserIds) {
+      const normalizedBotUserId = this.readTrimmedString(resolvedBotUserId);
+      if (normalizedBotUserId) {
+        knownBotUserIds.add(normalizedBotUserId);
+      }
+    }
+
+    return knownBotUserIds;
   }
 
   private async mapWithConcurrencyLimit<T, R>(
