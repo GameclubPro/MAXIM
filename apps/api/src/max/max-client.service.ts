@@ -2186,21 +2186,6 @@ export class MaxClientService implements OnModuleDestroy {
     return null;
   }
 
-  private buildWebhookUrl(
-    appBaseUrl: string | undefined,
-    botId: string | undefined,
-    secretPath: string | undefined,
-  ): string | null {
-    const normalizedBase = this.readTrimmedString(appBaseUrl);
-    const normalizedBotId = this.readTrimmedString(botId);
-    const normalizedSecretPath = this.readTrimmedString(secretPath);
-    if (!normalizedBase || !normalizedBotId || !normalizedSecretPath) {
-      return null;
-    }
-
-    return `${normalizedBase.replace(/\/+$/u, '')}/api/webhook/max/${normalizedBotId}/${normalizedSecretPath}`;
-  }
-
   private normalizeMessageRows(payload: Record<string, unknown>): Record<string, unknown>[] {
     const messages = Array.isArray(payload.messages) ? payload.messages : [];
     return messages.filter(

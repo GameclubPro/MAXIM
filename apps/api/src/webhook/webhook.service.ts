@@ -65,7 +65,7 @@ export class WebhookService {
 
       return { accepted: true, duplicate: false };
     } catch (error: unknown) {
-      const duplicateResult = await this.handleDuplicateError(error, update.updateId);
+      const duplicateResult = await this.handleDuplicateError(error);
       if (duplicateResult) {
         return duplicateResult;
       }
@@ -85,7 +85,7 @@ export class WebhookService {
           );
           return { accepted: true, duplicate: false };
         } catch (retryError: unknown) {
-          const duplicateRetryResult = await this.handleDuplicateError(retryError, update.updateId);
+          const duplicateRetryResult = await this.handleDuplicateError(retryError);
           if (duplicateRetryResult) {
             return duplicateRetryResult;
           }
@@ -728,10 +728,7 @@ export class WebhookService {
     return null;
   }
 
-  private async handleDuplicateError(
-    error: unknown,
-    updateId: string,
-  ): Promise<WebhookIngestResult | null> {
+  private async handleDuplicateError(error: unknown): Promise<WebhookIngestResult | null> {
     const code = (error as { code?: string }).code;
     if (code !== 'P2002') {
       return null;

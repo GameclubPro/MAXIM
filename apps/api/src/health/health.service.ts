@@ -290,12 +290,6 @@ export class HealthService implements OnModuleDestroy {
       queueMetrics?.effectiveLagSec ??
       systemMode.queueLagSec ??
       0;
-    const queuedMetrics = queueMetrics
-      ? (queueMetrics.userFacingWebhookEvents?.queued ?? queueMetrics.webhookEvents.queued)
-      : { count: 0 };
-    const receivedMetrics = queueMetrics
-      ? (queueMetrics.userFacingWebhookEvents?.received ?? queueMetrics.webhookEvents.received)
-      : { count: 0 };
     const oldestQueuedEventId =
       queueMetrics?.userFacingOldestQueuedEventId ?? queueMetrics?.oldestQueuedEventId ?? null;
     const oldestQueuedCreatedAt =

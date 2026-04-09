@@ -962,11 +962,6 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return nextEpoch;
   }
 
-  private async readRedisSnapshot(cacheKey: string): Promise<MembershipCacheSnapshot | null> {
-    const snapshots = await this.readRedisSnapshots([cacheKey]);
-    return snapshots.get(cacheKey) ?? null;
-  }
-
   private async readRedisSnapshots(
     cacheKeys: readonly string[],
   ): Promise<Map<string, MembershipCacheSnapshot>> {

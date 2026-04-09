@@ -14,10 +14,7 @@ import type {
 import { PrismaService } from '../prisma/prisma.service';
 import { MaxClientService, type MaxChatMemberAccess } from './max-client.service';
 import { MaxBotLinkService } from './max-bot-link.service';
-import {
-  MaxBotRegistryService,
-  type MaxBotDefinition,
-} from './max-bot-registry.service';
+import { MaxBotRegistryService } from './max-bot-registry.service';
 
 type PersistedMembership = {
   botId: string;

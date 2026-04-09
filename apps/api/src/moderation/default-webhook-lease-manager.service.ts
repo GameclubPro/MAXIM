@@ -52,7 +52,6 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private readonly mode: WebhookDynamicLeasesMode;
   private readonly canaryQueues: Set<DefaultWebhookQueueName>;
   private readonly homeQueues: readonly DefaultWebhookQueueName[];
-  private readonly homeOwnerByQueue = getDefaultWebhookHomeOwnerByQueue();
   private readonly shardConcurrencies = getDefaultWebhookShardConcurrencies();
   private readonly heartbeatMs: number;
   private readonly leaseTtlMs: number;

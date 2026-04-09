@@ -260,9 +260,6 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     const missingUpdateTypes = MAX_REQUIRED_WEBHOOK_UPDATE_TYPES.filter(
       (type) => !actualUpdateTypes.includes(type),
     );
-    const extraUpdateTypes = actualUpdateTypes.filter(
-      (type) => !REQUIRED_WEBHOOK_UPDATE_TYPES_SET.has(type),
-    );
     const otherSubscriptionsCount = existing.filter(
       (item) => !this.maxClient.matchesConfiguredWebhookUrl(item.url, bot.id),
     ).length;
