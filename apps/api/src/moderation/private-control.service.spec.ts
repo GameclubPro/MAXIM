@@ -1627,7 +1627,7 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('does not autofill stored rules text in bot when autofill is disabled', async () => {
+  it('shows stored manual rules text in bot when autofill is disabled', async () => {
     const { service, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Старый текст правил.',
@@ -1639,8 +1639,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
 
     expect(getLastUiText(maxClient)).toContain('Правила');
-    expect(getLastUiText(maxClient)).toContain('Текст из настроек сейчас не подставляется.');
-    expect(getLastUiText(maxClient)).not.toContain('Старый текст правил.');
+    expect(getLastUiText(maxClient)).toContain('Старый текст правил.');
 
     const buttonTexts = getLastButtons(maxClient)
       .flat()
@@ -2033,6 +2032,7 @@ describe('PrivateControlService', () => {
     const { service, adminService, chats } = createHarness({
       rules: createRules({
         text: 'Правила с фото.',
+        autoTextEnabled: true,
       }),
     });
     const { restore } = mockImageFetch(TINY_PNG, 'image/png');
@@ -2053,6 +2053,7 @@ describe('PrivateControlService', () => {
           text: 'Правила с фото.',
           imageMimeType: 'image/png',
           imageFileName: expect.stringContaining('private-rules-photo-1'),
+          autoTextEnabled: true,
         }),
         'private_bot',
       );
@@ -2064,6 +2065,7 @@ describe('PrivateControlService', () => {
           text: 'Правила с фото.',
           imageMimeType: 'image/png',
           imageFileName: 'photo-as-file.png',
+          autoTextEnabled: true,
         }),
         'private_bot',
       );
@@ -2095,6 +2097,7 @@ describe('PrivateControlService', () => {
     const { service, adminService, maxClient, chats } = createHarness({
       rules: createRules({
         text: 'Правила чата',
+        autoTextEnabled: true,
         imageBase64: TINY_PNG.toString('base64'),
         imageMimeType: 'image/png',
         imageFileName: 'rules.png',
@@ -2120,7 +2123,7 @@ describe('PrivateControlService', () => {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
-        autoTextEnabled: false,
+        autoTextEnabled: true,
       }),
       'private_bot',
     );

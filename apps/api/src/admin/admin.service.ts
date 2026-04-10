@@ -5972,6 +5972,7 @@ export class AdminService implements OnModuleDestroy {
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const rules = await this.upsertChatRules(chatId);
+    const previousPublishedMessageId = rules.publishedMessageId?.trim() || null;
     const autofilledText =
       rules.autoTextEnabled && !rules.text.trim()
         ? await this.buildAutofilledRulesTextFromCurrentSettings(chatId, user)
@@ -6040,6 +6041,24 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
     }
 
+    if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
+      try {
+        await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, { immediate: true });
+      } catch (error: unknown) {
+        if (!this.isMaxMessageMissingError(error)) {
+          this.logger.warn(
+            {
+              chatId,
+              actorUserId: user.userId,
+              messageId: previousPublishedMessageId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to delete previous published chat rules post during republish',
+          );
+        }
+      }
+    }
+
     const publishedAt = new Date();
     await this.prisma.chatRules.update({
       where: { chatId },
@@ -6063,6 +6082,9 @@ export class AdminService implements OnModuleDestroy {
           buttonEnabled: rules.buttonEnabled,
           hasImage: Boolean(imagePayload),
           autofilledTextApplied: autofilledText !== null,
+          replacedPreviousPost: Boolean(
+            previousPublishedMessageId && previousPublishedMessageId !== published.messageId,
+          ),
           source,
         },
       },

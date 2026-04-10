@@ -3773,7 +3773,7 @@ export class PrivateControlService {
             imageBase64: '',
             imageMimeType: '',
             imageFileName: '',
-            autoTextEnabled: false,
+            autoTextEnabled: rules.autoTextEnabled,
             buttonEnabled: rules.buttonEnabled,
             buttonUrl: rules.buttonUrl,
             buttonText: rules.buttonText,
@@ -5895,7 +5895,7 @@ export class PrivateControlService {
         imageBase64,
         imageMimeType,
         imageFileName,
-        autoTextEnabled: false,
+        autoTextEnabled: normalizedText ? false : currentRules.autoTextEnabled,
         buttonEnabled: currentRules.buttonEnabled,
         buttonUrl: currentRules.buttonUrl,
         buttonText: currentRules.buttonText,
@@ -6809,7 +6809,6 @@ export class PrivateControlService {
     ]);
 
     const hasText = rules.text.trim().length > 0;
-    const showStoredText = rules.autoTextEnabled && hasText;
     const hasImage = rules.imageBase64.trim().length > 0;
     const rulesSettingsMiniappUrl = this.buildRulesSettingsMiniappUrl(session.selectedChatId);
     const rulesSettingsMiniappRoute = this.buildRulesSettingsMiniappRoute(session.selectedChatId);
@@ -6825,11 +6824,7 @@ export class PrivateControlService {
       '',
       `Чат: ${this.escapeMarkdown(chatTitle)}`,
       '',
-      showStoredText
-        ? rules.text
-        : hasText
-          ? '_Текст из настроек сейчас не подставляется._'
-          : '_Текст правила пока не задан._',
+      hasText ? rules.text : '_Текст правила пока не задан._',
     ];
 
     if (waitingHint) {

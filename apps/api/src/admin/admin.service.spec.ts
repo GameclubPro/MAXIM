@@ -16367,6 +16367,71 @@ describe('AdminService chat rules', () => {
     );
   });
 
+  it('deletes the previous published rules post after a successful republish', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Обновлённые правила.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: 'mid-rules-old-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/101',
+      publishedAt: new Date('2026-03-09T08:00:00.000Z'),
+      createdAt: new Date('2026-03-09T07:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T08:00:00.000Z'),
+    });
+
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-new-2',
+        url: 'https://max.ru/chats/chat-1/message/202',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-old-1', {
+      immediate: true,
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'PUBLISH_CHAT_RULES',
+        payload: expect.objectContaining({
+          replacedPreviousPost: true,
+          source: 'miniapp',
+        }),
+      }),
+    });
+  });
+
   it('records private bot as the rules source in audit log payloads', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({

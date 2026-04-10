@@ -124,6 +124,11 @@ import {
   applyNightModeEnabledChange,
   mergeNightSectionSettings,
 } from './settings-page-state';
+import {
+  buildRulesTextFromSettingsScreen,
+  serializeRulesDraftPayload,
+  shouldHydrateRulesDraftFromServer,
+} from './settings-rules-state';
 import { buildRequiredSubscriptionChannelCollections } from './settings-required-subscription-state';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
@@ -862,43 +867,6 @@ const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
     'Плейсхолдеры: {user}, {warning}, {reason}, {channels}. Поддерживается Markdown MAX.',
   textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
-
-function serializeRulesDraftPayload(
-  value:
-    | Pick<
-        ChatRules,
-        | 'text'
-        | 'imageBase64'
-        | 'imageMimeType'
-        | 'imageFileName'
-        | 'autoTextEnabled'
-        | 'buttonEnabled'
-        | 'buttonUrl'
-        | 'buttonText'
-      >
-    | Pick<
-        UpdateChatRulesPayload,
-        | 'text'
-        | 'imageBase64'
-        | 'imageMimeType'
-        | 'imageFileName'
-        | 'autoTextEnabled'
-        | 'buttonEnabled'
-        | 'buttonUrl'
-        | 'buttonText'
-      >,
-): string {
-  return JSON.stringify({
-    text: value.text,
-    imageBase64: value.imageBase64,
-    imageMimeType: value.imageMimeType,
-    imageFileName: value.imageFileName,
-    autoTextEnabled: value.autoTextEnabled,
-    buttonEnabled: value.buttonEnabled,
-    buttonUrl: value.buttonUrl,
-    buttonText: value.buttonText,
-  });
-}
 
 type BotSpeechPreviewContext = {
   persona: BotSpeechPersona;
@@ -2011,7 +1979,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
-  const [rulesAutoFillSeedText, setRulesAutoFillSeedText] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [, setRulesTextError] = useState('');
   const [, setRulesImageError] = useState('');
@@ -2081,6 +2048,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
+  const rulesDraftRef = useRef<ChatRules | null>(null);
+  const previousRulesServerSnapshotRef = useRef('');
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
@@ -2146,13 +2115,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     setRulesDraft(null);
-    setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
     setRulesButtonUrlError('');
     setRulesButtonTextError('');
     setRulesButtonFieldsTouched(false);
     setRulesFailedSnapshot('');
+    previousRulesServerSnapshotRef.current = '';
     setMailingApplyToAllChats(false);
     setMailingText('');
     setMailingButtons([]);
@@ -2286,6 +2255,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isLoading: settingsScreenQuery.isLoading,
     error: settingsScreenQuery.error,
   };
+
+  useEffect(() => {
+    rulesDraftRef.current = rulesDraft;
+  }, [rulesDraft]);
   const managedBroadcastsQuery = {
     data: settingsScreenQuery.data?.managedBroadcasts,
     isLoading: settingsScreenQuery.isLoading,
@@ -2455,8 +2428,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setRulesDraft(chatRulesSchema.parse(rulesQuery.data));
-    setRulesAutoFillSeedText(null);
+    const nextServerDraft = chatRulesSchema.parse(rulesQuery.data);
+    const shouldHydrate = shouldHydrateRulesDraftFromServer({
+      currentDraft: rulesDraftRef.current,
+      previousServerSnapshot: previousRulesServerSnapshotRef.current,
+      nextServerDraft,
+    });
+    previousRulesServerSnapshotRef.current = serializeRulesDraftPayload(nextServerDraft);
+    if (!shouldHydrate) {
+      return;
+    }
+
+    setRulesDraft(nextServerDraft);
     setRulesTextError('');
     setRulesImageError('');
     setRulesButtonUrlError('');
@@ -2502,15 +2485,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft?.publishedMessageId ?? rulesQuery.data?.publishedMessageId ?? null;
   const rulesPublishedUrl = rulesDraft?.publishedUrl ?? rulesQuery.data?.publishedUrl ?? null;
   const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
-  const isPendingAutoFillOnly = Boolean(
-    rulesDraft &&
-    rulesAutoFillSeedText !== null &&
-    rulesDraft.text === rulesAutoFillSeedText &&
-    rulesDraft.imageBase64 === (rulesQuery.data?.imageBase64 ?? '') &&
-    rulesDraft.imageMimeType === (rulesQuery.data?.imageMimeType ?? '') &&
-    rulesDraft.imageFileName === (rulesQuery.data?.imageFileName ?? ''),
-  );
-
   const saveSectionMutation = useMutation({
     mutationFn: ({ payload }: { section: ApplySectionKey; payload: ChatSettings }) =>
       updateSettings(api, chatId ?? '', payload),
@@ -2619,7 +2593,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         const currentSnapshot = serializeRulesDraftPayload(current);
         return currentSnapshot === payloadSnapshot ? saved : current;
       });
-      setRulesAutoFillSeedText(null);
       setRulesTextError('');
       setRulesImageError('');
       setRulesButtonUrlError('');
@@ -2629,7 +2602,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     },
     onError: (error, payload) => {
-      setRulesFailedSnapshot(JSON.stringify(payload));
+      setRulesFailedSnapshot(serializeRulesDraftPayload(payload));
       pushToast({
         tone: 'danger',
         title: 'Не удалось сохранить черновик правил',
@@ -3566,14 +3539,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [rulesDraftSnapshot, rulesFailedSnapshot]);
 
   useEffect(() => {
-    if (
-      !chatId ||
-      !rulesDraft ||
-      !hasRulesChanges ||
-      isSavingRules ||
-      isPublishingRules ||
-      isPendingAutoFillOnly
-    ) {
+    if (!chatId || !rulesDraft || !hasRulesChanges || isSavingRules || isPublishingRules) {
       return;
     }
 
@@ -3598,7 +3564,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     hasRulesChanges,
     isPublishingRules,
     isSavingRules,
-    isPendingAutoFillOnly,
     mutateRules,
     rulesButtonFieldsTouched,
     rulesDraft,
@@ -3733,7 +3698,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handleHandoffRules() {
-    if (!chatId) {
+    if (!chatId || isSavingRules || isPublishingRules || handoffRulesMutation.isPending) {
       return;
     }
 
@@ -5895,6 +5860,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     disabled={
                                       rulesQuery.isLoading ||
                                       Boolean(rulesQuery.error) ||
+                                      isSavingRules ||
+                                      isPublishingRules ||
                                       handoffRulesMutation.isPending
                                     }
                                   >
@@ -5970,16 +5937,53 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       <input
                                         type="checkbox"
                                         checked={Boolean(rulesDraft.autoTextEnabled)}
-                                        onChange={(event) =>
-                                          setRulesDraft((current) =>
-                                            current
-                                              ? {
-                                                  ...current,
-                                                  autoTextEnabled: event.target.checked,
-                                                }
-                                              : current,
-                                          )
-                                        }
+                                        onChange={(event) => {
+                                          const enabled = event.target.checked;
+                                          if (!enabled) {
+                                            setRulesTextError('');
+                                            setRulesDraft((current) =>
+                                              current
+                                                ? {
+                                                    ...current,
+                                                    autoTextEnabled: false,
+                                                  }
+                                                : current,
+                                            );
+                                            return;
+                                          }
+
+                                          if (!settingsScreenQuery.data) {
+                                            return;
+                                          }
+
+                                          try {
+                                            const generatedText = buildRulesTextFromSettingsScreen(
+                                              settingsScreenQuery.data,
+                                            );
+                                            setRulesTextError('');
+                                            setRulesDraft((current) =>
+                                              current
+                                                ? {
+                                                    ...current,
+                                                    autoTextEnabled: true,
+                                                    text: generatedText,
+                                                  }
+                                                : current,
+                                            );
+                                          } catch (error) {
+                                            const description =
+                                              error instanceof Error
+                                                ? error.message
+                                                : 'Не удалось собрать текст правил.';
+                                            setRulesTextError(description);
+                                            pushToast({
+                                              tone: 'danger',
+                                              title: 'Не удалось собрать текст правил',
+                                              description,
+                                            });
+                                            maxNotify('error');
+                                          }
+                                        }}
                                       />
                                       <span className="toggle-switch" aria-hidden>
                                         <span className="toggle-switch__thumb" />
@@ -5992,8 +5996,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       id="rules-auto-fill-hint"
                                       className="settings-native-toggle__hint"
                                     >
-                                      Если свой текст не задан, соберём правила из текущих настроек
-                                      чата.
+                                      При включении соберём текст правил из текущих настроек чата и
+                                      сохраним его в черновик.
                                     </p>
                                   ) : null}
                                 </div>
@@ -9646,7 +9650,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           onChange={(event) => {
                                             const enabled = event.target.checked;
                                             if (enabled && mailingButtons.length === 0) {
-                                              setMailingButtonRevealSignal((current) => current + 1);
+                                              setMailingButtonRevealSignal(
+                                                (current) => current + 1,
+                                              );
                                             }
                                             setMailingButtons((current) =>
                                               enabled
