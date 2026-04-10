@@ -1,4 +1,4 @@
-import { chatSettingsSchema } from '@maxim/contracts';
+import { chatSettingsSchema, updateChatRulesRequestSchema } from '@maxim/contracts';
 
 describe('chatSettingsSchema duplicate flow validation', () => {
   it('allows duplicate thresholds to start from the first duplicate', () => {
@@ -29,5 +29,70 @@ describe('chatSettingsSchema duplicate flow validation', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it('normalizes stored multi-button arrays and syncs the legacy greeting fields', () => {
+    const result = chatSettingsSchema.parse({
+      greetingEnabled: true,
+      greetingBotMessageEnabled: true,
+      greetingBotButtonEnabled: true,
+      greetingBotButtons: [
+        {
+          text: ' Открыть канал ',
+          url: 'https://max.ru/channel/maxim ',
+        },
+        {
+          text: 'Профиль',
+          url: 'https://max.ru/profile/maxim',
+        },
+      ],
+    });
+
+    expect(result.greetingBotButtons).toEqual([
+      { text: 'Открыть канал', url: 'https://max.ru/channel/maxim' },
+      { text: 'Профиль', url: 'https://max.ru/profile/maxim' },
+    ]);
+    expect(result.greetingBotButtonUrl).toBe('https://max.ru/channel/maxim');
+    expect(result.greetingBotButtonText).toBe('Открыть канал');
+  });
+
+  it('keeps legacy button fields compatible when the stored array is empty', () => {
+    const result = chatSettingsSchema.parse({
+      textFiltersBotMessageEnabled: true,
+      textFiltersBotButtonEnabled: true,
+      textFiltersBotButtonUrl: ' https://max.ru/channel/rules ',
+      textFiltersBotButtonText: ' Правила ',
+      textFiltersBotButtons: [],
+    });
+
+    expect(result.textFiltersBotButtons).toEqual([
+      { text: 'Правила', url: 'https://max.ru/channel/rules' },
+    ]);
+    expect(result.textFiltersBotButtonUrl).toBe('https://max.ru/channel/rules');
+    expect(result.textFiltersBotButtonText).toBe('Правила');
+  });
+});
+
+describe('updateChatRulesRequestSchema button normalization', () => {
+  it('normalizes multi-button rules payloads and keeps legacy fields in sync', () => {
+    const result = updateChatRulesRequestSchema.parse({
+      text: 'Правила чата',
+      autoTextEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      buttonEnabled: true,
+      buttons: [
+        { text: ' Открыть чат ', url: 'https://max.ru/channel/team ' },
+        { text: 'MAX', url: 'https://max.ru/' },
+      ],
+    });
+
+    expect(result.buttons).toEqual([
+      { text: 'Открыть чат', url: 'https://max.ru/channel/team' },
+      { text: 'MAX', url: 'https://max.ru/' },
+    ]);
+    expect(result.buttonUrl).toBe('https://max.ru/channel/team');
+    expect(result.buttonText).toBe('Открыть чат');
   });
 });

@@ -8,6 +8,7 @@ type RulesDraftSerializable = Pick<
   | 'imageMimeType'
   | 'imageFileName'
   | 'autoTextEnabled'
+  | 'buttons'
   | 'buttonEnabled'
   | 'buttonUrl'
   | 'buttonText'
@@ -19,6 +20,7 @@ type RulesDraftSerializable = Pick<
     | 'imageMimeType'
     | 'imageFileName'
     | 'autoTextEnabled'
+    | 'buttons'
     | 'buttonEnabled'
     | 'buttonUrl'
     | 'buttonText'
@@ -36,6 +38,7 @@ export function serializeRulesDraftPayload(value: RulesDraftSerializable): strin
     imageMimeType: value.imageMimeType,
     imageFileName: value.imageFileName,
     autoTextEnabled: value.autoTextEnabled,
+    buttons: value.buttons,
     buttonEnabled: value.buttonEnabled,
     buttonUrl: value.buttonUrl,
     buttonText: value.buttonText,

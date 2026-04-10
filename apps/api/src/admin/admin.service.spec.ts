@@ -1458,8 +1458,14 @@ describe('AdminService night mode settings normalization', () => {
       ),
     ).rejects.toMatchObject({
       response: expect.objectContaining({
-        greetingBotButtonUrl: expect.objectContaining({
-          _errors: expect.arrayContaining(['Укажите корректную ссылку для кнопки (http/https).']),
+        greetingBotButtons: expect.objectContaining({
+          0: expect.objectContaining({
+            url: expect.objectContaining({
+              _errors: expect.arrayContaining([
+                'Укажите корректную ссылку для кнопки (http/https).',
+              ]),
+            }),
+          }),
         }),
       }),
     });
@@ -1501,8 +1507,14 @@ describe('AdminService night mode settings normalization', () => {
       ),
     ).rejects.toMatchObject({
       response: expect.objectContaining({
-        greetingBotButtonUrl: expect.objectContaining({
-          _errors: expect.arrayContaining(['Укажите корректную ссылку для кнопки (http/https).']),
+        greetingBotButtons: expect.objectContaining({
+          0: expect.objectContaining({
+            url: expect.objectContaining({
+              _errors: expect.arrayContaining([
+                'Укажите корректную ссылку для кнопки (http/https).',
+              ]),
+            }),
+          }),
         }),
       }),
     });
@@ -1653,12 +1665,12 @@ describe('AdminService night mode settings normalization', () => {
     expect(prisma.chatSettings.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { chatId: 'chat-1' },
-        data: {
+        data: expect.objectContaining({
           nightModeBotMessageEnabled: false,
           nightModeCommentsEnabled: false,
           nightModeBotButtonEnabled: false,
           nightModeRulesButtonEnabled: false,
-        },
+        }),
       }),
     );
   });
@@ -15825,6 +15837,7 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttons: [],
       buttonEnabled: false,
       buttonUrl: '',
       buttonText: 'Открыть',
@@ -16003,6 +16016,7 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttons: [],
       buttonEnabled: false,
       buttonUrl: '',
       buttonText: 'Открыть',
@@ -16362,7 +16376,79 @@ describe('AdminService chat rules', () => {
       'Правила с кнопкой.',
       {
         textFormat: 'markdown',
-        buttons: [[{ text: 'Подробнее', url: 'https://max.ru/help/rules' }]],
+        buttons: [[{ text: 'Подробнее', type: 'link', url: 'https://max.ru/help/rules' }]],
+      },
+    );
+  });
+
+  it('publishes rules with multiple custom post buttons grouped into rows', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила с набором кнопок.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttons: [
+        { text: 'Канал', url: 'https://max.ru/channel/maxim' },
+        { text: 'Чат', url: 'https://max.ru/chat/team' },
+        { text: 'Профиль', url: 'https://max.ru/profile/maxim' },
+        { text: 'Сайт', url: 'https://example.com/rules' },
+      ],
+      buttonEnabled: true,
+      buttonUrl: 'https://max.ru/channel/maxim',
+      buttonText: 'Канал',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-grid-1',
+        url: 'https://max.ru/chats/chat-1/message/706',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Правила с набором кнопок.',
+      {
+        textFormat: 'markdown',
+        buttons: [
+          [
+            { text: 'Канал', type: 'link', url: 'https://max.ru/channel/maxim' },
+            { text: 'Чат', type: 'link', url: 'https://max.ru/chat/team' },
+            { text: 'Профиль', type: 'link', url: 'https://max.ru/profile/maxim' },
+          ],
+          [{ text: 'Сайт', type: 'link', url: 'https://example.com/rules' }],
+        ],
       },
     );
   });
@@ -16623,6 +16709,7 @@ describe('AdminService chat rules', () => {
       imageMimeType: '',
       imageFileName: '',
       autoTextEnabled: false,
+      buttons: [],
       buttonEnabled: false,
       buttonUrl: '',
       buttonText: 'Открыть',
@@ -19100,6 +19187,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       getEntryBotId: jest.fn().mockReturnValue('777000_bot'),
       getContextOrDefaultBotId: jest.fn().mockReturnValue('888000_bot'),
       isKnownBotUserId: jest.fn().mockReturnValue(false),
+      resolveContactIdSync: jest.fn().mockReturnValue(null),
       resolveBotIdForCapability: jest.fn().mockResolvedValue('888000_bot'),
     };
 

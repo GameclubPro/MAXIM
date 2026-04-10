@@ -164,6 +164,87 @@ export const broadcastLinkButtonSchema = z
     }
   });
 export type BroadcastLinkButton = z.infer<typeof broadcastLinkButtonSchema>;
+const storedLinkButtonDraftSchema = z.object({
+  text: botButtonTextSchema,
+  url: botButtonUrlSchema,
+});
+
+function normalizeStoredLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
+  return values.map((value) => ({
+    text: value.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
+    url: value.url.trim(),
+  }));
+}
+
+function resolveStoredLinkButtons(value: {
+  buttons?: BroadcastLinkButton[];
+  buttonUrl?: string;
+  buttonText?: string;
+}): BroadcastLinkButton[] {
+  if (Array.isArray(value.buttons) && value.buttons.length > 0) {
+    return normalizeStoredLinkButtons(value.buttons);
+  }
+
+  const legacyUrl = value.buttonUrl?.trim() ?? '';
+  if (!legacyUrl) {
+    return [];
+  }
+
+  return normalizeStoredLinkButtons([
+    {
+      text: value.buttonText ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      url: legacyUrl,
+    },
+  ]);
+}
+
+function buildStoredLinkButtonState(value: {
+  buttons?: BroadcastLinkButton[];
+  buttonEnabled?: boolean;
+  buttonUrl?: string;
+  buttonText?: string;
+}): {
+  buttons: BroadcastLinkButton[];
+  buttonEnabled: boolean;
+  buttonUrl: string;
+  buttonText: string;
+} {
+  const buttons = resolveStoredLinkButtons(value);
+  const primaryButton = buttons[0];
+
+  return {
+    buttons,
+    buttonEnabled: value.buttonEnabled === true,
+    buttonUrl: primaryButton?.url ?? value.buttonUrl?.trim() ?? '',
+    buttonText:
+      primaryButton?.text ??
+      (value.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT),
+  };
+}
+
+function addStoredLinkButtonIssues(
+  buttons: BroadcastLinkButton[],
+  ctx: z.RefinementCtx,
+  path: [string],
+): void {
+  buttons.forEach((button, index) => {
+    if (!isValidBotButtonUrl(button.url)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, index, 'url'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (!isValidBotButtonText(button.text)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [...path, index, 'text'],
+        message: 'Введите название кнопки.',
+      });
+    }
+  });
+}
 const messageLimitsBlockedWordSchema = z.string().trim().max(32);
 const messageLimitsBlockedWordsSchema = z
   .array(messageLimitsBlockedWordSchema)
@@ -575,6 +656,10 @@ export const chatSettingsSchema = z
       greetingBotButtonEnabled: z.boolean().default(false),
       greetingBotButtonUrl: botButtonUrlSchema,
       greetingBotButtonText: botButtonTextSchema,
+      greetingBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       greetingRulesButtonEnabled: z.boolean().default(false),
       requiredSubscriptionEnabled: z.boolean().default(false),
       requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
@@ -616,6 +701,10 @@ export const chatSettingsSchema = z
       messageLimitsBotButtonEnabled: z.boolean().default(false),
       messageLimitsBotButtonUrl: botButtonUrlSchema,
       messageLimitsBotButtonText: botButtonTextSchema,
+      messageLimitsBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       russianProfanityFilterEnabled: z.boolean().default(true),
       commercialAdsFilterEnabled: z.boolean().default(false),
       commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
@@ -636,6 +725,10 @@ export const chatSettingsSchema = z
       textFiltersBotButtonEnabled: z.boolean().default(false),
       textFiltersBotButtonUrl: botButtonUrlSchema,
       textFiltersBotButtonText: botButtonTextSchema,
+      textFiltersBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       textFiltersRulesButtonEnabled: z.boolean().default(false),
       thematicCodewordEnabled: z.boolean().default(false),
       thematicCodeword: thematicCodewordSchema,
@@ -647,6 +740,10 @@ export const chatSettingsSchema = z
       thematicFiltersBotButtonEnabled: z.boolean().default(false),
       thematicFiltersBotButtonUrl: botButtonUrlSchema,
       thematicFiltersBotButtonText: botButtonTextSchema,
+      thematicFiltersBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       thematicFiltersRulesButtonEnabled: z.boolean().default(false),
       nightModeEnabled: z.boolean().default(false),
       nightModeStartTimeMinutes: z
@@ -670,6 +767,10 @@ export const chatSettingsSchema = z
       nightModeBotButtonEnabled: z.boolean().default(false),
       nightModeBotButtonUrl: botButtonUrlSchema,
       nightModeBotButtonText: botButtonTextSchema,
+      nightModeBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       nightModeRulesButtonEnabled: z.boolean().default(false),
       nightModeForceCloseEnabled: z.boolean().default(false),
       nightModeForceCloseForever: z.boolean().default(false),
@@ -686,12 +787,20 @@ export const chatSettingsSchema = z
       linkBotButtonEnabled: z.boolean().default(false),
       linkBotButtonUrl: botButtonUrlSchema,
       linkBotButtonText: botButtonTextSchema,
+      linkBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       linkRulesButtonEnabled: z.boolean().default(false),
       duplicateBotMessageEnabled: z.boolean().default(false),
       duplicateBotMessageText: botMessageTextSchema,
       duplicateBotButtonEnabled: z.boolean().default(false),
       duplicateBotButtonUrl: botButtonUrlSchema,
       duplicateBotButtonText: botButtonTextSchema,
+      duplicateBotButtons: z
+        .array(storedLinkButtonDraftSchema)
+        .max(MAX_BROADCAST_LINK_BUTTONS)
+        .default([]),
       duplicateRulesButtonEnabled: z.boolean().default(false),
       messageLimitsRulesButtonEnabled: z.boolean().default(false),
       rulesAttachViolationsEnabled: z.boolean().default(true),
@@ -700,9 +809,21 @@ export const chatSettingsSchema = z
     }),
   )
   .superRefine((value, ctx) => {
+    const linkBotButtons = resolveStoredLinkButtons({
+      buttons: value.linkBotButtons,
+      buttonUrl: value.linkBotButtonUrl,
+      buttonText: value.linkBotButtonText,
+    });
     if (
       value.linkBotMessageEnabled &&
       value.linkBotButtonEnabled &&
+      linkBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(linkBotButtons, ctx, ['linkBotButtons']);
+    } else if (
+      value.linkBotMessageEnabled &&
+      value.linkBotButtonEnabled &&
+      linkBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.linkBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -715,6 +836,13 @@ export const chatSettingsSchema = z
     if (
       value.linkBotMessageEnabled &&
       value.linkBotButtonEnabled &&
+      linkBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.linkBotMessageEnabled &&
+      value.linkBotButtonEnabled &&
+      linkBotButtons.length === 0 &&
       !isValidBotButtonText(value.linkBotButtonText)
     ) {
       ctx.addIssue({
@@ -724,10 +852,23 @@ export const chatSettingsSchema = z
       });
     }
 
+    const greetingBotButtons = resolveStoredLinkButtons({
+      buttons: value.greetingBotButtons,
+      buttonUrl: value.greetingBotButtonUrl,
+      buttonText: value.greetingBotButtonText,
+    });
     if (
       value.greetingEnabled &&
       value.greetingBotMessageEnabled &&
       value.greetingBotButtonEnabled &&
+      greetingBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(greetingBotButtons, ctx, ['greetingBotButtons']);
+    } else if (
+      value.greetingEnabled &&
+      value.greetingBotMessageEnabled &&
+      value.greetingBotButtonEnabled &&
+      value.greetingBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.greetingBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -741,6 +882,14 @@ export const chatSettingsSchema = z
       value.greetingEnabled &&
       value.greetingBotMessageEnabled &&
       value.greetingBotButtonEnabled &&
+      greetingBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.greetingEnabled &&
+      value.greetingBotMessageEnabled &&
+      value.greetingBotButtonEnabled &&
+      value.greetingBotButtons.length === 0 &&
       !isValidBotButtonText(value.greetingBotButtonText)
     ) {
       ctx.addIssue({
@@ -758,9 +907,21 @@ export const chatSettingsSchema = z
       });
     }
 
+    const duplicateBotButtons = resolveStoredLinkButtons({
+      buttons: value.duplicateBotButtons,
+      buttonUrl: value.duplicateBotButtonUrl,
+      buttonText: value.duplicateBotButtonText,
+    });
     if (
       value.duplicateBotMessageEnabled &&
       value.duplicateBotButtonEnabled &&
+      duplicateBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(duplicateBotButtons, ctx, ['duplicateBotButtons']);
+    } else if (
+      value.duplicateBotMessageEnabled &&
+      value.duplicateBotButtonEnabled &&
+      value.duplicateBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.duplicateBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -773,6 +934,13 @@ export const chatSettingsSchema = z
     if (
       value.duplicateBotMessageEnabled &&
       value.duplicateBotButtonEnabled &&
+      duplicateBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.duplicateBotMessageEnabled &&
+      value.duplicateBotButtonEnabled &&
+      value.duplicateBotButtons.length === 0 &&
       !isValidBotButtonText(value.duplicateBotButtonText)
     ) {
       ctx.addIssue({
@@ -782,9 +950,21 @@ export const chatSettingsSchema = z
       });
     }
 
+    const messageLimitsBotButtons = resolveStoredLinkButtons({
+      buttons: value.messageLimitsBotButtons,
+      buttonUrl: value.messageLimitsBotButtonUrl,
+      buttonText: value.messageLimitsBotButtonText,
+    });
     if (
       value.messageLimitsBotMessageEnabled &&
       value.messageLimitsBotButtonEnabled &&
+      messageLimitsBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(messageLimitsBotButtons, ctx, ['messageLimitsBotButtons']);
+    } else if (
+      value.messageLimitsBotMessageEnabled &&
+      value.messageLimitsBotButtonEnabled &&
+      value.messageLimitsBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.messageLimitsBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -797,6 +977,13 @@ export const chatSettingsSchema = z
     if (
       value.messageLimitsBotMessageEnabled &&
       value.messageLimitsBotButtonEnabled &&
+      messageLimitsBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.messageLimitsBotMessageEnabled &&
+      value.messageLimitsBotButtonEnabled &&
+      value.messageLimitsBotButtons.length === 0 &&
       !isValidBotButtonText(value.messageLimitsBotButtonText)
     ) {
       ctx.addIssue({
@@ -830,9 +1017,21 @@ export const chatSettingsSchema = z
       normalizedMessageLimitsBlockedWords.add(normalizedWord);
     }
 
+    const textFiltersBotButtons = resolveStoredLinkButtons({
+      buttons: value.textFiltersBotButtons,
+      buttonUrl: value.textFiltersBotButtonUrl,
+      buttonText: value.textFiltersBotButtonText,
+    });
     if (
       value.textFiltersBotMessageEnabled &&
       value.textFiltersBotButtonEnabled &&
+      textFiltersBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(textFiltersBotButtons, ctx, ['textFiltersBotButtons']);
+    } else if (
+      value.textFiltersBotMessageEnabled &&
+      value.textFiltersBotButtonEnabled &&
+      value.textFiltersBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.textFiltersBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -845,6 +1044,13 @@ export const chatSettingsSchema = z
     if (
       value.textFiltersBotMessageEnabled &&
       value.textFiltersBotButtonEnabled &&
+      textFiltersBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.textFiltersBotMessageEnabled &&
+      value.textFiltersBotButtonEnabled &&
+      value.textFiltersBotButtons.length === 0 &&
       !isValidBotButtonText(value.textFiltersBotButtonText)
     ) {
       ctx.addIssue({
@@ -854,9 +1060,21 @@ export const chatSettingsSchema = z
       });
     }
 
+    const thematicFiltersBotButtons = resolveStoredLinkButtons({
+      buttons: value.thematicFiltersBotButtons,
+      buttonUrl: value.thematicFiltersBotButtonUrl,
+      buttonText: value.thematicFiltersBotButtonText,
+    });
     if (
       value.thematicFiltersBotMessageEnabled &&
       value.thematicFiltersBotButtonEnabled &&
+      thematicFiltersBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(thematicFiltersBotButtons, ctx, ['thematicFiltersBotButtons']);
+    } else if (
+      value.thematicFiltersBotMessageEnabled &&
+      value.thematicFiltersBotButtonEnabled &&
+      value.thematicFiltersBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.thematicFiltersBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -869,6 +1087,13 @@ export const chatSettingsSchema = z
     if (
       value.thematicFiltersBotMessageEnabled &&
       value.thematicFiltersBotButtonEnabled &&
+      thematicFiltersBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.thematicFiltersBotMessageEnabled &&
+      value.thematicFiltersBotButtonEnabled &&
+      value.thematicFiltersBotButtons.length === 0 &&
       !isValidBotButtonText(value.thematicFiltersBotButtonText)
     ) {
       ctx.addIssue({
@@ -924,9 +1149,21 @@ export const chatSettingsSchema = z
       });
     }
 
+    const nightModeBotButtons = resolveStoredLinkButtons({
+      buttons: value.nightModeBotButtons,
+      buttonUrl: value.nightModeBotButtonUrl,
+      buttonText: value.nightModeBotButtonText,
+    });
     if (
       value.nightModeBotMessageEnabled &&
       value.nightModeBotButtonEnabled &&
+      nightModeBotButtons.length > 0
+    ) {
+      addStoredLinkButtonIssues(nightModeBotButtons, ctx, ['nightModeBotButtons']);
+    } else if (
+      value.nightModeBotMessageEnabled &&
+      value.nightModeBotButtonEnabled &&
+      value.nightModeBotButtons.length === 0 &&
       !isValidBotButtonUrl(value.nightModeBotButtonUrl)
     ) {
       ctx.addIssue({
@@ -939,6 +1176,13 @@ export const chatSettingsSchema = z
     if (
       value.nightModeBotMessageEnabled &&
       value.nightModeBotButtonEnabled &&
+      nightModeBotButtons.length > 0
+    ) {
+      // Validation already added above.
+    } else if (
+      value.nightModeBotMessageEnabled &&
+      value.nightModeBotButtonEnabled &&
+      value.nightModeBotButtons.length === 0 &&
       !isValidBotButtonText(value.nightModeBotButtonText)
     ) {
       ctx.addIssue({
@@ -965,6 +1209,82 @@ export const chatSettingsSchema = z
         message: 'Укажите длительность хотя бы на 1 час или 1 день.',
       });
     }
+  })
+  .transform((value) => {
+    const greetingBotButtonState = buildStoredLinkButtonState({
+      buttons: value.greetingBotButtons,
+      buttonEnabled: value.greetingBotButtonEnabled,
+      buttonUrl: value.greetingBotButtonUrl,
+      buttonText: value.greetingBotButtonText,
+    });
+    const messageLimitsBotButtonState = buildStoredLinkButtonState({
+      buttons: value.messageLimitsBotButtons,
+      buttonEnabled: value.messageLimitsBotButtonEnabled,
+      buttonUrl: value.messageLimitsBotButtonUrl,
+      buttonText: value.messageLimitsBotButtonText,
+    });
+    const textFiltersBotButtonState = buildStoredLinkButtonState({
+      buttons: value.textFiltersBotButtons,
+      buttonEnabled: value.textFiltersBotButtonEnabled,
+      buttonUrl: value.textFiltersBotButtonUrl,
+      buttonText: value.textFiltersBotButtonText,
+    });
+    const thematicFiltersBotButtonState = buildStoredLinkButtonState({
+      buttons: value.thematicFiltersBotButtons,
+      buttonEnabled: value.thematicFiltersBotButtonEnabled,
+      buttonUrl: value.thematicFiltersBotButtonUrl,
+      buttonText: value.thematicFiltersBotButtonText,
+    });
+    const nightModeBotButtonState = buildStoredLinkButtonState({
+      buttons: value.nightModeBotButtons,
+      buttonEnabled: value.nightModeBotButtonEnabled,
+      buttonUrl: value.nightModeBotButtonUrl,
+      buttonText: value.nightModeBotButtonText,
+    });
+    const linkBotButtonState = buildStoredLinkButtonState({
+      buttons: value.linkBotButtons,
+      buttonEnabled: value.linkBotButtonEnabled,
+      buttonUrl: value.linkBotButtonUrl,
+      buttonText: value.linkBotButtonText,
+    });
+    const duplicateBotButtonState = buildStoredLinkButtonState({
+      buttons: value.duplicateBotButtons,
+      buttonEnabled: value.duplicateBotButtonEnabled,
+      buttonUrl: value.duplicateBotButtonUrl,
+      buttonText: value.duplicateBotButtonText,
+    });
+
+    return {
+      ...value,
+      greetingBotButtons: greetingBotButtonState.buttons,
+      greetingBotButtonEnabled: greetingBotButtonState.buttonEnabled,
+      greetingBotButtonUrl: greetingBotButtonState.buttonUrl,
+      greetingBotButtonText: greetingBotButtonState.buttonText,
+      messageLimitsBotButtons: messageLimitsBotButtonState.buttons,
+      messageLimitsBotButtonEnabled: messageLimitsBotButtonState.buttonEnabled,
+      messageLimitsBotButtonUrl: messageLimitsBotButtonState.buttonUrl,
+      messageLimitsBotButtonText: messageLimitsBotButtonState.buttonText,
+      textFiltersBotButtons: textFiltersBotButtonState.buttons,
+      textFiltersBotButtonEnabled: textFiltersBotButtonState.buttonEnabled,
+      textFiltersBotButtonUrl: textFiltersBotButtonState.buttonUrl,
+      textFiltersBotButtonText: textFiltersBotButtonState.buttonText,
+      thematicFiltersBotButtons: thematicFiltersBotButtonState.buttons,
+      thematicFiltersBotButtonEnabled: thematicFiltersBotButtonState.buttonEnabled,
+      thematicFiltersBotButtonUrl: thematicFiltersBotButtonState.buttonUrl,
+      thematicFiltersBotButtonText: thematicFiltersBotButtonState.buttonText,
+      nightModeBotButtons: nightModeBotButtonState.buttons,
+      nightModeBotButtonEnabled: nightModeBotButtonState.buttonEnabled,
+      nightModeBotButtonUrl: nightModeBotButtonState.buttonUrl,
+      nightModeBotButtonText: nightModeBotButtonState.buttonText,
+      linkBotButtons: linkBotButtonState.buttons,
+      linkBotButtonEnabled: linkBotButtonState.buttonEnabled,
+      linkBotButtonUrl: linkBotButtonState.buttonUrl,
+      linkBotButtonText: linkBotButtonState.buttonText,
+      duplicateBotButtons: duplicateBotButtonState.buttons,
+      duplicateBotButtonEnabled: duplicateBotButtonState.buttonEnabled,
+      duplicateBotButtonUrl: duplicateBotButtonState.buttonUrl,
+      duplicateBotButtonText: duplicateBotButtonState.buttonText,
+    };
   });
 export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
@@ -974,6 +1294,7 @@ const chatRulesObjectSchema = z.object({
   imageMimeType: chatRulesImageMimeTypeSchema,
   imageFileName: chatRulesImageFileNameSchema,
   autoTextEnabled: z.boolean().default(false),
+  buttons: z.array(storedLinkButtonDraftSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean().default(false),
   buttonUrl: botButtonUrlSchema,
   buttonText: botButtonTextSchema,
@@ -983,6 +1304,8 @@ const chatRulesObjectSchema = z.object({
 });
 
 export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) => {
+  const buttons = resolveStoredLinkButtons(value);
+
   if (value.imageBase64) {
     if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
       ctx.addIssue({
@@ -993,7 +1316,9 @@ export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) =>
     }
   }
 
-  if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+  if (value.buttonEnabled && buttons.length > 0) {
+    addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
+  } else if (value.buttonEnabled && value.buttons.length === 0 && !isValidBotButtonUrl(value.buttonUrl)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['buttonUrl'],
@@ -1001,7 +1326,12 @@ export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) =>
     });
   }
 
-  if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+  if (
+    !(value.buttonEnabled && buttons.length > 0) &&
+    value.buttonEnabled &&
+    value.buttons.length === 0 &&
+    !isValidBotButtonText(value.buttonText)
+  ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['buttonText'],
@@ -1016,6 +1346,16 @@ export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) =>
       message: 'Сохранена некорректная ссылка на пост правил.',
     });
   }
+}).transform((value) => {
+  const buttonState = buildStoredLinkButtonState(value);
+
+  return {
+    ...value,
+    buttons: buttonState.buttons,
+    buttonEnabled: buttonState.buttonEnabled,
+    buttonUrl: buttonState.buttonUrl,
+    buttonText: buttonState.buttonText,
+  };
 });
 export type ChatRules = z.infer<typeof chatRulesSchema>;
 
@@ -1026,11 +1366,14 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
     imageMimeType: true,
     imageFileName: true,
     autoTextEnabled: true,
+    buttons: true,
     buttonEnabled: true,
     buttonUrl: true,
     buttonText: true,
   })
   .superRefine((value, ctx) => {
+    const buttons = resolveStoredLinkButtons(value);
+
     if (value.imageBase64) {
       if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
         ctx.addIssue({
@@ -1041,7 +1384,9 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
       }
     }
 
-    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+    if (value.buttonEnabled && buttons.length > 0) {
+      addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
+    } else if (value.buttonEnabled && value.buttons.length === 0 && !isValidBotButtonUrl(value.buttonUrl)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
@@ -1049,13 +1394,29 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
       });
     }
 
-    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+    if (
+      !(value.buttonEnabled && buttons.length > 0) &&
+      value.buttonEnabled &&
+      value.buttons.length === 0 &&
+      !isValidBotButtonText(value.buttonText)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonText'],
         message: 'Введите название кнопки.',
       });
     }
+  })
+  .transform((value) => {
+    const buttonState = buildStoredLinkButtonState(value);
+
+    return {
+      ...value,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
+    };
   });
 export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
 

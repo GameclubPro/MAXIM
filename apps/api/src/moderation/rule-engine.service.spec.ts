@@ -13,7 +13,7 @@ class MockRedisCounterService {
 }
 
 function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
-  return {
+  const base: ChatSettings = {
     id: '1',
     chatId: 'chat-1',
     duplicateWarnEnabled: true,
@@ -37,6 +37,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
     greetingBotButtonText: 'Открыть',
+    greetingBotButtons: [],
     greetingRulesButtonEnabled: false,
     deleteBotMessagesEnabled: true,
     deleteBotMessagesDelayMinutes: 2,
@@ -66,6 +67,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
+    messageLimitsBotButtons: [],
     russianProfanityFilterEnabled: true,
     commercialAdsFilterEnabled: false,
     commercialAdsSensitivity: 'BALANCED',
@@ -86,6 +88,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
+    textFiltersBotButtons: [],
     textFiltersRulesButtonEnabled: false,
     thematicCodewordEnabled: false,
     thematicCodeword: '',
@@ -97,6 +100,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     thematicFiltersBotButtonEnabled: false,
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
+    thematicFiltersBotButtons: [],
     thematicFiltersRulesButtonEnabled: false,
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
@@ -110,6 +114,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
     nightModeBotButtonText: 'Открыть',
+    nightModeBotButtons: [],
     nightModeRulesButtonEnabled: false,
     nightModeForceCloseEnabled: false,
     nightModeForceCloseForever: false,
@@ -139,12 +144,14 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
     linkBotButtonText: 'Открыть',
+    linkBotButtons: [],
     linkRulesButtonEnabled: false,
     duplicateBotMessageEnabled: false,
     duplicateBotMessageText: '',
     duplicateBotButtonEnabled: false,
     duplicateBotButtonUrl: '',
     duplicateBotButtonText: 'Открыть',
+    duplicateBotButtons: [],
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
     rulesAttachViolationsEnabled: true,
@@ -152,6 +159,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     warnThreshold: 3,
     createdAt: new Date(),
     updatedAt: new Date(),
+  };
+
+  return {
+    ...base,
     ...overrides,
   };
 }

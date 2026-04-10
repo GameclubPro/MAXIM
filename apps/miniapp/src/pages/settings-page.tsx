@@ -53,7 +53,6 @@ import {
 } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
-import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import type { PublishedRulesButtonToggleProps } from '../components/published-rules-button-toggle';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -149,8 +148,41 @@ type DeleteDelayStepperProps = {
   increaseAriaLabel: string;
   onAdjust: (direction: number) => void;
 };
+type ChatSettingsButtonGroup = {
+  buttonsKey:
+    | 'linkBotButtons'
+    | 'greetingBotButtons'
+    | 'textFiltersBotButtons'
+    | 'thematicFiltersBotButtons'
+    | 'duplicateBotButtons'
+    | 'messageLimitsBotButtons'
+    | 'nightModeBotButtons';
+  enabledKey:
+    | 'linkBotButtonEnabled'
+    | 'greetingBotButtonEnabled'
+    | 'textFiltersBotButtonEnabled'
+    | 'thematicFiltersBotButtonEnabled'
+    | 'duplicateBotButtonEnabled'
+    | 'messageLimitsBotButtonEnabled'
+    | 'nightModeBotButtonEnabled';
+  urlKey:
+    | 'linkBotButtonUrl'
+    | 'greetingBotButtonUrl'
+    | 'textFiltersBotButtonUrl'
+    | 'thematicFiltersBotButtonUrl'
+    | 'duplicateBotButtonUrl'
+    | 'messageLimitsBotButtonUrl'
+    | 'nightModeBotButtonUrl';
+  textKey:
+    | 'linkBotButtonText'
+    | 'greetingBotButtonText'
+    | 'textFiltersBotButtonText'
+    | 'thematicFiltersBotButtonText'
+    | 'duplicateBotButtonText'
+    | 'messageLimitsBotButtonText'
+    | 'nightModeBotButtonText';
+};
 
-const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 const LazyMessageLimitsBlockedWordPresets = lazy(
   () => import('../components/message-limits-blocked-word-presets'),
 );
@@ -188,6 +220,48 @@ const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
+const LINK_BOT_BUTTON_GROUP = {
+  buttonsKey: 'linkBotButtons',
+  enabledKey: 'linkBotButtonEnabled',
+  urlKey: 'linkBotButtonUrl',
+  textKey: 'linkBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const GREETING_BOT_BUTTON_GROUP = {
+  buttonsKey: 'greetingBotButtons',
+  enabledKey: 'greetingBotButtonEnabled',
+  urlKey: 'greetingBotButtonUrl',
+  textKey: 'greetingBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const TEXT_FILTERS_BOT_BUTTON_GROUP = {
+  buttonsKey: 'textFiltersBotButtons',
+  enabledKey: 'textFiltersBotButtonEnabled',
+  urlKey: 'textFiltersBotButtonUrl',
+  textKey: 'textFiltersBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const THEMATIC_FILTERS_BOT_BUTTON_GROUP = {
+  buttonsKey: 'thematicFiltersBotButtons',
+  enabledKey: 'thematicFiltersBotButtonEnabled',
+  urlKey: 'thematicFiltersBotButtonUrl',
+  textKey: 'thematicFiltersBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const DUPLICATE_BOT_BUTTON_GROUP = {
+  buttonsKey: 'duplicateBotButtons',
+  enabledKey: 'duplicateBotButtonEnabled',
+  urlKey: 'duplicateBotButtonUrl',
+  textKey: 'duplicateBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const MESSAGE_LIMITS_BOT_BUTTON_GROUP = {
+  buttonsKey: 'messageLimitsBotButtons',
+  enabledKey: 'messageLimitsBotButtonEnabled',
+  urlKey: 'messageLimitsBotButtonUrl',
+  textKey: 'messageLimitsBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
+const NIGHT_MODE_BOT_BUTTON_GROUP = {
+  buttonsKey: 'nightModeBotButtons',
+  enabledKey: 'nightModeBotButtonEnabled',
+  urlKey: 'nightModeBotButtonUrl',
+  textKey: 'nightModeBotButtonText',
+} as const satisfies ChatSettingsButtonGroup;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT = 9;
 const DEFAULT_RULES_POST_BUTTON_TEXT = 'Открыть';
@@ -345,14 +419,6 @@ function DeleteDelayStepper({
 
       {fieldError ? <small className="field__hint">{fieldError}</small> : null}
     </div>
-  );
-}
-
-function ManagedLinkButtonFieldsSlot(props: ManagedLinkButtonFieldsProps) {
-  return (
-    <Suspense fallback={null}>
-      <LazyManagedLinkButtonFields {...props} />
-    </Suspense>
   );
 }
 
@@ -1982,9 +2048,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [, setRulesTextError] = useState('');
   const [, setRulesImageError] = useState('');
-  const [rulesButtonUrlError, setRulesButtonUrlError] = useState('');
-  const [rulesButtonTextError, setRulesButtonTextError] = useState('');
+  const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>(
+    [],
+  );
   const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
+  const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
   const [domainInput, setDomainInput] = useState('');
   const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
   const [domainInputError, setDomainInputError] = useState('');
@@ -2117,9 +2185,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesDraft(null);
     setRulesTextError('');
     setRulesImageError('');
-    setRulesButtonUrlError('');
-    setRulesButtonTextError('');
+    setRulesButtonErrors([]);
     setRulesButtonFieldsTouched(false);
+    setRulesButtonRevealSignal(0);
     setRulesFailedSnapshot('');
     previousRulesServerSnapshotRef.current = '';
     setMailingApplyToAllChats(false);
@@ -2442,9 +2510,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesDraft(nextServerDraft);
     setRulesTextError('');
     setRulesImageError('');
-    setRulesButtonUrlError('');
-    setRulesButtonTextError('');
+    setRulesButtonErrors([]);
     setRulesButtonFieldsTouched(false);
+    setRulesButtonRevealSignal(0);
   }, [rulesQuery.data]);
 
   useEffect(() => {
@@ -2595,9 +2663,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
       setRulesTextError('');
       setRulesImageError('');
-      setRulesButtonUrlError('');
-      setRulesButtonTextError('');
+      setRulesButtonErrors([]);
       setRulesButtonFieldsTouched(false);
+      setRulesButtonRevealSignal(0);
       setRulesFailedSnapshot('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     },
@@ -3039,6 +3107,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError(key);
   }
 
+  function clearButtonGroupErrors(group: ChatSettingsButtonGroup) {
+    clearFieldError(group.buttonsKey);
+    clearFieldError(group.urlKey);
+    clearFieldError(group.textKey);
+  }
+
+  function updateDraftButtonGroup(
+    group: ChatSettingsButtonGroup,
+    options: {
+      buttons?: BroadcastLinkButton[];
+      enabled?: boolean;
+    },
+  ) {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const nextButtons = options.buttons ?? current[group.buttonsKey];
+      const buttonState = buildBroadcastLinkButtonLegacyFields(nextButtons);
+
+      return {
+        ...current,
+        [group.buttonsKey]: nextButtons,
+        [group.enabledKey]: options.enabled ?? current[group.enabledKey],
+        [group.urlKey]: buttonState.buttonUrl,
+        [group.textKey]: buttonState.buttonText,
+      };
+    });
+    clearButtonGroupErrors(group);
+  }
+
   function addRequiredSubscriptionChannel(channelId: string) {
     setDraft((current) => {
       if (!current) {
@@ -3260,29 +3360,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setRulesImageError('');
     }
 
-    const normalizedButtonUrl = value.buttonUrl.trim();
-    const normalizedButtonText = value.buttonText.trim();
     const shouldShowButtonErrors = Boolean(options.forceButtonErrors || rulesButtonFieldsTouched);
+    const normalizedButtonState = buildBroadcastLinkButtonLegacyFields(value.buttons);
     if (value.buttonEnabled) {
-      if (!isValidHttpUrl(normalizedButtonUrl)) {
-        setRulesButtonUrlError(
-          shouldShowButtonErrors ? 'Укажите корректную ссылку (http/https).' : '',
-        );
-        setRulesButtonTextError('');
+      const nextButtonErrors = validateBroadcastLinkButtons(value.buttons);
+      if (hasBroadcastLinkButtonErrors(nextButtonErrors)) {
+        setRulesButtonErrors(shouldShowButtonErrors ? nextButtonErrors : []);
         return null;
       }
-      setRulesButtonUrlError('');
-
-      if (!normalizedButtonText || normalizedButtonText.length > 32) {
-        setRulesButtonTextError(
-          shouldShowButtonErrors ? 'Введите название кнопки до 32 символов.' : '',
-        );
-        return null;
-      }
-      setRulesButtonTextError('');
+      setRulesButtonErrors([]);
     } else {
-      setRulesButtonUrlError('');
-      setRulesButtonTextError('');
+      setRulesButtonErrors([]);
     }
 
     return {
@@ -3291,9 +3379,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: value.imageBase64,
       imageMimeType: value.imageMimeType,
       imageFileName: value.imageFileName,
+      buttons: value.buttons,
       buttonEnabled: value.buttonEnabled,
-      buttonUrl: value.buttonUrl,
-      buttonText: value.buttonText,
+      buttonUrl: normalizedButtonState.buttonUrl,
+      buttonText: normalizedButtonState.buttonText,
     };
   }
 
@@ -4174,35 +4263,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showLinkBotButtonErrors = Boolean(
     draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled,
   );
-  const linkBotButtonUrlError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonUrl : undefined;
-  const linkBotButtonTextError = showLinkBotButtonErrors
-    ? fieldErrors.linkBotButtonText
-    : undefined;
-  const hasLinkBotButtonError = Boolean(linkBotButtonUrlError || linkBotButtonTextError);
+  const linkBotButtonErrors =
+    showLinkBotButtonErrors && fieldErrors.linkBotButtons
+      ? validateBroadcastLinkButtons(draft?.linkBotButtons ?? [])
+      : [];
+  const hasLinkBotButtonError = Boolean(fieldErrors.linkBotButtons);
   const showGreetingBotButtonErrors = Boolean(
     draft?.greetingEnabled && draft?.greetingBotMessageEnabled && draft?.greetingBotButtonEnabled,
   );
-  const greetingBotButtonUrlError = showGreetingBotButtonErrors
-    ? fieldErrors.greetingBotButtonUrl
-    : undefined;
-  const greetingBotButtonTextError = showGreetingBotButtonErrors
-    ? fieldErrors.greetingBotButtonText
-    : undefined;
-  const hasGreetingBotButtonError = Boolean(
-    greetingBotButtonUrlError || greetingBotButtonTextError,
-  );
+  const greetingBotButtonErrors =
+    showGreetingBotButtonErrors && fieldErrors.greetingBotButtons
+      ? validateBroadcastLinkButtons(draft?.greetingBotButtons ?? [])
+      : [];
+  const hasGreetingBotButtonError = Boolean(fieldErrors.greetingBotButtons);
   const showDuplicateBotButtonErrors = Boolean(
     draft?.duplicateBotMessageEnabled && draft?.duplicateBotButtonEnabled,
   );
-  const duplicateBotButtonUrlError = showDuplicateBotButtonErrors
-    ? fieldErrors.duplicateBotButtonUrl
-    : undefined;
-  const duplicateBotButtonTextError = showDuplicateBotButtonErrors
-    ? fieldErrors.duplicateBotButtonText
-    : undefined;
-  const hasDuplicateBotButtonError = Boolean(
-    duplicateBotButtonUrlError || duplicateBotButtonTextError,
-  );
+  const duplicateBotButtonErrors =
+    showDuplicateBotButtonErrors && fieldErrors.duplicateBotButtons
+      ? validateBroadcastLinkButtons(draft?.duplicateBotButtons ?? [])
+      : [];
+  const hasDuplicateBotButtonError = Boolean(fieldErrors.duplicateBotButtons);
   const showMessageLimitsBotButtonErrors = Boolean(
     draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
   );
@@ -4218,15 +4299,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     hasMessageLimitsBlockedWordsOverflow && !messageLimitsBlockedWordsExpanded
       ? messageLimitsBlockedWords.slice(-MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT)
       : messageLimitsBlockedWords;
-  const messageLimitsBotButtonUrlError = showMessageLimitsBotButtonErrors
-    ? fieldErrors.messageLimitsBotButtonUrl
-    : undefined;
-  const messageLimitsBotButtonTextError = showMessageLimitsBotButtonErrors
-    ? fieldErrors.messageLimitsBotButtonText
-    : undefined;
-  const hasMessageLimitsBotButtonError = Boolean(
-    messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
-  );
+  const messageLimitsBotButtonErrors =
+    showMessageLimitsBotButtonErrors && fieldErrors.messageLimitsBotButtons
+      ? validateBroadcastLinkButtons(draft?.messageLimitsBotButtons ?? [])
+      : [];
+  const hasMessageLimitsBotButtonError = Boolean(fieldErrors.messageLimitsBotButtons);
 
   useEffect(() => {
     if (!hasMessageLimitsBlockedWordsOverflow && messageLimitsBlockedWordsExpanded) {
@@ -4236,37 +4313,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showTextFiltersBotButtonErrors = Boolean(
     draft?.textFiltersBotMessageEnabled && draft?.textFiltersBotButtonEnabled,
   );
-  const textFiltersBotButtonUrlError = showTextFiltersBotButtonErrors
-    ? fieldErrors.textFiltersBotButtonUrl
-    : undefined;
-  const textFiltersBotButtonTextError = showTextFiltersBotButtonErrors
-    ? fieldErrors.textFiltersBotButtonText
-    : undefined;
-  const hasTextFiltersBotButtonError = Boolean(
-    textFiltersBotButtonUrlError || textFiltersBotButtonTextError,
-  );
+  const textFiltersBotButtonErrors =
+    showTextFiltersBotButtonErrors && fieldErrors.textFiltersBotButtons
+      ? validateBroadcastLinkButtons(draft?.textFiltersBotButtons ?? [])
+      : [];
+  const hasTextFiltersBotButtonError = Boolean(fieldErrors.textFiltersBotButtons);
   const showThematicBotButtonErrors = Boolean(
     draft?.thematicFiltersBotMessageEnabled && draft?.thematicFiltersBotButtonEnabled,
   );
-  const thematicBotButtonUrlError = showThematicBotButtonErrors
-    ? fieldErrors.thematicFiltersBotButtonUrl
-    : undefined;
-  const thematicBotButtonTextError = showThematicBotButtonErrors
-    ? fieldErrors.thematicFiltersBotButtonText
-    : undefined;
+  const thematicBotButtonErrors =
+    showThematicBotButtonErrors && fieldErrors.thematicFiltersBotButtons
+      ? validateBroadcastLinkButtons(draft?.thematicFiltersBotButtons ?? [])
+      : [];
+  const hasThematicBotButtonError = Boolean(fieldErrors.thematicFiltersBotButtons);
   const thematicCodewordError = draft?.thematicCodewordEnabled
     ? fieldErrors.thematicCodeword
     : undefined;
   const showNightBotButtonErrors = Boolean(
     draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
   );
-  const nightBotButtonUrlError = showNightBotButtonErrors
-    ? fieldErrors.nightModeBotButtonUrl
-    : undefined;
-  const nightBotButtonTextError = showNightBotButtonErrors
-    ? fieldErrors.nightModeBotButtonText
-    : undefined;
-  const hasNightBotButtonError = Boolean(nightBotButtonUrlError || nightBotButtonTextError);
+  const nightBotButtonErrors =
+    showNightBotButtonErrors && fieldErrors.nightModeBotButtons
+      ? validateBroadcastLinkButtons(draft?.nightModeBotButtons ?? [])
+      : [];
+  const hasNightBotButtonError = Boolean(fieldErrors.nightModeBotButtons);
   const nightTimezoneError = fieldErrors.nightModeTimezone;
   const showNightForceCloseDurationErrors = Boolean(
     draft?.nightModeForceCloseEnabled && !draft?.nightModeForceCloseForever,
@@ -4340,11 +4410,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : hasRulesDraftText
       ? `${rulesDraft?.text.trim().length ?? 0}/${MAX_CHAT_RULES_TEXT_LENGTH} символов`
       : 'Редактирование через бота';
-  const rulesButtonPreviewText = rulesDraft?.buttonText.trim() || DEFAULT_RULES_POST_BUTTON_TEXT;
-  const rulesButtonPreviewUrl = rulesDraft?.buttonUrl.trim() ?? '';
-  const hasRulesButtonPreviewUrl = isValidHttpUrl(rulesButtonPreviewUrl);
+  const rulesButtonStatus = formatBroadcastButtonsStatus(rulesDraft?.buttons ?? []);
   const rulesAutoFillSummary = rulesDraft?.autoTextEnabled ? 'Включено' : 'Выключено';
-  const rulesPostButtonSummary = rulesDraft?.buttonEnabled ? rulesButtonPreviewText : 'Выключена';
+  const rulesPostButtonSummary = rulesDraft?.buttonEnabled ? rulesButtonStatus : 'Выключена';
   const rulesViolationButtonSummary = draft?.rulesAttachViolationsEnabled
     ? 'Включена'
     : 'Выключена';
@@ -5525,8 +5593,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       setFieldValue('linkBotMessageEnabled', enabled);
                                       if (!enabled) {
                                         setFieldValue('linkBotButtonEnabled', false);
-                                        clearFieldError('linkBotButtonUrl');
-                                        clearFieldError('linkBotButtonText');
+                                        clearButtonGroupErrors(LINK_BOT_BUTTON_GROUP);
                                       }
                                     }}
                                   />
@@ -5714,11 +5781,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       checked={draft.linkBotButtonEnabled}
                                       onChange={(event) => {
                                         const enabled = event.target.checked;
-                                        setFieldValue('linkBotButtonEnabled', enabled);
-                                        if (!enabled) {
-                                          clearFieldError('linkBotButtonUrl');
-                                          clearFieldError('linkBotButtonText');
-                                        }
+                                        updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
+                                          enabled,
+                                          ...(enabled && draft.linkBotButtons.length === 0
+                                            ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                            : {}),
+                                        });
                                       }}
                                     />
                                     <span className="toggle-switch" aria-hidden>
@@ -5735,18 +5803,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 )}
 
                                 {draft.linkBotButtonEnabled ? (
-                                  <ManagedLinkButtonFieldsSlot
+                                  <BroadcastLinkButtonsEditor
                                     api={api}
-                                    urlValue={draft.linkBotButtonUrl}
-                                    onUrlChange={(nextValue) =>
-                                      setFieldValue('linkBotButtonUrl', nextValue)
+                                    buttons={draft.linkBotButtons}
+                                    errors={linkBotButtonErrors}
+                                    onChange={(nextButtons) =>
+                                      updateDraftButtonGroup(LINK_BOT_BUTTON_GROUP, {
+                                        buttons: nextButtons,
+                                        enabled: nextButtons.length > 0,
+                                      })
                                     }
-                                    textValue={draft.linkBotButtonText}
-                                    onTextChange={(nextValue) =>
-                                      setFieldValue('linkBotButtonText', nextValue)
-                                    }
-                                    urlError={linkBotButtonUrlError}
-                                    textError={linkBotButtonTextError}
+                                    title="Сетка кнопок"
+                                    subtitle="До 8 ссылочных кнопок. MAX покажет их рядами по 3."
                                     urlPlaceholder="https://max.ru/channel/..."
                                     textPlaceholder="Открыть"
                                   />
@@ -6036,20 +6104,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         type="checkbox"
                                         checked={rulesDraft.buttonEnabled}
                                         onChange={(event) => {
+                                          const enabled = event.target.checked;
                                           setRulesButtonFieldsTouched(false);
-                                          setRulesButtonUrlError('');
-                                          setRulesButtonTextError('');
+                                          setRulesButtonErrors([]);
                                           setRulesDraft((current) =>
                                             current
                                               ? {
                                                   ...current,
-                                                  buttonEnabled: event.target.checked,
-                                                  buttonText:
-                                                    current.buttonText ||
-                                                    DEFAULT_RULES_POST_BUTTON_TEXT,
+                                                  buttons:
+                                                    enabled && current.buttons.length === 0
+                                                      ? [createEmptyBroadcastLinkButton()]
+                                                      : current.buttons,
+                                                  buttonEnabled: enabled,
                                                 }
                                               : current,
                                           );
+                                          if (enabled && rulesDraft.buttons.length === 0) {
+                                            setRulesButtonRevealSignal((current) => current + 1);
+                                          }
                                         }}
                                       />
                                       <span className="toggle-switch" aria-hidden>
@@ -6070,69 +6142,32 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                                   {rulesDraft.buttonEnabled ? (
                                     <div className="rules-native-card__body">
-                                      <div className="rules-button-preview">
-                                        {hasRulesButtonPreviewUrl ? (
-                                          <a
-                                            href={rulesButtonPreviewUrl}
-                                            target="_blank"
-                                            rel="noreferrer"
-                                            className="rules-button-preview__button"
-                                            onClick={(event) =>
-                                              handleManagedPostLinkClick(
-                                                event,
-                                                rulesButtonPreviewUrl,
-                                              )
-                                            }
-                                          >
-                                            {rulesButtonPreviewText}
-                                          </a>
-                                        ) : (
-                                          <span
-                                            className="rules-button-preview__button is-disabled"
-                                            aria-disabled="true"
-                                          >
-                                            {rulesButtonPreviewText}
-                                          </span>
-                                        )}
-                                      </div>
-                                      <ManagedLinkButtonFieldsSlot
+                                      <BroadcastLinkButtonsEditor
                                         api={api}
-                                        urlValue={rulesDraft.buttonUrl}
-                                        onUrlChange={(nextValue) => {
+                                        buttons={rulesDraft.buttons}
+                                        errors={rulesButtonErrors}
+                                        revealNextStepSignal={rulesButtonRevealSignal}
+                                        onChange={(nextButtons) => {
                                           setRulesButtonFieldsTouched(true);
-                                          if (rulesButtonUrlError) {
-                                            setRulesButtonUrlError('');
-                                          }
+                                          setRulesButtonErrors([]);
+                                          const buttonState =
+                                            buildBroadcastLinkButtonLegacyFields(nextButtons);
                                           setRulesDraft((current) =>
                                             current
                                               ? {
                                                   ...current,
-                                                  buttonUrl: nextValue,
+                                                  buttons: nextButtons,
+                                                  buttonEnabled: nextButtons.length > 0,
+                                                  buttonUrl: buttonState.buttonUrl,
+                                                  buttonText: buttonState.buttonText,
                                                 }
                                               : current,
                                           );
                                         }}
-                                        textValue={rulesDraft.buttonText}
-                                        onTextChange={(nextValue) => {
-                                          setRulesButtonFieldsTouched(true);
-                                          if (rulesButtonTextError) {
-                                            setRulesButtonTextError('');
-                                          }
-                                          setRulesDraft((current) =>
-                                            current
-                                              ? {
-                                                  ...current,
-                                                  buttonText: nextValue,
-                                                }
-                                              : current,
-                                          );
-                                        }}
-                                        urlError={rulesButtonUrlError || undefined}
-                                        textError={rulesButtonTextError || undefined}
+                                        title="Сетка кнопок"
+                                        subtitle="До 8 ссылочных кнопок. В посте правил они тоже покажутся рядами по 3."
                                         urlPlaceholder="https://max.ru/channel/rules"
                                         textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
-                                        urlHint={null}
-                                        textHint={null}
                                       />
                                     </div>
                                   ) : null}
@@ -6361,8 +6396,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   setFieldValue('greetingBotButtonEnabled', false);
                                   setFieldValue('greetingRulesButtonEnabled', false);
                                   clearFieldError('greetingRulesButtonEnabled');
-                                  clearFieldError('greetingBotButtonUrl');
-                                  clearFieldError('greetingBotButtonText');
+                                  clearButtonGroupErrors(GREETING_BOT_BUTTON_GROUP);
                                 }
                               }}
                             />
@@ -6424,8 +6458,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       setFieldValue('greetingBotButtonEnabled', false);
                                       setFieldValue('greetingRulesButtonEnabled', false);
                                       clearFieldError('greetingRulesButtonEnabled');
-                                      clearFieldError('greetingBotButtonUrl');
-                                      clearFieldError('greetingBotButtonText');
+                                      clearButtonGroupErrors(GREETING_BOT_BUTTON_GROUP);
                                     }
                                   }}
                                 />
@@ -6565,11 +6598,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     checked={draft.greetingBotButtonEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('greetingBotButtonEnabled', enabled);
-                                      if (!enabled) {
-                                        clearFieldError('greetingBotButtonUrl');
-                                        clearFieldError('greetingBotButtonText');
-                                      }
+                                      updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
+                                        enabled,
+                                        ...(enabled && draft.greetingBotButtons.length === 0
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          : {}),
+                                      });
                                     }}
                                   />
                                   <span className="toggle-switch" aria-hidden>
@@ -6586,20 +6620,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.greetingBotButtonEnabled ? (
-                                <ManagedLinkButtonFieldsSlot
+                                <BroadcastLinkButtonsEditor
                                   api={api}
-                                  urlValue={draft.greetingBotButtonUrl}
-                                  onUrlChange={(nextValue) =>
-                                    setFieldValue('greetingBotButtonUrl', nextValue)
+                                  buttons={draft.greetingBotButtons}
+                                  errors={greetingBotButtonErrors}
+                                  onChange={(nextButtons) =>
+                                    updateDraftButtonGroup(GREETING_BOT_BUTTON_GROUP, {
+                                      buttons: nextButtons,
+                                      enabled: nextButtons.length > 0,
+                                    })
                                   }
-                                  textValue={draft.greetingBotButtonText}
-                                  onTextChange={(nextValue) =>
-                                    setFieldValue('greetingBotButtonText', nextValue)
-                                  }
-                                  urlError={greetingBotButtonUrlError}
-                                  textError={greetingBotButtonTextError}
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Открыть"
+                                  title="Сетка кнопок"
+                                  subtitle="До 8 ссылочных кнопок. В приветствии они тоже покажутся рядами по 3."
                                 />
                               ) : null}
                             </div>
@@ -7023,8 +7057,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     setFieldValue('textFiltersBotMessageEnabled', enabled);
                                     if (!enabled) {
                                       setFieldValue('textFiltersBotButtonEnabled', false);
-                                      clearFieldError('textFiltersBotButtonUrl');
-                                      clearFieldError('textFiltersBotButtonText');
+                                      clearButtonGroupErrors(TEXT_FILTERS_BOT_BUTTON_GROUP);
                                     }
                                   }}
                                 />
@@ -7212,11 +7245,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     checked={draft.textFiltersBotButtonEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('textFiltersBotButtonEnabled', enabled);
-                                      if (!enabled) {
-                                        clearFieldError('textFiltersBotButtonUrl');
-                                        clearFieldError('textFiltersBotButtonText');
-                                      }
+                                      updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
+                                        enabled,
+                                        ...(enabled && draft.textFiltersBotButtons.length === 0
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          : {}),
+                                      });
                                     }}
                                   />
                                   <span className="toggle-switch" aria-hidden>
@@ -7233,20 +7267,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.textFiltersBotButtonEnabled ? (
-                                <ManagedLinkButtonFieldsSlot
+                                <BroadcastLinkButtonsEditor
                                   api={api}
-                                  urlValue={draft.textFiltersBotButtonUrl}
-                                  onUrlChange={(nextValue) =>
-                                    setFieldValue('textFiltersBotButtonUrl', nextValue)
+                                  buttons={draft.textFiltersBotButtons}
+                                  errors={textFiltersBotButtonErrors}
+                                  onChange={(nextButtons) =>
+                                    updateDraftButtonGroup(TEXT_FILTERS_BOT_BUTTON_GROUP, {
+                                      buttons: nextButtons,
+                                      enabled: nextButtons.length > 0,
+                                    })
                                   }
-                                  textValue={draft.textFiltersBotButtonText}
-                                  onTextChange={(nextValue) =>
-                                    setFieldValue('textFiltersBotButtonText', nextValue)
-                                  }
-                                  urlError={textFiltersBotButtonUrlError}
-                                  textError={textFiltersBotButtonTextError}
                                   urlPlaceholder="https://max.ru/channel/rules"
                                   textPlaceholder="Правила чата"
+                                  title="Сетка кнопок"
+                                  subtitle="До 8 ссылочных кнопок. В сообщении о нарушении они покажутся рядами по 3."
                                 />
                               ) : null}
                             </div>
@@ -7387,15 +7421,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     type="checkbox"
                                     checked={draft.thematicFiltersBotMessageEnabled}
                                     onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersBotMessageEnabled', enabled);
-                                      if (!enabled) {
-                                        setFieldValue('thematicFiltersBotButtonEnabled', false);
-                                        clearFieldError('thematicFiltersBotButtonUrl');
-                                        clearFieldError('thematicFiltersBotButtonText');
-                                      }
-                                    }}
-                                  />
+                                    const enabled = event.target.checked;
+                                    setFieldValue('thematicFiltersBotMessageEnabled', enabled);
+                                    if (!enabled) {
+                                      setFieldValue('thematicFiltersBotButtonEnabled', false);
+                                      clearButtonGroupErrors(THEMATIC_FILTERS_BOT_BUTTON_GROUP);
+                                    }
+                                  }}
+                                />
                                   <span className="toggle-switch" aria-hidden>
                                     <span className="toggle-switch__thumb" />
                                   </span>
@@ -7403,7 +7436,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
                             </div>
 
-                            <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div
+                              className={cn(
+                                'settings-native-toggle',
+                                'settings-native-toggle--nested',
+                                hasThematicBotButtonError && 'field--error',
+                              )}
+                            >
                               <div className="settings-native-toggle__row">
                                 <span className="settings-native-toggle__title">
                                   Кнопка в сообщении бота
@@ -7418,14 +7457,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     checked={draft.thematicFiltersBotButtonEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersBotButtonEnabled', enabled);
                                       if (enabled) {
                                         setFieldValue('thematicFiltersBotMessageEnabled', true);
                                       }
-                                      if (!enabled) {
-                                        clearFieldError('thematicFiltersBotButtonUrl');
-                                        clearFieldError('thematicFiltersBotButtonText');
-                                      }
+                                      updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
+                                        enabled,
+                                        ...(enabled && draft.thematicFiltersBotButtons.length === 0
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          : {}),
+                                      });
                                     }}
                                   />
                                   <span className="toggle-switch" aria-hidden>
@@ -7436,20 +7476,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
 
                             {draft.thematicFiltersBotButtonEnabled ? (
-                              <ManagedLinkButtonFieldsSlot
+                              <BroadcastLinkButtonsEditor
                                 api={api}
-                                urlValue={draft.thematicFiltersBotButtonUrl}
-                                onUrlChange={(nextValue) =>
-                                  setFieldValue('thematicFiltersBotButtonUrl', nextValue)
+                                buttons={draft.thematicFiltersBotButtons}
+                                errors={thematicBotButtonErrors}
+                                onChange={(nextButtons) =>
+                                  updateDraftButtonGroup(THEMATIC_FILTERS_BOT_BUTTON_GROUP, {
+                                    buttons: nextButtons,
+                                    enabled: nextButtons.length > 0,
+                                  })
                                 }
-                                textValue={draft.thematicFiltersBotButtonText}
-                                onTextChange={(nextValue) =>
-                                  setFieldValue('thematicFiltersBotButtonText', nextValue)
-                                }
-                                urlError={thematicBotButtonUrlError}
-                                textError={thematicBotButtonTextError}
                                 urlPlaceholder="https://max.ru/channel/..."
                                 textPlaceholder="Открыть"
+                                title="Сетка кнопок"
+                                subtitle="До 8 ссылочных кнопок. В тематическом фильтре они покажутся рядами по 3."
                               />
                             ) : null}
 
@@ -7608,8 +7648,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   });
                                   if (!enabled) {
                                     setFieldValue('duplicateBotButtonEnabled', false);
-                                    clearFieldError('duplicateBotButtonUrl');
-                                    clearFieldError('duplicateBotButtonText');
+                                    clearButtonGroupErrors(DUPLICATE_BOT_BUTTON_GROUP);
                                   }
                                 }}
                               />
@@ -7652,39 +7691,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               className="settings-native-switch"
                               aria-label="Кнопка в сообщении о дублях"
                             >
-                              <input
-                                type="checkbox"
-                                checked={draft.duplicateBotButtonEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setFieldValue('duplicateBotButtonEnabled', enabled);
-                                  if (!enabled) {
-                                    clearFieldError('duplicateBotButtonUrl');
-                                    clearFieldError('duplicateBotButtonText');
-                                  }
-                                }}
-                              />
-                              <span className="toggle-switch" aria-hidden>
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateBotButtonEnabled}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                      enabled,
+                                      ...(enabled && draft.duplicateBotButtons.length === 0
+                                        ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                        : {}),
+                                    });
+                                  }}
+                                />
+                                <span className="toggle-switch" aria-hidden>
                                 <span className="toggle-switch__thumb" />
                               </span>
                             </label>
                           </div>
 
                           {draft.duplicateBotButtonEnabled ? (
-                            <ManagedLinkButtonFieldsSlot
+                            <BroadcastLinkButtonsEditor
                               api={api}
-                              urlValue={draft.duplicateBotButtonUrl}
-                              onUrlChange={(nextValue) =>
-                                setFieldValue('duplicateBotButtonUrl', nextValue)
+                              buttons={draft.duplicateBotButtons}
+                              errors={duplicateBotButtonErrors}
+                              onChange={(nextButtons) =>
+                                updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                  buttons: nextButtons,
+                                  enabled: nextButtons.length > 0,
+                                })
                               }
-                              textValue={draft.duplicateBotButtonText}
-                              onTextChange={(nextValue) =>
-                                setFieldValue('duplicateBotButtonText', nextValue)
-                              }
-                              urlError={duplicateBotButtonUrlError}
-                              textError={duplicateBotButtonTextError}
                               urlPlaceholder="https://max.ru/profile/..."
                               textPlaceholder="Открыть"
+                              title="Сетка кнопок"
+                              subtitle="До 8 ссылочных кнопок. В сообщении о дублях они покажутся рядами по 3."
                             />
                           ) : null}
                         </div>
@@ -8617,8 +8657,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 setFieldValue('messageLimitsBotMessageEnabled', enabled);
                                 if (!enabled) {
                                   setFieldValue('messageLimitsBotButtonEnabled', false);
-                                  clearFieldError('messageLimitsBotButtonUrl');
-                                  clearFieldError('messageLimitsBotButtonText');
+                                  clearButtonGroupErrors(MESSAGE_LIMITS_BOT_BUTTON_GROUP);
                                 }
                               }}
                             />
@@ -8754,11 +8793,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 checked={draft.messageLimitsBotButtonEnabled}
                                 onChange={(event) => {
                                   const enabled = event.target.checked;
-                                  setFieldValue('messageLimitsBotButtonEnabled', enabled);
-                                  if (!enabled) {
-                                    clearFieldError('messageLimitsBotButtonUrl');
-                                    clearFieldError('messageLimitsBotButtonText');
-                                  }
+                                  updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
+                                    enabled,
+                                    ...(enabled && draft.messageLimitsBotButtons.length === 0
+                                      ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                      : {}),
+                                  });
                                 }}
                               />
                               <span className="toggle-switch" aria-hidden>
@@ -8775,20 +8815,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
 
                           {draft.messageLimitsBotButtonEnabled ? (
-                            <ManagedLinkButtonFieldsSlot
+                            <BroadcastLinkButtonsEditor
                               api={api}
-                              urlValue={draft.messageLimitsBotButtonUrl}
-                              onUrlChange={(nextValue) =>
-                                setFieldValue('messageLimitsBotButtonUrl', nextValue)
+                              buttons={draft.messageLimitsBotButtons}
+                              errors={messageLimitsBotButtonErrors}
+                              onChange={(nextButtons) =>
+                                updateDraftButtonGroup(MESSAGE_LIMITS_BOT_BUTTON_GROUP, {
+                                  buttons: nextButtons,
+                                  enabled: nextButtons.length > 0,
+                                })
                               }
-                              textValue={draft.messageLimitsBotButtonText}
-                              onTextChange={(nextValue) =>
-                                setFieldValue('messageLimitsBotButtonText', nextValue)
-                              }
-                              urlError={messageLimitsBotButtonUrlError}
-                              textError={messageLimitsBotButtonTextError}
                               urlPlaceholder="https://max.ru/channel/..."
                               textPlaceholder="Открыть"
+                              title="Сетка кнопок"
+                              subtitle="До 8 ссылочных кнопок. В сообщении об ограничениях они покажутся рядами по 3."
                             />
                           ) : null}
                         </div>
@@ -8868,8 +8908,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   clearFieldError('nightModeCommentsEnabled');
                                   clearFieldError('nightModeBotButtonEnabled');
                                   clearFieldError('nightModeRulesButtonEnabled');
-                                  clearFieldError('nightModeBotButtonUrl');
-                                  clearFieldError('nightModeBotButtonText');
+                                  clearButtonGroupErrors(NIGHT_MODE_BOT_BUTTON_GROUP);
                                 }
                               }}
                             />
@@ -9014,8 +9053,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       clearFieldError('nightModeCommentsEnabled');
                                       clearFieldError('nightModeBotButtonEnabled');
                                       clearFieldError('nightModeRulesButtonEnabled');
-                                      clearFieldError('nightModeBotButtonUrl');
-                                      clearFieldError('nightModeBotButtonText');
+                                      clearButtonGroupErrors(NIGHT_MODE_BOT_BUTTON_GROUP);
                                     }
                                   }}
                                 />
@@ -9210,11 +9248,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     checked={draft.nightModeBotButtonEnabled}
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
-                                      setFieldValue('nightModeBotButtonEnabled', enabled);
-                                      if (!enabled) {
-                                        clearFieldError('nightModeBotButtonUrl');
-                                        clearFieldError('nightModeBotButtonText');
-                                      }
+                                      updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
+                                        enabled,
+                                        ...(enabled && draft.nightModeBotButtons.length === 0
+                                          ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                          : {}),
+                                      });
                                     }}
                                   />
                                   <span className="toggle-switch" aria-hidden>
@@ -9231,20 +9270,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.nightModeBotButtonEnabled ? (
-                                <ManagedLinkButtonFieldsSlot
+                                <BroadcastLinkButtonsEditor
                                   api={api}
-                                  urlValue={draft.nightModeBotButtonUrl}
-                                  onUrlChange={(nextValue) =>
-                                    setFieldValue('nightModeBotButtonUrl', nextValue)
+                                  buttons={draft.nightModeBotButtons}
+                                  errors={nightBotButtonErrors}
+                                  onChange={(nextButtons) =>
+                                    updateDraftButtonGroup(NIGHT_MODE_BOT_BUTTON_GROUP, {
+                                      buttons: nextButtons,
+                                      enabled: nextButtons.length > 0,
+                                    })
                                   }
-                                  textValue={draft.nightModeBotButtonText}
-                                  onTextChange={(nextValue) =>
-                                    setFieldValue('nightModeBotButtonText', nextValue)
-                                  }
-                                  urlError={nightBotButtonUrlError}
-                                  textError={nightBotButtonTextError}
                                   urlPlaceholder="https://max.ru/channel/..."
                                   textPlaceholder="Правила чата"
+                                  title="Сетка кнопок"
+                                  subtitle="До 8 ссылочных кнопок. В ночном сообщении они покажутся рядами по 3."
                                 />
                               ) : null}
                             </div>

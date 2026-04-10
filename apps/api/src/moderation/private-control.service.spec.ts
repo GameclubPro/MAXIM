@@ -489,6 +489,7 @@ function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
     imageMimeType: '',
     imageFileName: '',
     autoTextEnabled: false,
+    buttons: [],
     buttonEnabled: false,
     buttonUrl: '',
     buttonText: 'Открыть',

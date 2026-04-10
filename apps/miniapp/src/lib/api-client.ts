@@ -140,6 +140,7 @@ export type UpdateChatRulesPayload = Pick<
   | 'imageMimeType'
   | 'imageFileName'
   | 'autoTextEnabled'
+  | 'buttons'
   | 'buttonEnabled'
   | 'buttonUrl'
   | 'buttonText'

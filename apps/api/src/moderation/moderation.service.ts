@@ -10,6 +10,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  DEFAULT_BROADCAST_BUTTON_TEXT,
+  MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   normalizeDeleteBotMessagesDelayMinutes,
@@ -1122,6 +1124,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeBotMessageText: settings.nightModeBotMessageText,
           commentsEnabled: settings.commentsEnabled,
           nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
+          nightModeBotButtons: settings.nightModeBotButtons,
           nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
           nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
           nightModeBotButtonText: settings.nightModeBotButtonText,
@@ -1271,6 +1274,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botSpeechStyle: settings.botSpeechStyle,
           duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
           duplicateBotMessageText: settings.duplicateBotMessageText,
+          duplicateBotButtons: settings.duplicateBotButtons,
           duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
           duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
           duplicateBotButtonText: settings.duplicateBotButtonText,
@@ -1300,6 +1304,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           botSpeechStyle: settings.botSpeechStyle,
           duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
           duplicateBotMessageText: settings.duplicateBotMessageText,
+          duplicateBotButtons: settings.duplicateBotButtons,
           duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
           duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
           duplicateBotButtonText: settings.duplicateBotButtonText,
@@ -1407,10 +1412,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
+      this.markWebhookHotPathStage(hotPathProfile, 'violation-follow-up');
       const linkMessageOptions =
         topViolation.ruleCode === 'LINK_BLOCKED'
           ? this.buildBotMessageOptions(
               chatId,
+              settings.linkBotButtons,
               settings.linkBotButtonEnabled,
               settings.linkBotButtonUrl,
               settings.linkBotButtonText,
@@ -1433,6 +1440,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const textFilterMessageOptions = isTextFilterHit
         ? this.buildBotMessageOptions(
             chatId,
+            settings.textFiltersBotButtons,
             settings.textFiltersBotButtonEnabled,
             settings.textFiltersBotButtonUrl,
             settings.textFiltersBotButtonText,
@@ -1444,6 +1452,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const limitsMessageOptions = isMessageLimitsHit
         ? this.buildBotMessageOptions(
             chatId,
+            settings.messageLimitsBotButtons,
             settings.messageLimitsBotButtonEnabled,
             settings.messageLimitsBotButtonUrl,
             settings.messageLimitsBotButtonText,
@@ -1455,6 +1464,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const topicMessageOptions = isTopicFilterHit
         ? this.buildBotMessageOptions(
             chatId,
+            settings.thematicFiltersBotButtons,
             settings.thematicFiltersBotButtonEnabled,
             settings.thematicFiltersBotButtonUrl,
             settings.thematicFiltersBotButtonText,
@@ -1940,6 +1950,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     duplicateBotMessageEnabled: boolean;
     duplicateBotMessageText: string;
+    duplicateBotButtons: unknown;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
@@ -1962,6 +1973,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       duplicateBotMessageEnabled,
       duplicateBotMessageText,
+      duplicateBotButtons,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -2020,6 +2032,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const duplicateMessageOptions = this.buildBotMessageOptions(
       chatId,
+      duplicateBotButtons,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -2103,6 +2116,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     duplicateBotMessageEnabled: boolean;
     duplicateBotMessageText: string;
+    duplicateBotButtons: unknown;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
@@ -2124,6 +2138,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       duplicateBotMessageEnabled,
       duplicateBotMessageText,
+      duplicateBotButtons,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -2181,6 +2196,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const duplicateMessageOptions = this.buildBotMessageOptions(
       chatId,
+      duplicateBotButtons,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -3914,6 +3930,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildBotMessageOptions(
     chatId: string,
+    rawButtons: unknown,
     buttonEnabled: boolean,
     buttonUrl: string,
     buttonText: string,
@@ -3927,9 +3944,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesPublishedUrl,
       rulesPublishedMessageId,
     );
-    const primaryButton = this.buildLinkButton(buttonEnabled, buttonUrl, buttonText);
-    if (primaryButton) {
-      buttons.push(primaryButton);
+
+    if (buttonEnabled) {
+      buttons.push(
+        ...this.normalizeConfiguredLinkButtons(rawButtons, {
+          buttonUrl,
+          buttonText,
+        }),
+      );
     }
 
     const rulesButton = this.buildRulesButton(
@@ -3946,21 +3968,73 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    if (buttons.length === 1 && this.isLinkButton(buttons[0])) {
+    const buttonRows = this.buildMessageButtonRows(buttons);
+    if (buttonRows.length === 1 && buttonRows[0].length === 1 && this.isLinkButton(buttonRows[0][0])) {
       return {
-        button: buttons[0],
+        button: buttonRows[0][0],
         ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
       };
     }
 
-    return buttons.length > 0
+    return buttonRows.length > 0
       ? {
-          buttons: [buttons],
+          buttons: buttonRows,
           ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
         }
       : {
           messageLink: rulesMessageLink,
         };
+  }
+
+  private normalizeConfiguredLinkButtons(
+    rawButtons: unknown,
+    legacy?: {
+      buttonUrl?: string | null;
+      buttonText?: string | null;
+    },
+  ): MaxLinkButton[] {
+    const buttons: MaxLinkButton[] = [];
+
+    if (Array.isArray(rawButtons)) {
+      for (const item of rawButtons) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+
+        const row = item as { text?: unknown; url?: unknown };
+        const button = this.buildLinkButton(
+          true,
+          typeof row.url === 'string' ? row.url : '',
+          typeof row.text === 'string' ? row.text : DEFAULT_BROADCAST_BUTTON_TEXT,
+        );
+        if (!button) {
+          continue;
+        }
+
+        buttons.push(button);
+      }
+    }
+
+    if (buttons.length > 0) {
+      return buttons;
+    }
+
+    const legacyButton = this.buildLinkButton(
+      true,
+      legacy?.buttonUrl ?? '',
+      legacy?.buttonText ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+    );
+    return legacyButton ? [legacyButton] : [];
+  }
+
+  private buildMessageButtonRows(buttons: readonly MaxMessageButton[]): MaxMessageButton[][] {
+    const rows: MaxMessageButton[][] = [];
+
+    for (let index = 0; index < buttons.length; index += MAX_BROADCAST_LINK_BUTTONS_PER_ROW) {
+      rows.push(buttons.slice(index, index + MAX_BROADCAST_LINK_BUTTONS_PER_ROW));
+    }
+
+    return rows;
   }
 
   private buildRequiredSubscriptionMessageOptions(
@@ -5523,6 +5597,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingDeleteBotMessageDelayMinutes: number;
     greetingBotMessageText: string;
     botSpeechStyle: BotSpeechStyle | null;
+    greetingBotButtons: unknown;
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
@@ -5542,6 +5617,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingDeleteBotMessageDelayMinutes,
       greetingBotMessageText,
       botSpeechStyle,
+      greetingBotButtons,
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
@@ -5574,6 +5650,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const greetingMessageOptions = this.buildBotMessageOptions(
       chatId,
+      greetingBotButtons,
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
@@ -5693,6 +5770,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingDeleteBotMessageDelayMinutes: settings.greetingDeleteBotMessageDelayMinutes,
       greetingBotMessageText: settings.greetingBotMessageText,
       botSpeechStyle: settings.botSpeechStyle,
+      greetingBotButtons: settings.greetingBotButtons,
       greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
       greetingBotButtonUrl: settings.greetingBotButtonUrl,
       greetingBotButtonText: settings.greetingBotButtonText,
@@ -6766,6 +6844,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeCommentsEnabled: true,
           nightModeOpenMessageEnabled: true,
           nightModeOpenMessageText: true,
+          nightModeBotButtons: true,
           nightModeBotButtonEnabled: true,
           nightModeBotButtonUrl: true,
           nightModeBotButtonText: true,
@@ -6830,6 +6909,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               nightModeBotMessageText: settings.nightModeBotMessageText,
               commentsEnabled: settings.commentsEnabled,
               nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
+              nightModeBotButtons: settings.nightModeBotButtons,
               nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
               nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
               nightModeBotButtonText: settings.nightModeBotButtonText,
@@ -6934,6 +7014,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeBotMessageText: string;
     commentsEnabled: boolean;
     nightModeCommentsEnabled: boolean;
+    nightModeBotButtons: unknown;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -6955,6 +7036,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       nightModeBotMessageText,
       commentsEnabled,
       nightModeCommentsEnabled,
+      nightModeBotButtons,
       nightModeBotButtonEnabled,
       nightModeBotButtonUrl,
       nightModeBotButtonText,
@@ -6985,6 +7067,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeBotMessageText,
           commentsEnabled,
           nightModeCommentsEnabled,
+          nightModeBotButtons,
           nightModeBotButtonEnabled,
           nightModeBotButtonUrl,
           nightModeBotButtonText,
@@ -10735,6 +10818,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeBotMessageText: string;
     commentsEnabled: boolean;
     nightModeCommentsEnabled: boolean;
+    nightModeBotButtons: unknown;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -11303,6 +11387,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     commentsEnabled: boolean;
     nightModeCommentsEnabled: boolean;
+    nightModeBotButtons: unknown;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -11312,6 +11397,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): MaxSendMessageOptions | null {
     const baseOptions = this.buildBotMessageOptions(
       params.chatId,
+      params.nightModeBotButtons,
       params.nightModeBotButtonEnabled,
       params.nightModeBotButtonUrl,
       params.nightModeBotButtonText,

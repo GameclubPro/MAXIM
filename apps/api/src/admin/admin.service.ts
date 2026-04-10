@@ -507,24 +507,55 @@ const CHANNEL_SUGGESTION_START_PARAM_PREFIX = 'cds-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
-const CHAT_SETTINGS_BUTTON_URL_KEYS = [
-  'linkBotButtonUrl',
-  'greetingBotButtonUrl',
-  'textFiltersBotButtonUrl',
-  'thematicFiltersBotButtonUrl',
-  'duplicateBotButtonUrl',
-  'messageLimitsBotButtonUrl',
-  'nightModeBotButtonUrl',
-] as const satisfies readonly (keyof ChatSettings)[];
-const CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY = {
-  linkBotButtonUrl: 'linkBotButtonEnabled',
-  greetingBotButtonUrl: 'greetingBotButtonEnabled',
-  textFiltersBotButtonUrl: 'textFiltersBotButtonEnabled',
-  thematicFiltersBotButtonUrl: 'thematicFiltersBotButtonEnabled',
-  duplicateBotButtonUrl: 'duplicateBotButtonEnabled',
-  messageLimitsBotButtonUrl: 'messageLimitsBotButtonEnabled',
-  nightModeBotButtonUrl: 'nightModeBotButtonEnabled',
-} as const satisfies Record<(typeof CHAT_SETTINGS_BUTTON_URL_KEYS)[number], keyof ChatSettings>;
+const CHAT_SETTINGS_BUTTON_GROUPS = [
+  {
+    buttons: 'linkBotButtons',
+    enabled: 'linkBotButtonEnabled',
+    url: 'linkBotButtonUrl',
+    text: 'linkBotButtonText',
+  },
+  {
+    buttons: 'greetingBotButtons',
+    enabled: 'greetingBotButtonEnabled',
+    url: 'greetingBotButtonUrl',
+    text: 'greetingBotButtonText',
+  },
+  {
+    buttons: 'textFiltersBotButtons',
+    enabled: 'textFiltersBotButtonEnabled',
+    url: 'textFiltersBotButtonUrl',
+    text: 'textFiltersBotButtonText',
+  },
+  {
+    buttons: 'thematicFiltersBotButtons',
+    enabled: 'thematicFiltersBotButtonEnabled',
+    url: 'thematicFiltersBotButtonUrl',
+    text: 'thematicFiltersBotButtonText',
+  },
+  {
+    buttons: 'duplicateBotButtons',
+    enabled: 'duplicateBotButtonEnabled',
+    url: 'duplicateBotButtonUrl',
+    text: 'duplicateBotButtonText',
+  },
+  {
+    buttons: 'messageLimitsBotButtons',
+    enabled: 'messageLimitsBotButtonEnabled',
+    url: 'messageLimitsBotButtonUrl',
+    text: 'messageLimitsBotButtonText',
+  },
+  {
+    buttons: 'nightModeBotButtons',
+    enabled: 'nightModeBotButtonEnabled',
+    url: 'nightModeBotButtonUrl',
+    text: 'nightModeBotButtonText',
+  },
+] as const satisfies ReadonlyArray<{
+  buttons: keyof ChatSettings;
+  enabled: keyof ChatSettings;
+  url: keyof ChatSettings;
+  text: keyof ChatSettings;
+}>;
 const CHANNEL_SETTINGS_BUTTON_URL_KEYS = [
   'postSuggestionsButtonUrl',
 ] as const satisfies readonly (keyof ChannelSettings)[];
@@ -544,6 +575,7 @@ const SETTINGS_SECTION_KEYS = {
     'linkBanEnabled',
     'linkMuteEnabled',
     'linkMuteDurationHours',
+    'linkBotButtons',
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
@@ -554,6 +586,7 @@ const SETTINGS_SECTION_KEYS = {
     'greetingDeleteBotMessageEnabled',
     'greetingDeleteBotMessageDelayMinutes',
     'greetingBotMessageText',
+    'greetingBotButtons',
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
     'greetingBotButtonText',
@@ -579,6 +612,7 @@ const SETTINGS_SECTION_KEYS = {
     'textFiltersBanEnabled',
     'textFiltersMuteEnabled',
     'textFiltersMuteDurationHours',
+    'textFiltersBotButtons',
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
@@ -591,6 +625,7 @@ const SETTINGS_SECTION_KEYS = {
     'thematicFiltersBanEnabled',
     'thematicFiltersMuteEnabled',
     'thematicFiltersMuteDurationHours',
+    'thematicFiltersBotButtons',
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
@@ -609,6 +644,7 @@ const SETTINGS_SECTION_KEYS = {
     'duplicateBanMaxCount',
     'duplicateBotMessageEnabled',
     'duplicateBotMessageText',
+    'duplicateBotButtons',
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
@@ -634,6 +670,7 @@ const SETTINGS_SECTION_KEYS = {
     'messageLimitsBanEnabled',
     'messageLimitsMuteEnabled',
     'messageLimitsMuteDurationHours',
+    'messageLimitsBotButtons',
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
@@ -648,6 +685,7 @@ const SETTINGS_SECTION_KEYS = {
     'nightModeCommentsEnabled',
     'nightModeOpenMessageEnabled',
     'nightModeOpenMessageText',
+    'nightModeBotButtons',
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
@@ -6024,7 +6062,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     let published: { messageId: string; url: string | null };
-    const buttonRow = this.buildChatRulesButtonRow(rules);
+    const buttonRows = this.buildChatRulesButtonRows(rules);
     try {
       published = await this.publishMessageWithRetry(
         chatId,
@@ -6032,7 +6070,7 @@ export class AdminService implements OnModuleDestroy {
         {
           textFormat: 'markdown',
           ...(imagePayload ? { imagePayload } : {}),
-          ...(buttonRow ? { buttons: [buttonRow] } : {}),
+          ...(buttonRows ? { buttons: buttonRows } : {}),
         },
         resolvedBotId,
       );
@@ -7533,6 +7571,101 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private normalizeStoredLinkButtons(
+    rawButtons: unknown,
+    legacy?: {
+      buttonUrl?: string | null;
+      buttonText?: string | null;
+    },
+  ): BroadcastLinkButton[] {
+    const normalizedButtons: BroadcastLinkButton[] = [];
+
+    if (Array.isArray(rawButtons)) {
+      for (const item of rawButtons) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+
+        const row = item as { text?: unknown; url?: unknown };
+        const url = this.normalizeLegacyProfileButtonUrl(
+          typeof row.url === 'string' ? row.url : '',
+        );
+        if (!url) {
+          continue;
+        }
+
+        normalizedButtons.push({
+          text:
+            typeof row.text === 'string' && row.text.trim().length > 0
+              ? row.text.trim()
+              : DEFAULT_BROADCAST_BUTTON_TEXT,
+          url,
+        });
+
+        if (normalizedButtons.length >= MAX_BROADCAST_LINK_BUTTONS) {
+          break;
+        }
+      }
+    }
+
+    if (normalizedButtons.length > 0) {
+      return normalizedButtons;
+    }
+
+    const legacyUrl = this.normalizeLegacyProfileButtonUrl(legacy?.buttonUrl ?? '');
+    if (!legacyUrl) {
+      return [];
+    }
+
+    return [
+      {
+        text: legacy?.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
+        url: legacyUrl,
+      },
+    ];
+  }
+
+  private buildStoredLinkButtonState(
+    rawButtons: unknown,
+    legacy?: {
+      buttonUrl?: string | null;
+      buttonText?: string | null;
+    },
+  ): {
+    buttons: BroadcastLinkButton[];
+    buttonUrl: string;
+    buttonText: string;
+  } {
+    const buttons = this.normalizeStoredLinkButtons(rawButtons, legacy);
+    const primaryButton = buttons[0];
+
+    return {
+      buttons,
+      buttonUrl: primaryButton?.url ?? '',
+      buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+    };
+  }
+
+  private areBroadcastButtonsEqual(left: readonly BroadcastLinkButton[], right: unknown): boolean {
+    if (!Array.isArray(right)) {
+      return left.length === 0;
+    }
+
+    if (left.length !== right.length) {
+      return false;
+    }
+
+    return left.every((button, index) => {
+      const candidate = right[index];
+      if (!candidate || typeof candidate !== 'object') {
+        return false;
+      }
+
+      const row = candidate as { text?: unknown; url?: unknown };
+      return row.text === button.text && row.url === button.url;
+    });
+  }
+
   private sanitizeStoredChatSettings(settings: unknown): unknown {
     if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
       return settings;
@@ -7540,18 +7673,29 @@ export class AdminService implements OnModuleDestroy {
 
     let normalizedSettings = settings as Record<string, unknown>;
 
-    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
-      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(
-        normalizedSettings[key] as string | null | undefined,
-      );
-      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
-      const shouldDisableButton =
-        normalizedUrl.length === 0 && normalizedSettings[enabledKey] === true;
-      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
+    for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
+      const buttonState = this.buildStoredLinkButtonState(normalizedSettings[group.buttons], {
+        buttonUrl: normalizedSettings[group.url] as string | null | undefined,
+        buttonText: normalizedSettings[group.text] as string | null | undefined,
+      });
+      const enabled = normalizedSettings[group.enabled] === true;
+      const shouldDisableButton = enabled && buttonState.buttons.length === 0;
+      const currentUrl = normalizedSettings[group.url];
+      const currentText = normalizedSettings[group.text];
+      const currentButtons = normalizedSettings[group.buttons];
+
+      if (
+        !this.areBroadcastButtonsEqual(buttonState.buttons, currentButtons) ||
+        currentUrl !== buttonState.buttonUrl ||
+        currentText !== buttonState.buttonText ||
+        shouldDisableButton
+      ) {
         normalizedSettings = {
           ...normalizedSettings,
-          [key]: normalizedUrl,
-          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
+          [group.buttons]: buttonState.buttons,
+          [group.url]: buttonState.buttonUrl,
+          [group.text]: buttonState.buttonText,
+          ...(shouldDisableButton ? { [group.enabled]: false } : {}),
         };
       }
     }
@@ -7588,15 +7732,25 @@ export class AdminService implements OnModuleDestroy {
   private normalizeChatSettingsButtonUrls(chatId: string, settings: ChatSettings): ChatSettings {
     let normalizedSettings = settings;
 
-    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
-      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key]);
-      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
-      const shouldDisableButton = normalizedUrl.length === 0 && normalizedSettings[enabledKey];
-      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
+    for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
+      const buttonState = this.buildStoredLinkButtonState(normalizedSettings[group.buttons], {
+        buttonUrl: normalizedSettings[group.url],
+        buttonText: normalizedSettings[group.text],
+      });
+      const shouldDisableButton =
+        buttonState.buttons.length === 0 && normalizedSettings[group.enabled];
+      if (
+        !this.areBroadcastButtonsEqual(buttonState.buttons, normalizedSettings[group.buttons]) ||
+        buttonState.buttonUrl !== normalizedSettings[group.url] ||
+        buttonState.buttonText !== normalizedSettings[group.text] ||
+        shouldDisableButton
+      ) {
         normalizedSettings = {
           ...normalizedSettings,
-          [key]: normalizedUrl,
-          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
+          [group.buttons]: buttonState.buttons,
+          [group.url]: buttonState.buttonUrl,
+          [group.text]: buttonState.buttonText,
+          ...(shouldDisableButton ? { [group.enabled]: false } : {}),
         };
       }
     }
@@ -8078,78 +8232,23 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private getChatSettingsNormalizationChanges(
-    current: Pick<
-      ChatSettings,
-      | 'linkBotButtonUrl'
-      | 'greetingBotButtonUrl'
-      | 'textFiltersBotButtonUrl'
-      | 'thematicFiltersBotButtonUrl'
-      | 'duplicateBotButtonUrl'
-      | 'messageLimitsBotButtonUrl'
-      | 'nightModeBotButtonUrl'
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeCommentsEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
-      | 'nightModeForceCloseEnabled'
-      | 'nightModeForceCloseUntil'
-    >,
-    normalized: Pick<
-      ChatSettings,
-      | 'linkBotButtonUrl'
-      | 'greetingBotButtonUrl'
-      | 'textFiltersBotButtonUrl'
-      | 'thematicFiltersBotButtonUrl'
-      | 'duplicateBotButtonUrl'
-      | 'messageLimitsBotButtonUrl'
-      | 'nightModeBotButtonUrl'
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeCommentsEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
-      | 'nightModeForceCloseEnabled'
-      | 'nightModeForceCloseUntil'
-    >,
-  ): Partial<
-    Pick<
-      ChatSettings,
-      | 'linkBotButtonUrl'
-      | 'greetingBotButtonUrl'
-      | 'textFiltersBotButtonUrl'
-      | 'thematicFiltersBotButtonUrl'
-      | 'duplicateBotButtonUrl'
-      | 'messageLimitsBotButtonUrl'
-      | 'nightModeBotButtonUrl'
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeCommentsEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
-      | 'nightModeForceCloseEnabled'
-      | 'nightModeForceCloseUntil'
-    >
-  > {
-    const changes: Partial<
-      Pick<
-        ChatSettings,
-        | 'linkBotButtonUrl'
-        | 'greetingBotButtonUrl'
-        | 'textFiltersBotButtonUrl'
-        | 'thematicFiltersBotButtonUrl'
-        | 'duplicateBotButtonUrl'
-        | 'messageLimitsBotButtonUrl'
-        | 'nightModeBotButtonUrl'
-        | 'nightModeBotMessageEnabled'
-        | 'nightModeCommentsEnabled'
-        | 'nightModeBotButtonEnabled'
-        | 'nightModeRulesButtonEnabled'
-        | 'nightModeForceCloseEnabled'
-        | 'nightModeForceCloseUntil'
-      >
-    > = {};
+    current: ChatSettings,
+    normalized: ChatSettings,
+  ): Partial<ChatSettings> {
+    const changes: Partial<ChatSettings> = {};
 
-    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
-      if (current[key] !== normalized[key]) {
-        changes[key] = normalized[key];
+    for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
+      if (!this.areBroadcastButtonsEqual(normalized[group.buttons], current[group.buttons])) {
+        changes[group.buttons] = normalized[group.buttons];
+      }
+      if (current[group.url] !== normalized[group.url]) {
+        changes[group.url] = normalized[group.url];
+      }
+      if (current[group.text] !== normalized[group.text]) {
+        changes[group.text] = normalized[group.text];
+      }
+      if (current[group.enabled] !== normalized[group.enabled]) {
+        changes[group.enabled] = normalized[group.enabled];
       }
     }
 
@@ -8186,16 +8285,24 @@ export class AdminService implements OnModuleDestroy {
     const currentSettings = current as Record<string, unknown>;
     const changes: Partial<ChatSettings> = {};
 
-    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
-      const currentUrl = this.readTrimmedString(currentSettings[key]) ?? '';
-      if (currentUrl !== sanitized[key]) {
-        changes[key] = sanitized[key];
+    for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
+      if (!this.areBroadcastButtonsEqual(sanitized[group.buttons], currentSettings[group.buttons])) {
+        changes[group.buttons] = sanitized[group.buttons];
       }
 
-      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
-      const currentEnabled = currentSettings[enabledKey] === true;
-      if (currentEnabled !== sanitized[enabledKey]) {
-        changes[enabledKey] = sanitized[enabledKey];
+      const currentUrl = this.readTrimmedString(currentSettings[group.url]) ?? '';
+      if (currentUrl !== sanitized[group.url]) {
+        changes[group.url] = sanitized[group.url];
+      }
+
+      const currentText = this.readTrimmedString(currentSettings[group.text]) ?? '';
+      if (currentText !== sanitized[group.text]) {
+        changes[group.text] = sanitized[group.text];
+      }
+
+      const currentEnabled = currentSettings[group.enabled] === true;
+      if (currentEnabled !== sanitized[group.enabled]) {
+        changes[group.enabled] = sanitized[group.enabled];
       }
     }
 
@@ -11142,16 +11249,20 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
-    const normalizedButtonText = value.buttonText.trim() || 'Открыть';
+    const buttonState = this.buildStoredLinkButtonState(value.buttons, {
+      buttonUrl: value.buttonUrl,
+      buttonText: value.buttonText,
+    });
     const baseDraft = {
       text: value.text,
       autoTextEnabled: value.autoTextEnabled,
+      buttons: buttonState.buttons,
       buttonEnabled: value.buttonEnabled,
-      buttonUrl: value.buttonUrl.trim(),
-      buttonText: normalizedButtonText,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
     } satisfies Pick<
       UpdateChatRulesRequest,
-      'text' | 'autoTextEnabled' | 'buttonEnabled' | 'buttonUrl' | 'buttonText'
+      'text' | 'autoTextEnabled' | 'buttons' | 'buttonEnabled' | 'buttonUrl' | 'buttonText'
     >;
     const normalizedImageBase64 = value.imageBase64.trim();
     if (!normalizedImageBase64) {
@@ -11192,15 +11303,21 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private mapChatRules(rules: PersistedChatRules): ChatRules {
+    const buttonState = this.buildStoredLinkButtonState(rules.buttons, {
+      buttonUrl: rules.buttonUrl,
+      buttonText: rules.buttonText,
+    });
+
     return chatRulesSchema.parse({
       text: rules.text,
       imageBase64: rules.imageBase64,
       imageMimeType: rules.imageMimeType,
       imageFileName: rules.imageFileName,
       autoTextEnabled: rules.autoTextEnabled,
+      buttons: buttonState.buttons,
       buttonEnabled: rules.buttonEnabled,
-      buttonUrl: rules.buttonUrl,
-      buttonText: rules.buttonText,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
       publishedMessageId: rules.publishedMessageId,
       publishedUrl: rules.publishedUrl,
       publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
@@ -11271,25 +11388,31 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private buildChatRulesButtonRow(
-    rules: Pick<ChatRules, 'buttonEnabled' | 'buttonUrl' | 'buttonText'>,
-  ): [MaxMessageButton] | null {
+  private buildChatRulesButtonRows(
+    rules: {
+      buttons: unknown;
+      buttonEnabled: boolean;
+      buttonUrl: string;
+      buttonText: string;
+    },
+  ): MaxMessageButton[][] | null {
     if (!rules.buttonEnabled) {
       return null;
     }
 
-    const buttonUrl = this.normalizePublishedRulesUrl(rules.buttonUrl);
-    if (!buttonUrl) {
+    const buttons = this.normalizeStoredLinkButtons(rules.buttons, {
+      buttonUrl: rules.buttonUrl,
+      buttonText: rules.buttonText,
+    }).map((button) => ({
+      ...button,
+      url: this.normalizePublishedRulesUrl(button.url) ?? '',
+    }));
+    const normalizedButtons = buttons.filter((button) => button.url.length > 0);
+    if (normalizedButtons.length === 0) {
       return null;
     }
 
-    const buttonText = rules.buttonText.trim() || 'Открыть';
-    return [
-      {
-        text: buttonText.slice(0, 32),
-        url: buttonUrl,
-      },
-    ];
+    return this.buildBroadcastLinkButtonRows(normalizedButtons);
   }
 
   private async buildAutofilledRulesTextFromCurrentSettings(
