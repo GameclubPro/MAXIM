@@ -86,7 +86,7 @@ type PendingSingleLookupBatch = {
 const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLookupPolicyConfig> =
   {
     moderation_required_subscription: {
-      positiveFreshTtlSec: 60,
+      positiveFreshTtlSec: 120,
       negativeFreshTtlSec: 10,
       backoffMs: 15_000,
       trafficClass: 'critical',
@@ -180,7 +180,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     this.subscriber = this.redis.duplicate();
     this.membershipLookupBatchWindowMs = this.readConfigInt(
       configService.get('MAX_MEMBERSHIP_LOOKUP_BATCH_WINDOW_MS'),
-      12,
+      20,
       0,
     );
     this.maxChatBackoffMs = this.readConfigInt(

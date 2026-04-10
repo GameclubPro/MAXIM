@@ -130,6 +130,30 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
+  it('keeps a positive required-subscription snapshot warm for two minutes', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:01:00.000Z'));
+
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['user-1', { userId: 'user-1', isAdmin: false }]])),
+    };
+    const service = new MaxMembershipLookupService(maxClient as never, createConfigMock() as never);
+
+    await expect(
+      service.getMembership('channel-1', 'user-1', 'moderation_required_subscription'),
+    ).resolves.toBe(true);
+
+    jest.advanceTimersByTime(90_000);
+
+    await expect(
+      service.getMembership('channel-1', 'user-1', 'moderation_required_subscription'),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
+  });
+
   it('expires negative snapshots sooner than positive ones', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:05:00.000Z'));
 
