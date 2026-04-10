@@ -53,7 +53,7 @@ function majorExplanation(
   void messageStatus;
 
   if (reason === 'в этом чате ссылки не проходят, без ссылок') {
-    return `Товарищ ${userMention(name)}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.`;
+    return `Товарищ ${userMention(name)}, ссылку изъял 👮‍♂️ В этом чате с ними строго. Если вопрос по делу, согласуйте с админом.`;
   }
 
   if (subject === 'Объявление') {
@@ -72,11 +72,11 @@ function majorExplanation(
     return `Товарищ ${userMention(name)}, сообщение завернул 👮‍♂️ Причина: ${reason}. Подправьте и подавайте заново.`;
   }
 
-  return `Товарищ ${userMention(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и разъедемся красиво.`;
+  return `Товарищ ${userMention(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и возвращайтесь.`;
 }
 
 function duplicateExplanation(name: string, sanction: string): string {
-  return `Товарищ ${userMention(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
+  return `Товарищ ${userMention(name)}, повтор сообщения зафиксировал 👮‍♂️ ${sanction}`;
 }
 
 function muteNotice(name: string, duration: string): string {
@@ -88,11 +88,11 @@ function permanentBanNotice(name: string): string {
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${userMention(name)}, предупреждение на карандаш занёс 👮‍♂️ Причина: ${reason}. Дальше держим порядок.`;
+  return `Товарищ ${userMention(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}. Дальше держим строй.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `Товарищ ${userMention(name)}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.`;
+  return `Товарищ ${userMention(name)}, предупреждение за ссылки оформил 👮‍♂️ Следующее нарушение пойдёт со взысканием.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
