@@ -2003,6 +2003,53 @@ describe('RuleEngineService', () => {
     ).toBe(true);
   });
 
+  it('does not spend photo cooldown on a message blocked by another violation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 2,
+      messageLimitsBlockedWords: ['казино'],
+    });
+
+    const blockedAttempt = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'казино',
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+    const firstCleanAttempt = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'фото без нарушений',
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+    const secondCleanAttempt = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ещё одно фото без нарушений',
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(
+      blockedAttempt.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD'),
+    ).toBe(true);
+    expect(
+      blockedAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
+    ).toBe(false);
+    expect(
+      firstCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
+    ).toBe(false);
+    expect(
+      secondCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
+    ).toBe(true);
+  });
+
   it('resets sticker cooldown state when sticker cooldown settings change', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const initialSettings = buildSettings({

@@ -841,43 +841,6 @@ export class RuleEngineService {
       });
     }
 
-    if (hasPhotoAttachment && settings.photoMessageCooldownEnabled) {
-      const cooldownSec = settings.photoMessageCooldownHours * 60 * 60;
-      const key = this.buildMediaCooldownKey(
-        'photo',
-        chatId,
-        userId,
-        settings.photoMessageCooldownHours,
-        settings.updatedAt,
-      );
-      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
-      if (count > 1) {
-        violations.push({
-          ruleCode: 'PHOTO_RATE_LIMIT',
-          score: 0.86,
-          reason: `Messages with photos are limited to one per ${settings.photoMessageCooldownHours}h`,
-        });
-      }
-    }
-
-    if (hasStickerAttachment && settings.stickerMessageCooldownEnabled) {
-      const cooldownSec = settings.stickerMessageCooldownMinutes * 60;
-      const key = this.buildMediaCooldownKey(
-        'sticker',
-        chatId,
-        userId,
-        settings.stickerMessageCooldownMinutes,
-        settings.updatedAt,
-      );
-      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
-      if (count > 1) {
-        violations.push({
-          ruleCode: 'STICKER_RATE_LIMIT',
-          score: 0.86,
-          reason: `Stickers are limited to one per ${settings.stickerMessageCooldownMinutes}m`,
-        });
-      }
-    }
     this.markDetectStage(profile, 'attachments');
 
     const compactText = settings.antiDuplicateEnabled ? normalized.replace(/\s+/g, ' ').trim() : '';
@@ -897,6 +860,46 @@ export class RuleEngineService {
           })
         : undefined;
     this.markDetectStage(profile, 'duplicate-state');
+
+    if (violations.length === 0 && !duplicateState?.hit && !duplicateState?.decision) {
+      if (hasPhotoAttachment && settings.photoMessageCooldownEnabled) {
+        const cooldownSec = settings.photoMessageCooldownHours * 60 * 60;
+        const key = this.buildMediaCooldownKey(
+          'photo',
+          chatId,
+          userId,
+          settings.photoMessageCooldownHours,
+          settings.updatedAt,
+        );
+        const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+        if (count > 1) {
+          violations.push({
+            ruleCode: 'PHOTO_RATE_LIMIT',
+            score: 0.86,
+            reason: `Messages with photos are limited to one per ${settings.photoMessageCooldownHours}h`,
+          });
+        }
+      }
+
+      if (hasStickerAttachment && settings.stickerMessageCooldownEnabled) {
+        const cooldownSec = settings.stickerMessageCooldownMinutes * 60;
+        const key = this.buildMediaCooldownKey(
+          'sticker',
+          chatId,
+          userId,
+          settings.stickerMessageCooldownMinutes,
+          settings.updatedAt,
+        );
+        const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+        if (count > 1) {
+          violations.push({
+            ruleCode: 'STICKER_RATE_LIMIT',
+            score: 0.86,
+            reason: `Stickers are limited to one per ${settings.stickerMessageCooldownMinutes}m`,
+          });
+        }
+      }
+    }
 
     this.logSlowDetectIfNeeded({
       chatId,
