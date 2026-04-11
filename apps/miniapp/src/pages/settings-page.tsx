@@ -105,7 +105,12 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import {
+  maxNotify,
+  openMaxBotLink,
+  openMaxBotLinkAndClose,
+  setMaxClosingConfirmation,
+} from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -2386,6 +2391,59 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionChannelCollections.unavailableManagedChannels;
   const availableRequiredSubscriptionChannelChoices =
     requiredSubscriptionChannelCollections.availableChoices;
+  const currentRulesTextSource = useMemo(() => {
+    const currentSettings = draft ?? settingsScreenQuery.data?.settings;
+    if (!currentSettings) {
+      return null;
+    }
+
+    const channelById = new Map<string, ManagedEntityHeader>();
+    for (const channel of settingsScreenQuery.data?.requiredSubscriptionChannels ?? []) {
+      channelById.set(channel.id, channel);
+    }
+    for (const channel of selectedRequiredSubscriptionChannels) {
+      channelById.set(channel.id, {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: channel.link,
+        participantsCount: null,
+        avatarUrl: null,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      });
+    }
+    for (const channel of selectedUnavailableRequiredSubscriptionChannels) {
+      channelById.set(channel.id, {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: null,
+        participantsCount: null,
+        avatarUrl: null,
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      });
+    }
+
+    return {
+      settings: currentSettings,
+      domains: domainsQuery.data ?? settingsScreenQuery.data?.domains ?? [],
+      requiredSubscriptionChannels: currentSettings.requiredSubscriptionChannelIds
+        .map((channelId) => channelById.get(channelId))
+        .filter((channel): channel is ManagedEntityHeader => Boolean(channel)),
+    };
+  }, [
+    domainsQuery.data,
+    draft,
+    selectedRequiredSubscriptionChannels,
+    selectedUnavailableRequiredSubscriptionChannels,
+    settingsScreenQuery.data?.domains,
+    settingsScreenQuery.data?.requiredSubscriptionChannels,
+    settingsScreenQuery.data?.settings,
+  ]);
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -2877,12 +2935,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const handoffBroadcastMutation = useMutation({
     mutationFn: (payload: BroadcastHandoffPayload) => handoffBroadcast(api, chatId ?? '', payload),
     onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+          description: 'Ссылка на handoff вернулась пустой.',
+        });
+        return;
+      }
+
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
         description: 'Отправьте там текст или фото, затем подтвердите рассылку.',
       });
-      openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
       pushToast({
@@ -2896,13 +2962,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const handoffRulesMutation = useMutation({
     mutationFn: () => handoffRules(api, chatId ?? ''),
     onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+          description: 'Ссылка на handoff вернулась пустой.',
+        });
+        return;
+      }
+
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
         description:
           'Отправьте там текст или фото. Публиковать можно и там, и здесь. Кнопка «Правила» остаётся в mini app.',
       });
-      openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
       pushToast({
@@ -3386,14 +3460,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }
 
+  function reportRulesAutofillError(error: unknown) {
+    const description =
+      error instanceof Error ? error.message : 'Не удалось собрать текст правил.';
+    setRulesTextError(description);
+    pushToast({
+      tone: 'danger',
+      title: 'Не удалось собрать текст правил',
+      description,
+    });
+    maxNotify('error');
+  }
+
+  function buildRulesDraftFromCurrentSettings(value: ChatRules): ChatRules {
+    if (!currentRulesTextSource) {
+      throw new Error('Настройки чата ещё загружаются.');
+    }
+
+    return {
+      ...value,
+      autoTextEnabled: true,
+      text: buildRulesTextFromSettingsScreen(currentRulesTextSource),
+    };
+  }
+
+  function prepareRulesDraftForSubmit(
+    value: ChatRules,
+    options: { reportAutofillErrors?: boolean } = {},
+  ): ChatRules | null {
+    if (!value.autoTextEnabled) {
+      return value;
+    }
+
+    try {
+      const nextDraft = buildRulesDraftFromCurrentSettings(value);
+      setRulesTextError('');
+      if (serializeRulesDraftPayload(nextDraft) !== serializeRulesDraftPayload(value)) {
+        setRulesDraft((current) =>
+          current ? { ...current, text: nextDraft.text, autoTextEnabled: true } : current,
+        );
+      }
+      return nextDraft;
+    } catch (error) {
+      if (options.reportAutofillErrors !== false) {
+        reportRulesAutofillError(error);
+      }
+      return null;
+    }
+  }
+
   async function saveRulesDraftNow(
-    options: { forceButtonErrors?: boolean } = {},
+    options: { forceButtonErrors?: boolean; draft?: ChatRules } = {},
   ): Promise<ChatRules | null> {
-    if (!rulesDraft) {
+    const targetDraft = options.draft ?? rulesDraft;
+    if (!targetDraft) {
       return null;
     }
 
-    const payload = validateRulesDraft(rulesDraft, options);
+    const payload = validateRulesDraft(targetDraft, options);
     if (!payload) {
       return null;
     }
@@ -3787,12 +3911,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handleHandoffRules() {
-    if (!chatId || isSavingRules || isPublishingRules || handoffRulesMutation.isPending) {
+    if (!chatId || !rulesDraft || isSavingRules || isPublishingRules || handoffRulesMutation.isPending) {
       return;
     }
 
-    if (hasRulesChanges) {
-      const saved = await saveRulesDraftNow({ forceButtonErrors: true });
+    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
+    if (!preparedRulesDraft) {
+      return;
+    }
+
+    if (serializeRulesDraftPayload(preparedRulesDraft) !== rulesServerSnapshot) {
+      const saved = await saveRulesDraftNow({
+        forceButtonErrors: true,
+        draft: preparedRulesDraft,
+      });
       if (!saved) {
         return;
       }
@@ -3806,24 +3938,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (!rulesDraft.autoTextEnabled && !rulesDraft.text.trim()) {
+    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
+    if (!preparedRulesDraft) {
+      return;
+    }
+
+    if (!preparedRulesDraft.autoTextEnabled && !preparedRulesDraft.text.trim()) {
       setRulesTextError('Введите текст правил перед публикацией.');
       return;
     }
     setRulesTextError('');
 
-    if (rulesDraft.text.length > MAX_CHAT_RULES_TEXT_LENGTH) {
+    if (preparedRulesDraft.text.length > MAX_CHAT_RULES_TEXT_LENGTH) {
       setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
       return;
     }
 
-    if (!hasRulesChanges && !validateRulesDraft(rulesDraft, { forceButtonErrors: true })) {
+    const nextRulesSnapshot = serializeRulesDraftPayload(preparedRulesDraft);
+    const shouldSavePreparedRules = nextRulesSnapshot !== rulesServerSnapshot;
+
+    if (
+      !shouldSavePreparedRules &&
+      !validateRulesDraft(preparedRulesDraft, { forceButtonErrors: true })
+    ) {
       return;
     }
 
-    const saved = hasRulesChanges
-      ? await saveRulesDraftNow({ forceButtonErrors: true })
-      : rulesDraft;
+    const saved = shouldSavePreparedRules
+      ? await saveRulesDraftNow({
+          forceButtonErrors: true,
+          draft: preparedRulesDraft,
+        })
+      : preparedRulesDraft;
     if (!saved) {
       return;
     }
@@ -6020,36 +6166,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             return;
                                           }
 
-                                          if (!settingsScreenQuery.data) {
-                                            return;
-                                          }
-
                                           try {
-                                            const generatedText = buildRulesTextFromSettingsScreen(
-                                              settingsScreenQuery.data,
-                                            );
+                                            const nextDraft = buildRulesDraftFromCurrentSettings({
+                                              ...rulesDraft,
+                                              autoTextEnabled: true,
+                                            });
                                             setRulesTextError('');
                                             setRulesDraft((current) =>
                                               current
                                                 ? {
                                                     ...current,
                                                     autoTextEnabled: true,
-                                                    text: generatedText,
+                                                    text: nextDraft.text,
                                                   }
                                                 : current,
                                             );
                                           } catch (error) {
-                                            const description =
-                                              error instanceof Error
-                                                ? error.message
-                                                : 'Не удалось собрать текст правил.';
-                                            setRulesTextError(description);
-                                            pushToast({
-                                              tone: 'danger',
-                                              title: 'Не удалось собрать текст правил',
-                                              description,
-                                            });
-                                            maxNotify('error');
+                                            reportRulesAutofillError(error);
                                           }
                                         }}
                                       />

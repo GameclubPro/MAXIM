@@ -44,7 +44,11 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
+import {
+  maxNotify,
+  openMaxBotLinkAndClose,
+  setMaxClosingConfirmation,
+} from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -806,13 +810,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const handoffBroadcastMutation = useMutation({
     mutationFn: (payload: BroadcastHandoffPayload) => handoffChannelBroadcast(api, chatId, payload),
     onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+          description: 'Ссылка на handoff вернулась пустой.',
+        });
+        return;
+      }
+
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
         description: 'Отправьте там текст или фото, затем подтвердите публикацию.',
       });
       maxNotify('success');
-      openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
       pushToast({
