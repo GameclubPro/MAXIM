@@ -2402,30 +2402,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       channelById.set(channel.id, channel);
     }
     for (const channel of selectedRequiredSubscriptionChannels) {
-      channelById.set(channel.id, {
-        id: channel.id,
-        title: channel.title,
-        entityType: 'channel',
-        link: channel.link,
-        participantsCount: null,
-        avatarUrl: null,
-        primaryBotId: null,
-        assignedBots: [],
-        sharedMode: 'owned',
-      });
+      channelById.set(
+        channel.id,
+        {
+          id: channel.id,
+          title: channel.title,
+          entityType: 'channel',
+          link: channel.link,
+          participantsCount: null,
+        } as ManagedEntityHeader,
+      );
     }
     for (const channel of selectedUnavailableRequiredSubscriptionChannels) {
-      channelById.set(channel.id, {
-        id: channel.id,
-        title: channel.title,
-        entityType: 'channel',
-        link: null,
-        participantsCount: null,
-        avatarUrl: null,
-        primaryBotId: null,
-        assignedBots: [],
-        sharedMode: 'owned',
-      });
+      channelById.set(
+        channel.id,
+        {
+          id: channel.id,
+          title: channel.title,
+          entityType: 'channel',
+          link: null,
+          participantsCount: null,
+        } as ManagedEntityHeader,
+      );
     }
 
     return {
@@ -3484,10 +3482,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }
 
-  function prepareRulesDraftForSubmit(
-    value: ChatRules,
-    options: { reportAutofillErrors?: boolean } = {},
-  ): ChatRules | null {
+  function prepareRulesDraftForSubmit(value: ChatRules): ChatRules | null {
     if (!value.autoTextEnabled) {
       return value;
     }
@@ -3502,9 +3497,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
       return nextDraft;
     } catch (error) {
-      if (options.reportAutofillErrors !== false) {
-        reportRulesAutofillError(error);
-      }
+      reportRulesAutofillError(error);
       return null;
     }
   }

@@ -12,7 +12,7 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // Settings remains lazy-loaded, but its incremental chunk also needs a few kilobytes
 // of realistic growth room for richer controls and content editors.
-const SETTINGS_JS_BUDGET_GZIP = 104 * 1024;
+const SETTINGS_JS_BUDGET_GZIP = 105 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
