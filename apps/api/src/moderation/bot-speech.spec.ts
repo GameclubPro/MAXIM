@@ -174,7 +174,26 @@ describe('bot speech styles', () => {
         'FRIENDLY',
       ),
     ).toBe(
-      '**Алексей**, сообщение не прошло: слишком длинное сообщение: 187 символов при лимите 100. Немного поправьте и можно снова.',
+      '**Алексей**, сообщение не прошло. Причина: слишком длинное сообщение: 187 символов при лимите 100.',
+    );
+
+    expect(
+      (service as any).buildMessageLimitsExplanation(
+        userLabel,
+        'PHOTO_RATE_LIMIT',
+        true,
+        1,
+        5,
+        2,
+        5,
+        undefined,
+        undefined,
+        null,
+        '',
+        'FRIENDLY',
+      ),
+    ).toBe(
+      '**Алексей**, сообщение не прошло. Причина: слишком частая отправка фото: не чаще одного раза в 2ч. Если фото несколько, лучше собрать их в альбом или коллаж.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY')).toBe(

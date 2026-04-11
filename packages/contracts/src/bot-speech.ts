@@ -151,8 +151,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersWarnMessageText:
         '{user}, это предупреждение. Причина: {reason}. Давайте дальше без такого текста.',
       duplicateBotMessageText: '{user}, такое сообщение уже отправлялось. {sanction}',
-      messageLimitsBotMessageText:
-        '{user}, сообщение не прошло: {reason}. Немного поправьте и можно снова.',
+      messageLimitsBotMessageText: '{user}, сообщение не прошло. Причина: {reason}.',
       nightModeBotMessageText:
         'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText:
@@ -201,7 +200,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, предупреждение оформил 👮‍♂️ Причина: {reason}. Дальше держим строй.',
       duplicateBotMessageText: 'Товарищ {user}, повтор сообщения зафиксировал 👮‍♂️ {sanction}',
       messageLimitsBotMessageText:
-        'Товарищ {user}, сообщение завернул 👮‍♂️ Причина: {reason}. Подправьте и подавайте заново.',
+        'Товарищ {user}, сообщение завернул 👮‍♂️ Причина: {reason}.',
       nightModeBotMessageText:
         'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText:
@@ -307,7 +306,7 @@ const BOT_SPEECH_POLICE_FEMALE_PRESET: BotSpeechPreset = {
       'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}. Дальше держим строй.',
     duplicateBotMessageText: 'Товарищ {user}, повтор сообщения зафиксировала 👮‍♀️ {sanction}',
     messageLimitsBotMessageText:
-      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}. Подправьте и подавайте заново.',
+      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}.',
     nightModeBotMessageText:
       'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
     nightModeOpenMessageText:
