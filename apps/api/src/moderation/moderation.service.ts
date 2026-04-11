@@ -2712,12 +2712,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'IRONIC') {
       if (action === 'WARN') {
-        return 'Да, это уже предупреждение.';
+        return 'Да, это уже предупреждение. Повтор не сделал мысль убедительнее.';
       }
       if (action === 'MUTE') {
-        return `Мут на ${muteDurationLabel}. Пусть идея чуть остынет.`;
+        return `Мут на ${muteDurationLabel}. Повторение полезно в учебнике, не в чате.`;
       }
-      return 'Бан без таймера. Чат решил больше не рисковать.';
+      return 'Бан без таймера. Эксперимент с повторами официально завершён.';
     }
 
     if (action === 'WARN') {
@@ -2745,7 +2745,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (style === 'IRONIC') {
-      return 'Повтор убрал. Коллекцию можно не собирать.';
+      return 'Повтор убрал. Эхо здесь карьеру не сделает.';
     }
 
     return 'Пока без взыскания.';
@@ -3046,7 +3046,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (botSpeechStyle === 'IRONIC') {
-      return `${userLabel}, на этот раз дошло до бана без таймера.`;
+      return `${userLabel}, на этот раз дошло до бана без таймера. Настойчивость была впечатляющей, но лишней.`;
     }
 
     return `Товарищ ${userLabel}, оформляю бан до ручного разбана.`;
