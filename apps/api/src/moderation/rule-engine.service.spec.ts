@@ -1956,6 +1956,100 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT')).toBe(true);
   });
 
+  it('resets photo cooldown state when photo cooldown settings change', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const initialSettings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 12,
+      updatedAt: new Date('2026-04-11T09:00:00.000Z'),
+    });
+    const updatedSettings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 1,
+      updatedAt: new Date('2026-04-11T10:00:00.000Z'),
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: initialSettings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    const firstAfterSettingsChange = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: updatedSettings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+    const secondAfterSettingsChange = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: updatedSettings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(
+      firstAfterSettingsChange.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
+    ).toBe(false);
+    expect(
+      secondAfterSettingsChange.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
+    ).toBe(true);
+  });
+
+  it('resets sticker cooldown state when sticker cooldown settings change', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const initialSettings = buildSettings({
+      stickerMessageCooldownEnabled: true,
+      stickerMessageCooldownMinutes: 10,
+      updatedAt: new Date('2026-04-11T09:00:00.000Z'),
+    });
+    const updatedSettings = buildSettings({
+      stickerMessageCooldownEnabled: true,
+      stickerMessageCooldownMinutes: 5,
+      updatedAt: new Date('2026-04-11T10:00:00.000Z'),
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: initialSettings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    const firstAfterSettingsChange = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: updatedSettings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+    const secondAfterSettingsChange = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: updatedSettings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    expect(
+      firstAfterSettingsChange.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT'),
+    ).toBe(false);
+    expect(
+      secondAfterSettingsChange.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT'),
+    ).toBe(true);
+  });
+
   it('does not trigger PHOTO_RATE_LIMIT for sticker-only attachments', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const settings = buildSettings({

@@ -843,7 +843,13 @@ export class RuleEngineService {
 
     if (hasPhotoAttachment && settings.photoMessageCooldownEnabled) {
       const cooldownSec = settings.photoMessageCooldownHours * 60 * 60;
-      const key = `photo:cooldown:${chatId}:${userId}`;
+      const key = this.buildMediaCooldownKey(
+        'photo',
+        chatId,
+        userId,
+        settings.photoMessageCooldownHours,
+        settings.updatedAt,
+      );
       const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
       if (count > 1) {
         violations.push({
@@ -856,7 +862,13 @@ export class RuleEngineService {
 
     if (hasStickerAttachment && settings.stickerMessageCooldownEnabled) {
       const cooldownSec = settings.stickerMessageCooldownMinutes * 60;
-      const key = `sticker:cooldown:${chatId}:${userId}`;
+      const key = this.buildMediaCooldownKey(
+        'sticker',
+        chatId,
+        userId,
+        settings.stickerMessageCooldownMinutes,
+        settings.updatedAt,
+      );
       const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
       if (count > 1) {
         violations.push({
@@ -914,6 +926,26 @@ export class RuleEngineService {
       stages: new Map(),
       stageTimelineMs: new Map(),
     };
+  }
+
+  private buildMediaCooldownKey(
+    mediaKind: 'photo' | 'sticker',
+    chatId: string,
+    userId: string,
+    windowValue: number,
+    settingsUpdatedAt: Date | string,
+  ): string {
+    return `${mediaKind}:cooldown:v2:${chatId}:${userId}:${windowValue}:${this.normalizeSettingsUpdatedAt(settingsUpdatedAt)}`;
+  }
+
+  private normalizeSettingsUpdatedAt(value: Date | string): string {
+    if (value instanceof Date) {
+      const timestamp = value.getTime();
+      return Number.isFinite(timestamp) ? String(timestamp) : 'na';
+    }
+
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? String(parsed) : 'na';
   }
 
   private markDetectStage(profile: RuleEngineDetectProfile, stage: string): void {
