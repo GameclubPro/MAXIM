@@ -475,7 +475,15 @@ export class HealthService implements OnModuleDestroy {
     }
 
     if (staleCachedSnapshot) {
-      this.refreshQueueMetricsSnapshotInBackground();
+      const refreshedSnapshot =
+        (await this.tryRefreshStaleQueueMetricsSnapshot(staleCachedSnapshot)) ?? null;
+      if (refreshedSnapshot) {
+        return {
+          snapshot: refreshedSnapshot,
+          fallbackDetail: null,
+        };
+      }
+
       return {
         snapshot: staleCachedSnapshot,
         fallbackDetail:
@@ -502,13 +510,59 @@ export class HealthService implements OnModuleDestroy {
     }
   }
 
-  private refreshQueueMetricsSnapshotInBackground(): void {
-    const now = Date.now();
+  private async tryRefreshStaleQueueMetricsSnapshot(
+    staleCachedSnapshot: QueueMetricsSnapshot,
+  ): Promise<QueueMetricsSnapshot | null> {
+    const refreshPromise = this.refreshQueueMetricsSnapshotInBackground();
+    if (!refreshPromise) {
+      return null;
+    }
+
+    try {
+      await this.withTimeout(
+        refreshPromise,
+        this.readinessOptionalDiagnosticsTimeoutMs,
+        'queue metrics stale refresh',
+      );
+    } catch {
+      return null;
+    }
+
+    const refreshedSnapshot =
+      this.queueMetricsService.peekCachedSnapshot?.(this.queueSnapshotMaxAgeMs) ?? null;
     if (
-      this.backgroundQueueMetricsRefreshPromise ||
-      now - this.backgroundQueueMetricsRefreshStartedAtMs < this.queueSnapshotMaxAgeMs
+      refreshedSnapshot &&
+      this.isQueueMetricsSnapshotFresher(staleCachedSnapshot, refreshedSnapshot)
     ) {
-      return;
+      return refreshedSnapshot;
+    }
+
+    return null;
+  }
+
+  private isQueueMetricsSnapshotFresher(
+    previousSnapshot: QueueMetricsSnapshot,
+    nextSnapshot: QueueMetricsSnapshot,
+  ): boolean {
+    const previousGeneratedAtMs = Date.parse(previousSnapshot.generatedAt);
+    const nextGeneratedAtMs = Date.parse(nextSnapshot.generatedAt);
+    if (
+      !Number.isFinite(previousGeneratedAtMs) ||
+      !Number.isFinite(nextGeneratedAtMs)
+    ) {
+      return nextSnapshot.generatedAt !== previousSnapshot.generatedAt;
+    }
+
+    return nextGeneratedAtMs > previousGeneratedAtMs;
+  }
+
+  private refreshQueueMetricsSnapshotInBackground(): Promise<void> | null {
+    const now = Date.now();
+    if (this.backgroundQueueMetricsRefreshPromise) {
+      return this.backgroundQueueMetricsRefreshPromise;
+    }
+    if (now - this.backgroundQueueMetricsRefreshStartedAtMs < this.queueSnapshotMaxAgeMs) {
+      return null;
     }
 
     this.backgroundQueueMetricsRefreshStartedAtMs = now;
@@ -522,6 +576,7 @@ export class HealthService implements OnModuleDestroy {
         }
       });
     this.backgroundQueueMetricsRefreshPromise = refreshPromise;
+    return refreshPromise;
   }
 
   private updateQueueLagBreachState(rawQueueLagOk: boolean, evaluatedAtMs: number): number | null {

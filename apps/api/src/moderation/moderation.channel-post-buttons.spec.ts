@@ -881,7 +881,7 @@ describe('ModerationService channel auto post buttons', () => {
 
     await (service as any).processChannelAutoPostButtons();
 
-    expect(prisma.channelSettings.findMany).toHaveBeenCalledWith({
+    expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(1, {
       where: {
         OR: [
           {
@@ -897,9 +897,22 @@ describe('ModerationService channel auto post buttons', () => {
           },
         ],
       },
+      select: {
+        chatId: true,
+      },
+      orderBy: {
+        updatedAt: 'desc',
+      },
+    });
+    expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        chatId: {
+          in: ['channel-1'],
+        },
+      },
       include: {
         chat: {
-          include: {
+          select: {
             admins: {
               select: {
                 userId: true,
@@ -907,9 +920,6 @@ describe('ModerationService channel auto post buttons', () => {
             },
           },
         },
-      },
-      orderBy: {
-        updatedAt: 'desc',
       },
     });
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
@@ -1468,7 +1478,7 @@ describe('ModerationService channel auto post buttons', () => {
     await (service as any).processChannelAutoPostButtons();
     await (service as any).processChannelAutoPostButtons();
 
-    expect(prisma.channelSettings.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.channelSettings.findMany).toHaveBeenCalledTimes(2);
     expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
       count: 10,

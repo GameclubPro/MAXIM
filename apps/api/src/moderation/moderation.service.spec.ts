@@ -15331,4 +15331,139 @@ describe('ModerationService', () => {
       },
     );
   });
+
+  it('throttles channel auto-post scans instead of pausing them completely when the runtime governor returns slow', async () => {
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'background share 67.2%',
+        retryAfterMs: 45_000,
+      }),
+    };
+
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    const loggerSpy = jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
+
+    const plan = await (service as any).resolveChannelAutoPostExecutionPlan();
+
+    expect(plan).toEqual({
+      batchSize: 4,
+      interChannelDelayMs: 500,
+      maxNewMessagesPerScan: 1,
+    });
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'moderation',
+      sourceTag: 'channel_auto_post',
+      allowQueueLagSlowPathBelowSec: 5,
+    });
+    expect(loggerSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        task: 'channel-auto-post-buttons',
+        action: 'slow',
+        reason: 'background share 67.2%',
+        retryAfterMs: 45_000,
+        batchSize: 4,
+        maxNewMessagesPerScan: 1,
+      }),
+      'Throttled moderation background work because the runtime governor detected pressure',
+    );
+  });
+
+  it('loads full channel auto-post contexts only for the selected scan batch', async () => {
+    const candidateChannels = [
+      { chatId: 'channel-1' },
+      { chatId: 'channel-2' },
+      { chatId: 'channel-3' },
+      { chatId: 'channel-4' },
+      { chatId: 'channel-5' },
+      { chatId: 'channel-6' },
+    ];
+    const channelBatch = ['channel-1', 'channel-2', 'channel-3', 'channel-4'];
+    const prisma = {
+      channelSettings: {
+        findMany: jest
+          .fn()
+          .mockResolvedValueOnce(candidateChannels)
+          .mockResolvedValueOnce(
+            channelBatch.map((chatId) => ({
+              chatId,
+              updatedAt: new Date('2026-04-13T00:00:00.000Z'),
+              autoPostButtonsMode: 'COMMENTS',
+              commentsEnabled: true,
+              commentsAdminsEnabled: true,
+              commentsAllEnabled: false,
+              postSuggestionsEnabled: false,
+              chat: {
+                admins: [{ userId: 'admin-1' }],
+              },
+            })),
+          ),
+      },
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'slow',
+        reason: 'background share 67.2%',
+        retryAfterMs: 45_000,
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+    jest
+      .spyOn(service as any, 'processManagedChannelAutoPostButtons')
+      .mockResolvedValue(undefined);
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        select: {
+          chatId: true,
+        },
+      }),
+    );
+    expect(prisma.channelSettings.findMany).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        where: {
+          chatId: {
+            in: channelBatch,
+          },
+        },
+      }),
+    );
+    expect((service as any).processManagedChannelAutoPostButtons).toHaveBeenCalledTimes(4);
+  });
 });

@@ -161,6 +161,12 @@ type ChannelAutoPostScanState = {
   terminalFailureReason: string | null;
 };
 
+type ChannelAutoPostExecutionPlan = {
+  batchSize: number;
+  interChannelDelayMs: number;
+  maxNewMessagesPerScan: number;
+};
+
 type PendingChatAdminLookup = {
   cacheKey: string;
   userId: string;
@@ -344,6 +350,9 @@ const DEFAULT_CHANNEL_AUTO_POST_STARTUP_DELAY_MS = 30_000;
 const DEFAULT_CHANNEL_AUTO_POST_STARTUP_JITTER_MS = 15_000;
 const DEFAULT_CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN = 3;
 const DEFAULT_CHANNEL_AUTO_POST_REPAIR_SWEEP_MS = 10 * 60 * 1_000;
+const CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR = 2;
+const CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS = 500;
+const CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN = 1;
 const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS = 15_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS = 8;
 const DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS = 150;
@@ -11922,9 +11931,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (Date.now() < this.channelAutoPostBackoffUntilMs) {
       return;
     }
-    if (await this.shouldPauseBackgroundWork('channel-auto-post-buttons')) {
-      return;
-    }
     if (this.channelAutoPostScanMaxChannels === 0) {
       return;
     }
@@ -11932,10 +11938,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const executionPlan = await this.resolveChannelAutoPostExecutionPlan();
+    if (!executionPlan) {
+      return;
+    }
+
     this.channelAutoPostInFlight = true;
     try {
       let encounteredTransientThrottle = false;
-      const channels = await this.prisma.channelSettings.findMany({
+      const channelCandidates = await this.prisma.channelSettings.findMany({
         where: {
           OR: [
             {
@@ -11951,40 +11962,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
           ],
         },
-        include: {
-          chat: {
-            include: {
-              admins: {
-                select: {
-                  userId: true,
-                },
-              },
-            },
-          },
+        select: {
+          chatId: true,
         },
         orderBy: {
           updatedAt: 'desc',
         },
       });
-      const scanBatch = this.selectChannelAutoPostScanBatch(
-        channels,
-        this.resolveChannelAutoPostScanBatchSize(),
+      const scanBatchRefs = this.selectChannelAutoPostScanBatch(
+        channelCandidates,
+        executionPlan.batchSize,
+      );
+      if (scanBatchRefs.length === 0) {
+        this.channelAutoPostThrottleStreak = 0;
+        return;
+      }
+
+      const scanBatch = await this.loadChannelAutoPostScanContexts(
+        scanBatchRefs.map((item) => item.chatId),
       );
 
-      for (const [index, channelSettings] of scanBatch.entries()) {
+      for (const [index, managedChannel] of scanBatch.entries()) {
         if (index > 0) {
-          await this.sleep(this.channelAutoPostInterChannelDelayMs);
+          await this.sleep(executionPlan.interChannelDelayMs);
         }
 
         try {
-          await this.processManagedChannelAutoPostButtons({
-            channelSettings,
-            adminUserIds: channelSettings.chat.admins.map((item) => item.userId),
+          await this.processManagedChannelAutoPostButtons(managedChannel, {
+            maxNewMessagesPerScan: executionPlan.maxNewMessagesPerScan,
           });
         } catch (error: unknown) {
           this.logger.warn(
             {
-              chatId: channelSettings.chatId,
+              chatId: managedChannel.channelSettings.chatId,
               error: error instanceof Error ? error.message : 'Unknown error',
             },
             'Failed channel auto post buttons scan',
@@ -11994,7 +12004,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.channelAutoPostThrottleStreak += 1;
             const backoffMs = this.resolveChannelAutoPostThrottleBackoffMs();
             this.channelAutoPostBackoffUntilMs = Date.now() + backoffMs;
-            this.deferChannelAutoPostScan(channelSettings.chatId, backoffMs);
+            this.deferChannelAutoPostScan(managedChannel.channelSettings.chatId, backoffMs);
             break;
           }
         }
@@ -12008,9 +12018,60 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async loadChannelAutoPostScanContexts(
+    chatIds: readonly string[],
+  ): Promise<ManagedChannelContext[]> {
+    const normalizedChatIds = Array.from(
+      new Set(chatIds.map((chatId) => chatId.trim()).filter((chatId) => chatId.length > 0)),
+    );
+    if (normalizedChatIds.length === 0) {
+      return [];
+    }
+
+    const channelSettings = await this.prisma.channelSettings.findMany({
+      where: {
+        chatId: {
+          in: normalizedChatIds,
+        },
+      },
+      include: {
+        chat: {
+          select: {
+            admins: {
+              select: {
+                userId: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    const contextsByChatId = new Map(
+      channelSettings.map((settings) => [
+        settings.chatId,
+        {
+          channelSettings: settings,
+          adminUserIds: settings.chat.admins.map((item) => item.userId),
+        } satisfies ManagedChannelContext,
+      ]),
+    );
+
+    return normalizedChatIds.flatMap((chatId) => {
+      const context = contextsByChatId.get(chatId);
+      return context ? [context] : [];
+    });
+  }
+
   private async processManagedChannelAutoPostButtons(
     managedChannel: ManagedChannelContext,
+    options: {
+      maxNewMessagesPerScan?: number;
+    } = {},
   ): Promise<void> {
+    const maxNewMessagesPerScan = Math.max(
+      1,
+      options.maxNewMessagesPerScan ?? this.channelAutoPostMaxNewMessagesPerScan,
+    );
     const chatId = managedChannel.channelSettings.chatId;
     const existingScanState = this.channelAutoPostScanState.get(chatId) ?? null;
     if (existingScanState && Date.now() < existingScanState.nextScanAtMs) {
@@ -12062,7 +12123,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.channelAutoPostScanState.set(chatId, scanState);
         continue;
       }
-      if (autoAttachAttempts >= this.channelAutoPostMaxNewMessagesPerScan) {
+      if (autoAttachAttempts >= maxNewMessagesPerScan) {
         break;
       }
 
@@ -12084,6 +12145,115 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       this.scheduleChannelAutoPostScanState(scanState, sawNewMessages),
     );
+  }
+
+  private async resolveChannelAutoPostExecutionPlan(): Promise<ChannelAutoPostExecutionPlan | null> {
+    const basePlan: ChannelAutoPostExecutionPlan = {
+      batchSize: this.resolveChannelAutoPostScanBatchSize(),
+      interChannelDelayMs: this.channelAutoPostInterChannelDelayMs,
+      maxNewMessagesPerScan: this.channelAutoPostMaxNewMessagesPerScan,
+    };
+
+    if (this.backgroundRuntimeGovernorService) {
+      const decision = await this.backgroundRuntimeGovernorService.decide({
+        component: 'moderation',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec,
+      });
+      if (decision.action === 'run') {
+        return basePlan;
+      }
+
+      const now = Date.now();
+      if (decision.action === 'slow') {
+        if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+          this.channelAutoPostPausedLogAtMs = now;
+          this.logger.log(
+            {
+              task: 'channel-auto-post-buttons',
+              action: decision.action,
+              reason: decision.reason,
+              retryAfterMs: decision.retryAfterMs,
+              batchSize: Math.max(
+                1,
+                Math.ceil(basePlan.batchSize / CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR),
+              ),
+              maxNewMessagesPerScan: Math.max(
+                1,
+                Math.min(
+                  basePlan.maxNewMessagesPerScan,
+                  CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
+                ),
+              ),
+            },
+            'Throttled moderation background work because the runtime governor detected pressure',
+          );
+        }
+
+        return {
+          batchSize: Math.max(
+            1,
+            Math.ceil(basePlan.batchSize / CHANNEL_AUTO_POST_SLOW_BATCH_DIVISOR),
+          ),
+          interChannelDelayMs: Math.max(
+            basePlan.interChannelDelayMs,
+            CHANNEL_AUTO_POST_SLOW_INTER_CHANNEL_DELAY_MS,
+          ),
+          maxNewMessagesPerScan: Math.max(
+            1,
+            Math.min(
+              basePlan.maxNewMessagesPerScan,
+              CHANNEL_AUTO_POST_SLOW_MAX_NEW_MESSAGES_PER_SCAN,
+            ),
+          ),
+        };
+      }
+
+      if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+        this.channelAutoPostPausedLogAtMs = now;
+        this.logger.log(
+          {
+            task: 'channel-auto-post-buttons',
+            action: decision.action,
+            reason: decision.reason,
+            retryAfterMs: decision.retryAfterMs,
+          },
+          'Paused moderation background work because the runtime governor detected pressure',
+        );
+      }
+      this.channelAutoPostBackoffUntilMs = Math.max(
+        this.channelAutoPostBackoffUntilMs,
+        now + decision.retryAfterMs,
+      );
+      return null;
+    }
+
+    const mode = await this.resolveSystemModeSnapshot();
+    let pauseReason: string | null = null;
+    if (mode.mode !== 'degrade' || isSystemModeRecoveryWindow(mode)) {
+      pauseReason = await this.resolveBackgroundPressurePauseReason();
+      if (!pauseReason) {
+        return basePlan;
+      }
+    } else {
+      pauseReason = mode.reason;
+    }
+
+    const now = Date.now();
+    if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+      this.channelAutoPostPausedLogAtMs = now;
+      this.logger.log(
+        {
+          task: 'channel-auto-post-buttons',
+          mode: mode.mode,
+          source: mode.source,
+          reason: pauseReason,
+        },
+        'Paused moderation background work because the system is under pressure',
+      );
+    }
+
+    return null;
   }
 
   private async processManualGroupCloseChats(): Promise<void> {
