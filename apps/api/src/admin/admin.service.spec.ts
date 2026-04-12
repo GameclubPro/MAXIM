@@ -5755,6 +5755,57 @@ describe('AdminService.listChannels', () => {
     expect(chatContextCache.setManagedEntityHeader).not.toHaveBeenCalled();
   });
 
+  it('persists a presentable remote managed-entity title while priming headers', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).primeManagedEntityHeaders(
+      [
+        createChatSummaryFixture({
+          id: 'chat-1',
+          title: 'Chat chat-1',
+          createdAt: '2026-04-05T00:20:07.272Z',
+          entityType: 'chat',
+          primaryBotId: 'id613002203036_bot',
+        }),
+      ],
+      [
+        {
+          chatId: 'chat-1',
+          title: 'Продукция для общепита | РФ',
+          entityType: 'chat',
+          link: 'https://max.ru/chat-1',
+          avatarUrl: 'https://i.oneme.ru/chat-1.webp',
+          lastEventTime: 1,
+        },
+      ],
+    );
+
+    expect(prisma.chat.update).toHaveBeenCalledWith({
+      where: { id: 'chat-1' },
+      data: { title: 'Продукция для общепита | РФ' },
+    });
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'chat-1',
+        title: 'Продукция для общепита | РФ',
+        entityType: 'chat',
+        link: 'https://max.ru/chat-1',
+        participantsCount: null,
+        avatarUrl: 'https://i.oneme.ru/chat-1.webp',
+        primaryBotId: 'id613002203036_bot',
+      }),
+    );
+  });
+
   it('revalidates cached channels during refresh and checks admin for current scan window candidates', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([

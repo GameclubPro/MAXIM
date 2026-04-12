@@ -20670,15 +20670,35 @@ export class AdminService implements OnModuleDestroy {
           return;
         }
 
-        const title =
-          this.resolvePresentableManagedEntityTitle(chat.id, remoteChat.title, chat.title) ??
-          chat.title;
+        const presentableTitle = this.resolvePresentableManagedEntityTitle(
+          chat.id,
+          remoteChat.title,
+          chat.title,
+        );
+        const title = presentableTitle ?? chat.title;
         const link = remoteChat.link ?? chat.link ?? null;
         const avatarUrl =
           this.readTrimmedString(remoteChat.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl);
 
         if (link === null && avatarUrl === null && title === chat.title) {
           return;
+        }
+
+        if (presentableTitle && presentableTitle !== chat.title) {
+          try {
+            await this.prisma.chat.update({
+              where: { id: chat.id },
+              data: { title: presentableTitle },
+            });
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: chat.id,
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to persist discovered managed entity title',
+            );
+          }
         }
 
         await this.chatContextCache.setManagedEntityHeader(
