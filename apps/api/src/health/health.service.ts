@@ -222,7 +222,7 @@ export class HealthService implements OnModuleDestroy {
                     windowSec: maxApiSnapshot.windowSec,
                     avgRps: maxApiSnapshot.avgRps,
                     peakRps: maxApiSnapshot.peakRps,
-                    load: maxApiSnapshot.peakLoad,
+                    load: maxApiSnapshot.smoothedLoad,
                   },
                 }
               : {}),

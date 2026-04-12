@@ -25,6 +25,7 @@ export type MaxApiBotRateLimitSnapshot = MaxApiTrafficSnapshot & {
   };
   peakLoad: number;
   avgLoad: number;
+  smoothedLoad: number;
 };
 
 type SourceCounterBucket = {
@@ -38,6 +39,7 @@ const DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC = 10 * 60;
 const MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT = 6 * 60 * 60;
 const MAX_API_SOURCE_METRICS_SCAN_COUNT = 500;
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
+const DEFAULT_MAX_API_LOAD_SMOOTHING_SEC = 5;
 const MAX_API_TRAFFIC_CLASSES: readonly MaxApiTrafficClass[] = [
   'critical',
   'interactive',
@@ -397,6 +399,26 @@ export class MaxApiMetricsService implements OnModuleDestroy {
           : 0,
       ),
     );
+    const smoothedLoad = this.normalizeLoad(
+      Math.max(
+        this.computeSmoothedLoad(stats.totalRequests, stats.activeSeconds, limits.globalRps),
+        this.computeSmoothedLoad(
+          stats.trafficClasses.critical.totalRequests,
+          stats.trafficClasses.critical.activeSeconds,
+          limits.criticalRps,
+        ),
+        this.computeSmoothedLoad(
+          stats.trafficClasses.interactive.totalRequests,
+          stats.trafficClasses.interactive.activeSeconds,
+          limits.interactiveRps,
+        ),
+        this.computeSmoothedLoad(
+          stats.trafficClasses.background.totalRequests,
+          stats.trafficClasses.background.activeSeconds,
+          limits.backgroundRps,
+        ),
+      ),
+    );
 
     return {
       windowSec,
@@ -404,6 +426,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       limits,
       peakLoad,
       avgLoad,
+      smoothedLoad,
     };
   }
 
@@ -459,6 +482,19 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     }
 
     return Math.max(0, Math.min(1, Number(value.toFixed(4))));
+  }
+
+  private computeSmoothedLoad(totalRequests: number, activeSeconds: number, limit: number): number {
+    if (limit <= 0 || totalRequests <= 0) {
+      return 0;
+    }
+
+    const smoothingWindowSec = Math.max(
+      DEFAULT_MAX_API_LOAD_SMOOTHING_SEC,
+      Math.max(1, activeSeconds),
+    );
+
+    return totalRequests / smoothingWindowSec / limit;
   }
 
   private readConfigInt(value: unknown, fallback: number, min = 1): number {

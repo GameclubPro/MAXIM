@@ -308,6 +308,7 @@ describe('HealthService', () => {
           },
           peakLoad: 0.6429,
           avgLoad: 0.0143,
+          smoothedLoad: 0.1714,
         },
       }),
     };
@@ -329,7 +330,7 @@ describe('HealthService', () => {
           windowSec: 60,
           avgRps: 0.2,
           peakRps: 9,
-          load: 0.6429,
+          load: 0.1714,
         },
       }),
     );

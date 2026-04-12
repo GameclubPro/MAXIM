@@ -417,6 +417,7 @@ describe('MaxApiMetricsService', () => {
           },
           peakLoad: 0.375,
           avgLoad: 0.0072,
+          smoothedLoad: 0.0867,
         },
         'bot-b': {
           windowSec: expectedWindowSec,
@@ -452,6 +453,7 @@ describe('MaxApiMetricsService', () => {
           },
           peakLoad: 0.25,
           avgLoad: 0.0041,
+          smoothedLoad: 0.05,
         },
       });
 
