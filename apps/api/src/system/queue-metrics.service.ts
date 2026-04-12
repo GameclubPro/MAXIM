@@ -580,6 +580,7 @@ export class QueueMetricsService {
           ORDER BY created_at ASC
           LIMIT 1
         ) AS "oldestCreatedAt"
+      FROM filtered
     `);
     const row = rows[0];
     const count =

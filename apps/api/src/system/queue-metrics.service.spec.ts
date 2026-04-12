@@ -341,6 +341,60 @@ describe('QueueMetricsService', () => {
     }
   });
 
+  it('keeps the raw user-facing webhook metrics query scoped to the filtered CTE rows', async () => {
+    const rawQuery = jest.fn().mockResolvedValue([
+      {
+        count: BigInt(0),
+        activeCount: BigInt(0),
+        oldestEventId: null,
+        oldestCreatedAt: null,
+      },
+    ]);
+    const prisma = {
+      $queryRaw: rawQuery,
+      webhookEvent: {
+        count: jest.fn().mockResolvedValue(0),
+        findFirst: jest.fn().mockResolvedValue(null),
+        groupBy: jest.fn().mockResolvedValue([]),
+      },
+    };
+    const actionHealthService = {
+      refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn().mockReturnValue({
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      }),
+    };
+    const moduleRef = {
+      get: jest.fn(),
+    };
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+    };
+
+    const service = new QueueMetricsService(
+      prisma as never,
+      actionHealthService as never,
+      moduleRef as never,
+      botRegistry as never,
+    );
+
+    await service.getSnapshot();
+
+    const queryTexts = rawQuery.mock.calls.map(([query]) => {
+      const sqlQuery = query as { sql?: string; strings?: readonly string[] };
+      return sqlQuery.sql ?? sqlQuery.strings?.join('') ?? String(query);
+    });
+
+    expect(queryTexts.some((text) => text.includes('FROM filtered'))).toBe(true);
+  });
+
   it('aggregates default worker group counters by dynamic lease actual owner when available', async () => {
     const prisma = {
       webhookEvent: {
