@@ -40,12 +40,18 @@ export type AnyWebhookQueueName = (typeof ALL_WEBHOOK_QUEUE_NAMES)[number];
 export const WEBHOOK_JOB_PRIORITY = {
   callback: 1,
   membershipJoin: 2,
+  manualCloseMessage: 3,
   message: 5,
   membershipLeave: 8,
   default: 6,
 } as const;
 
-export function resolveWebhookJobPriority(payload: unknown): number {
+export function resolveWebhookJobPriority(
+  payload: unknown,
+  options?: {
+    manualCloseMessage?: boolean;
+  },
+): number {
   switch (readWebhookType(payload)) {
     case 'message_callback':
       return WEBHOOK_JOB_PRIORITY.callback;
@@ -54,7 +60,9 @@ export function resolveWebhookJobPriority(payload: unknown): number {
     case 'bot_started':
       return WEBHOOK_JOB_PRIORITY.membershipJoin;
     case 'message_created':
-      return WEBHOOK_JOB_PRIORITY.message;
+      return options?.manualCloseMessage
+        ? WEBHOOK_JOB_PRIORITY.manualCloseMessage
+        : WEBHOOK_JOB_PRIORITY.message;
     case 'user_removed':
     case 'bot_removed':
       return WEBHOOK_JOB_PRIORITY.membershipLeave;

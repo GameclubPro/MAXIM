@@ -40,12 +40,15 @@ function createService(params?: {
     queuedAt?: Date | null;
     normalizedPayload?: unknown;
   }>;
+  manualCloseChatIds?: string[];
   addError?: Error | null;
   criticalJob?: JobMock | null;
   defaultJob?: JobMock | null;
   backgroundJob?: JobMock | null;
   legacyJob?: JobMock | null;
   undefinedJobs?: boolean;
+  configOverrides?: Partial<Record<string, number>>;
+  resolvedQueueName?: string;
 }) {
   const prisma = {
     webhookEvent: {
@@ -61,6 +64,13 @@ function createService(params?: {
       ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    chatSettings: {
+      findMany: jest.fn().mockResolvedValue(
+        (params?.manualCloseChatIds ?? []).map((chatId) => ({
+          chatId,
+        })),
+      ),
     },
     moderationEvent: {
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -111,6 +121,7 @@ function createService(params?: {
     ENQUEUE_MAX_ATTEMPTS: 120,
     WEBHOOK_RETENTION_DAYS: 7,
     MODERATION_RETENTION_DAYS: 90,
+    ...(params?.configOverrides ?? {}),
   };
   const config = {
     get: jest.fn((key: string, fallback?: number) =>
@@ -126,7 +137,9 @@ function createService(params?: {
     legacyQueue,
   };
   const webhookRoutingService = {
-    resolveQueueName: jest.fn(async (_eventId: string, payload: unknown) => resolveWebhookQueueName(payload)),
+    resolveQueueName: jest.fn(async (_eventId: string, payload: unknown) =>
+      params?.resolvedQueueName ?? resolveWebhookQueueName(payload),
+    ),
   };
 
   const service = new WebhookOutboxService(
@@ -419,6 +432,20 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('uses a wider priority selection window than the enqueue batch size', async () => {
+    const { service, prisma } = createService({
+      configOverrides: { ENQUEUE_BATCH_SIZE: 2 },
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(prisma.webhookEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: 6,
+      }),
+    );
+  });
+
   it('enqueues high-priority membership joins before older message_created events', async () => {
     const joinChatId = '-72826040868309';
     const joinQueueName = resolveJoinWebhookQueueNameForChatId(joinChatId);
@@ -447,6 +474,46 @@ describe('WebhookOutboxService', () => {
     expect(
       queues['moderation-default-0'].add.mock.calls.map((call) => call[1].webhookEventId),
     ).toEqual(['evt-message']);
+  });
+
+  it('prioritizes manual-close messages ahead of older regular messages', async () => {
+    const { service, queues } = createService({
+      configOverrides: { ENQUEUE_BATCH_SIZE: 1 },
+      resolvedQueueName: 'moderation-default-0',
+      manualCloseChatIds: ['chat-manual'],
+      findManyResult: [
+        {
+          id: 'evt-regular-message',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-24T00:00:00.000Z'),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'chat-regular' },
+          },
+        },
+        {
+          id: 'evt-manual-close-message',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-24T00:00:01.000Z'),
+          normalizedPayload: {
+            type: 'message_created',
+            message: { chatId: 'chat-manual' },
+          },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues['moderation-default-0'].add).toHaveBeenCalledTimes(1);
+    expect(queues['moderation-default-0'].add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-manual-close-message' },
+      expect.objectContaining({
+        jobId: 'evt-manual-close-message',
+        priority: 3,
+      }),
+    );
   });
 
   it('routes membership leave events into the background queue', async () => {

@@ -10,6 +10,8 @@ import {
   ALL_WEBHOOK_QUEUE_NAMES,
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   type DefaultWebhookQueueName,
+  extractWebhookChatId,
+  extractWebhookType,
   JOIN_WEBHOOK_QUEUE_NAMES,
   type JoinWebhookQueueName,
   LEGACY_WEBHOOK_QUEUE,
@@ -24,6 +26,10 @@ import { WebhookRoutingService } from './webhook-routing.service';
 const ANY_WEBHOOK_QUEUE_NAMES = new Set<string>(ALL_WEBHOOK_QUEUE_NAMES);
 const USER_FACING_STALE_QUEUED_REPAIR_MS = 20_000;
 const BACKGROUND_STALE_QUEUED_REPAIR_MS = 120_000;
+const PRIORITY_SELECTION_WINDOW_MULTIPLIER = 3;
+const MAX_PRIORITY_SELECTION_WINDOW = 1_000;
+const MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS = 5_000;
+const MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD = 4_096;
 
 type WebhookEnqueueCandidate = {
   id: string;
@@ -34,6 +40,15 @@ type WebhookEnqueueCandidate = {
   createdAt: Date;
   queuedAt: Date | null;
   normalizedPayload: unknown;
+};
+
+type PrioritizedWebhookEnqueueCandidate = WebhookEnqueueCandidate & {
+  priority: number;
+};
+
+type ManualClosePriorityCacheEntry = {
+  prioritized: boolean;
+  expiresAtMs: number;
 };
 
 @Injectable()
@@ -57,6 +72,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     DefaultWebhookQueueName,
     Queue<ProcessWebhookJob>
   >;
+  private readonly manualClosePriorityCache = new Map<string, ManualClosePriorityCacheEntry>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -176,7 +192,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         ],
       },
       orderBy: { createdAt: 'asc' },
-      take: this.batchSize,
+      take: this.resolvePrioritySelectionWindowSize(),
       select: {
         id: true,
         status: true,
@@ -189,20 +205,135 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const prioritizedCandidates = candidates
-      .filter((candidate) => this.shouldEnqueueCandidate(candidate, now))
-      .sort((left, right) => {
-      const priorityDiff =
-        resolveWebhookJobPriority(left.normalizedPayload) -
-        resolveWebhookJobPriority(right.normalizedPayload);
-      if (priorityDiff !== 0) {
-        return priorityDiff;
-      }
-
-      return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+    const prioritizedCandidates = await this.prioritizeCandidates(candidates, now);
 
     await this.enqueueCandidates(prioritizedCandidates);
+  }
+
+  private resolvePrioritySelectionWindowSize(): number {
+    return Math.max(
+      this.batchSize,
+      Math.min(this.batchSize * PRIORITY_SELECTION_WINDOW_MULTIPLIER, MAX_PRIORITY_SELECTION_WINDOW),
+    );
+  }
+
+  private async prioritizeCandidates(
+    candidates: WebhookEnqueueCandidate[],
+    now: Date,
+  ): Promise<PrioritizedWebhookEnqueueCandidate[]> {
+    const enqueueableCandidates = candidates.filter((candidate) =>
+      this.shouldEnqueueCandidate(candidate, now),
+    );
+    if (enqueueableCandidates.length === 0) {
+      return [];
+    }
+
+    const manualCloseChatIds = await this.resolveManualClosePriorityChatIds(
+      enqueueableCandidates,
+      now,
+    );
+
+    return enqueueableCandidates
+      .map((candidate) => ({
+        ...candidate,
+        priority: this.resolveCandidatePriority(candidate, manualCloseChatIds),
+      }))
+      .sort((left, right) => {
+        const priorityDiff = left.priority - right.priority;
+        if (priorityDiff !== 0) {
+          return priorityDiff;
+        }
+
+        return left.createdAt.getTime() - right.createdAt.getTime();
+      })
+      .slice(0, this.batchSize);
+  }
+
+  private resolveCandidatePriority(
+    candidate: WebhookEnqueueCandidate,
+    manualCloseChatIds: ReadonlySet<string>,
+  ): number {
+    const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+    return resolveWebhookJobPriority(candidate.normalizedPayload, {
+      manualCloseMessage: chatId !== null && manualCloseChatIds.has(chatId),
+    });
+  }
+
+  private extractPriorityChatId(payload: unknown): string | null {
+    if (extractWebhookType(payload) !== 'message_created') {
+      return null;
+    }
+
+    const chatId = extractWebhookChatId(payload);
+    return chatId.length > 0 ? chatId : null;
+  }
+
+  private async resolveManualClosePriorityChatIds(
+    candidates: WebhookEnqueueCandidate[],
+    now: Date,
+  ): Promise<Set<string>> {
+    const nowMs = now.getTime();
+    this.pruneManualClosePriorityCache(nowMs);
+
+    const prioritizedChatIds = new Set<string>();
+    const uncachedChatIds = new Set<string>();
+
+    for (const candidate of candidates) {
+      const chatId = this.extractPriorityChatId(candidate.normalizedPayload);
+      if (!chatId) {
+        continue;
+      }
+
+      const cached = this.manualClosePriorityCache.get(chatId);
+      if (cached && cached.expiresAtMs > nowMs) {
+        if (cached.prioritized) {
+          prioritizedChatIds.add(chatId);
+        }
+        continue;
+      }
+
+      this.manualClosePriorityCache.delete(chatId);
+      uncachedChatIds.add(chatId);
+    }
+
+    if (uncachedChatIds.size === 0) {
+      return prioritizedChatIds;
+    }
+
+    const activeManualCloseChats = await this.prisma.chatSettings.findMany({
+      where: {
+        chatId: { in: Array.from(uncachedChatIds) },
+        nightModeForceCloseEnabled: true,
+      },
+      select: {
+        chatId: true,
+      },
+    });
+
+    const activeManualCloseChatIds = new Set(activeManualCloseChats.map((row) => row.chatId));
+    const expiresAtMs = nowMs + MANUAL_CLOSE_PRIORITY_CACHE_TTL_MS;
+
+    for (const chatId of uncachedChatIds) {
+      const prioritized = activeManualCloseChatIds.has(chatId);
+      this.manualClosePriorityCache.set(chatId, { prioritized, expiresAtMs });
+      if (prioritized) {
+        prioritizedChatIds.add(chatId);
+      }
+    }
+
+    return prioritizedChatIds;
+  }
+
+  private pruneManualClosePriorityCache(nowMs: number) {
+    if (this.manualClosePriorityCache.size < MANUAL_CLOSE_PRIORITY_CACHE_PRUNE_THRESHOLD) {
+      return;
+    }
+
+    for (const [chatId, entry] of this.manualClosePriorityCache) {
+      if (entry.expiresAtMs <= nowMs) {
+        this.manualClosePriorityCache.delete(chatId);
+      }
+    }
   }
 
   private shouldEnqueueCandidate(candidate: WebhookEnqueueCandidate, now: Date): boolean {
@@ -226,7 +357,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return USER_FACING_STALE_QUEUED_REPAIR_MS;
   }
 
-  private async enqueueCandidates(candidates: WebhookEnqueueCandidate[]) {
+  private async enqueueCandidates(candidates: PrioritizedWebhookEnqueueCandidate[]) {
     if (candidates.length === 0) {
       return;
     }
@@ -257,7 +388,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
             : queueName;
         await this.enqueueOne(
           event,
-          resolveWebhookJobPriority(event.normalizedPayload),
+          event.priority,
           targetQueueName,
         );
       }
