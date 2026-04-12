@@ -123,10 +123,13 @@ import {
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
 import {
-  NIGHT_SECTION_SETTING_KEYS,
+  COMMENTS_SETTING_KEYS,
+  SECTION_SETTING_KEYS,
+  type ApplySectionKey,
   applyNightModeBotMessageEnabledChange,
   applyNightModeEnabledChange,
-  mergeNightSectionSettings,
+  mergeCommentsSettings,
+  mergeSectionSettings,
 } from './settings-page-state';
 import {
   buildRulesTextFromSettingsScreen,
@@ -521,25 +524,12 @@ type BotMessageEditorKey =
   | 'nightOpen';
 type WarnMessageEditorKey = 'linkWarn' | 'requiredSubscriptionWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
-  | 'links'
+  | ApplySectionKey
   | 'rules'
   | 'poll'
   | 'giveaway'
-  | 'greeting'
-  | 'profanityFilter'
-  | 'commercialFilter'
-  | 'thematicFilters'
-  | 'duplicates'
-  | 'limits'
-  | 'night'
-  | 'requiredSubscription'
   | 'comments'
-  | 'mailing'
-  | 'extra';
-type ApplySectionKey = Exclude<
-  SettingsSectionKey,
-  'comments' | 'mailing' | 'rules' | 'poll' | 'giveaway'
->;
+  | 'mailing';
 
 const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -571,136 +561,6 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   requiredSubscription: 'Подписка на канал',
   extra: 'Сервис',
 };
-
-const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
-  links: [
-    'linkPolicy',
-    'linkBotMessageEnabled',
-    'linkBotMessageText',
-    'linkWarnEnabled',
-    'linkWarnMessageText',
-    'linkMuteEnabled',
-    'linkMuteDurationHours',
-    'linkBanEnabled',
-    'linkBotButtonEnabled',
-    'linkBotButtonUrl',
-    'linkBotButtonText',
-  ],
-  greeting: [
-    'greetingEnabled',
-    'greetingBotMessageEnabled',
-    'greetingDeleteBotMessageEnabled',
-    'greetingDeleteBotMessageDelayMinutes',
-    'greetingBotMessageText',
-    'greetingBotButtonEnabled',
-    'greetingBotButtonUrl',
-    'greetingBotButtonText',
-    'greetingRulesButtonEnabled',
-  ],
-  profanityFilter: [
-    'russianProfanityFilterEnabled',
-    'profanityBotMessageEnabled',
-    'profanityWarnEnabled',
-    'profanityMuteEnabled',
-    'profanityMuteDurationHours',
-    'profanityBanEnabled',
-  ],
-  commercialFilter: [
-    'commercialAdsFilterEnabled',
-    'commercialAdsSensitivity',
-    'commercialAdsWarnThreshold',
-    'commercialAdsDeleteThreshold',
-    'textFiltersBotMessageEnabled',
-    'textFiltersBotMessageText',
-    'textFiltersWarnEnabled',
-    'textFiltersWarnMessageText',
-    'textFiltersMuteEnabled',
-    'textFiltersMuteDurationHours',
-    'textFiltersBanEnabled',
-    'textFiltersBotButtonEnabled',
-    'textFiltersBotButtonUrl',
-    'textFiltersBotButtonText',
-  ],
-  thematicFilters: [
-    'thematicCodewordEnabled',
-    'thematicCodeword',
-    'thematicFiltersBotMessageEnabled',
-    'thematicFiltersWarnEnabled',
-    'thematicFiltersMuteEnabled',
-    'thematicFiltersMuteDurationHours',
-    'thematicFiltersBanEnabled',
-    'thematicFiltersBotButtonEnabled',
-    'thematicFiltersBotButtonUrl',
-    'thematicFiltersBotButtonText',
-  ],
-  duplicates: [
-    'antiDuplicateEnabled',
-    'duplicateWarnEnabled',
-    'duplicateMuteEnabled',
-    'duplicateBanEnabled',
-    'duplicateWarnWindowSec',
-    'duplicateWarnMaxCount',
-    'duplicateMuteWindowSec',
-    'duplicateMuteMaxCount',
-    'duplicateMuteDurationHours',
-    'duplicateBanWindowSec',
-    'duplicateBanMaxCount',
-    'duplicateBotMessageEnabled',
-    'duplicateBotMessageText',
-    'duplicateBotButtonEnabled',
-    'duplicateBotButtonUrl',
-    'duplicateBotButtonText',
-  ],
-  limits: [
-    'antiSpamEnabled',
-    'messageCountLimitEnabled',
-    'messageCountLimitMessages',
-    'messageCountLimitWindowHours',
-    'maxMessageLengthEnabled',
-    'maxMessageLength',
-    'photoMessageCooldownEnabled',
-    'photoMessageCooldownHours',
-    'stickerMessageCooldownEnabled',
-    'stickerMessageCooldownMinutes',
-    'videoMessagesEnabled',
-    'fileMessagesEnabled',
-    'voiceMessagesEnabled',
-    'messageLimitsBlockedWords',
-    'messageLimitsBotMessageEnabled',
-    'messageLimitsBotMessageText',
-    'messageLimitsWarnEnabled',
-    'messageLimitsBanEnabled',
-    'messageLimitsMuteEnabled',
-    'messageLimitsMuteDurationHours',
-    'messageLimitsBotButtonEnabled',
-    'messageLimitsBotButtonUrl',
-    'messageLimitsBotButtonText',
-  ],
-  night: [...NIGHT_SECTION_SETTING_KEYS],
-  requiredSubscription: [
-    'requiredSubscriptionEnabled',
-    'requiredSubscriptionChannelIds',
-    'requiredSubscriptionBotMessageEnabled',
-    'requiredSubscriptionBotMessageText',
-    'requiredSubscriptionWarnEnabled',
-    'requiredSubscriptionWarnMessageText',
-    'requiredSubscriptionMuteEnabled',
-    'requiredSubscriptionMuteDurationHours',
-    'requiredSubscriptionBanEnabled',
-  ],
-  extra: [
-    'deleteSpammersEnabled',
-    'deleteBotMessagesEnabled',
-    'deleteBotMessagesDelayMinutes',
-    'removeBotsFromGroupEnabled',
-  ],
-};
-
-const COMMENTS_SETTING_KEYS = [
-  'commentsEnabled',
-  'commentsAdminsEnabled',
-  'commentsChatBroadcastsEnabled',
-] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 function resolveDuplicateSharedWindowSec(
   settings: Pick<
@@ -1657,43 +1517,6 @@ function normalizeLegacyChatCommentScope(settings: ChatSettings): ChatSettings {
     ...settings,
     commentsAllEnabled: false,
   };
-}
-
-function mergeSectionSettings(
-  targetSettings: ChatSettings,
-  sourceSettings: ChatSettings,
-  section: ApplySectionKey,
-): ChatSettings {
-  if (section === 'night') {
-    return mergeNightSectionSettings(targetSettings, sourceSettings);
-  }
-
-  const nextSettings = { ...targetSettings } as ChatSettings;
-  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
-  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
-
-  for (const key of SECTION_SETTING_KEYS[section]) {
-    nextRecord[key] = sourceRecord[key];
-  }
-
-  return nextSettings;
-}
-
-function mergeCommentsSettings(
-  targetSettings: ChatSettings,
-  sourceSettings: ChatSettings,
-): ChatSettings {
-  const nextSettings = { ...targetSettings } as ChatSettings;
-  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
-  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
-
-  for (const key of COMMENTS_SETTING_KEYS) {
-    nextRecord[key] = sourceRecord[key];
-  }
-
-  nextSettings.commentsAllEnabled = false;
-
-  return nextSettings;
 }
 
 function formatRequiredSubscriptionCount(count: number): string {

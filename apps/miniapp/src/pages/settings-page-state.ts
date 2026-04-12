@@ -1,5 +1,17 @@
 import type { ChatSettings } from '@maxim/contracts';
 
+export type ApplySectionKey =
+  | 'links'
+  | 'greeting'
+  | 'profanityFilter'
+  | 'commercialFilter'
+  | 'thematicFilters'
+  | 'duplicates'
+  | 'limits'
+  | 'night'
+  | 'requiredSubscription'
+  | 'extra';
+
 export const NIGHT_SECTION_SETTING_KEYS = [
   'nightModeEnabled',
   'nightModeStartTimeMinutes',
@@ -10,6 +22,7 @@ export const NIGHT_SECTION_SETTING_KEYS = [
   'nightModeCommentsEnabled',
   'nightModeOpenMessageEnabled',
   'nightModeOpenMessageText',
+  'nightModeBotButtons',
   'nightModeBotButtonEnabled',
   'nightModeBotButtonUrl',
   'nightModeBotButtonText',
@@ -19,6 +32,142 @@ export const NIGHT_SECTION_SETTING_KEYS = [
   'nightModeForceCloseHours',
   'nightModeForceCloseDays',
   'nightModeForceCloseUntil',
+] as const satisfies ReadonlyArray<keyof ChatSettings>;
+
+export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
+  links: [
+    'linkPolicy',
+    'linkBotMessageEnabled',
+    'linkBotMessageText',
+    'linkWarnEnabled',
+    'linkWarnMessageText',
+    'linkMuteEnabled',
+    'linkMuteDurationHours',
+    'linkBanEnabled',
+    'linkBotButtons',
+    'linkBotButtonEnabled',
+    'linkBotButtonUrl',
+    'linkBotButtonText',
+  ],
+  greeting: [
+    'greetingEnabled',
+    'greetingBotMessageEnabled',
+    'greetingDeleteBotMessageEnabled',
+    'greetingDeleteBotMessageDelayMinutes',
+    'greetingBotMessageText',
+    'greetingBotButtons',
+    'greetingBotButtonEnabled',
+    'greetingBotButtonUrl',
+    'greetingBotButtonText',
+    'greetingRulesButtonEnabled',
+  ],
+  profanityFilter: [
+    'russianProfanityFilterEnabled',
+    'profanityBotMessageEnabled',
+    'profanityWarnEnabled',
+    'profanityMuteEnabled',
+    'profanityMuteDurationHours',
+    'profanityBanEnabled',
+  ],
+  commercialFilter: [
+    'commercialAdsFilterEnabled',
+    'commercialAdsSensitivity',
+    'commercialAdsWarnThreshold',
+    'commercialAdsDeleteThreshold',
+    'textFiltersBotMessageEnabled',
+    'textFiltersBotMessageText',
+    'textFiltersWarnEnabled',
+    'textFiltersWarnMessageText',
+    'textFiltersMuteEnabled',
+    'textFiltersMuteDurationHours',
+    'textFiltersBanEnabled',
+    'textFiltersBotButtons',
+    'textFiltersBotButtonEnabled',
+    'textFiltersBotButtonUrl',
+    'textFiltersBotButtonText',
+  ],
+  thematicFilters: [
+    'thematicCodewordEnabled',
+    'thematicCodeword',
+    'thematicFiltersBotMessageEnabled',
+    'thematicFiltersWarnEnabled',
+    'thematicFiltersMuteEnabled',
+    'thematicFiltersMuteDurationHours',
+    'thematicFiltersBanEnabled',
+    'thematicFiltersBotButtons',
+    'thematicFiltersBotButtonEnabled',
+    'thematicFiltersBotButtonUrl',
+    'thematicFiltersBotButtonText',
+  ],
+  duplicates: [
+    'antiDuplicateEnabled',
+    'duplicateWarnEnabled',
+    'duplicateMuteEnabled',
+    'duplicateBanEnabled',
+    'duplicateWarnWindowSec',
+    'duplicateWarnMaxCount',
+    'duplicateMuteWindowSec',
+    'duplicateMuteMaxCount',
+    'duplicateMuteDurationHours',
+    'duplicateBanWindowSec',
+    'duplicateBanMaxCount',
+    'duplicateBotMessageEnabled',
+    'duplicateBotMessageText',
+    'duplicateBotButtons',
+    'duplicateBotButtonEnabled',
+    'duplicateBotButtonUrl',
+    'duplicateBotButtonText',
+  ],
+  limits: [
+    'antiSpamEnabled',
+    'messageCountLimitEnabled',
+    'messageCountLimitMessages',
+    'messageCountLimitWindowHours',
+    'maxMessageLengthEnabled',
+    'maxMessageLength',
+    'photoMessageCooldownEnabled',
+    'photoMessageCooldownHours',
+    'stickerMessageCooldownEnabled',
+    'stickerMessageCooldownMinutes',
+    'videoMessagesEnabled',
+    'fileMessagesEnabled',
+    'voiceMessagesEnabled',
+    'messageLimitsBlockedWords',
+    'messageLimitsBotMessageEnabled',
+    'messageLimitsBotMessageText',
+    'messageLimitsWarnEnabled',
+    'messageLimitsBanEnabled',
+    'messageLimitsMuteEnabled',
+    'messageLimitsMuteDurationHours',
+    'messageLimitsBotButtons',
+    'messageLimitsBotButtonEnabled',
+    'messageLimitsBotButtonUrl',
+    'messageLimitsBotButtonText',
+  ],
+  night: [...NIGHT_SECTION_SETTING_KEYS],
+  requiredSubscription: [
+    'requiredSubscriptionEnabled',
+    'requiredSubscriptionChannelIds',
+    'requiredSubscriptionBotMessageEnabled',
+    'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionWarnEnabled',
+    'requiredSubscriptionWarnMessageText',
+    'requiredSubscriptionMuteEnabled',
+    'requiredSubscriptionMuteDurationHours',
+    'requiredSubscriptionBanEnabled',
+  ],
+  extra: [
+    'deleteSpammersEnabled',
+    'deleteBotMessagesEnabled',
+    'deleteBotMessagesDelayMinutes',
+    'removeBotsFromGroupEnabled',
+  ],
+};
+
+export const COMMENTS_SETTING_KEYS = [
+  'commentsEnabled',
+  'commentsAdminsEnabled',
+  'commentsChatBroadcastsEnabled',
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 export function applyNightModeEnabledChange(
@@ -74,6 +223,43 @@ export function mergeNightSectionSettings(
   for (const key of NIGHT_SECTION_SETTING_KEYS) {
     nextRecord[key] = sourceRecord[key];
   }
+
+  return nextSettings;
+}
+
+export function mergeSectionSettings(
+  targetSettings: ChatSettings,
+  sourceSettings: ChatSettings,
+  section: ApplySectionKey,
+): ChatSettings {
+  if (section === 'night') {
+    return mergeNightSectionSettings(targetSettings, sourceSettings);
+  }
+
+  const nextSettings = { ...targetSettings } as ChatSettings;
+  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
+  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
+
+  for (const key of SECTION_SETTING_KEYS[section]) {
+    nextRecord[key] = sourceRecord[key];
+  }
+
+  return nextSettings;
+}
+
+export function mergeCommentsSettings(
+  targetSettings: ChatSettings,
+  sourceSettings: ChatSettings,
+): ChatSettings {
+  const nextSettings = { ...targetSettings } as ChatSettings;
+  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
+  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
+
+  for (const key of COMMENTS_SETTING_KEYS) {
+    nextRecord[key] = sourceRecord[key];
+  }
+
+  nextSettings.commentsAllEnabled = false;
 
   return nextSettings;
 }
