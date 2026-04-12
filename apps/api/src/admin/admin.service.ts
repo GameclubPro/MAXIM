@@ -451,9 +451,10 @@ const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 220;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 320;
-const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 10;
+const MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE = 6;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 40;
-const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 20;
+const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 10;
+const MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE = 6;
 const MANAGED_ENTITIES_LOCAL_REFRESH_SCAN_WINDOW_SIZE = 8;
 const MANAGED_ENTITIES_ALLOWLIST_CACHE_TTL_MS = 2_000;
 const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
@@ -477,7 +478,7 @@ const MANAGED_ENTITIES_REFRESH_SNAPSHOT_TTL_SEC = 5 * 60;
 const MANAGED_ENTITIES_REFRESH_LAST_SYNCED_TTL_SEC = 30 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_DIFF_MAX_CHANGE_RATIO = 0.3;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
-const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
+const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 45_000;
 const MANAGED_ENTITIES_MANUAL_REFRESH_RECENT_SYNC_WINDOW_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_FRESHNESS_WINDOW_MS = 10 * 60_000;
@@ -5268,7 +5269,7 @@ export class AdminService implements OnModuleDestroy {
 
     const syncCandidates =
       trafficClass === 'background'
-        ? chats
+        ? chats.slice(0, MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE)
         : chats.slice(0, MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE);
     if (syncCandidates.length === 0) {
       return;
@@ -20125,14 +20126,14 @@ export class AdminService implements OnModuleDestroy {
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
         allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
-      if (this.shouldIgnoreManagedEntitiesQueueLagPause(decision, options)) {
+      if (this.shouldIgnoreManagedEntitiesQueueLagThrottleDecision(decision, options)) {
         return null;
       }
-      if (!decision || decision.action !== 'pause') {
+      if (!decision || decision.action === 'run') {
         return null;
       }
 
-      return this.logManagedEntitiesBackgroundPauseDecision(reason, decision);
+      return this.logManagedEntitiesBackgroundThrottleDecision(reason, decision);
     }
 
     const systemModeService = this.systemModeService as
@@ -20164,14 +20165,14 @@ export class AdminService implements OnModuleDestroy {
         allowRecoveryWindowRun: options.allowRecoveryWindowRun === true,
         allowQueueLagSlowPathBelowSec: options.allowQueueLagSlowPathBelowSec,
       });
-      if (this.shouldIgnoreManagedEntitiesQueueLagPause(decision, options)) {
+      if (this.shouldIgnoreManagedEntitiesQueueLagThrottleDecision(decision, options)) {
         return null;
       }
-      if (decision.action !== 'pause') {
+      if (decision.action === 'run') {
         return null;
       }
 
-      return this.logManagedEntitiesBackgroundPauseDecision(reason, decision);
+      return this.logManagedEntitiesBackgroundThrottleDecision(reason, decision);
     }
 
     const snapshot = await this.resolveSystemModeSnapshot();
@@ -20182,7 +20183,7 @@ export class AdminService implements OnModuleDestroy {
     return this.logManagedEntitiesSystemModePauseDecision(reason, snapshot);
   }
 
-  private logManagedEntitiesBackgroundPauseDecision(
+  private logManagedEntitiesBackgroundThrottleDecision(
     reason: 'schedule' | 'job',
     decision: {
       action: 'run' | 'slow' | 'pause';
@@ -20203,7 +20204,7 @@ export class AdminService implements OnModuleDestroy {
           details: decision.reason,
           retryAfterMs: decision.retryAfterMs,
         },
-        'Paused managed entities background refresh because the runtime governor detected pressure',
+        'Throttled managed entities background refresh because the runtime governor detected pressure',
       );
     }
 
@@ -20269,7 +20270,7 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private shouldIgnoreManagedEntitiesQueueLagPause(
+  private shouldIgnoreManagedEntitiesQueueLagThrottleDecision(
     decision:
       | {
           action: 'run' | 'slow' | 'pause';
@@ -20284,7 +20285,7 @@ export class AdminService implements OnModuleDestroy {
   ): boolean {
     if (
       !decision ||
-      decision.action !== 'pause' ||
+      decision.action === 'run' ||
       typeof options.allowQueueLagSlowPathBelowSec !== 'number' ||
       !Number.isFinite(options.allowQueueLagSlowPathBelowSec)
     ) {

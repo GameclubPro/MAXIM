@@ -20,11 +20,14 @@ import {
 const CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS = 2_500;
 const CHAT_ADMIN_ROSTER_SYNC_FAST_LANE_TIMEOUT_MS = 1_500;
 const CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE = 'background';
-const CHAT_ADMIN_ROSTER_SCHEDULE_CONCURRENCY = 8;
+const CHAT_ADMIN_ROSTER_DISCOVERY_SCHEDULE_CONCURRENCY = 4;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 20;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS = 2_000;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS = 6;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS = 3_000;
 const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY = 1;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY = 2;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC = 7 * 24 * 60 * 60;
 const MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_PATCH_CONCURRENCY = 8;
 
@@ -50,14 +53,17 @@ export class MaxChatAdminRosterSyncService {
   ) {}
 
   async scheduleDiscoverySnapshotSync(chats: readonly MaxBotChat[]): Promise<void> {
-    await this.mapWithConcurrencyLimit([...chats], CHAT_ADMIN_ROSTER_SCHEDULE_CONCURRENCY, async (chat) =>
-      this.scheduleChatAdminRosterSync({
-        chatId: chat.chatId,
-        botIds: chat.botIds ?? (chat.botId ? [chat.botId] : []),
-        title: chat.title,
-        entityType: chat.entityType,
-        source: 'discovery_snapshot',
-      }),
+    await this.mapWithConcurrencyLimit(
+      [...chats],
+      CHAT_ADMIN_ROSTER_DISCOVERY_SCHEDULE_CONCURRENCY,
+      async (chat) =>
+        this.scheduleChatAdminRosterSync({
+          chatId: chat.chatId,
+          botIds: chat.botIds ?? (chat.botId ? [chat.botId] : []),
+          title: chat.title,
+          entityType: chat.entityType,
+          source: 'discovery_snapshot',
+        }),
     );
   }
 
@@ -94,26 +100,11 @@ export class MaxChatAdminRosterSyncService {
 
       await this.queue.add('sync-chat-admin-roster', desiredJobData, {
         jobId,
-        attempts:
-          desiredJobData.source === 'webhook_bot_added'
-            ? CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS
-            : 5,
-        priority:
-          desiredJobData.source === 'webhook_bot_added'
-            ? CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY
-            : CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY,
+        attempts: this.resolveJobAttempts(desiredJobData),
+        priority: this.resolveJobPriority(desiredJobData),
         removeOnComplete: true,
         removeOnFail: false,
-        backoff:
-          desiredJobData.source === 'webhook_bot_added'
-            ? {
-                type: 'fixed',
-                delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS,
-              }
-            : {
-                type: 'exponential',
-                delay: 1_000,
-              },
+        backoff: this.resolveJobBackoff(desiredJobData),
       });
       return true;
     } catch (error: unknown) {
@@ -312,6 +303,7 @@ export class MaxChatAdminRosterSyncService {
       params?.source === 'webhook_bot_added' ||
       params?.source === 'webhook_bot_removed' ||
       params?.source === 'webhook_chat_title_changed' ||
+      params?.source === 'webhook_membership_churn' ||
       params?.source === 'discovery_snapshot'
         ? params.source
         : null;
@@ -574,6 +566,59 @@ export class MaxChatAdminRosterSyncService {
     );
   }
 
+  private resolveJobAttempts(job: MaxChatAdminRosterSyncJob): number {
+    if (job.source === 'webhook_bot_added') {
+      return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS;
+    }
+
+    if (job.source === 'webhook_membership_churn') {
+      return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS;
+    }
+
+    return 5;
+  }
+
+  private resolveJobPriority(job: MaxChatAdminRosterSyncJob): number {
+    if (job.source === 'webhook_bot_added') {
+      return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY;
+    }
+
+    if (job.source === 'webhook_membership_churn') {
+      return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY;
+    }
+
+    return CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY;
+  }
+
+  private resolveJobBackoff(job: MaxChatAdminRosterSyncJob):
+    | {
+        type: 'fixed';
+        delay: number;
+      }
+    | {
+        type: 'exponential';
+        delay: number;
+      } {
+    if (job.source === 'webhook_bot_added') {
+      return {
+        type: 'fixed',
+        delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS,
+      };
+    }
+
+    if (job.source === 'webhook_membership_churn') {
+      return {
+        type: 'fixed',
+        delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS,
+      };
+    }
+
+    return {
+      type: 'exponential',
+      delay: 1_000,
+    };
+  }
+
   private buildChatAdminRosterReadOptions(job: MaxChatAdminRosterSyncJob, botId: string): {
     botId: string;
     trafficClass: 'interactive' | 'background';
@@ -581,7 +626,7 @@ export class MaxChatAdminRosterSyncService {
     sourceTag: string;
     timeoutMs: number;
   } {
-    if (job.source === 'webhook_bot_added') {
+    if (job.source === 'webhook_bot_added' || job.source === 'webhook_membership_churn') {
       return {
         botId,
         trafficClass: 'interactive',

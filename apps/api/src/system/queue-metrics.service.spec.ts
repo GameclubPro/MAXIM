@@ -237,6 +237,8 @@ describe('QueueMetricsService', () => {
       failed: {
         count: 2,
         oldestEventId: 'failed-1',
+        activeCount: 2,
+        activeWindowSec: 21600,
       },
     });
     expect(snapshot.actionHealth).toEqual({
@@ -268,6 +270,75 @@ describe('QueueMetricsService', () => {
         },
       }),
     );
+  });
+
+  it('separates active failed webhook events from stale historical tails', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-12T12:00:00.000Z'));
+
+    try {
+      const prisma = {
+        webhookEvent: {
+          count: jest.fn().mockImplementation(async ({ where }: { where: { status: WebhookStatus; createdAt?: { gte: Date } } }) => {
+            if (where.status !== WebhookStatus.FAILED) {
+              return 0;
+            }
+
+            return where.createdAt?.gte ? 1 : 5;
+          }),
+          findFirst: jest.fn().mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
+            if (where.status !== WebhookStatus.FAILED) {
+              return null;
+            }
+
+            return {
+              id: 'failed-oldest',
+              createdAt: new Date('2026-04-12T03:00:00.000Z'),
+            };
+          }),
+          groupBy: jest.fn().mockResolvedValue([]),
+        },
+      };
+      const actionHealthService = {
+        refreshSnapshots: jest.fn().mockResolvedValue(undefined),
+        getSnapshot: jest.fn().mockReturnValue({
+          windowSec: 60,
+          total: 0,
+          success: 0,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        }),
+      };
+      const moduleRef = {
+        get: jest.fn(),
+      };
+      const botRegistry = {
+        getAllBots: jest.fn().mockReturnValue([]),
+        getDefaultBot: jest.fn().mockReturnValue({ id: '777000_bot' }),
+      };
+
+      const service = new QueueMetricsService(
+        prisma as never,
+        actionHealthService as never,
+        moduleRef as never,
+        botRegistry as never,
+      );
+
+      const snapshot = await service.getSnapshot();
+
+      expect(snapshot.webhookEvents.failed).toEqual(
+        expect.objectContaining({
+          count: 5,
+          activeCount: 1,
+          staleCount: 4,
+          activeWindowSec: 21600,
+          oldestEventId: 'failed-oldest',
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('aggregates default worker group counters by dynamic lease actual owner when available', async () => {

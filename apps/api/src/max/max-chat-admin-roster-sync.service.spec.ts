@@ -91,6 +91,36 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('prioritizes webhook membership churn roster sync jobs ahead of discovery sync', async () => {
+    const { service, queue } = createService();
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100122',
+        botIds: ['bot-1'],
+        title: 'Membership churn chat',
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(true);
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'sync-chat-admin-roster',
+      expect.objectContaining({
+        chatId: '-100122',
+        source: 'webhook_membership_churn',
+      }),
+      expect.objectContaining({
+        attempts: 6,
+        priority: 2,
+        backoff: {
+          type: 'fixed',
+          delay: 3_000,
+        },
+      }),
+    );
+  });
+
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     const { service, prisma, maxClient, maxBotLinkService, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);
@@ -245,6 +275,46 @@ describe('MaxChatAdminRosterSyncService', () => {
         trafficClass: 'background',
         actionHealthLane: 'background',
         timeoutMs: 2_500,
+      }),
+    );
+  });
+
+  it('uses the interactive fast lane to prewarm membership churn snapshots', async () => {
+    const { service, maxClient } = createService();
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100128',
+        botIds: ['bot-1'],
+        title: 'Joined chat',
+        entityType: 'chat',
+        source: 'webhook_membership_churn',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100128',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: 1_500,
+      }),
+    );
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-100128',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: 1_500,
       }),
     );
   });

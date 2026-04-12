@@ -177,6 +177,108 @@ describe('SystemDashboardService', () => {
     });
   });
 
+  it('does not raise a failed-webhooks alert for stale historical FAILED tails without recent failures', async () => {
+    const service = new SystemDashboardService(
+      {
+        getSnapshot: jest.fn().mockResolvedValue({
+          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoin: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoinShards: {},
+          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultShards: {},
+          webhookDefaultWorkerGroups: createDefaultWorkerGroups(),
+          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: {
+              count: 141,
+              activeCount: 0,
+              staleCount: 141,
+              activeWindowSec: 21600,
+              oldestEventId: 'evt-stale-1',
+              oldestCreatedAt: null,
+              oldestLagSec: 86400,
+            },
+          },
+          userFacingWebhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: {
+              count: 141,
+              activeCount: 0,
+              staleCount: 141,
+              activeWindowSec: 21600,
+              oldestEventId: 'evt-stale-1',
+              oldestCreatedAt: null,
+              oldestLagSec: 86400,
+            },
+          },
+          actionHealth: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          webhookDynamicLeases: null,
+          bots: {},
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          userFacingOldestQueuedEventId: null,
+          userFacingOldestQueuedCreatedAt: null,
+          userFacingOldestQueuedLagSec: 0,
+          userFacingOldestReceivedEventId: null,
+          userFacingOldestReceivedCreatedAt: null,
+          userFacingOldestReceivedLagSec: 0,
+          userFacingEffectiveLagSec: 0,
+          generatedAt: '2026-03-29T12:00:00.000Z',
+        }),
+      } as never,
+      {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue({
+          mode: 'normal',
+          source: 'auto',
+          reason: 'system healthy',
+          updatedAt: '2026-03-29T12:00:00.000Z',
+          manualMode: null,
+          queueLagSec: 0,
+          action: {
+            windowSec: 60,
+            total: 12,
+            success: 12,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        }),
+      } as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+      {
+        getSnapshot: jest.fn().mockResolvedValue(createWebhookSubscriptionSnapshot()),
+      } as never,
+    );
+
+    await expect(service.getSnapshot()).resolves.toMatchObject({
+      summary: {
+        status: 'healthy',
+        title: 'Бот работает ровно',
+      },
+      alerts: [],
+    });
+  });
+
   it('builds a critical summary with operator guidance during degrade', async () => {
     const service = new SystemDashboardService(
       {

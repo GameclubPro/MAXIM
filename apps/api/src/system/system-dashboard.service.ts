@@ -69,7 +69,9 @@ export class SystemDashboardService {
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
-    const failedCount = queues.webhookEvents.failed.count;
+    const failedCount = this.readActiveFailedCount(queues.webhookEvents.failed);
+    const staleFailedCount = this.readStaleFailedCount(queues.webhookEvents.failed, failedCount);
+    const failedWindowSec = queues.webhookEvents.failed.activeWindowSec ?? null;
     const criticalRate = mode.action.criticalRate;
     const errorRate = mode.action.errorRate;
     const stabilizing = this.isStabilizing(mode, queueLagSec);
@@ -105,7 +107,7 @@ export class SystemDashboardService {
         code: 'failed-webhooks',
         level: critical ? 'critical' : 'warning',
         title: critical ? 'Есть заметный хвост failed webhook' : 'Появились failed webhook',
-        detail: `В статусе FAILED сейчас ${failedCount} событий.`,
+        detail: this.buildFailedWebhookAlertDetail(failedCount, staleFailedCount, failedWindowSec),
         recommendedAction:
           'Посмотрите последние ошибки доставки/обработки и очистите только подтверждённо мёртвые записи.',
       });
@@ -212,7 +214,15 @@ export class SystemDashboardService {
       summary: {
         status,
         title: this.buildSummaryTitle(status, stabilizing),
-        detail: this.buildSummaryDetail(status, mode.reason, queueLagSec, failedCount, stabilizing),
+        detail: this.buildSummaryDetail(
+          status,
+          mode.reason,
+          queueLagSec,
+          failedCount,
+          staleFailedCount,
+          failedWindowSec,
+          stabilizing,
+        ),
         generatedAt: new Date().toISOString(),
         stabilizing,
       },
@@ -281,17 +291,77 @@ export class SystemDashboardService {
     reason: string,
     queueLagSec: number,
     failedCount: number,
+    staleFailedCount: number,
+    failedWindowSec: number | null,
     stabilizing: boolean,
   ): string {
     if (status === 'healthy') {
       return 'Webhook-path чистый, backlog не копится, critical MAX budget не съедается UI-нагрузкой.';
     }
 
+    const failedSummary = this.buildFailedSummary(failedCount, staleFailedCount, failedWindowSec);
     if (stabilizing) {
-      return `Auto-mode ещё держит защитный degrade (${reason}), но backlog уже не растёт. Lag ${queueLagSec.toFixed(1)} сек, failed ${failedCount}.`;
+      return `Auto-mode ещё держит защитный degrade (${reason}), но backlog уже не растёт. Lag ${queueLagSec.toFixed(1)} сек, ${failedSummary}.`;
     }
 
-    return `Причина текущего режима: ${reason}. Lag ${queueLagSec.toFixed(1)} сек, failed ${failedCount}.`;
+    return `Причина текущего режима: ${reason}. Lag ${queueLagSec.toFixed(1)} сек, ${failedSummary}.`;
+  }
+
+  private readActiveFailedCount(metrics: { count: number; activeCount?: number }): number {
+    return metrics.activeCount ?? metrics.count;
+  }
+
+  private readStaleFailedCount(
+    metrics: { count: number; staleCount?: number },
+    activeFailedCount: number,
+  ): number {
+    return metrics.staleCount ?? Math.max(0, metrics.count - activeFailedCount);
+  }
+
+  private buildFailedWebhookAlertDetail(
+    activeFailedCount: number,
+    staleFailedCount: number,
+    windowSec: number | null,
+  ): string {
+    if (!windowSec || windowSec <= 0) {
+      return `В статусе FAILED сейчас ${activeFailedCount} событий.`;
+    }
+
+    const windowLabel = this.formatShortTimeWindow(windowSec);
+    if (staleFailedCount > 0) {
+      return `За ${windowLabel} в статусе FAILED ${activeFailedCount} событий; ещё ${staleFailedCount} старых остаются хвостом.`;
+    }
+
+    return `За ${windowLabel} в статусе FAILED ${activeFailedCount} событий.`;
+  }
+
+  private buildFailedSummary(
+    activeFailedCount: number,
+    staleFailedCount: number,
+    windowSec: number | null,
+  ): string {
+    if (!windowSec || windowSec <= 0) {
+      return `failed ${activeFailedCount}`;
+    }
+
+    const windowLabel = this.formatShortTimeWindow(windowSec);
+    if (staleFailedCount > 0) {
+      return `failed ${activeFailedCount} за ${windowLabel} (+${staleFailedCount} stale)`;
+    }
+
+    return `failed ${activeFailedCount} за ${windowLabel}`;
+  }
+
+  private formatShortTimeWindow(windowSec: number): string {
+    if (windowSec % 3_600 === 0) {
+      return `${windowSec / 3_600} ч.`;
+    }
+
+    if (windowSec % 60 === 0) {
+      return `${windowSec / 60} мин.`;
+    }
+
+    return `${windowSec} сек.`;
   }
 
   private isStabilizing(

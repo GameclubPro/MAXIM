@@ -38,6 +38,9 @@ export type WebhookStatusMetrics = {
   oldestEventId: string | null;
   oldestCreatedAt: string | null;
   oldestLagSec: number;
+  activeCount?: number;
+  staleCount?: number;
+  activeWindowSec?: number;
 };
 
 export type WebhookDefaultWorkerGroupMetrics = {
@@ -167,6 +170,7 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
   oldestCreatedAt: null,
   oldestLagSec: 0,
 };
+const ACTIVE_FAILED_WEBHOOK_WINDOW_SEC = 6 * 60 * 60;
 const USER_FACING_WEBHOOK_TYPES = ['message_created', 'message_callback', 'bot_started', 'bot_added'] as const;
 
 @Injectable()
@@ -530,6 +534,7 @@ export class QueueMetricsService {
     }
 
     const normalizedBotId = typeof botId === 'string' ? botId.trim() : '';
+    const activeFailedCutoff = new Date(Date.now() - ACTIVE_FAILED_WEBHOOK_WINDOW_SEC * 1_000);
     const statusCondition = Prisma.raw(`'${status}'::"WebhookStatus"`);
     const conditions: Prisma.Sql[] = [Prisma.sql`"status" = ${statusCondition}`];
     if (normalizedBotId) {
@@ -546,6 +551,7 @@ export class QueueMetricsService {
     const rows = await this.prisma.$queryRaw<
       Array<{
         count: bigint | number;
+        activeCount?: bigint | number;
         oldestEventId: string | null;
         oldestCreatedAt: Date | null;
       }>
@@ -557,6 +563,11 @@ export class QueueMetricsService {
       )
       SELECT
         COUNT(*)::bigint AS count,
+        ${
+          status === WebhookStatus.FAILED
+            ? Prisma.sql`COUNT(*) FILTER (WHERE created_at >= ${activeFailedCutoff})::bigint AS "activeCount",`
+            : Prisma.sql``
+        }
         (
           SELECT id
           FROM filtered
@@ -577,20 +588,34 @@ export class QueueMetricsService {
         : typeof row?.count === 'number'
           ? row.count
           : 0;
+    const activeCount =
+      status === WebhookStatus.FAILED
+        ? typeof row?.activeCount === 'bigint'
+          ? Number(row.activeCount)
+          : typeof row?.activeCount === 'number'
+            ? row.activeCount
+            : 0
+        : undefined;
 
     if (!row?.oldestCreatedAt) {
-      return {
+      const metrics: WebhookStatusMetrics = {
         ...EMPTY_WEBHOOK_STATUS_METRICS,
         count,
       };
+      return status === WebhookStatus.FAILED
+        ? this.decorateFailedWebhookMetrics(metrics, activeCount ?? 0)
+        : metrics;
     }
 
-    return {
+    const metrics: WebhookStatusMetrics = {
       count,
       oldestEventId: row.oldestEventId ?? null,
       oldestCreatedAt: row.oldestCreatedAt.toISOString(),
       oldestLagSec: Math.max(0, (Date.now() - row.oldestCreatedAt.getTime()) / 1_000),
     };
+    return status === WebhookStatus.FAILED
+      ? this.decorateFailedWebhookMetrics(metrics, activeCount ?? 0)
+      : metrics;
   }
 
   private async buildPerBotSnapshots(
@@ -674,7 +699,8 @@ export class QueueMetricsService {
     botId: string | null,
   ): Promise<WebhookStatusMetrics> {
     const where = this.buildWebhookStatusWhere(status, botId);
-    const [count, oldestEvent] = await Promise.all([
+    const activeFailedCutoff = new Date(Date.now() - ACTIVE_FAILED_WEBHOOK_WINDOW_SEC * 1_000);
+    const [count, oldestEvent, activeCount] = await Promise.all([
       this.prisma.webhookEvent.count({
         where,
       }),
@@ -683,21 +709,53 @@ export class QueueMetricsService {
         orderBy: { createdAt: 'asc' },
         select: { id: true, createdAt: true },
       }),
+      status === WebhookStatus.FAILED
+        ? this.prisma.webhookEvent.count({
+            where: {
+              ...where,
+              createdAt: {
+                gte: activeFailedCutoff,
+              },
+            },
+          })
+        : Promise.resolve(undefined),
     ]);
 
     if (!oldestEvent) {
-      return {
+      const metrics: WebhookStatusMetrics = {
         ...EMPTY_WEBHOOK_STATUS_METRICS,
         count,
       };
+      return status === WebhookStatus.FAILED
+        ? this.decorateFailedWebhookMetrics(metrics, activeCount ?? 0)
+        : metrics;
     }
 
     const oldestLagSec = Math.max(0, (Date.now() - oldestEvent.createdAt.getTime()) / 1_000);
-    return {
+    const metrics: WebhookStatusMetrics = {
       count,
       oldestEventId: oldestEvent.id,
       oldestCreatedAt: oldestEvent.createdAt.toISOString(),
       oldestLagSec,
+    };
+    return status === WebhookStatus.FAILED
+      ? this.decorateFailedWebhookMetrics(metrics, activeCount ?? 0)
+      : metrics;
+  }
+
+  private decorateFailedWebhookMetrics(
+    metrics: WebhookStatusMetrics,
+    activeCount: number,
+  ): WebhookStatusMetrics {
+    return {
+      ...metrics,
+      activeCount,
+      activeWindowSec: ACTIVE_FAILED_WEBHOOK_WINDOW_SEC,
+      ...(metrics.count > activeCount
+        ? {
+            staleCount: Math.max(0, metrics.count - activeCount),
+          }
+        : {}),
     };
   }
 

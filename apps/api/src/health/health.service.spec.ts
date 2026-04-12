@@ -721,6 +721,211 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('reports only active failed events in readiness while keeping stale totals visible', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-12T12:00:00.000Z'));
+    try {
+      const prisma = {
+        $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+      };
+      const queueMetricsService = {
+        getSnapshot: jest.fn().mockResolvedValue({
+          moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoin: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookJoinShards: {},
+          webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookDefaultShards: {},
+          webhookDefaultWorkerGroups: {},
+          webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+          webhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: {
+              count: 5,
+              activeCount: 1,
+              staleCount: 4,
+              activeWindowSec: 21600,
+              oldestEventId: 'failed-1',
+              oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+              oldestLagSec: 32400,
+            },
+          },
+          userFacingWebhookEvents: {
+            received: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            failed: {
+              count: 5,
+              activeCount: 1,
+              staleCount: 4,
+              activeWindowSec: 21600,
+              oldestEventId: 'failed-1',
+              oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+              oldestLagSec: 32400,
+            },
+          },
+          actionHealth: {
+            windowSec: 60,
+            total: 3,
+            success: 3,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+          webhookDynamicLeases: null,
+          bots: {
+            id613002203036_bot: {
+              webhookEvents: {
+                received: {
+                  count: 0,
+                  oldestEventId: null,
+                  oldestCreatedAt: null,
+                  oldestLagSec: 0,
+                },
+                queued: {
+                  count: 0,
+                  oldestEventId: null,
+                  oldestCreatedAt: null,
+                  oldestLagSec: 0,
+                },
+                failed: {
+                  count: 5,
+                  activeCount: 1,
+                  staleCount: 4,
+                  activeWindowSec: 21600,
+                  oldestEventId: 'failed-1',
+                  oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+                  oldestLagSec: 32400,
+                },
+              },
+              userFacingWebhookEvents: {
+                received: {
+                  count: 0,
+                  oldestEventId: null,
+                  oldestCreatedAt: null,
+                  oldestLagSec: 0,
+                },
+                queued: {
+                  count: 0,
+                  oldestEventId: null,
+                  oldestCreatedAt: null,
+                  oldestLagSec: 0,
+                },
+                failed: {
+                  count: 5,
+                  activeCount: 1,
+                  staleCount: 4,
+                  activeWindowSec: 21600,
+                  oldestEventId: 'failed-1',
+                  oldestCreatedAt: '2026-04-12T03:00:00.000Z',
+                  oldestLagSec: 32400,
+                },
+              },
+              queuedByQueue: {},
+              actionHealth: {
+                windowSec: 60,
+                total: 3,
+                success: 3,
+                failure: 0,
+                critical: 0,
+                errorRate: 0,
+                criticalRate: 0,
+              },
+              oldestQueuedEventId: null,
+              oldestQueuedCreatedAt: null,
+              oldestQueuedLagSec: 0,
+              oldestReceivedEventId: null,
+              oldestReceivedCreatedAt: null,
+              oldestReceivedLagSec: 0,
+              effectiveLagSec: 0,
+              userFacingOldestQueuedEventId: null,
+              userFacingOldestQueuedCreatedAt: null,
+              userFacingOldestQueuedLagSec: 0,
+              userFacingOldestReceivedEventId: null,
+              userFacingOldestReceivedCreatedAt: null,
+              userFacingOldestReceivedLagSec: 0,
+              userFacingEffectiveLagSec: 0,
+            },
+          },
+          oldestQueuedEventId: null,
+          oldestQueuedCreatedAt: null,
+          oldestQueuedLagSec: 0,
+          oldestReceivedEventId: null,
+          oldestReceivedCreatedAt: null,
+          oldestReceivedLagSec: 0,
+          effectiveLagSec: 0,
+          userFacingOldestQueuedEventId: null,
+          userFacingOldestQueuedCreatedAt: null,
+          userFacingOldestQueuedLagSec: 0,
+          userFacingOldestReceivedEventId: null,
+          userFacingOldestReceivedCreatedAt: null,
+          userFacingOldestReceivedLagSec: 0,
+          userFacingEffectiveLagSec: 0,
+          generatedAt: '2026-04-12T12:00:00.000Z',
+        }),
+        peekCachedSnapshot: jest.fn().mockReturnValue(null),
+      };
+      const systemModeSnapshot = {
+        mode: 'normal',
+        source: 'auto',
+        reason: 'system healthy',
+        updatedAt: '2026-04-12T12:00:00.000Z',
+        manualMode: null,
+        queueLagSec: 0,
+        action: {
+          windowSec: 60,
+          total: 3,
+          success: 3,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+      };
+      const systemModeService = {
+        getEffectiveSnapshot: jest.fn().mockResolvedValue(systemModeSnapshot),
+        peekCachedSnapshot: jest.fn().mockReturnValue(systemModeSnapshot),
+      };
+
+      const service = new HealthService(
+        prisma as never,
+        queueMetricsService as never,
+        systemModeService as never,
+        createConfigMock() as never,
+      );
+
+      const snapshot = await service.ready();
+
+      expect(snapshot.bots).toEqual({
+        id613002203036_bot: {
+          queueLagSec: 0,
+          rawOk: true,
+          queuedEvents: 0,
+          receivedEvents: 0,
+          failedEvents: 1,
+          failedEventsTotal: 5,
+          staleFailedEvents: 4,
+          failedEventsWindowSec: 21600,
+          action: {
+            windowSec: 60,
+            total: 3,
+            success: 3,
+            failure: 0,
+            critical: 0,
+            errorRate: 0,
+            criticalRate: 0,
+          },
+        },
+      });
+
+      await service.onModuleDestroy();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('serves a recent stale queue snapshot immediately and refreshes metrics in the background', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:12:10.000Z'));

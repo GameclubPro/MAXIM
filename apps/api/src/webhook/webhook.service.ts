@@ -18,10 +18,17 @@ type BotSelfAccessCacheEntry = {
   expiresAtMs: number;
 };
 
+type PersistedBotSelfAccessSnapshot = {
+  canHandleUserFacing: boolean;
+  checkedAtMs: number | null;
+};
+
 const BOT_SELF_ACCESS_CACHE_TTL_MS = 5 * 60 * 1_000;
 const BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS = 60 * 1_000;
 const BOT_SELF_ACCESS_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
+const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
+const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
@@ -30,6 +37,16 @@ const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'bot_added',
 ]);
 const MEMBERSHIP_ACTIVITY_UPDATE_TYPES = new Set(['user_added', 'user_removed']);
+const INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES = new Set([
+  'bot_added',
+  'bot_started',
+  'chat_title_changed',
+]);
+const CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES = new Set([
+  'bot_started',
+  'user_added',
+  'user_removed',
+]);
 
 @Injectable()
 export class WebhookService {
@@ -38,6 +55,7 @@ export class WebhookService {
   private readonly rawPayloadSampleRate: number;
   private readonly botSelfAccessCache = new Map<string, BotSelfAccessCacheEntry>();
   private readonly botSelfAccessBackoffUntilMs = new Map<string, number>();
+  private readonly executionOwnerRecheckBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -181,14 +199,29 @@ export class WebhookService {
         entityType,
         botId: update.botId,
       });
-      const executionOwnerBotId = this.shouldRefreshExecutionOwnerFromWebhook(update, boundBotId)
-        ? await this.maybeFailOverExecutionOwner({
+      let executionOwnerBotId = boundBotId;
+      const shouldRefreshExecutionOwner = await this.shouldRefreshExecutionOwnerFromWebhook(
+        update,
+        boundBotId,
+      );
+      if (shouldRefreshExecutionOwner) {
+        const allowLiveCheck = this.shouldPerformInlineExecutionOwnerLiveRefresh(update);
+        executionOwnerBotId = await this.maybeFailOverExecutionOwner({
+          update,
+          chatId,
+          incomingBotId: update.botId ?? null,
+          currentOwnerBotId: boundBotId,
+          allowLiveCheck,
+        });
+        if (!allowLiveCheck && executionOwnerBotId === boundBotId) {
+          this.scheduleExecutionOwnerFailoverRecheck({
             update,
             chatId,
             incomingBotId: update.botId ?? null,
             currentOwnerBotId: boundBotId,
-          })
-        : boundBotId;
+          });
+        }
+      }
       this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
       return executionOwnerBotId;
     } catch (error: unknown) {
@@ -210,11 +243,11 @@ export class WebhookService {
     chatId: string;
     incomingBotId: string | null;
     currentOwnerBotId: string | null;
+    allowLiveCheck: boolean;
   }): Promise<string | null> {
     const incomingBotId = params.incomingBotId?.trim() ?? '';
     const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
     if (
-      !this.maxClient ||
       !params.chatId.startsWith('-') ||
       !incomingBotId ||
       !currentOwnerBotId ||
@@ -223,18 +256,19 @@ export class WebhookService {
       return params.currentOwnerBotId;
     }
 
-    const currentOwnerCanHandleUserFacing = await this.getBotSelfModerationAccessState(
-      params.chatId,
-      currentOwnerBotId,
-    );
+    const currentOwnerCanHandleUserFacing = params.allowLiveCheck
+      ? await this.getBotSelfModerationAccessState(params.chatId, currentOwnerBotId)
+      : await this.getCachedOrPersistedBotSelfModerationAccessState(
+          params.chatId,
+          currentOwnerBotId,
+        );
     if (currentOwnerCanHandleUserFacing !== false) {
       return params.currentOwnerBotId;
     }
 
-    const incomingBotCanHandleUserFacing = await this.getBotSelfModerationAccessState(
-      params.chatId,
-      incomingBotId,
-    );
+    const incomingBotCanHandleUserFacing = params.allowLiveCheck
+      ? await this.getBotSelfModerationAccessState(params.chatId, incomingBotId)
+      : await this.getCachedOrPersistedBotSelfModerationAccessState(params.chatId, incomingBotId);
     if (incomingBotCanHandleUserFacing !== true) {
       return params.currentOwnerBotId;
     }
@@ -262,16 +296,16 @@ export class WebhookService {
     return reassignedBotId ?? params.currentOwnerBotId;
   }
 
-  private shouldRefreshExecutionOwnerFromWebhook(
+  private shouldPerformInlineExecutionOwnerLiveRefresh(update: MaxUpdate): boolean {
+    return INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES.has(update.type.trim().toLowerCase());
+  }
+
+  private async shouldRefreshExecutionOwnerFromWebhook(
     update: MaxUpdate,
     currentOwnerBotId: string | null,
-  ): boolean {
+  ): Promise<boolean> {
     const normalizedType = update.type.trim().toLowerCase();
-    if (
-      normalizedType === 'bot_added' ||
-      normalizedType === 'bot_started' ||
-      normalizedType === 'chat_title_changed'
-    ) {
+    if (this.shouldPerformInlineExecutionOwnerLiveRefresh(update)) {
       return true;
     }
 
@@ -286,7 +320,7 @@ export class WebhookService {
     }
 
     return (
-      this.readCachedBotSelfAccess(this.buildBotSelfAccessCacheKey(chatId, currentOwnerBotId)) ===
+      (await this.getCachedOrPersistedBotSelfModerationAccessState(chatId, currentOwnerBotId)) ===
       false
     );
   }
@@ -525,6 +559,25 @@ export class WebhookService {
     }
   }
 
+  private async getCachedOrPersistedBotSelfModerationAccessState(
+    chatId: string,
+    botId: string,
+  ): Promise<boolean | null> {
+    const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
+    const cached = this.readCachedBotSelfAccess(cacheKey);
+    if (cached !== null) {
+      return cached;
+    }
+
+    const persisted = await this.readPersistedBotSelfAccess(chatId, botId);
+    if (!persisted) {
+      return null;
+    }
+
+    this.cacheBotSelfAccessState(cacheKey, persisted.canHandleUserFacing, persisted.checkedAtMs);
+    return persisted.canHandleUserFacing;
+  }
+
   private async cacheBotSelfAccess(
     chatId: string,
     botId: string,
@@ -532,14 +585,7 @@ export class WebhookService {
   ): Promise<boolean> {
     const canHandleUserFacing = this.canBotHandleUserFacingUpdates(access);
     const cacheKey = this.buildBotSelfAccessCacheKey(chatId, botId);
-    this.botSelfAccessCache.set(cacheKey, {
-      canHandleUserFacing,
-      expiresAtMs:
-        Date.now() +
-        (canHandleUserFacing
-          ? BOT_SELF_ACCESS_CACHE_TTL_MS
-          : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS),
-    });
+    this.cacheBotSelfAccessState(cacheKey, canHandleUserFacing);
     this.botSelfAccessBackoffUntilMs.delete(cacheKey);
     await this.persistBotSelfAccessSnapshot(chatId, botId, access);
     return canHandleUserFacing;
@@ -587,6 +633,27 @@ export class WebhookService {
     return `${chatId}:${botId}`;
   }
 
+  private cacheBotSelfAccessState(
+    cacheKey: string,
+    canHandleUserFacing: boolean,
+    checkedAtMs: number | null = null,
+  ): void {
+    const now = Date.now();
+    const ttlMs = canHandleUserFacing
+      ? BOT_SELF_ACCESS_CACHE_TTL_MS
+      : BOT_SELF_ACCESS_NEGATIVE_CACHE_TTL_MS;
+    const snapshotExpiryMs =
+      typeof checkedAtMs === 'number' && Number.isFinite(checkedAtMs)
+        ? checkedAtMs + BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS - now
+        : null;
+    const cappedTtlMs =
+      snapshotExpiryMs === null ? ttlMs : Math.max(1, Math.min(ttlMs, snapshotExpiryMs));
+    this.botSelfAccessCache.set(cacheKey, {
+      canHandleUserFacing,
+      expiresAtMs: now + cappedTtlMs,
+    });
+  }
+
   private readCachedBotSelfAccess(cacheKey: string): boolean | null {
     const cached = this.botSelfAccessCache.get(cacheKey);
     if (!cached) {
@@ -599,22 +666,111 @@ export class WebhookService {
     return cached.canHandleUserFacing;
   }
 
-  private canBotHandleUserFacingUpdates(access: MaxChatMemberAccess | null): boolean {
-    if (!access) {
-      return false;
+  private async readPersistedBotSelfAccess(
+    chatId: string,
+    botId: string,
+  ): Promise<PersistedBotSelfAccessSnapshot | null> {
+    const membershipModel = (
+      this.prisma as PrismaService & {
+        chatBotMembership?: {
+          findUnique?: (args: {
+            where: {
+              chatId_botId: {
+                chatId: string;
+                botId: string;
+              };
+            };
+            select: {
+              permissionsSnapshot: true;
+            };
+          }) => Promise<{ permissionsSnapshot: unknown } | null>;
+        };
+      }
+    ).chatBotMembership;
+    if (typeof membershipModel?.findUnique !== 'function') {
+      return null;
     }
 
-    if (access.isOwner) {
+    try {
+      const membership = await membershipModel.findUnique({
+        where: {
+          chatId_botId: {
+            chatId,
+            botId,
+          },
+        },
+        select: {
+          permissionsSnapshot: true,
+        },
+      });
+      return this.normalizePersistedBotSelfAccessSnapshot(membership?.permissionsSnapshot ?? null);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read persisted bot self access snapshot during webhook owner check',
+      );
+      return null;
+    }
+  }
+
+  private normalizePersistedBotSelfAccessSnapshot(
+    value: unknown,
+  ): PersistedBotSelfAccessSnapshot | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const checkedAtRaw = typeof row.checkedAt === 'string' ? row.checkedAt.trim() : '';
+    const checkedAtMs = checkedAtRaw ? Date.parse(checkedAtRaw) : Number.NaN;
+    if (!Number.isFinite(checkedAtMs)) {
+      return null;
+    }
+    if (checkedAtMs + BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS <= Date.now()) {
+      return null;
+    }
+
+    const permissions = Array.isArray(row.permissions)
+      ? row.permissions.filter((permission): permission is string => typeof permission === 'string')
+      : [];
+    return {
+      canHandleUserFacing: this.canBotHandleUserFacingFlags({
+        isAdmin: row.isAdmin === true,
+        isOwner: row.isOwner === true,
+        permissions,
+      }),
+      checkedAtMs: Math.trunc(checkedAtMs),
+    };
+  }
+
+  private canBotHandleUserFacingUpdates(access: MaxChatMemberAccess | null): boolean {
+    return this.canBotHandleUserFacingFlags({
+      isAdmin: access?.isAdmin === true,
+      isOwner: access?.isOwner === true,
+      permissions: access?.permissions ?? [],
+    });
+  }
+
+  private canBotHandleUserFacingFlags(params: {
+    isAdmin: boolean;
+    isOwner: boolean;
+    permissions: readonly string[];
+  }): boolean {
+    if (params.isOwner) {
       return true;
     }
 
-    if (!access.isAdmin) {
+    if (!params.isAdmin) {
       return false;
     }
 
     const permissions = Array.from(
       new Set(
-        (access.permissions ?? [])
+        (params.permissions ?? [])
           .map((permission) =>
             permission
               .trim()
@@ -626,7 +782,7 @@ export class WebhookService {
     );
     if (permissions.length === 0) {
       // Older MAX payloads may not expose granular permissions for admins.
-      return true;
+      return params.isAdmin;
     }
 
     return permissions.some((permission) => this.isUserFacingModerationPermission(permission));
@@ -657,6 +813,61 @@ export class WebhookService {
     return update.type.trim().toLowerCase() === 'bot_removed';
   }
 
+  private scheduleExecutionOwnerFailoverRecheck(params: {
+    update: MaxUpdate;
+    chatId: string;
+    incomingBotId: string | null;
+    currentOwnerBotId: string | null;
+  }): void {
+    if (!this.maxClient) {
+      return;
+    }
+
+    const normalizedType = params.update.type.trim().toLowerCase();
+    if (normalizedType !== 'message_created' && normalizedType !== 'message_callback') {
+      return;
+    }
+
+    const chatId = params.chatId.trim();
+    const incomingBotId = params.incomingBotId?.trim() ?? '';
+    const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
+    if (!chatId.startsWith('-') || !incomingBotId || !currentOwnerBotId || incomingBotId === currentOwnerBotId) {
+      return;
+    }
+
+    const backoffKey = `${chatId}:${currentOwnerBotId}:${incomingBotId}`;
+    const backoffUntilMs = this.executionOwnerRecheckBackoffUntilMs.get(backoffKey) ?? 0;
+    if (backoffUntilMs > Date.now()) {
+      return;
+    }
+
+    this.executionOwnerRecheckBackoffUntilMs.set(
+      backoffKey,
+      Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
+    );
+    setTimeout(() => {
+      void this
+        .maybeFailOverExecutionOwner({
+          update: params.update,
+          chatId,
+          incomingBotId,
+          currentOwnerBotId,
+          allowLiveCheck: true,
+        })
+        .catch((error: unknown) => {
+          this.logger.debug(
+            {
+              chatId,
+              currentOwnerBotId,
+              incomingBotId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Async execution-owner recheck after webhook ingest failed',
+          );
+        });
+    }, 0);
+  }
+
   private scheduleChatAdminRosterSyncFromWebhook(update: MaxUpdate, chatId: string): void {
     if (!this.maxChatAdminRosterSyncService) {
       return;
@@ -666,7 +877,8 @@ export class WebhookService {
     if (
       normalizedType !== 'bot_added' &&
       normalizedType !== 'bot_removed' &&
-      normalizedType !== 'chat_title_changed'
+      normalizedType !== 'chat_title_changed' &&
+      !CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES.has(normalizedType)
     ) {
       return;
     }
@@ -678,6 +890,8 @@ export class WebhookService {
           ? 'webhook_bot_removed'
           : normalizedType === 'chat_title_changed'
             ? 'webhook_chat_title_changed'
+            : CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES.has(normalizedType)
+              ? 'webhook_membership_churn'
             : null;
 
     void this.maxChatAdminRosterSyncService

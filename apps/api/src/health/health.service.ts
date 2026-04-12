@@ -33,6 +33,9 @@ export type ReadinessSnapshot = {
       queuedEvents: number;
       receivedEvents: number;
       failedEvents: number;
+      failedEventsTotal?: number;
+      staleFailedEvents?: number;
+      failedEventsWindowSec?: number;
       action: SystemModeSnapshot['action'];
       maxApi?: ReadinessBotMaxApiSnapshot;
     }
@@ -201,6 +204,11 @@ export class HealthService implements OnModuleDestroy {
     return Object.fromEntries(
       Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => {
         const maxApiSnapshot = maxApiBotSnapshots?.[botId];
+        const activeFailedEvents =
+          botMetrics.webhookEvents.failed.activeCount ?? botMetrics.webhookEvents.failed.count;
+        const staleFailedEvents =
+          botMetrics.webhookEvents.failed.staleCount ??
+          Math.max(0, botMetrics.webhookEvents.failed.count - activeFailedEvents);
         return [
           botId,
           {
@@ -214,7 +222,15 @@ export class HealthService implements OnModuleDestroy {
             receivedEvents:
               botMetrics.userFacingWebhookEvents?.received.count ??
               botMetrics.webhookEvents.received.count,
-            failedEvents: botMetrics.webhookEvents.failed.count,
+            failedEvents: activeFailedEvents,
+            ...(botMetrics.webhookEvents.failed.count !== activeFailedEvents
+              ? {
+                  failedEventsTotal: botMetrics.webhookEvents.failed.count,
+                  staleFailedEvents,
+                  failedEventsWindowSec:
+                    botMetrics.webhookEvents.failed.activeWindowSec ?? undefined,
+                }
+              : {}),
             action: botMetrics.actionHealth,
             ...(maxApiSnapshot
               ? {

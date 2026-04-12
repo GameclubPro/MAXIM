@@ -5982,7 +5982,7 @@ describe('AdminService.listChannels', () => {
     expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
       'admin-1',
       'channel',
-      30,
+      45,
     );
   });
 
@@ -6782,12 +6782,12 @@ describe('AdminService.listChannels', () => {
     ]);
     expect(result.refresh).toEqual({
       complete: false,
-      cursor: 20,
+      cursor: 10,
       backoffActive: false,
       nextPollAfterMs: 1500,
-      processedCandidates: 20,
+      processedCandidates: 10,
       totalCandidates: 26,
-      progressPercent: 77,
+      progressPercent: 38,
       lastSyncedAt: null,
       manualRefreshBlockedReason: 'in_progress',
       manualRefreshRetryAfterMs: 1500,
@@ -6892,7 +6892,7 @@ describe('AdminService.listChannels', () => {
     expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
       'admin-1',
       'channel',
-      30,
+      45,
     );
   });
 
@@ -8081,7 +8081,7 @@ describe('AdminService.listChats', () => {
       sourceTag: 'managed_refresh',
       timeoutMs: 2500,
     });
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(10);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(6);
     expect(maxClient.getChatAdminIds).toHaveBeenNthCalledWith(
       1,
       'chat-1',
@@ -9519,7 +9519,7 @@ describe('AdminService.listChats', () => {
     }
   });
 
-  it('allows a reset-cursor managed refresh to bypass the recovery-window pause on schedule', async () => {
+  it('still defers a reset-cursor managed refresh on schedule when the governor reports slow pressure', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
       {
@@ -9596,15 +9596,15 @@ describe('AdminService.listChats', () => {
       ],
       refresh: {
         complete: false,
-        cursor: 0,
-        backoffActive: false,
-        nextPollAfterMs: 1500,
+        cursor: null,
+        backoffActive: true,
+        nextPollAfterMs: 20_000,
         processedCandidates: null,
         totalCandidates: null,
         progressPercent: null,
         lastSyncedAt: null,
-        manualRefreshBlockedReason: 'in_progress',
-        manualRefreshRetryAfterMs: 1500,
+        manualRefreshBlockedReason: 'backoff',
+        manualRefreshRetryAfterMs: 20_000,
       },
     });
 
@@ -9614,19 +9614,7 @@ describe('AdminService.listChats', () => {
       allowRecoveryWindowRun: true,
       allowQueueLagSlowPathBelowSec: 30,
     });
-    expect(managedEntitiesRefreshQueue.add).toHaveBeenCalledWith(
-      'refresh-managed-entities',
-      {
-        userId: 'admin-1',
-        entityType: 'chat',
-        bypassRemoteCache: false,
-        resetRefreshCursor: true,
-      },
-      expect.objectContaining({
-        jobId: 'managed-entities-refresh__chat__admin-1',
-        priority: 2,
-      }),
-    );
+    expect(managedEntitiesRefreshQueue.add).not.toHaveBeenCalled();
   });
 
   it('reprioritizes a waiting managed refresh job when the user polls an already-started chat refresh', async () => {
@@ -11230,7 +11218,7 @@ describe('AdminService.listChats', () => {
     expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat');
   });
 
-  it('allows a reset-cursor managed refresh background job to run through the recovery window', async () => {
+  it('defers a reset-cursor managed refresh background job when the governor reports slow pressure', async () => {
     const service = new AdminService(
       createPrismaMock() as never,
       {
@@ -11267,15 +11255,7 @@ describe('AdminService.listChats', () => {
       } as never,
     );
 
-    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
-      items: [],
-      refresh: {
-        complete: false,
-        cursor: 20,
-        backoffActive: false,
-        nextPollAfterMs: 1500,
-      },
-    });
+    const discoverSpy = jest.spyOn(service as any, 'discoverManagedEntities');
 
     await expect(
       service.processManagedEntitiesRefreshJob({
@@ -11285,10 +11265,10 @@ describe('AdminService.listChats', () => {
         resetRefreshCursor: true,
       }),
     ).resolves.toEqual({
-      continueAfterMs: 1500,
+      continueAfterMs: 20_000,
     });
 
-    expect(discoverSpy).toHaveBeenCalledTimes(1);
+    expect(discoverSpy).not.toHaveBeenCalled();
   });
 
   it('allows a user-triggered managed refresh job to ignore a soft queue-lag pause below the slow-path ceiling', async () => {
