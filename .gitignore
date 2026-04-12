@@ -28,6 +28,8 @@ npm-debug.log*
 *.pid
 
 # Local data
+.codex
+.codex/
 infra/data/
 autorinok-users.txt
 rostov-*

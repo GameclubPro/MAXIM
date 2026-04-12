@@ -1560,6 +1560,45 @@ describe('ModerationService', () => {
     }
   });
 
+  it('caps violation admin recheck wait to the remaining hot-path budget under pressure', () => {
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn(),
+      } as never,
+    );
+
+    const dateNowSpy = jest.spyOn(Date, 'now');
+    let now = 10_000;
+    dateNowSpy.mockImplementation(() => now);
+
+    try {
+      const profile = (service as any).createWebhookHotPathProfile();
+      now = 19_400;
+
+      const waitMs = (service as any).resolveWebhookHotPathStageWaitBudgetMs({
+        hotPathProfile: profile,
+        systemMode: {
+          mode: 'degrade',
+          reason: 'recovery window in progress',
+          queueLagSec: 0,
+        },
+        hotChatBackoffActive: false,
+        defaultWaitMs: 500,
+        reserveMs: 250,
+      });
+
+      expect(waitMs).toBe(350);
+    } finally {
+      dateNowSpy.mockRestore();
+    }
+  });
+
   it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {
@@ -12769,9 +12808,7 @@ describe('ModerationService', () => {
           }),
         };
         const maxBotLinkService = {
-          resolveBotIdsForModerationAction: jest
-            .fn()
-            .mockResolvedValue(['id613002203036_4_bot']),
+          resolveBotIdsForModerationAction: jest.fn().mockResolvedValue(['id613002203036_4_bot']),
           getResolvedBotSync: jest.fn((botId?: string | null) => ({
             id: botId ?? 'id613002203036_bot',
           })),
@@ -12833,14 +12870,12 @@ describe('ModerationService', () => {
           },
         };
         const maxClient = {
-          getCurrentChatMemberAccess: jest
-            .fn()
-            .mockResolvedValue({
-              userId: '613002203036',
-              isAdmin: true,
-              isOwner: false,
-              permissions: ['add_remove_members'],
-            }),
+          getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+            userId: '613002203036',
+            isAdmin: true,
+            isOwner: false,
+            permissions: ['add_remove_members'],
+          }),
         };
         const maxBotLinkService = {
           resolveBotIdsForModerationAction: jest
@@ -12880,10 +12915,7 @@ describe('ModerationService', () => {
           }),
         ).resolves.toBe(true);
 
-        expect(operation.mock.calls).toEqual([
-          ['id613002203036_bot'],
-          ['id613002203036_4_bot'],
-        ]);
+        expect(operation.mock.calls).toEqual([['id613002203036_bot'], ['id613002203036_4_bot']]);
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(2);
       });
     });
