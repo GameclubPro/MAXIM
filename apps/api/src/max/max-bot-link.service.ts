@@ -15,6 +15,7 @@ import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
 const CHAT_BOT_CACHE_TTL_MS = 10 * 60 * 1_000;
+const OBSERVED_WEBHOOK_TOUCH_TTL_MS = 60 * 1_000;
 const ACTIONABLE_BOT_LIFECYCLE_STATES = new Set(['active', 'draining']);
 const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
   'delete',
@@ -84,6 +85,7 @@ export type ChatBotExecutionBinding = {
 export class MaxBotLinkService {
   private readonly logger = new Logger(MaxBotLinkService.name);
   private readonly chatBotBindingCache = new Map<string, ChatBotBindingCacheEntry>();
+  private readonly observedWebhookTouchCache = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -174,6 +176,65 @@ export class MaxBotLinkService {
     }
 
     return this.getDefaultBotId();
+  }
+
+  async getStoredChatPrimaryBotId(chatId: string | null | undefined): Promise<string | null> {
+    const normalizedChatId = typeof chatId === 'string' ? chatId.trim() : '';
+    if (!normalizedChatId) {
+      return null;
+    }
+
+    const cachedBotId = this.getCachedChatBotId(normalizedChatId);
+    if (cachedBotId) {
+      return cachedBotId;
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: normalizedChatId },
+      select: { primaryBotId: true, botId: true },
+    });
+    const resolvedBotId =
+      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
+    if (resolvedBotId) {
+      this.rememberChatBotBinding(normalizedChatId, resolvedBotId);
+    }
+
+    return resolvedBotId;
+  }
+
+  async observeStoredChatBotWebhook(params: {
+    chatId: string;
+    primaryBotId?: string | null;
+    botId?: string | null;
+  }): Promise<void> {
+    const chatId = params.chatId.trim();
+    const primaryBotId = this.botRegistry.getBotById(params.primaryBotId)?.id ?? null;
+    const observedBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    if (!chatId || !observedBotId) {
+      return;
+    }
+
+    const cacheKey = `${chatId}:${observedBotId}`;
+    const nowMs = Date.now();
+    if ((this.observedWebhookTouchCache.get(cacheKey) ?? 0) > nowMs) {
+      return;
+    }
+
+    const now = new Date(nowMs);
+    await this.upsertChatBotMembership(chatId, observedBotId, {
+      role:
+        primaryBotId !== null && observedBotId !== primaryBotId
+          ? ChatBotMembershipRole.STANDBY
+          : ChatBotMembershipRole.PRIMARY,
+      status: ChatBotMembershipStatus.ACTIVE,
+      lastSeenAt: now,
+      lastWebhookAt: now,
+    });
+    this.observedWebhookTouchCache.set(cacheKey, nowMs + OBSERVED_WEBHOOK_TOUCH_TTL_MS);
+
+    if (primaryBotId) {
+      this.rememberChatBotBinding(chatId, primaryBotId);
+    }
   }
 
   resolveContactIdSync(botId?: string | null): string | null {

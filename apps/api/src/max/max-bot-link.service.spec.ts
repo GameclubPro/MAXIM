@@ -758,6 +758,40 @@ describe('MaxBotLinkService', () => {
     ).resolves.toEqual(['id613002203036_bot', 'id613002203036_4_bot']);
   });
 
+  it('touches observed shared-bot membership without rewriting the chat row on every webhook', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-8', {
+      id: 'chat-8',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+
+    await fixture.service.observeStoredChatBotWebhook({
+      chatId: 'chat-8',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+    });
+    await fixture.service.observeStoredChatBotWebhook({
+      chatId: 'chat-8',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+    });
+
+    expect(fixture.prisma.chat.update).not.toHaveBeenCalled();
+    expect(fixture.prisma.chatBotMembership.upsert).toHaveBeenCalledTimes(1);
+    expect(
+      fixture.memberships.find((membership) => membership.botId === 'id613002203036_4_bot'),
+    ).toEqual(
+      expect.objectContaining({
+        chatId: 'chat-8',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        lastWebhookAt: expect.any(Date),
+      }),
+    );
+  });
+
   it('builds entry mini app links through the canonical entry bot', () => {
     const fixture = createServiceFixture();
 

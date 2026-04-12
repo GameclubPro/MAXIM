@@ -277,6 +277,7 @@ describe('SystemModeService', () => {
 
     await service.evaluateAutoMode();
 
+    expect(queueMetricsService.getSnapshot).toHaveBeenCalledWith({ maxAgeMs: 15000 });
     expect(service.getSnapshot()).toEqual(
       expect.objectContaining({
         mode: 'normal',

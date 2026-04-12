@@ -3,6 +3,8 @@ import { WebhookService } from './webhook.service';
 describe('WebhookService', () => {
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
+    getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(null),
+    observeStoredChatBotWebhook: jest.fn().mockResolvedValue(undefined),
     markChatBotRemoved: jest.fn().mockResolvedValue(undefined),
   };
   const maxChatAdminRosterSyncService = {
@@ -13,6 +15,10 @@ describe('WebhookService', () => {
     jest.clearAllMocks();
     maxBotLinkService.bindChatToBot.mockReset();
     maxBotLinkService.bindChatToBot.mockResolvedValue(undefined);
+    maxBotLinkService.getStoredChatPrimaryBotId.mockReset();
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValue(null);
+    maxBotLinkService.observeStoredChatBotWebhook.mockReset();
+    maxBotLinkService.observeStoredChatBotWebhook.mockResolvedValue(undefined);
     maxBotLinkService.markChatBotRemoved.mockReset();
     maxBotLinkService.markChatBotRemoved.mockResolvedValue(undefined);
     maxChatAdminRosterSyncService.scheduleChatAdminRosterSync.mockReset();
@@ -282,7 +288,7 @@ describe('WebhookService', () => {
       data: [
         expect.objectContaining({
           id: 'u-read-models-1',
-          dedupeKey: 'u-read-models-1',
+          dedupeKey: 'membership:user_added:-100200:user-77:mid-read-models-1',
           chatId: '-100200',
           eventType: 'user_added',
           userId: 'user-77',
@@ -580,6 +586,126 @@ describe('WebhookService', () => {
         data: expect.objectContaining({
           normalizedPayload: expect.objectContaining({
             executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('reuses the stored chat binding for ordinary mirrored updates without rewriting chat ownership rows', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-6a' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('id613002203036_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-owner-stored-1',
+          type: 'message_created',
+          botId: 'id613002203036_4_bot',
+          message: {
+            messageId: 'mid-2a',
+            chatId: '-100124',
+            chatTitle: 'Shared chat',
+            senderId: 'user-2',
+            text: 'hello',
+            createdAt: new Date('2026-03-31T20:00:01.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.getStoredChatPrimaryBotId).toHaveBeenCalledWith('-100124');
+    expect(maxBotLinkService.bindChatToBot).not.toHaveBeenCalled();
+    expect(maxBotLinkService.observeStoredChatBotWebhook).toHaveBeenCalledWith({
+      chatId: '-100124',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+    });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_bot',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('skips the extra observed-membership touch when a stored-binding webhook already triggered owner failover', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-6aa' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    maxBotLinkService.getStoredChatPrimaryBotId.mockResolvedValueOnce('id613002203036_bot');
+    maxBotLinkService.bindChatToBot.mockResolvedValueOnce('id613002203036_4_bot');
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    (service as any).botSelfAccessCache.set('-100124:id613002203036_bot', {
+      canHandleUserFacing: false,
+      expiresAtMs: Date.now() + 60_000,
+    });
+    (service as any).botSelfAccessCache.set('-100124:id613002203036_4_bot', {
+      canHandleUserFacing: true,
+      expiresAtMs: Date.now() + 60_000,
+    });
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-owner-stored-2',
+          type: 'message_created',
+          botId: 'id613002203036_4_bot',
+          message: {
+            messageId: 'mid-2b',
+            chatId: '-100124',
+            chatTitle: 'Shared chat',
+            senderId: 'user-2',
+            text: 'hello',
+            createdAt: new Date('2026-03-31T20:00:02.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(maxBotLinkService.bindChatToBot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: '-100124',
+        botId: 'id613002203036_4_bot',
+        allowReassign: true,
+      }),
+    );
+    expect(maxBotLinkService.observeStoredChatBotWebhook).not.toHaveBeenCalled();
+    expect(prisma.webhookEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            executionOwnerBotId: 'id613002203036_4_bot',
           }),
         }),
       }),

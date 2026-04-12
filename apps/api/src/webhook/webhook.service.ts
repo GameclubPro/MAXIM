@@ -1,6 +1,6 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ChatEntityType, WebhookStatus, type Prisma } from '@prisma/client';
+import { ChatEntityType, Prisma, WebhookStatus } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
@@ -44,6 +44,12 @@ const INLINE_EXECUTION_OWNER_REFRESH_UPDATE_TYPES = new Set([
 ]);
 const CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES = new Set([
   'bot_started',
+  'user_added',
+  'user_removed',
+]);
+const STORED_CHAT_BINDING_REUSE_UPDATE_TYPES = new Set([
+  'message_created',
+  'message_callback',
   'user_added',
   'user_removed',
 ]);
@@ -181,6 +187,7 @@ export class WebhookService {
     }
 
     const entityType = this.readWebhookChatEntityType(update);
+    const normalizedType = update.type.trim().toLowerCase();
     try {
       if (this.isBotRemovalUpdate(update)) {
         const nextOwnerBotId = await this.maxBotLinkService.markChatBotRemoved({
@@ -191,6 +198,45 @@ export class WebhookService {
         });
         this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
         return nextOwnerBotId;
+      }
+
+      if (STORED_CHAT_BINDING_REUSE_UPDATE_TYPES.has(normalizedType)) {
+        const storedOwnerBotId = await this.maxBotLinkService.getStoredChatPrimaryBotId(chatId);
+        if (storedOwnerBotId) {
+          let executionOwnerBotId: string | null = storedOwnerBotId;
+          const observedBotId = update.botId?.trim() || null;
+          const shouldRefreshExecutionOwner = await this.shouldRefreshExecutionOwnerFromWebhook(
+            update,
+            storedOwnerBotId,
+          );
+          if (shouldRefreshExecutionOwner) {
+            const allowLiveCheck = this.shouldPerformInlineExecutionOwnerLiveRefresh(update);
+            executionOwnerBotId = await this.maybeFailOverExecutionOwner({
+              update,
+              chatId,
+              incomingBotId: update.botId ?? null,
+              currentOwnerBotId: storedOwnerBotId,
+              allowLiveCheck,
+            });
+            if (!allowLiveCheck && executionOwnerBotId === storedOwnerBotId) {
+              this.scheduleExecutionOwnerFailoverRecheck({
+                update,
+                chatId,
+                incomingBotId: update.botId ?? null,
+                currentOwnerBotId: storedOwnerBotId,
+              });
+            }
+          }
+          if (!(observedBotId && executionOwnerBotId !== storedOwnerBotId && observedBotId === executionOwnerBotId)) {
+            await this.maxBotLinkService.observeStoredChatBotWebhook({
+              chatId,
+              primaryBotId: executionOwnerBotId ?? storedOwnerBotId,
+              botId: observedBotId,
+            });
+          }
+          this.scheduleChatAdminRosterSyncFromWebhook(update, chatId);
+          return executionOwnerBotId;
+        }
       }
 
       const boundBotId = await this.maxBotLinkService.bindChatToBot({
@@ -362,6 +408,33 @@ export class WebhookService {
     const managedModel = (
       this.prisma as PrismaService & {
         managedEntityLocalActivity?: {
+          updateMany?: (args: {
+            where: {
+              userId: string;
+              chatId: string;
+              lastEventAt: {
+                lt: Date;
+              };
+            };
+            data: {
+              entityType: ChatEntityType;
+              chatTitle?: string | null;
+              sourceEventType: string;
+              botId?: string | null;
+              lastEventAt: Date;
+            };
+          }) => Promise<{ count: number }>;
+          create?: (args: {
+            data: {
+              userId: string;
+              chatId: string;
+              entityType: ChatEntityType;
+              chatTitle?: string | null;
+              sourceEventType: string;
+              botId?: string | null;
+              lastEventAt: Date;
+            };
+          }) => Promise<unknown>;
           upsert?: (args: {
             where: {
               userId_chatId: {
@@ -389,7 +462,52 @@ export class WebhookService {
         };
       }
     ).managedEntityLocalActivity;
-    if (managedProjection && typeof managedModel?.upsert === 'function') {
+    if (
+      managedProjection &&
+      typeof managedModel?.updateMany === 'function' &&
+      typeof managedModel?.create === 'function'
+    ) {
+      const baseWrite = {
+        entityType: managedProjection.entityType,
+        sourceEventType: managedProjection.sourceEventType,
+        botId: managedProjection.botId ?? null,
+        lastEventAt: managedProjection.lastEventAt,
+        ...(managedProjection.chatTitle ? { chatTitle: managedProjection.chatTitle } : {}),
+      };
+      writes.push(
+        (async () => {
+          const updateResult = await managedModel.updateMany({
+            where: {
+              userId: managedProjection.userId,
+              chatId: managedProjection.chatId,
+              lastEventAt: {
+                lt: managedProjection.lastEventAt,
+              },
+            },
+            data: baseWrite,
+          });
+          if (updateResult.count > 0) {
+            return;
+          }
+
+          try {
+            await managedModel.create({
+              data: {
+                userId: managedProjection.userId,
+                chatId: managedProjection.chatId,
+                ...baseWrite,
+              },
+            });
+          } catch (error: unknown) {
+            if (this.isPrismaKnownError(error, 'P2002')) {
+              return;
+            }
+
+            throw error;
+          }
+        })(),
+      );
+    } else if (managedProjection && typeof managedModel?.upsert === 'function') {
       const baseWrite = {
         entityType: managedProjection.entityType,
         sourceEventType: managedProjection.sourceEventType,
@@ -460,7 +578,13 @@ export class WebhookService {
     const eventAt = this.resolveUpdateEventAt(update);
     return {
       id: update.updateId,
-      dedupeKey: update.updateId,
+      dedupeKey: this.buildMembershipActivityDedupeKey(
+        normalizedType,
+        chatId,
+        update.message?.senderId?.trim() || null,
+        eventAt,
+        update.message?.messageId?.trim() || null,
+      ),
       botId: update.botId?.trim() || null,
       chatId,
       eventType: normalizedType,
@@ -510,6 +634,21 @@ export class WebhookService {
     }
 
     return new Date();
+  }
+
+  private buildMembershipActivityDedupeKey(
+    eventType: string,
+    chatId: string,
+    userId: string | null,
+    eventAt: Date,
+    messageId: string | null,
+  ): string {
+    const normalizedMessageId = messageId?.trim() ?? '';
+    if (normalizedMessageId.length > 0 && !normalizedMessageId.startsWith(`${eventType}:`)) {
+      return `membership:${eventType}:${chatId}:${userId ?? ''}:${normalizedMessageId}`;
+    }
+
+    return `membership:${eventType}:${chatId}:${userId ?? ''}:${eventAt.toISOString()}`;
   }
 
   private async getBotSelfModerationAccessState(
@@ -979,6 +1118,14 @@ export class WebhookService {
     }
 
     return String(error).trim().toLowerCase();
+  }
+
+  private isPrismaKnownError(error: unknown, code: string): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === code;
+    }
+
+    return (error as { code?: string } | null)?.code === code;
   }
 
   private extractStatusCode(error: unknown): number | null {

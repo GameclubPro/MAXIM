@@ -804,7 +804,7 @@ type BotSpeechPreviewContext = {
   characterName: string;
 };
 
-type ReadinessBotSnapshot = {
+type HeaderBotLoadSnapshot = {
   queueLagSec: number;
   queuedEvents: number;
   failedEvents: number;
@@ -845,64 +845,66 @@ function resolveHeaderAssignedBots(
     .slice(0, 2);
 }
 
-function parseReadinessBotSnapshots(value: unknown): Record<string, ReadinessBotSnapshot> {
+function parseHeaderBotLoadSnapshots(value: unknown): Record<string, HeaderBotLoadSnapshot> {
   if (!isRecord(value) || !isRecord(value.bots)) {
-    throw new Error('Invalid readiness snapshot');
+    throw new Error('Invalid bot load snapshot');
   }
 
   return Object.fromEntries(
     Object.entries(value.bots)
       .map(([botId, snapshot]) => {
-        if (!isRecord(snapshot) || !isRecord(snapshot.action)) {
+        if (!isRecord(snapshot)) {
           return null;
         }
-
         if (
-          typeof snapshot.queueLagSec !== 'number' ||
-          typeof snapshot.queuedEvents !== 'number' ||
-          typeof snapshot.failedEvents !== 'number' ||
-          typeof snapshot.action.errorRate !== 'number'
+          snapshot.load !== null &&
+          snapshot.load !== undefined &&
+          typeof snapshot.load !== 'number'
         ) {
           return null;
         }
 
-        const maxApi = isRecord(snapshot.maxApi) ? snapshot.maxApi : null;
-        const maxApiLoad =
-          maxApi && typeof maxApi.load === 'number' && Number.isFinite(maxApi.load)
-            ? maxApi.load
-            : null;
-
         return [
           botId,
           {
-            queueLagSec: snapshot.queueLagSec,
-            queuedEvents: snapshot.queuedEvents,
-            failedEvents: snapshot.failedEvents,
-            actionErrorRate: snapshot.action.errorRate,
-            maxApiLoad,
+            queueLagSec: 0,
+            queuedEvents: 0,
+            failedEvents: 0,
+            actionErrorRate: 0,
+            maxApiLoad:
+              typeof snapshot.load === 'number' && Number.isFinite(snapshot.load)
+                ? snapshot.load
+                : null,
           },
-        ] satisfies [string, ReadinessBotSnapshot];
+        ] satisfies [string, HeaderBotLoadSnapshot];
       })
-      .filter((entry): entry is [string, ReadinessBotSnapshot] => entry !== null),
+      .filter((entry): entry is [string, HeaderBotLoadSnapshot] => entry !== null),
   );
 }
 
-async function getReadinessBotSnapshots(): Promise<Record<string, ReadinessBotSnapshot>> {
-  const response = await fetch('/api/health/ready', {
+async function getHeaderBotLoadSnapshots(
+  botIds: readonly string[],
+): Promise<Record<string, HeaderBotLoadSnapshot>> {
+  const params = new URLSearchParams();
+  if (botIds.length > 0) {
+    params.set('bots', botIds.join(','));
+  }
+
+  const response = await fetch(`/api/health/bot-load?${params.toString()}`, {
     headers: {
       Accept: 'application/json',
     },
   });
 
   if (!response.ok) {
-    throw new Error(`Health ready request failed: ${response.status}`);
+    throw new Error(`Bot load request failed: ${response.status}`);
   }
 
   const payload = (await response.json()) as unknown;
-  return parseReadinessBotSnapshots(payload);
+  return parseHeaderBotLoadSnapshots(payload);
 }
 
-function resolveHeaderBotLoadLevel(snapshot: ReadinessBotSnapshot | undefined): {
+function resolveHeaderBotLoadLevel(snapshot: HeaderBotLoadSnapshot | undefined): {
   value: number;
   tone: 'cool' | 'warm' | 'hot';
 } {
@@ -2188,7 +2190,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const botLoadQuery = useQuery({
     queryKey: ['settings-header-bot-load', headerAssignedBots.map((bot) => bot.botId).join(':')],
-    queryFn: getReadinessBotSnapshots,
+    queryFn: () => getHeaderBotLoadSnapshots(headerAssignedBots.map((bot) => bot.botId)),
     enabled: headerAssignedBots.length > 0,
     staleTime: 10_000,
     refetchInterval: 20_000,

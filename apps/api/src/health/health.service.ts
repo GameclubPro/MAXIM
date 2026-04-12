@@ -69,6 +69,20 @@ export type ReadinessSnapshot = {
   };
 };
 
+export type BotLoadSnapshot = {
+  ok: boolean;
+  timestamp: string;
+  windowSec: number;
+  bots: Record<
+    string,
+    {
+      load: number | null;
+      avgRps: number;
+      peakRps: number;
+    }
+  >;
+};
+
 const READINESS_CACHE_TTL_MS = 2_000;
 const DEFAULT_READINESS_QUEUE_SNAPSHOT_MAX_AGE_MS = 2_000;
 const DEFAULT_READINESS_BUILD_TIMEOUT_MS = 2_500;
@@ -192,6 +206,27 @@ export class HealthService implements OnModuleDestroy {
     return {
       ok: true,
       timestamp: new Date().toISOString(),
+    };
+  }
+
+  async botLoad(botIds: readonly string[]): Promise<BotLoadSnapshot> {
+    const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))];
+    const maxApiBotSnapshots = await this.tryGetMaxApiBotSnapshots(normalizedBotIds);
+
+    return {
+      ok: true,
+      timestamp: new Date().toISOString(),
+      windowSec: this.readinessMaxApiWindowSec,
+      bots: Object.fromEntries(
+        normalizedBotIds.map((botId) => [
+          botId,
+          {
+            load: maxApiBotSnapshots?.[botId]?.smoothedLoad ?? null,
+            avgRps: maxApiBotSnapshots?.[botId]?.avgRps ?? 0,
+            peakRps: maxApiBotSnapshots?.[botId]?.peakRps ?? 0,
+          },
+        ]),
+      ),
     };
   }
 

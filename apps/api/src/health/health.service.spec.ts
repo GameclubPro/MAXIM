@@ -342,6 +342,74 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns a lightweight bot-load snapshot without building readiness queues', async () => {
+    const prisma = {
+      $queryRawUnsafe: jest.fn(),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn(),
+    };
+    const maxApiMetricsService = {
+      getBotRateLimitSnapshot: jest.fn().mockResolvedValue({
+        id613002203036_bot: {
+          windowSec: 60,
+          totalRequests: 12,
+          avgRps: 0.2,
+          peakRps: 9,
+          activeSeconds: 2,
+          trafficClasses: {
+            critical: { totalRequests: 0, avgRps: 0, peakRps: 0, activeSeconds: 0 },
+            interactive: { totalRequests: 12, avgRps: 0.2, peakRps: 9, activeSeconds: 2 },
+            background: { totalRequests: 0, avgRps: 0, peakRps: 0, activeSeconds: 0 },
+          },
+          limits: {
+            globalRps: 30,
+            criticalRps: 16,
+            interactiveRps: 14,
+            backgroundRps: 8,
+          },
+          peakLoad: 0.6429,
+          avgLoad: 0.0143,
+          smoothedLoad: 0.1714,
+        },
+      }),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+      undefined,
+      maxApiMetricsService as never,
+    );
+
+    const snapshot = await service.botLoad(['id613002203036_bot']);
+
+    expect(snapshot).toEqual({
+      ok: true,
+      timestamp: expect.any(String),
+      windowSec: 60,
+      bots: {
+        id613002203036_bot: {
+          load: 0.1714,
+          avgRps: 0.2,
+          peakRps: 9,
+        },
+      },
+    });
+    expect(maxApiMetricsService.getBotRateLimitSnapshot).toHaveBeenCalledWith(
+      ['id613002203036_bot'],
+      { windowSec: 60 },
+    );
+    expect(queueMetricsService.getSnapshot).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('serves a stale readiness snapshot when the live build exceeds the timeout budget', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:00:00.000Z'));

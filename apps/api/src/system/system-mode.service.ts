@@ -21,6 +21,7 @@ export type SystemModeSnapshot = {
 const SYSTEM_MODE_SNAPSHOT_KEY = 'system:mode:snapshot:v1';
 const SYSTEM_MODE_SHARED_CACHE_TTL_MS = 2_000;
 const SYSTEM_MODE_EFFECTIVE_CACHE_TTL_MS = 30_000;
+const DEFAULT_SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS = 15_000;
 const ACTION_ERROR_RATE_MIN_TOTAL = 100;
 const ACTION_ERROR_RATE_MIN_FAILURES = 5;
 const RECOVERY_WINDOW_REASON = 'recovery window in progress';
@@ -41,6 +42,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private readonly stabilizeSec: number;
   private readonly actionErrorThreshold: number;
   private readonly actionCriticalThreshold: number;
+  private readonly queueSnapshotMaxAgeMs: number;
   private intervalId: NodeJS.Timeout | null = null;
 
   private mode: SystemMode = 'normal';
@@ -64,6 +66,10 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     this.stabilizeSec = configService.get<number>('DEGRADE_STABILIZE_SEC', 300);
     this.actionErrorThreshold = 0.02;
     this.actionCriticalThreshold = 0.02;
+    this.queueSnapshotMaxAgeMs = configService.get<number>(
+      'SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS',
+      DEFAULT_SYSTEM_MODE_QUEUE_SNAPSHOT_MAX_AGE_MS,
+    );
   }
 
   onModuleInit() {
@@ -111,7 +117,9 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const queue = await this.queueMetricsService.getSnapshot();
+      const queue = await this.queueMetricsService.getSnapshot({
+        maxAgeMs: this.queueSnapshotMaxAgeMs,
+      });
       const queueLagSec = queue.userFacingEffectiveLagSec ?? queue.effectiveLagSec ?? 0;
       this.lastQueueLagSec = queueLagSec;
       await this.actionHealthService.refreshSnapshots(60);
