@@ -86,11 +86,11 @@ type PendingSingleLookupBatch = {
 const MEMBERSHIP_LOOKUP_POLICIES: Record<MaxMembershipLookupPolicy, MembershipLookupPolicyConfig> =
   {
     moderation_required_subscription: {
-      positiveFreshTtlSec: 120,
+      positiveFreshTtlSec: 15,
       negativeFreshTtlSec: 10,
       backoffMs: 15_000,
       trafficClass: 'critical',
-      allowStaleOnError: true,
+      allowStaleOnError: false,
     },
     giveaway_interactive: {
       positiveFreshTtlSec: 15,

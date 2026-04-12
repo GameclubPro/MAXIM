@@ -12184,7 +12184,7 @@ describe('ModerationService', () => {
     expect(maxBotLinkService.resolveBotIdForModerationAction).toHaveBeenCalledWith({
       chatId: 'chat-1',
       action: 'delete_message',
-      fallbackToPrimary: false,
+      fallbackToPrimary: true,
     });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-video-1', {
       botId: 'id613002203036_4_bot',
@@ -14080,7 +14080,7 @@ describe('ModerationService', () => {
       );
     });
 
-    it('skips required subscription enforcement entirely while degraded under pressure', async () => {
+    it('enforces required subscription while degraded under pressure', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -14091,7 +14091,12 @@ describe('ModerationService', () => {
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = {
         hasChatMember: jest.fn().mockResolvedValue(false),
-        getChatSnapshot: jest.fn(),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
         kickMember: jest.fn(),
@@ -14133,13 +14138,13 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
-      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
     it('retries sending the explanation on the next message when the first send fails', async () => {
@@ -14399,7 +14404,7 @@ describe('ModerationService', () => {
       expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
     });
 
-    it('fails open when MAX membership lookup errors', async () => {
+    it('enforces conservatively when MAX membership lookup errors persist after strict retry', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -14410,6 +14415,12 @@ describe('ModerationService', () => {
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = {
         hasChatMember: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
         kickMember: jest.fn(),
@@ -14431,14 +14442,15 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('skips required subscription enforcement entirely when the system is under pressure', async () => {
+    it('enforces required subscription when the system is under pressure', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -14447,7 +14459,13 @@ describe('ModerationService', () => {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
       const maxClient = {
-        hasChatMember: jest.fn(),
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
         kickMember: jest.fn(),
@@ -14487,15 +14505,15 @@ describe('ModerationService', () => {
       await service.handleUpdate(createUpdate());
 
       expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
-      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
-    it('skips required subscription enforcement while the chat is in webhook hot-timeout backoff', async () => {
+    it('enforces required subscription before skipping a chat in webhook hot-timeout backoff', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
@@ -14504,7 +14522,13 @@ describe('ModerationService', () => {
         detect: jest.fn().mockResolvedValue({ violations: [] }),
       };
       const maxClient = {
-        hasChatMember: jest.fn(),
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
         kickMember: jest.fn(),
@@ -14523,11 +14547,11 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.hasChatMember).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+      expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 

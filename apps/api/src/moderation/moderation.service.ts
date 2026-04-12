@@ -213,6 +213,11 @@ type RulesButtonReference = {
   publishedMessageId: string | null;
 };
 
+type RequiredSubscriptionMembershipLookupOptions = {
+  forceFresh?: boolean;
+  allowStaleOnError?: boolean;
+};
+
 type ChannelDialogType = 'comments' | 'suggest';
 
 type ModerationActionAttemptResult =
@@ -266,7 +271,7 @@ const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
-const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
+const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 15;
 const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
@@ -279,7 +284,6 @@ const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
-const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS = 30_000;
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
@@ -500,7 +504,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly webhookHotTimeoutChatBackoffUntilMs = new Map<string, number>();
   private webhookHotChatSkipLogAtMs = 0;
-  private requiredSubscriptionPressureSkipLogAtMs = 0;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
@@ -1138,7 +1141,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (this.shouldSkipHotChatModeration(mode, hotChatBackoffActive)) {
+      const deferHotChatModerationSkipUntilAfterRequiredSubscription =
+        hotChatBackoffActive && settings.requiredSubscriptionEnabled;
+      if (
+        this.shouldSkipHotChatModeration(mode, hotChatBackoffActive) &&
+        !deferHotChatModerationSkipUntilAfterRequiredSubscription
+      ) {
         this.logHotChatModerationSkip(chatId, senderId, mode);
         this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
         void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
@@ -1150,54 +1158,56 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const mediaFlags = this.detectMediaFlags(update);
-      const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
-        ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
-            chatId,
-          })
-        : new Set<string>();
-      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
-      const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
-      this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
-      const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
-        chatId,
-        userId: senderId,
-        userLabel,
-        messageId,
-        text,
-        deleteSpammersEnabled: settings.deleteSpammersEnabled,
-        exemptFromEnforcement: isGlobalSpammerExempt,
-      });
-      if (globalSpammerTracking.handled) {
-        return;
-      }
-
-      if (
-        settings.deleteSpammersEnabled &&
-        !globalSpammerTracking.skipKnownSpammerCheck &&
-        !isGlobalSpammerExempt
-      ) {
-        const knownSpammerSkipReason = this.resolveOptionalWebhookStageSkipReason({
-          stage: 'known-spammer-check',
-          hotPathProfile,
-          systemMode: mode,
-          hotChatBackoffActive,
+      if (!deferHotChatModerationSkipUntilAfterRequiredSubscription) {
+        const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
+          ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
+              chatId,
+            })
+          : new Set<string>();
+        this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-exempt');
+        const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
+        this.markWebhookHotPathStage(hotPathProfile, 'global-spammer-track');
+        const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
+          chatId,
+          userId: senderId,
+          userLabel,
+          messageId,
+          text,
+          deleteSpammersEnabled: settings.deleteSpammersEnabled,
+          exemptFromEnforcement: isGlobalSpammerExempt,
         });
-        if (knownSpammerSkipReason) {
-          this.recordOptionalWebhookStageSkip({
+        if (globalSpammerTracking.handled) {
+          return;
+        }
+
+        if (
+          settings.deleteSpammersEnabled &&
+          !globalSpammerTracking.skipKnownSpammerCheck &&
+          !isGlobalSpammerExempt
+        ) {
+          const knownSpammerSkipReason = this.resolveOptionalWebhookStageSkipReason({
             stage: 'known-spammer-check',
-            reason: knownSpammerSkipReason,
-            failOpen: true,
+            hotPathProfile,
+            systemMode: mode,
+            hotChatBackoffActive,
           });
-        } else {
-          const handled = await this.handleKnownSpammerSenderMessage({
-            chatId,
-            userId: senderId,
-            messageId,
-            text,
-          });
-          this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
-          if (handled) {
-            return;
+          if (knownSpammerSkipReason) {
+            this.recordOptionalWebhookStageSkip({
+              stage: 'known-spammer-check',
+              reason: knownSpammerSkipReason,
+              failOpen: true,
+            });
+          } else {
+            const handled = await this.handleKnownSpammerSenderMessage({
+              chatId,
+              userId: senderId,
+              messageId,
+              text,
+            });
+            this.markWebhookHotPathStage(hotPathProfile, 'known-spammer-check');
+            if (handled) {
+              return;
+            }
           }
         }
       }
@@ -1219,6 +1229,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hotPathProfile,
       });
       if (requiredSubscriptionHandled) {
+        return;
+      }
+
+      if (deferHotChatModerationSkipUntilAfterRequiredSubscription) {
+        this.logHotChatModerationSkip(chatId, senderId, mode);
+        this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
+        void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
+          stage: 'hot-chat-skip',
+          outcome: 'skip',
+          failOpen: true,
+        });
         return;
       }
 
@@ -7274,24 +7295,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const pressureSkipReason = this.resolveRequiredSubscriptionPressureSkipReason(
-      params.systemMode,
-      params.hotChatBackoffActive,
-    );
-    if (pressureSkipReason) {
-      this.logRequiredSubscriptionPressureSkip({
-        chatId: params.chatId,
-        userId: params.userId,
-        reason: pressureSkipReason,
-      });
-      void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
-        stage: 'required-subscription',
-        outcome: 'skip',
-        failOpen: true,
-      });
-      return false;
-    }
-
     const requiredChannelIds = this.readRequiredSubscriptionChannelIds(
       params.settings.requiredSubscriptionChannelIds,
     );
@@ -7320,7 +7323,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       requiredMembershipChannelIds,
     );
     this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.membership');
-    if (!membership || membership.missingChannelIds.length === 0) {
+    if (membership.missingChannelIds.length === 0) {
       return false;
     }
 
@@ -7607,7 +7610,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     userId: string,
     requiredChannelIds: readonly string[],
-  ): Promise<{ missingChannelIds: string[] } | null> {
+  ): Promise<{ missingChannelIds: string[] }> {
     const membershipChecks = await this.mapWithConcurrency(
       requiredChannelIds,
       this.requiredSubscriptionLookupConcurrency,
@@ -7616,77 +7619,70 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         membership: await this.getRequiredSubscriptionMembership(channelId, userId),
       }),
     );
+    const membershipsByChannelId = new Map(
+      membershipChecks.map((item) => [item.channelId, item.membership] as const),
+    );
     const failedChannelIds = membershipChecks
       .filter((item) => item.membership === null)
       .map((item) => item.channelId);
     if (failedChannelIds.length > 0) {
-      this.logger.warn(
+      const retriedChecks = await this.mapWithConcurrency(
+        failedChannelIds,
+        this.requiredSubscriptionLookupConcurrency,
+        async (channelId) => ({
+          channelId,
+          membership: await this.getRequiredSubscriptionMembership(channelId, userId, {
+            forceFresh: true,
+            allowStaleOnError: false,
+          }),
+        }),
+      );
+      for (const retriedCheck of retriedChecks) {
+        membershipsByChannelId.set(retriedCheck.channelId, retriedCheck.membership);
+      }
+    }
+
+    const unresolvedChannelIds = requiredChannelIds.filter(
+      (channelId) => membershipsByChannelId.get(channelId) === null,
+    );
+    if (unresolvedChannelIds.length > 0) {
+      this.logger.error(
         {
           chatId,
           userId,
-          failedChannelIds,
+          unresolvedChannelIds,
           checkedChannelCount: requiredChannelIds.length,
         },
-        'Required subscription checks failed; skipping enforcement',
+        'Required subscription checks remained unresolved after strict retry; enforcing conservatively',
       );
-      return null;
     }
 
-    const missingChannelIds = membershipChecks
-      .filter((item) => item.membership === false)
-      .map((item) => item.channelId);
+    const missingChannelIds = requiredChannelIds.filter(
+      (channelId) => membershipsByChannelId.get(channelId) !== true,
+    );
 
     return { missingChannelIds };
-  }
-
-  private resolveRequiredSubscriptionPressureSkipReason(
-    mode: SystemModeSnapshot,
-    hotChatBackoffActive = false,
-  ): string | null {
-    if (hotChatBackoffActive) {
-      return 'chat hot-path backoff active';
-    }
-
-    if (mode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC) {
-      return `queue lag ${mode.queueLagSec.toFixed(1)}s`;
-    }
-
-    if (mode.mode === 'degrade' && !isSystemModeRecoveryWindow(mode)) {
-      return mode.reason || 'system degrade';
-    }
-
-    return null;
-  }
-
-  private logRequiredSubscriptionPressureSkip(params: {
-    chatId: string;
-    userId: string;
-    reason: string;
-  }) {
-    const now = Date.now();
-    if (
-      now - this.requiredSubscriptionPressureSkipLogAtMs <
-      REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_LOG_INTERVAL_MS
-    ) {
-      return;
-    }
-
-    this.requiredSubscriptionPressureSkipLogAtMs = now;
-    this.logger.warn(
-      {
-        chatId: params.chatId,
-        userId: params.userId,
-        reason: params.reason,
-      },
-      'Skipped required subscription enforcement because the system is under pressure',
-    );
   }
 
   private async getRequiredSubscriptionMembership(
     channelId: string,
     userId: string,
+    options: RequiredSubscriptionMembershipLookupOptions = {},
   ): Promise<boolean | null> {
     if (this.membershipLookupService) {
+      if (options.forceFresh || options.allowStaleOnError !== undefined) {
+        return this.membershipLookupService.getMembership(
+          channelId,
+          userId,
+          'moderation_required_subscription',
+          {
+            ...(options.forceFresh ? { forceRefresh: true } : {}),
+            ...(options.allowStaleOnError !== undefined
+              ? { allowStaleOnError: options.allowStaleOnError }
+              : {}),
+          },
+        );
+      }
       return this.membershipLookupService.getMembership(
         channelId,
         userId,
@@ -7694,9 +7690,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    const allowStaleOnError = options.allowStaleOnError === true;
     const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(channelId, userId);
     const now = Date.now();
     const memoryCached = this.requiredSubscriptionMembershipCache.get(cacheKey);
+    if (options.forceFresh) {
+      return this.performRequiredSubscriptionMembershipLookup(channelId, userId, {
+        allowStaleOnError,
+        cachedMembership: memoryCached?.isMember ?? null,
+      });
+    }
     if (memoryCached && memoryCached.expiresAt > now) {
       return memoryCached.isMember;
     }
@@ -7719,7 +7722,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const backoffUntilMs = this.requiredSubscriptionMembershipBackoffUntilMs.get(cacheKey) ?? 0;
     if (backoffUntilMs > now) {
-      return memoryCached?.isMember ?? null;
+      return allowStaleOnError ? memoryCached?.isMember ?? null : null;
     }
 
     const inFlight = this.requiredSubscriptionMembershipInFlight.get(cacheKey);
@@ -7761,7 +7764,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to resolve required subscription membership',
         );
-        return memoryCached?.isMember ?? null;
+        return allowStaleOnError ? memoryCached?.isMember ?? null : null;
       }
     })();
     let trackedLookupPromise!: Promise<boolean | null>;
@@ -7773,6 +7776,75 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     this.requiredSubscriptionMembershipInFlight.set(cacheKey, trackedLookupPromise);
     return trackedLookupPromise;
+  }
+
+  private async performRequiredSubscriptionMembershipLookup(
+    channelId: string,
+    userId: string,
+    options: {
+      allowStaleOnError?: boolean;
+      cachedMembership?: boolean | null;
+    } = {},
+  ): Promise<boolean | null> {
+    const normalizedChannelId = channelId.trim();
+    const normalizedUserId = userId.trim();
+    if (!normalizedChannelId || !normalizedUserId) {
+      return null;
+    }
+
+    const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(
+      normalizedChannelId,
+      normalizedUserId,
+    );
+    const cachedMembership =
+      typeof options.cachedMembership === 'boolean' ? options.cachedMembership : null;
+    try {
+      const botId =
+        (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function'
+          ? await this.maxBotLinkService.resolveBotIdForMemberAccess({
+              chatId: normalizedChannelId,
+            })
+          : await this.resolveChatReadBotId(normalizedChannelId)) ?? null;
+      const lookupOptions = {
+        trafficClass: 'critical' as const,
+        timeoutMs: 2_000,
+        sourceTag: MAX_API_SOURCE_TAGS.REQUIRED_SUBSCRIPTION_MEMBERSHIP,
+        ...(botId ? { botId } : {}),
+      };
+      const isMember = await this.maxClient.hasChatMember(
+        normalizedChannelId,
+        normalizedUserId,
+        lookupOptions,
+      );
+      const ttlSec = isMember
+        ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
+        : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC;
+      this.requiredSubscriptionMembershipCache.set(cacheKey, {
+        isMember,
+        expiresAt: Date.now() + ttlSec * 1_000,
+      });
+      this.requiredSubscriptionMembershipBackoffUntilMs.delete(cacheKey);
+      await this.redisCounter?.setStringWithTtl(cacheKey, isMember ? '1' : '0', ttlSec);
+      return isMember;
+    } catch (error: unknown) {
+      const transient = this.isTransientMaxApiLookupError(error);
+      if (transient) {
+        this.requiredSubscriptionMembershipBackoffUntilMs.set(
+          cacheKey,
+          Date.now() + REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS,
+        );
+      }
+      this.logger.warn(
+        {
+          channelId: normalizedChannelId,
+          userId: normalizedUserId,
+          backoffMs: transient ? REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS : 0,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to resolve required subscription membership',
+      );
+      return options.allowStaleOnError === true ? cachedMembership : null;
+    }
   }
 
   private async resolveRequiredSubscriptionChannels(
@@ -9487,7 +9559,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const resolvedBotIds = await maxBotLinkService.resolveBotIdsForModerationAction({
         chatId: params.chatId,
         action: params.action,
-        fallbackToPrimary: false,
+        fallbackToPrimary: true,
       });
       return Array.from(
         new Set(
@@ -9502,7 +9574,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const resolvedBotId = await maxBotLinkService.resolveBotIdForModerationAction({
         chatId: params.chatId,
         action: params.action,
-        fallbackToPrimary: false,
+        fallbackToPrimary: true,
       });
       return resolvedBotId ? [resolvedBotId] : [];
     }
@@ -9607,6 +9679,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const chat = await this.prisma.chat.findUnique({
         where: { id: chatId },
         select: {
+          primaryBotId: true,
+          botId: true,
           botMemberships: {
             select: {
               botId: true,
@@ -9618,24 +9692,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       const candidateBotIds: string[] = [];
       const getResolvedBotSync = this.maxBotLinkService?.getResolvedBotSync;
-      for (const membership of chat?.botMemberships ?? []) {
-        if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
+      const trackedBotIds = new Set<string>();
+      for (const rawBotId of [
+        typeof chat?.primaryBotId === 'string' ? chat.primaryBotId : null,
+        typeof chat?.botId === 'string' ? chat.botId : null,
+        ...((chat?.botMemberships ?? [])
+          .filter((membership) => membership.status === ChatBotMembershipStatus.ACTIVE)
+          .map((membership) => membership.botId) as string[]),
+      ]) {
+        const normalizedBotId = typeof rawBotId === 'string' ? rawBotId.trim() : '';
+        if (!normalizedBotId || trackedBotIds.has(normalizedBotId)) {
           continue;
         }
-
-        const botId = membership.botId.trim();
-        if (!botId || candidateBotIds.includes(botId)) {
+        trackedBotIds.add(normalizedBotId);
+        if (candidateBotIds.includes(normalizedBotId)) {
           continue;
         }
 
         if (typeof getResolvedBotSync === 'function') {
-          const resolvedBotId = getResolvedBotSync.call(this.maxBotLinkService, botId)?.id ?? null;
-          if (resolvedBotId !== botId) {
+          const resolvedBotId =
+            getResolvedBotSync.call(this.maxBotLinkService, normalizedBotId)?.id ?? null;
+          if (resolvedBotId !== normalizedBotId) {
             continue;
           }
         }
 
-        candidateBotIds.push(botId);
+        candidateBotIds.push(normalizedBotId);
       }
       return candidateBotIds;
     } catch (error: unknown) {

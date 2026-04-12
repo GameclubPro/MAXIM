@@ -130,7 +130,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
-  it('keeps a positive required-subscription snapshot warm for two minutes', async () => {
+  it('keeps a positive required-subscription snapshot warm for fifteen seconds', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:01:00.000Z'));
 
     const maxClient = {
@@ -145,7 +145,7 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-1', 'moderation_required_subscription'),
     ).resolves.toBe(true);
 
-    jest.advanceTimersByTime(90_000);
+    jest.advanceTimersByTime(12_000);
 
     await expect(
       service.getMembership('channel-1', 'user-1', 'moderation_required_subscription'),
@@ -649,7 +649,7 @@ describe('MaxMembershipLookupService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
   });
 
-  it('returns stale membership on transient errors only when the policy allows it', async () => {
+  it('does not return stale required-subscription membership on transient errors, but still allows it for interactive policies', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-29T10:15:00.000Z'));
 
     const maxClient = {
@@ -657,6 +657,11 @@ describe('MaxMembershipLookupService', () => {
       getChatMembersAccess: jest
         .fn()
         .mockResolvedValueOnce(new Map([['user-3', { userId: 'user-3', isAdmin: false }]]))
+        .mockRejectedValueOnce(
+          Object.assign(new Error('MAX API rate limit exceeded'), {
+            response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
+          }),
+        )
         .mockRejectedValueOnce(
           Object.assign(new Error('MAX API rate limit exceeded'), {
             response: { status: 429, data: { message: 'MAX API rate limit exceeded' } },
@@ -675,14 +680,13 @@ describe('MaxMembershipLookupService', () => {
       service.getMembership('channel-1', 'user-3', 'moderation_required_subscription', {
         forceRefresh: true,
       }),
-    ).resolves.toBe(true);
+    ).resolves.toBeNull();
 
     await expect(
-      service.getMembership('channel-1', 'user-3', 'giveaway_strict', {
+      service.getMembership('channel-1', 'user-3', 'giveaway_interactive', {
         forceRefresh: true,
-        allowStaleOnError: false,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe(true);
   });
 
   it('returns stale background giveaway membership when a retained positive snapshot exists', async () => {
