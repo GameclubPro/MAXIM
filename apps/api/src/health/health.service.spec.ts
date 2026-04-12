@@ -182,6 +182,165 @@ describe('HealthService', () => {
     await service.onModuleDestroy();
   });
 
+  it('enriches readiness bot snapshots with limiter-backed MAX API load', async () => {
+    const prisma = {
+      $queryRawUnsafe: jest.fn().mockResolvedValue([{ '?column?': 1 }]),
+    };
+    const queueMetricsService = {
+      getSnapshot: jest.fn().mockResolvedValue({
+        moderation: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookCritical: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookDefault: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookBackground: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookLegacy: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        actions: { waiting: 0, active: 0, delayed: 0, failed: 0, completed: 0 },
+        webhookEvents: {
+          received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        },
+        userFacingWebhookEvents: {
+          received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+          failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+        },
+        actionHealth: {
+          windowSec: 60,
+          total: 1,
+          success: 1,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+        oldestQueuedEventId: null,
+        oldestQueuedCreatedAt: null,
+        oldestQueuedLagSec: 0,
+        oldestReceivedEventId: null,
+        oldestReceivedCreatedAt: null,
+        oldestReceivedLagSec: 0,
+        effectiveLagSec: 0,
+        userFacingOldestQueuedEventId: null,
+        userFacingOldestQueuedCreatedAt: null,
+        userFacingOldestQueuedLagSec: 0,
+        userFacingOldestReceivedEventId: null,
+        userFacingOldestReceivedCreatedAt: null,
+        userFacingOldestReceivedLagSec: 0,
+        userFacingEffectiveLagSec: 0,
+        generatedAt: '2026-03-31T09:12:05.000Z',
+        bots: {
+          id613002203036_bot: {
+            webhookEvents: {
+              received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+              queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+              failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            },
+            userFacingWebhookEvents: {
+              received: { count: 1, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+              queued: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+              failed: { count: 0, oldestEventId: null, oldestCreatedAt: null, oldestLagSec: 0 },
+            },
+            queuedByQueue: {},
+            actionHealth: {
+              windowSec: 60,
+              total: 1,
+              success: 1,
+              failure: 0,
+              critical: 0,
+              errorRate: 0,
+              criticalRate: 0,
+            },
+            oldestQueuedEventId: null,
+            oldestQueuedCreatedAt: null,
+            oldestQueuedLagSec: 0,
+            oldestReceivedEventId: null,
+            oldestReceivedCreatedAt: null,
+            oldestReceivedLagSec: 0,
+            effectiveLagSec: 0,
+            userFacingOldestQueuedEventId: null,
+            userFacingOldestQueuedCreatedAt: null,
+            userFacingOldestQueuedLagSec: 0,
+            userFacingOldestReceivedEventId: null,
+            userFacingOldestReceivedCreatedAt: null,
+            userFacingOldestReceivedLagSec: 0,
+            userFacingEffectiveLagSec: 0,
+          },
+        },
+      }),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'normal',
+        source: 'auto',
+        reason: 'system healthy',
+        updatedAt: '2026-03-31T09:12:10.000Z',
+        manualMode: null,
+        queueLagSec: 0,
+        action: {
+          windowSec: 60,
+          total: 1,
+          success: 1,
+          failure: 0,
+          critical: 0,
+          errorRate: 0,
+          criticalRate: 0,
+        },
+      }),
+    };
+    const maxApiMetricsService = {
+      getBotRateLimitSnapshot: jest.fn().mockResolvedValue({
+        id613002203036_bot: {
+          windowSec: 60,
+          totalRequests: 12,
+          avgRps: 0.2,
+          peakRps: 9,
+          activeSeconds: 2,
+          trafficClasses: {
+            critical: { totalRequests: 0, avgRps: 0, peakRps: 0, activeSeconds: 0 },
+            interactive: { totalRequests: 12, avgRps: 0.2, peakRps: 9, activeSeconds: 2 },
+            background: { totalRequests: 0, avgRps: 0, peakRps: 0, activeSeconds: 0 },
+          },
+          limits: {
+            globalRps: 30,
+            criticalRps: 16,
+            interactiveRps: 14,
+            backgroundRps: 8,
+          },
+          peakLoad: 0.6429,
+          avgLoad: 0.0143,
+        },
+      }),
+    };
+
+    const service = new HealthService(
+      prisma as never,
+      queueMetricsService as never,
+      systemModeService as never,
+      createConfigMock() as never,
+      undefined,
+      maxApiMetricsService as never,
+    );
+
+    const snapshot = await service.ready();
+
+    expect(snapshot.bots.id613002203036_bot).toEqual(
+      expect.objectContaining({
+        maxApi: {
+          windowSec: 60,
+          avgRps: 0.2,
+          peakRps: 9,
+          load: 0.6429,
+        },
+      }),
+    );
+    expect(maxApiMetricsService.getBotRateLimitSnapshot).toHaveBeenCalledWith(
+      ['id613002203036_bot'],
+      { windowSec: 60 },
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('serves a stale readiness snapshot when the live build exceeds the timeout budget', async () => {
     jest.useFakeTimers();
     jest.setSystemTime(new Date('2026-03-31T09:00:00.000Z'));

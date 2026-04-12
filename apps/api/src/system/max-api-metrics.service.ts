@@ -2,7 +2,30 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
-type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
+export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
+
+export type MaxApiTrafficClassStats = {
+  totalRequests: number;
+  avgRps: number;
+  peakRps: number;
+  activeSeconds: number;
+};
+
+export type MaxApiTrafficSnapshot = MaxApiTrafficClassStats & {
+  trafficClasses: Record<MaxApiTrafficClass, MaxApiTrafficClassStats>;
+};
+
+export type MaxApiBotRateLimitSnapshot = MaxApiTrafficSnapshot & {
+  windowSec: number;
+  limits: {
+    globalRps: number;
+    criticalRps: number;
+    interactiveRps: number;
+    backgroundRps: number;
+  };
+  peakLoad: number;
+  avgLoad: number;
+};
 
 type SourceCounterBucket = {
   perSecond: Map<number, number>;
@@ -10,9 +33,11 @@ type SourceCounterBucket = {
 };
 
 const MAX_API_SOURCE_METRICS_KEY_PREFIX = 'maxapi:rps:source:v1';
+const MAX_API_GLOBAL_METRICS_KEY_PREFIX = 'maxapi:rps:global';
 const DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC = 10 * 60;
 const MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT = 6 * 60 * 60;
 const MAX_API_SOURCE_METRICS_SCAN_COUNT = 500;
+const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const MAX_API_TRAFFIC_CLASSES: readonly MaxApiTrafficClass[] = [
   'critical',
   'interactive',
@@ -22,9 +47,32 @@ const MAX_API_TRAFFIC_CLASSES: readonly MaxApiTrafficClass[] = [
 @Injectable()
 export class MaxApiMetricsService implements OnModuleDestroy {
   private readonly redis: Redis;
+  private readonly globalRpsLimit: number;
+  private readonly criticalGlobalRpsLimit: number;
+  private readonly interactiveGlobalRpsLimit: number;
+  private readonly backgroundGlobalRpsLimit: number;
 
   constructor(configService: ConfigService) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.globalRpsLimit = this.readConfigInt(
+      configService.get<number>('MAX_API_GLOBAL_RPS'),
+      DEFAULT_MAX_API_GLOBAL_RPS,
+    );
+    this.criticalGlobalRpsLimit = this.readConfigInt(
+      configService.get<number>('MAX_API_GLOBAL_RPS_CRITICAL'),
+      Math.max(1, Math.floor(this.globalRpsLimit * 0.45)),
+    );
+    this.interactiveGlobalRpsLimit = this.readConfigInt(
+      configService.get<number>('MAX_API_GLOBAL_RPS_INTERACTIVE'),
+      Math.max(1, Math.floor(this.globalRpsLimit * 0.35)),
+    );
+    this.backgroundGlobalRpsLimit = this.readConfigInt(
+      configService.get<number>('MAX_API_GLOBAL_RPS_BACKGROUND'),
+      Math.max(
+        1,
+        this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit,
+      ),
+    );
   }
 
   async onModuleDestroy() {
@@ -125,6 +173,65 @@ export class MaxApiMetricsService implements OnModuleDestroy {
           ]),
       ),
     };
+  }
+
+  async getBotRateLimitSnapshot(
+    botIds: readonly string[],
+    options: { windowSec?: number } = {},
+  ): Promise<Record<string, MaxApiBotRateLimitSnapshot>> {
+    const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))].sort(
+      (left, right) => left.localeCompare(right),
+    );
+    const windowSec = this.normalizeWindowSec(options.windowSec);
+    if (normalizedBotIds.length === 0) {
+      return {};
+    }
+
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const startSec = nowSec - windowSec + 1;
+    const keys: string[] = [];
+    const entries: Array<{
+      key: string;
+      botId: string;
+      sec: number;
+      trafficClass: MaxApiTrafficClass;
+    }> = [];
+
+    for (const botId of normalizedBotIds) {
+      for (let sec = startSec; sec <= nowSec; sec += 1) {
+        for (const trafficClass of MAX_API_TRAFFIC_CLASSES) {
+          const key = `${MAX_API_GLOBAL_METRICS_KEY_PREFIX}:${botId}:${trafficClass}:${sec}`;
+          keys.push(key);
+          entries.push({ key, botId, sec, trafficClass });
+        }
+      }
+    }
+
+    const countsByKey = await this.readCounts(keys);
+    const buckets = new Map<string, SourceCounterBucket>();
+
+    for (const entry of entries) {
+      const count = countsByKey.get(entry.key) ?? 0;
+      if (count <= 0) {
+        continue;
+      }
+
+      const bucket =
+        buckets.get(entry.botId) ??
+        (() => {
+          const created = this.createSourceCounterBucket();
+          buckets.set(entry.botId, created);
+          return created;
+        })();
+      this.incrementBucket(bucket, entry.trafficClass, entry.sec, count);
+    }
+
+    return Object.fromEntries(
+      normalizedBotIds.map((botId) => [
+        botId,
+        this.buildBotRateLimitSnapshot(buckets.get(botId) ?? this.createSourceCounterBucket(), windowSec),
+      ]),
+    );
   }
 
   private normalizeWindowSec(value: number | undefined): number {
@@ -255,7 +362,55 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     };
   }
 
-  private buildTrafficClassStats(bucket: Map<number, number>, windowSec: number) {
+  private buildBotRateLimitSnapshot(
+    bucket: SourceCounterBucket,
+    windowSec: number,
+  ): MaxApiBotRateLimitSnapshot {
+    const stats = this.buildStats(bucket, windowSec);
+    const limits = {
+      globalRps: this.globalRpsLimit,
+      criticalRps: this.resolveTrafficClassEffectiveRpsLimit('critical'),
+      interactiveRps: this.resolveTrafficClassEffectiveRpsLimit('interactive'),
+      backgroundRps: this.resolveTrafficClassEffectiveRpsLimit('background'),
+    };
+    const peakLoad = this.normalizeLoad(
+      Math.max(
+        limits.globalRps > 0 ? stats.peakRps / limits.globalRps : 0,
+        limits.criticalRps > 0 ? stats.trafficClasses.critical.peakRps / limits.criticalRps : 0,
+        limits.interactiveRps > 0
+          ? stats.trafficClasses.interactive.peakRps / limits.interactiveRps
+          : 0,
+        limits.backgroundRps > 0
+          ? stats.trafficClasses.background.peakRps / limits.backgroundRps
+          : 0,
+      ),
+    );
+    const avgLoad = this.normalizeLoad(
+      Math.max(
+        limits.globalRps > 0 ? stats.avgRps / limits.globalRps : 0,
+        limits.criticalRps > 0 ? stats.trafficClasses.critical.avgRps / limits.criticalRps : 0,
+        limits.interactiveRps > 0
+          ? stats.trafficClasses.interactive.avgRps / limits.interactiveRps
+          : 0,
+        limits.backgroundRps > 0
+          ? stats.trafficClasses.background.avgRps / limits.backgroundRps
+          : 0,
+      ),
+    );
+
+    return {
+      windowSec,
+      ...stats,
+      limits,
+      peakLoad,
+      avgLoad,
+    };
+  }
+
+  private buildTrafficClassStats(
+    bucket: Map<number, number>,
+    windowSec: number,
+  ): MaxApiTrafficClassStats {
     const counts = [...bucket.values()];
     const totalRequests = counts.reduce((sum, value) => sum + value, 0);
     const peakRps = counts.reduce((max, value) => Math.max(max, value), 0);
@@ -267,5 +422,57 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       peakRps,
       activeSeconds,
     };
+  }
+
+  private resolveTrafficClassGlobalRpsLimit(trafficClass: MaxApiTrafficClass): number {
+    switch (trafficClass) {
+      case 'critical':
+        return this.criticalGlobalRpsLimit;
+      case 'background':
+        return this.backgroundGlobalRpsLimit;
+      case 'interactive':
+      default:
+        return this.interactiveGlobalRpsLimit;
+    }
+  }
+
+  private resolveTrafficClassEffectiveRpsLimit(trafficClass: MaxApiTrafficClass): number {
+    const configuredLimit = this.resolveTrafficClassGlobalRpsLimit(trafficClass);
+    const reservedForOtherClasses = (() => {
+      switch (trafficClass) {
+        case 'critical':
+          return this.interactiveGlobalRpsLimit + this.backgroundGlobalRpsLimit;
+        case 'background':
+          return this.criticalGlobalRpsLimit + this.interactiveGlobalRpsLimit;
+        case 'interactive':
+        default:
+          return this.criticalGlobalRpsLimit + this.backgroundGlobalRpsLimit;
+      }
+    })();
+
+    return Math.max(configuredLimit, Math.max(1, this.globalRpsLimit - reservedForOtherClasses));
+  }
+
+  private normalizeLoad(value: number): number {
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+
+    return Math.max(0, Math.min(1, Number(value.toFixed(4))));
+  }
+
+  private readConfigInt(value: unknown, fallback: number, min = 1): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number.parseInt(value, 10)
+          : Number.NaN;
+
+    if (!Number.isFinite(numericValue)) {
+      return fallback;
+    }
+
+    return Math.max(min, Math.trunc(numericValue));
   }
 }

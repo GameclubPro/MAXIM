@@ -38,6 +38,20 @@ jest.mock('ioredis', () => ({
 
 function createConfigMock() {
   return {
+    get: jest.fn((key: string) => {
+      switch (key) {
+        case 'MAX_API_GLOBAL_RPS':
+          return 30;
+        case 'MAX_API_GLOBAL_RPS_CRITICAL':
+          return 12;
+        case 'MAX_API_GLOBAL_RPS_INTERACTIVE':
+          return 10;
+        case 'MAX_API_GLOBAL_RPS_BACKGROUND':
+          return 4;
+        default:
+          return undefined;
+      }
+    }),
     getOrThrow: jest.fn((key: string) => {
       if (key === 'REDIS_URL') {
         return 'redis://localhost:6379/0';
@@ -350,6 +364,96 @@ describe('MaxApiMetricsService', () => {
         },
       },
     });
+
+    await service.onModuleDestroy();
+  });
+
+  it('aggregates limiter-backed bot RPS pressure by traffic class', async () => {
+    const service = new MaxApiMetricsService(createConfigMock() as never);
+    const store = redisStores[0]!;
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const expectedWindowSec = 60;
+    const avg = (totalRequests: number) => Number((totalRequests / expectedWindowSec).toFixed(3));
+
+    store.set(`maxapi:rps:global:bot-a:critical:${nowSec}`, '6');
+    store.set(`maxapi:rps:global:bot-a:interactive:${nowSec}`, '4');
+    store.set(`maxapi:rps:global:bot-a:background:${nowSec - 1}`, '3');
+    store.set(`maxapi:rps:global:bot-b:background:${nowSec}`, '2');
+    store.set(`maxapi:rps:global:bot-b:interactive:${nowSec - 1}`, '1');
+
+    await expect(service.getBotRateLimitSnapshot(['bot-a', 'bot-b'], { windowSec: 10 })).resolves
+      .toEqual({
+        'bot-a': {
+          windowSec: expectedWindowSec,
+          totalRequests: 13,
+          avgRps: avg(13),
+          peakRps: 10,
+          activeSeconds: 2,
+          trafficClasses: {
+            critical: {
+              totalRequests: 6,
+              avgRps: avg(6),
+              peakRps: 6,
+              activeSeconds: 1,
+            },
+            interactive: {
+              totalRequests: 4,
+              avgRps: avg(4),
+              peakRps: 4,
+              activeSeconds: 1,
+            },
+            background: {
+              totalRequests: 3,
+              avgRps: avg(3),
+              peakRps: 3,
+              activeSeconds: 1,
+            },
+          },
+          limits: {
+            globalRps: 30,
+            criticalRps: 16,
+            interactiveRps: 14,
+            backgroundRps: 8,
+          },
+          peakLoad: 0.375,
+          avgLoad: 0.0072,
+        },
+        'bot-b': {
+          windowSec: expectedWindowSec,
+          totalRequests: 3,
+          avgRps: avg(3),
+          peakRps: 2,
+          activeSeconds: 2,
+          trafficClasses: {
+            critical: {
+              totalRequests: 0,
+              avgRps: 0,
+              peakRps: 0,
+              activeSeconds: 0,
+            },
+            interactive: {
+              totalRequests: 1,
+              avgRps: avg(1),
+              peakRps: 1,
+              activeSeconds: 1,
+            },
+            background: {
+              totalRequests: 2,
+              avgRps: avg(2),
+              peakRps: 2,
+              activeSeconds: 1,
+            },
+          },
+          limits: {
+            globalRps: 30,
+            criticalRps: 16,
+            interactiveRps: 14,
+            backgroundRps: 8,
+          },
+          peakLoad: 0.25,
+          avgLoad: 0.0041,
+        },
+      });
 
     await service.onModuleDestroy();
   });

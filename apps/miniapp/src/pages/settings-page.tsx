@@ -809,6 +809,7 @@ type ReadinessBotSnapshot = {
   queuedEvents: number;
   failedEvents: number;
   actionErrorRate: number;
+  maxApiLoad: number | null;
 };
 
 const DEFAULT_BOT_SPEECH_PREVIEW_CONTEXT: BotSpeechPreviewContext = {
@@ -865,6 +866,12 @@ function parseReadinessBotSnapshots(value: unknown): Record<string, ReadinessBot
           return null;
         }
 
+        const maxApi = isRecord(snapshot.maxApi) ? snapshot.maxApi : null;
+        const maxApiLoad =
+          maxApi && typeof maxApi.load === 'number' && Number.isFinite(maxApi.load)
+            ? maxApi.load
+            : null;
+
         return [
           botId,
           {
@@ -872,6 +879,7 @@ function parseReadinessBotSnapshots(value: unknown): Record<string, ReadinessBot
             queuedEvents: snapshot.queuedEvents,
             failedEvents: snapshot.failedEvents,
             actionErrorRate: snapshot.action.errorRate,
+            maxApiLoad,
           },
         ] satisfies [string, ReadinessBotSnapshot];
       })
@@ -903,6 +911,17 @@ function resolveHeaderBotLoadLevel(snapshot: ReadinessBotSnapshot | undefined): 
       value: 0.18,
       tone: 'cool',
     };
+  }
+
+  if (typeof snapshot.maxApiLoad === 'number') {
+    const value = Math.max(0.14, Math.min(1, snapshot.maxApiLoad));
+    if (value >= 0.85) {
+      return { value, tone: 'hot' };
+    }
+    if (value >= 0.55) {
+      return { value, tone: 'warm' };
+    }
+    return { value, tone: 'cool' };
   }
 
   const lagScore = Math.min(1, snapshot.queueLagSec / 10);

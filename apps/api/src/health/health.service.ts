@@ -2,9 +2,17 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
+import { MaxApiMetricsService } from '../system/max-api-metrics.service';
 import { QueueMetricsService, type QueueMetricsSnapshot } from '../system/queue-metrics.service';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
+
+type ReadinessBotMaxApiSnapshot = {
+  windowSec: number;
+  avgRps: number;
+  peakRps: number;
+  load: number;
+};
 
 export type ReadinessSnapshot = {
   ok: boolean;
@@ -26,6 +34,7 @@ export type ReadinessSnapshot = {
       receivedEvents: number;
       failedEvents: number;
       action: SystemModeSnapshot['action'];
+      maxApi?: ReadinessBotMaxApiSnapshot;
     }
   >;
   systemMode: SystemModeSnapshot & {
@@ -65,6 +74,7 @@ const DEFAULT_READINESS_OPTIONAL_DIAGNOSTICS_TIMEOUT_MS = 250;
 const DEFAULT_READINESS_FRESH_HEALTHY_DEPENDENCY_MAX_AGE_MS = 10_000;
 const DEFAULT_READINESS_STALE_FALLBACK_MAX_AGE_MS = 30_000;
 const DEFAULT_READINESS_DEPENDENCY_FALLBACK_MAX_AGE_MS = 5 * 60_000;
+const DEFAULT_READINESS_MAX_API_WINDOW_SEC = 60;
 const STALE_READY_SOFT_WARNING_CODE = 'stale-ready-fallback';
 const READINESS_UNAVAILABLE_REASON = 'readiness snapshot unavailable';
 
@@ -87,6 +97,7 @@ export class HealthService implements OnModuleDestroy {
   private readonly readinessFreshHealthyDependencyMaxAgeMs: number;
   private readonly readinessStaleFallbackMaxAgeMs: number;
   private readonly readinessDependencyFallbackMaxAgeMs: number;
+  private readonly readinessMaxApiWindowSec: number;
   private readyCache: ReadinessSnapshot | null = null;
   private readyCacheAtMs = 0;
   private readyPromise: Promise<ReadinessSnapshot> | null = null;
@@ -106,6 +117,7 @@ export class HealthService implements OnModuleDestroy {
     private readonly systemModeService: SystemModeService,
     configService: ConfigService,
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+    private readonly maxApiMetricsService?: MaxApiMetricsService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
@@ -160,6 +172,13 @@ export class HealthService implements OnModuleDestroy {
         ),
       ),
     );
+    this.readinessMaxApiWindowSec = Math.max(
+      10,
+      configService.get<number>(
+        'READINESS_MAX_API_WINDOW_SEC',
+        DEFAULT_READINESS_MAX_API_WINDOW_SEC,
+      ),
+    );
   }
 
   async onModuleDestroy() {
@@ -175,25 +194,41 @@ export class HealthService implements OnModuleDestroy {
 
   private mapQueueMetricsBots(
     queueMetrics: Pick<QueueMetricsSnapshot, 'bots'> | null | undefined,
+    maxApiBotSnapshots:
+      | Awaited<ReturnType<MaxApiMetricsService['getBotRateLimitSnapshot']>>
+      | null = null,
   ): ReadinessSnapshot['bots'] {
     return Object.fromEntries(
-      Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => [
-        botId,
-        {
-          queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
-          rawOk:
-            (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
-            this.queueLagThresholdSec,
-          queuedEvents:
-            botMetrics.userFacingWebhookEvents?.queued.count ??
-            botMetrics.webhookEvents.queued.count,
-          receivedEvents:
-            botMetrics.userFacingWebhookEvents?.received.count ??
-            botMetrics.webhookEvents.received.count,
-          failedEvents: botMetrics.webhookEvents.failed.count,
-          action: botMetrics.actionHealth,
-        },
-      ]),
+      Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => {
+        const maxApiSnapshot = maxApiBotSnapshots?.[botId];
+        return [
+          botId,
+          {
+            queueLagSec: botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec,
+            rawOk:
+              (botMetrics.userFacingEffectiveLagSec ?? botMetrics.effectiveLagSec) <=
+              this.queueLagThresholdSec,
+            queuedEvents:
+              botMetrics.userFacingWebhookEvents?.queued.count ??
+              botMetrics.webhookEvents.queued.count,
+            receivedEvents:
+              botMetrics.userFacingWebhookEvents?.received.count ??
+              botMetrics.webhookEvents.received.count,
+            failedEvents: botMetrics.webhookEvents.failed.count,
+            action: botMetrics.actionHealth,
+            ...(maxApiSnapshot
+              ? {
+                  maxApi: {
+                    windowSec: maxApiSnapshot.windowSec,
+                    avgRps: maxApiSnapshot.avgRps,
+                    peakRps: maxApiSnapshot.peakRps,
+                    load: maxApiSnapshot.peakLoad,
+                  },
+                }
+              : {}),
+          },
+        ];
+      }),
     );
   }
 
@@ -283,6 +318,9 @@ export class HealthService implements OnModuleDestroy {
         })
         .catch(() => undefined);
     }
+    const maxApiBotSnapshots = await this.tryGetMaxApiBotSnapshots(
+      Object.keys(cachedQueueMetrics?.bots ?? {}),
+    );
     const runtimeDiagnostics = await this.tryGetRuntimeDiagnosticsSnapshot();
 
     const effectiveLagSec =
@@ -332,7 +370,7 @@ export class HealthService implements OnModuleDestroy {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
       ...(runtimeDiagnostics ? { burst: runtimeDiagnostics.burst } : {}),
-      bots: this.mapQueueMetricsBots(cachedQueueMetrics),
+      bots: this.mapQueueMetricsBots(cachedQueueMetrics, maxApiBotSnapshots),
       systemMode: {
         ...systemMode,
         queueLagSec: effectiveLagSec,
@@ -526,12 +564,15 @@ export class HealthService implements OnModuleDestroy {
       !severeQueueLag && (rawQueueLagOk || breachDurationSec < this.queueLagSustainSec);
     const cachedQueueSnapshot =
       this.queueMetricsService.peekCachedSnapshot?.(this.readinessStaleFallbackMaxAgeMs) ?? null;
+    const maxApiBotSnapshots = await this.tryGetMaxApiBotSnapshots(
+      Object.keys(cachedQueueSnapshot?.bots ?? {}),
+    );
 
     return {
       ok: database && redis && queueLagOk,
       timestamp: new Date().toISOString(),
       bots: Object.keys(cachedQueueSnapshot?.bots ?? {}).length
-        ? this.mapQueueMetricsBots(cachedQueueSnapshot)
+        ? this.mapQueueMetricsBots(cachedQueueSnapshot, maxApiBotSnapshots)
         : (this.readyCache?.bots ?? {}),
       systemMode: {
         ...systemMode,
@@ -622,6 +663,31 @@ export class HealthService implements OnModuleDestroy {
   private describeReadinessFallback(error: unknown): string {
     const detail = error instanceof Error ? error.message : String(error);
     return `Serving stale readiness data because live readiness evaluation did not finish in ${this.readinessBuildTimeoutMs}ms: ${detail}`;
+  }
+
+  private async tryGetMaxApiBotSnapshots(): Promise<null>;
+  private async tryGetMaxApiBotSnapshots(
+    botIds: readonly string[],
+  ): Promise<Awaited<ReturnType<MaxApiMetricsService['getBotRateLimitSnapshot']>> | null>;
+  private async tryGetMaxApiBotSnapshots(
+    botIds: readonly string[] = [],
+  ): Promise<Awaited<ReturnType<MaxApiMetricsService['getBotRateLimitSnapshot']>> | null> {
+    const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))];
+    if (!this.maxApiMetricsService || normalizedBotIds.length === 0) {
+      return null;
+    }
+
+    try {
+      return await this.withTimeout(
+        this.maxApiMetricsService.getBotRateLimitSnapshot(normalizedBotIds, {
+          windowSec: this.readinessMaxApiWindowSec,
+        }),
+        this.readinessOptionalDiagnosticsTimeoutMs,
+        'max api readiness bot snapshot',
+      );
+    } catch {
+      return null;
+    }
   }
 
   private async tryGetRuntimeDiagnosticsSnapshot(): Promise<Awaited<
