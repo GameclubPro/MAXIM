@@ -9,11 +9,11 @@ const redisInstances: Array<{
 }> = [];
 
 function createPipeline(hashes: RedisHashes) {
-  const commands: Array<{ kind: 'hincrby' | 'pexpire' | 'hgetall'; args: unknown[] }> = [];
+  const commands: Array<{ kind: 'hincrby' | 'pexpire' | 'hmget'; args: unknown[] }> = [];
   const pipeline = {
     hincrby: (...args: [string, string, number]) => pipelineImpl.hincrby(...args),
     pexpire: (...args: [string, number]) => pipelineImpl.pexpire(...args),
-    hgetall: (...args: [string]) => pipelineImpl.hgetall(...args),
+    hmget: (...args: [string, ...string[]]) => pipelineImpl.hmget(...args),
     exec: () => pipelineImpl.exec(),
   };
   const pipelineImpl = {
@@ -25,8 +25,8 @@ function createPipeline(hashes: RedisHashes) {
       commands.push({ kind: 'pexpire', args });
       return pipeline;
     }),
-    hgetall: jest.fn((...args: [string]) => {
-      commands.push({ kind: 'hgetall', args });
+    hmget: jest.fn((...args: [string, ...string[]]) => {
+      commands.push({ kind: 'hmget', args });
       return pipeline;
     }),
     exec: jest.fn(async () =>
@@ -39,9 +39,10 @@ function createPipeline(hashes: RedisHashes) {
           hashes.set(key, current);
           return [null, nextValue] as const;
         }
-        if (command.kind === 'hgetall') {
-          const [key] = command.args as [string];
-          return [null, { ...(hashes.get(key) ?? {}) }] as const;
+        if (command.kind === 'hmget') {
+          const [key, ...fields] = command.args as [string, ...string[]];
+          const current = hashes.get(key) ?? {};
+          return [null, fields.map((field) => current[field] ?? null)] as const;
         }
         return [null, 1] as const;
       }),
@@ -125,6 +126,29 @@ describe('ActionHealthService', () => {
       errorRate: 1,
       criticalRate: 0,
     });
+
+    await service.onModuleDestroy();
+  });
+
+  it('reuses fresh shared snapshots without another redis refresh', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-30T20:00:00.000Z'));
+    const service = new ActionHealthService(createConfigMock() as never);
+    const nowMs = Date.now();
+
+    service.recordSuccess('bot-a', nowMs);
+
+    await Promise.resolve();
+
+    const redisInstance = redisInstances[0];
+    expect(redisInstance).toBeDefined();
+    const pipelineCallsBeforeRefresh = redisInstance!.pipeline.mock.calls.length;
+
+    await service.refreshSnapshots(60, ['bot-a']);
+    const pipelineCallsAfterFirstRefresh = redisInstance!.pipeline.mock.calls.length;
+    expect(pipelineCallsAfterFirstRefresh).toBeGreaterThan(pipelineCallsBeforeRefresh);
+
+    await service.refreshSnapshots(60, ['bot-a']);
+    expect(redisInstance!.pipeline.mock.calls.length).toBe(pipelineCallsAfterFirstRefresh);
 
     await service.onModuleDestroy();
   });

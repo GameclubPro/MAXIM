@@ -30,7 +30,16 @@ export type ActionHealthSnapshot = {
   criticalRate: number;
 };
 
-const ACTION_HEALTH_LANES = ['critical', 'interactive', 'background'] as const satisfies readonly ActionHealthLane[];
+const ACTION_HEALTH_LANES = [
+  'critical',
+  'interactive',
+  'background',
+] as const satisfies readonly ActionHealthLane[];
+const ACTION_COUNTER_FIELDS = [
+  'success',
+  'failure',
+  'critical',
+] as const satisfies readonly ActionCounterField[];
 
 @Injectable()
 export class ActionHealthService implements OnModuleDestroy {
@@ -46,6 +55,8 @@ export class ActionHealthService implements OnModuleDestroy {
   private readonly countersByBotLane: TimedCountersByBotLane = new Map();
   private readonly sharedSnapshotCache = new Map<string, CachedSnapshot>();
   private readonly sharedSnapshotMaxAgeMs: number;
+  private sharedRefreshPromise: Promise<void> | null = null;
+  private sharedRefreshWindowSec: number | null = null;
   private sharedWriteWarnAtMs = 0;
 
   constructor(configService: ConfigService) {
@@ -185,14 +196,46 @@ export class ActionHealthService implements OnModuleDestroy {
       return;
     }
 
-    const nowSec = Math.floor(Date.now() / 1_000);
-    const pipeline = this.redis.pipeline();
     const refreshTargets = scopes.flatMap((botId) => [
       { botId, lane: null as ActionHealthLane | null },
       ...ACTION_HEALTH_LANES.map((lane) => ({ botId, lane })),
     ]);
+    if (this.hasFreshSharedSnapshots(windowSec, refreshTargets)) {
+      return;
+    }
+
+    if (this.sharedRefreshPromise && this.sharedRefreshWindowSec === windowSec) {
+      await this.sharedRefreshPromise;
+      if (this.hasFreshSharedSnapshots(windowSec, refreshTargets)) {
+        return;
+      }
+    }
+
+    const refreshPromise = this.refreshSnapshotsFromRedis(windowSec, refreshTargets);
+    this.sharedRefreshPromise = refreshPromise;
+    this.sharedRefreshWindowSec = windowSec;
+    try {
+      await refreshPromise;
+    } finally {
+      if (this.sharedRefreshPromise === refreshPromise) {
+        this.sharedRefreshPromise = null;
+        this.sharedRefreshWindowSec = null;
+      }
+    }
+  }
+
+  private async refreshSnapshotsFromRedis(
+    windowSec: number,
+    refreshTargets: ReadonlyArray<{ botId: string | null; lane: ActionHealthLane | null }>,
+  ): Promise<void> {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const windowFields = this.buildWindowFields(windowSec, nowSec);
+    const pipeline = this.redis.pipeline();
     for (const target of refreshTargets) {
-      pipeline.hgetall(this.buildSharedKey(target.botId, target.lane));
+      pipeline.hmget(
+        this.buildSharedKey(target.botId, target.lane),
+        ...windowFields.map((field) => field.name),
+      );
     }
 
     try {
@@ -203,12 +246,12 @@ export class ActionHealthService implements OnModuleDestroy {
 
       refreshTargets.forEach((target, index) => {
         const payload = results[index]?.[1];
-        const fields =
-          payload && typeof payload === 'object' && !Array.isArray(payload)
-            ? (payload as Record<string, string>)
-            : {};
         this.sharedSnapshotCache.set(this.buildCacheKey(windowSec, target.botId, target.lane), {
-          snapshot: this.buildSnapshotFromSharedFields(fields, windowSec, nowSec),
+          snapshot: this.buildSnapshotFromSharedValues(
+            Array.isArray(payload) ? payload : [],
+            windowSec,
+            windowFields,
+          ),
           updatedAtMs: Date.now(),
         });
       });
@@ -222,6 +265,15 @@ export class ActionHealthService implements OnModuleDestroy {
         );
       }
     }
+  }
+
+  private hasFreshSharedSnapshots(
+    windowSec: number,
+    refreshTargets: ReadonlyArray<{ botId: string | null; lane: ActionHealthLane | null }>,
+  ): boolean {
+    return refreshTargets.every((target) =>
+      Boolean(this.readCachedSharedSnapshot(windowSec, target.botId, target.lane)),
+    );
   }
 
   private prune(values: number[], cutoff: number) {
@@ -293,7 +345,10 @@ export class ActionHealthService implements OnModuleDestroy {
     const keys = [this.buildSharedKey(null, null), this.buildSharedKey(null, lane)];
     const normalizedBotId = this.normalizeBotId(botId);
     if (normalizedBotId) {
-      keys.push(this.buildSharedKey(normalizedBotId, null), this.buildSharedKey(normalizedBotId, lane));
+      keys.push(
+        this.buildSharedKey(normalizedBotId, null),
+        this.buildSharedKey(normalizedBotId, lane),
+      );
     }
 
     const pipeline = this.redis.pipeline();
@@ -315,9 +370,7 @@ export class ActionHealthService implements OnModuleDestroy {
   }
 
   private buildSharedKey(botId: string | null, lane: ActionHealthLane | null): string {
-    const base = botId
-      ? `system:action-health:v1:bot:${botId}`
-      : 'system:action-health:v1:global';
+    const base = botId ? `system:action-health:v1:bot:${botId}` : 'system:action-health:v1:global';
     return lane ? `${base}:lane:${lane}` : base;
   }
 
@@ -394,26 +447,48 @@ export class ActionHealthService implements OnModuleDestroy {
     };
   }
 
-  private buildSnapshotFromSharedFields(
-    fields: Record<string, string>,
+  private buildWindowFields(
     windowSec: number,
     nowSec: number,
+  ): Array<{ field: ActionCounterField; name: string }> {
+    const windowStartSec = nowSec - windowSec + 1;
+    const fields: Array<{ field: ActionCounterField; name: string }> = [];
+
+    for (let bucketSec = windowStartSec; bucketSec <= nowSec; bucketSec += 1) {
+      ACTION_COUNTER_FIELDS.forEach((field) => {
+        fields.push({
+          field,
+          name: `${field}:${bucketSec}`,
+        });
+      });
+    }
+
+    return fields;
+  }
+
+  private buildSnapshotFromSharedValues(
+    values: readonly unknown[],
+    windowSec: number,
+    windowFields: readonly { field: ActionCounterField }[],
   ): ActionHealthSnapshot {
-    const cutoffSec = nowSec - windowSec + 1;
     let success = 0;
     let failure = 0;
     let critical = 0;
 
-    for (const [rawField, rawValue] of Object.entries(fields)) {
-      const separatorIndex = rawField.lastIndexOf(':');
-      if (separatorIndex <= 0) {
-        continue;
+    values.forEach((rawValue, index) => {
+      const field = windowFields[index]?.field;
+      if (!field) {
+        return;
       }
-      const field = rawField.slice(0, separatorIndex) as ActionCounterField;
-      const bucketSec = Number(rawField.slice(separatorIndex + 1));
-      const value = Number(rawValue);
-      if (!Number.isFinite(bucketSec) || !Number.isFinite(value) || bucketSec < cutoffSec) {
-        continue;
+
+      const value =
+        typeof rawValue === 'number'
+          ? rawValue
+          : typeof rawValue === 'string'
+            ? Number(rawValue)
+            : Number.NaN;
+      if (!Number.isFinite(value) || value <= 0) {
+        return;
       }
 
       if (field === 'success') {
@@ -423,7 +498,7 @@ export class ActionHealthService implements OnModuleDestroy {
       } else if (field === 'critical') {
         critical += value;
       }
-    }
+    });
 
     const total = success + failure;
     return {
