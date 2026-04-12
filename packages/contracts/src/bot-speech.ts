@@ -200,11 +200,11 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, предупреждение оформил 👮‍♂️ Причина: {reason}. Дальше держим строй.',
       duplicateBotMessageText: 'Товарищ {user}, повтор сообщения зафиксировал 👮‍♂️ {sanction}',
       messageLimitsBotMessageText:
-        'Товарищ {user}, сообщение завернул 👮‍♂️ Причина: {reason}.',
+        'Товарищ {user}, сообщение завернул 👮‍♂️ Причина: {reason}. Подправьте и подавайте заново.',
       nightModeBotMessageText:
-        'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
+        'Ночной режим, граждане 🌙 Участок прикрыт на {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText:
-        'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир по форме.',
+        'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир без нарушений.',
     },
     system: {
       linkMute: 'Товарищ {user}, повторную отправку ссылок зафиксировал. Оформляю мут.',
@@ -306,11 +306,11 @@ const BOT_SPEECH_POLICE_FEMALE_PRESET: BotSpeechPreset = {
       'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}. Дальше держим строй.',
     duplicateBotMessageText: 'Товарищ {user}, повтор сообщения зафиксировала 👮‍♀️ {sanction}',
     messageLimitsBotMessageText:
-      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}.',
+      'Товарищ {user}, сообщение завернула 👮‍♀️ Причина: {reason}. Подправьте и подавайте заново.',
     nightModeBotMessageText:
-      'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
+      'Ночной режим, граждане 🌙 Участок прикрыт на {night_window} ({night_timezone}). {night_status}',
     nightModeOpenMessageText:
-      'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир по форме.',
+      'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир без нарушений.',
   },
   system: {
     linkMute: 'Товарищ {user}, повторную отправку ссылок зафиксировала. Оформляю мут.',

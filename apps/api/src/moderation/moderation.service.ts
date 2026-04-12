@@ -365,6 +365,8 @@ const DEFAULT_WEBHOOK_USER_FACING_TIMEOUT_MS = 10_000;
 const WEBHOOK_USER_FACING_SLOW_LOG_THRESHOLD_MS = 5_000;
 const WEBHOOK_OPTIONAL_STAGE_MIN_REMAINING_MS = 1_500;
 const REQUIRED_SUBSCRIPTION_METADATA_REFRESH_MIN_REMAINING_MS = 2_000;
+const REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS = 1_000;
+const VIOLATION_ADMIN_RECHECK_RESERVE_MS = 250;
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_AUTO_ATTACH_SKIP_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT_SKIPPED';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
@@ -1068,6 +1070,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
       );
       if (senderChatAdminCheck.isAdmin) {
+        this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
         await this.handleChatAdminModerationBypass({
           update,
           chatId,
@@ -1333,13 +1336,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const violationSenderAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
-        chatId,
-        chat.adminUserIds,
-        senderId,
-        senderChatAdminCheck,
-      );
+      this.markWebhookHotPathStage(hotPathProfile, 'violation-admin-recheck');
+      const violationAdminRecheckMaxWaitMs = this.resolveWebhookHotPathStageWaitBudgetMs({
+        hotPathProfile,
+        systemMode: mode,
+        hotChatBackoffActive,
+        defaultWaitMs: CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
+        reserveMs: VIOLATION_ADMIN_RECHECK_RESERVE_MS,
+      });
+      let violationSenderAdminCheck = senderChatAdminCheck;
+      if (violationAdminRecheckMaxWaitMs > 0) {
+        violationSenderAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
+          chatId,
+          chat.adminUserIds,
+          senderId,
+          senderChatAdminCheck,
+          {
+            maxWaitMs: violationAdminRecheckMaxWaitMs,
+          },
+        );
+      } else {
+        const skipReason = this.resolveOptionalWebhookStageSkipReason({
+          stage: 'admin-check.violation-recheck',
+          hotPathProfile,
+          systemMode: mode,
+          hotChatBackoffActive,
+          minRemainingMs: VIOLATION_ADMIN_RECHECK_RESERVE_MS,
+        });
+        if (skipReason) {
+          this.recordOptionalWebhookStageSkip({
+            stage: 'admin-check.violation-recheck',
+            reason: skipReason,
+          });
+        }
+      }
       if (violationSenderAdminCheck.isAdmin) {
+        this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
         await this.handleChatAdminModerationBypass({
           update,
           chatId,
@@ -1369,6 +1401,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         violations.find((item) => item.ruleCode === 'STICKER_RATE_LIMIT') ??
         violations[0];
 
+      this.markWebhookHotPathStage(hotPathProfile, 'violation-record');
       await this.prisma.violation.create({
         data: {
           chatId,
@@ -1383,6 +1416,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let messageDeleted = false;
 
       if (canDeleteMessage) {
+        this.markWebhookHotPathStage(hotPathProfile, 'violation-delete');
         messageDeleted = await this.deleteMessageImmediately(chatId, messageId);
         if (messageDeleted) {
           await this.createBotModerationEvent({
@@ -7285,6 +7319,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params.userId,
       requiredMembershipChannelIds,
     );
+    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.membership');
     if (!membership || membership.missingChannelIds.length === 0) {
       return false;
     }
@@ -7304,6 +7339,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
+    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.delete');
 
     const missingChannelIdsNeedingRefresh = membership.missingChannelIds.filter((channelId) => {
       const metadata = resolvedRequiredChannelsById.get(channelId) ?? null;
@@ -7348,6 +7384,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       .map((channel) => this.readRequiredSubscriptionChannelTitle(channel.id, channel.title))
       .filter((title) => title.length > 0);
 
+    this.markWebhookHotPathStage(params.hotPathProfile, 'required-subscription.follow-up');
     await this.prisma.violation.create({
       data: {
         chatId: params.chatId,
@@ -7407,11 +7444,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
       });
+    const requiredSubscriptionNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
+      stage: 'required-subscription.notice',
+      hotPathProfile: params.hotPathProfile,
+      systemMode: params.systemMode,
+      hotChatBackoffActive: params.hotChatBackoffActive,
+      minRemainingMs: REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
+    });
+    const canSendRequiredSubscriptionNotice = !requiredSubscriptionNoticeSkipReason;
+    if (requiredSubscriptionNoticeSkipReason) {
+      this.recordOptionalWebhookStageSkip({
+        stage: 'required-subscription.notice',
+        reason: requiredSubscriptionNoticeSkipReason,
+      });
+    }
 
     if (action === SanctionAction.NONE) {
       if (
         isFirstRequiredSubscriptionViolation &&
-        params.settings.requiredSubscriptionBotMessageEnabled
+        params.settings.requiredSubscriptionBotMessageEnabled &&
+        canSendRequiredSubscriptionNotice
       ) {
         const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
           params.chatId,
@@ -7442,7 +7494,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
       }
-    } else if (action === SanctionAction.WARN) {
+    } else if (action === SanctionAction.WARN && canSendRequiredSubscriptionNotice) {
       try {
         await sendRequiredSubscriptionBotMessage(
           this.buildRequiredSubscriptionWarnExplanation(
@@ -7489,7 +7541,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         trackAsGlobalSpammer: false,
       });
 
-      if (action === SanctionAction.MUTE) {
+      if (action === SanctionAction.MUTE && canSendRequiredSubscriptionNotice) {
         try {
           await sendRequiredSubscriptionBotMessage(
             this.buildRequiredSubscriptionMuteExplanation(
@@ -9268,6 +9320,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params,
       await this.resolveModerationActionBotIds(params),
     );
+    if (attempt.status === 'success') {
+      return true;
+    }
 
     let forcedSnapshotRefreshPerformed = false;
     if (
@@ -9924,6 +9979,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     localAdminUserIds: string[] | undefined,
     userId: string,
     initialResult: ChatAdminCheckResult,
+    options?: {
+      maxWaitMs?: number;
+    },
   ): Promise<ChatAdminCheckResult> {
     if (initialResult.isAdmin || initialResult.source !== 'local_fallback') {
       return initialResult;
@@ -9953,8 +10011,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
+    const maxWaitMs = Math.max(
+      1,
+      Math.ceil(options?.maxWaitMs ?? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS),
+    );
     const remoteAdminAccess = await this.getRemoteChatAdminAccessWithin(chatId, userId, {
-      maxWaitMs: CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
+      maxWaitMs,
     });
     if (remoteAdminAccess === 'granted') {
       return this.finalizeAdminCheckResult(
@@ -13746,10 +13808,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs);
-    const pressureActive =
-      params.hotChatBackoffActive === true ||
-      params.systemMode.mode === 'degrade' ||
-      params.systemMode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC / 2;
+    const pressureActive = this.isWebhookHotPathPressureActive(
+      params.systemMode,
+      params.hotChatBackoffActive,
+    );
     if (!pressureActive) {
       return null;
     }
@@ -13769,6 +13831,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return `${params.stage} skipped with ${remainingMs}ms remaining during ${params.systemMode.reason || 'degrade'}`;
     }
     return `${params.stage} skipped with ${remainingMs}ms remaining at queue lag ${params.systemMode.queueLagSec.toFixed(1)}s`;
+  }
+
+  private isWebhookHotPathPressureActive(
+    systemMode: SystemModeSnapshot,
+    hotChatBackoffActive = false,
+  ): boolean {
+    return (
+      hotChatBackoffActive ||
+      systemMode.mode === 'degrade' ||
+      systemMode.queueLagSec >= REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC / 2
+    );
+  }
+
+  private resolveWebhookHotPathStageWaitBudgetMs(params: {
+    hotPathProfile?: WebhookHotPathProfile | null;
+    systemMode: SystemModeSnapshot;
+    hotChatBackoffActive?: boolean;
+    defaultWaitMs: number;
+    reserveMs?: number;
+  }): number {
+    const defaultWaitMs = Math.max(1, Math.ceil(params.defaultWaitMs));
+    const snapshot = this.readWebhookHotPathProfileSnapshot(params.hotPathProfile);
+    const elapsedMs =
+      typeof snapshot?.elapsedMs === 'number' && Number.isFinite(snapshot.elapsedMs)
+        ? snapshot.elapsedMs
+        : null;
+    if (elapsedMs === null) {
+      return defaultWaitMs;
+    }
+
+    if (!this.isWebhookHotPathPressureActive(params.systemMode, params.hotChatBackoffActive)) {
+      return defaultWaitMs;
+    }
+
+    const reserveMs = Math.max(0, Math.ceil(params.reserveMs ?? 0));
+    const remainingMs = Math.max(0, this.webhookUserFacingTimeoutMs - elapsedMs - reserveMs);
+    return Math.min(defaultWaitMs, remainingMs);
   }
 
   private recordOptionalWebhookStageSkip(params: {
@@ -13824,7 +13923,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
-  private markWebhookHotPathStage(profile: WebhookHotPathProfile | undefined, stage: string): void {
+  private markWebhookHotPathStage(
+    profile: WebhookHotPathProfile | null | undefined,
+    stage: string,
+  ): void {
     if (!profile) {
       return;
     }
