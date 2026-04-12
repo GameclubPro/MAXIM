@@ -10067,6 +10067,63 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('does not overwrite a presentable title during local discovery when the candidate title is fallback', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValueOnce({
+      id: 'chat-launch',
+      title: 'Устойчивое имя чата',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      primaryBotId: null,
+      botId: null,
+    });
+
+    const maxBotLinkService = {
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue(null),
+      getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue([]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+    jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue(undefined);
+
+    await expect(
+      (service as any).persistManagedEntityAccessBestEffort({
+        chatId: 'chat-launch',
+        userId: 'admin-1',
+        title: 'Chat chat-launch',
+        entityType: 'chat',
+        source: 'local_discovery',
+      }),
+    ).resolves.toMatchObject({
+      id: 'chat-launch',
+      title: 'Устойчивое имя чата',
+      entityType: 'chat',
+    });
+
+    const upsertArgs = prisma.chat.upsert.mock.calls[0][0];
+    expect(upsertArgs.update).not.toHaveProperty('title');
+    expect(prisma.chat.findUnique).not.toHaveBeenCalled();
+    expect(maxBotLinkService.bindDiscoveredChatBots).toHaveBeenCalledWith(
+      expect.objectContaining({
+        chatId: 'chat-launch',
+        title: 'Устойчивое имя чата',
+      }),
+    );
+  });
+
   it('replaces a fallback title during current chat bootstrap when MAX provides a presentable title', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValueOnce({

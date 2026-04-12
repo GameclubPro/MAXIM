@@ -20959,7 +20959,8 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
     const fallbackTitle = entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`;
-    const nextTitle = normalizedTitle ?? fallbackTitle;
+    const presentableTitle = this.resolvePresentableManagedEntityTitle(chatId, normalizedTitle);
+    const nextTitle = presentableTitle ?? fallbackTitle;
     const updateEntityType = options.updateEntityType === true;
     const titleUpdateMode =
       options.titleUpdateMode === 'fallback_only' ? 'fallback_only' : 'always';
@@ -20971,7 +20972,7 @@ export class AdminService implements OnModuleDestroy {
       ),
     );
     let shouldUpdateTitle = false;
-    if (normalizedTitle) {
+    if (presentableTitle) {
       if (titleUpdateMode === 'always') {
         shouldUpdateTitle = true;
       } else {
