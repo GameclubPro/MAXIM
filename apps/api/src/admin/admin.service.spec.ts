@@ -2326,6 +2326,10 @@ describe('AdminService required subscription settings', () => {
         },
       },
     ]);
+    const chatContextCache = createChatContextCacheMock();
+    const maxBotExecutionPlanner = {
+      refreshChatBotCapabilitySnapshots: jest.fn().mockResolvedValue(undefined),
+    };
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2350,8 +2354,15 @@ describe('AdminService required subscription settings', () => {
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      createChatContextCacheMock() as never,
+      chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotExecutionPlanner as never,
     );
     jest.spyOn(service, 'getSettings').mockResolvedValue(
       chatSettingsSchema.parse({
@@ -2413,6 +2424,21 @@ describe('AdminService required subscription settings', () => {
         deleteSpammersEnabled: false,
       }),
     );
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-2');
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledTimes(3);
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'chat',
+    });
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
+      chatId: 'chat-2',
+      entityType: 'chat',
+    });
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      entityType: 'channel',
+    });
   });
 
   it('applies the full night section to every cached chat', async () => {

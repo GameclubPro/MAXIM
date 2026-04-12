@@ -492,6 +492,7 @@ const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
 const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const ADMIN_ACTION_HEALTH_LANE = 'background' as const;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
+const REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY = 3;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
@@ -7481,8 +7482,34 @@ export class AdminService implements OnModuleDestroy {
         ]);
 
         await this.chatContextCache.invalidate(chatId);
+        await this.refreshManagedEntityBotAccessSnapshots(
+          chatId,
+          'chat',
+          'chat settings apply-to-all',
+        );
       },
     );
+
+    if (shouldValidateRequiredSubscription && normalizedSettings.requiredSubscriptionEnabled) {
+      const requiredSubscriptionChannelIds = Array.from(
+        new Set(
+          normalizedSettings.requiredSubscriptionChannelIds
+            .map((channelId) => channelId.trim())
+            .filter((channelId) => channelId.length > 0),
+        ),
+      );
+      await this.mapWithConcurrencyLimit(
+        requiredSubscriptionChannelIds,
+        REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+        async (channelId) => {
+          await this.refreshManagedEntityBotAccessSnapshots(
+            channelId,
+            'channel',
+            'required subscription settings apply-to-all',
+          );
+        },
+      );
+    }
 
     return {
       sourceChatId,
@@ -7790,23 +7817,26 @@ export class AdminService implements OnModuleDestroy {
           .filter((value): value is string => value.length > 0),
       ),
     );
-    const channels: ManagedEntityHeader[] = [];
+    const channels = await this.mapWithConcurrencyLimit(
+      normalizedChannelIds,
+      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+      async (channelId) => {
+        try {
+          return await this.resolveRequiredSubscriptionChannelById(channelId);
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              channelId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to resolve required subscription channel for settings screen',
+          );
+          return null;
+        }
+      },
+    );
 
-    for (const channelId of normalizedChannelIds) {
-      try {
-        channels.push(await this.resolveRequiredSubscriptionChannelById(channelId));
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            channelId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Failed to resolve required subscription channel for settings screen',
-        );
-      }
-    }
-
-    return channels;
+    return channels.filter((channel): channel is ManagedEntityHeader => channel !== null);
   }
 
   private async resolveRequiredSubscriptionChannelReference(
@@ -8107,14 +8137,20 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    const invalidChannelIds: string[] = [];
-    for (const channelId of selectedChannelIds) {
-      try {
-        await this.resolveRequiredSubscriptionChannelById(channelId);
-      } catch {
-        invalidChannelIds.push(channelId);
-      }
-    }
+    const invalidChannelIds = (
+      await this.mapWithConcurrencyLimit(
+        selectedChannelIds,
+        REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+        async (channelId) => {
+          try {
+            await this.resolveRequiredSubscriptionChannelById(channelId);
+            return null;
+          } catch {
+            return channelId;
+          }
+        },
+      )
+    ).filter((channelId): channelId is string => channelId !== null);
 
     if (invalidChannelIds.length > 0) {
       throw new BadRequestException({
@@ -19008,13 +19044,17 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    for (const channelId of settings.requiredSubscriptionChannelIds) {
-      await this.refreshManagedEntityBotAccessSnapshots(
-        channelId,
-        'channel',
-        'required subscription settings update',
-      );
-    }
+    await this.mapWithConcurrencyLimit(
+      settings.requiredSubscriptionChannelIds,
+      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+      async (channelId) => {
+        await this.refreshManagedEntityBotAccessSnapshots(
+          channelId,
+          'channel',
+          'required subscription settings update',
+        );
+      },
+    );
   }
 
   private async refreshExecutionReadinessAfterChannelSettingsUpdate(chatId: string): Promise<void> {

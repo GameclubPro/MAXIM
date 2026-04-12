@@ -74,6 +74,59 @@ test('keeps resolved external channels reusable after they were removed from sel
   );
 });
 
+test('prefers fresh managed channel metadata over stale resolved fallback for the same channel', () => {
+  const collections = buildRequiredSubscriptionChannelCollections({
+    managedChannels: [
+      createChannel('channel-public', {
+        title: 'Свежий managed title',
+        link: 'https://max.ru/managed-channel-public',
+      }),
+    ],
+    resolvedChannels: [
+      createResolvedChannel('channel-public', {
+        title: 'Старый resolved title',
+        link: 'https://max.ru/stale-channel-public',
+      }),
+    ],
+    selectedChannelIds: ['channel-public'],
+  });
+
+  assert.deepEqual(collections.selectedChannels, [
+    {
+      id: 'channel-public',
+      title: 'Свежий managed title',
+      link: 'https://max.ru/managed-channel-public',
+    },
+  ]);
+});
+
+test('uses resolved metadata when the managed channel snapshot still has no public link', () => {
+  const collections = buildRequiredSubscriptionChannelCollections({
+    managedChannels: [
+      createChannel('channel-public', {
+        title: 'Managed without link',
+        link: '   ',
+      }),
+    ],
+    resolvedChannels: [
+      createResolvedChannel('channel-public', {
+        title: 'Resolved with link',
+        link: 'https://max.ru/resolved-channel-public',
+      }),
+    ],
+    selectedChannelIds: ['channel-public'],
+  });
+
+  assert.deepEqual(collections.selectedChannels, [
+    {
+      id: 'channel-public',
+      title: 'Resolved with link',
+      link: 'https://max.ru/resolved-channel-public',
+    },
+  ]);
+  assert.deepEqual(collections.selectedUnavailableChannels, []);
+});
+
 test('marks selected channels without a public link as unavailable instead of silently dropping them', () => {
   const collections = buildRequiredSubscriptionChannelCollections({
     managedChannels: [

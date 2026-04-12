@@ -91,7 +91,13 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   }
 
   for (const channel of params.resolvedChannels) {
-    availableChannelById.set(channel.id, channel);
+    const existingChannel = availableChannelById.get(channel.id);
+    if (!existingChannel || !normalizeLink(existingChannel.link)) {
+      availableChannelById.set(channel.id, {
+        ...channel,
+        link: normalizeLink(channel.link),
+      });
+    }
     unavailableManagedChannelById.delete(channel.id);
   }
 
