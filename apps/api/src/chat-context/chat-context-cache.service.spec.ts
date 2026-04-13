@@ -1,14 +1,69 @@
-jest.mock('ioredis', () =>
-  jest.fn().mockImplementation(() => ({
-    get: jest.fn(),
-    mget: jest.fn(),
-    pttl: jest.fn().mockResolvedValue(-2),
-    set: jest.fn().mockResolvedValue('OK'),
-    del: jest.fn().mockResolvedValue(1),
-    multi: jest.fn(),
-    quit: jest.fn().mockResolvedValue(undefined),
-  })),
-);
+jest.mock('ioredis', () => {
+  const store = new Map<string, string>();
+  const subscribers = new Set<(channel: string, payload: string) => void>();
+
+  const createInstance = () => {
+    const messageHandlers = new Set<(channel: string, payload: string) => void>();
+    const instance = {
+      get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+      mget: jest
+        .fn()
+        .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
+      pttl: jest.fn().mockResolvedValue(-2),
+      set: jest.fn().mockImplementation(async (key: string, value: string) => {
+        store.set(key, value);
+        return 'OK';
+      }),
+      del: jest.fn().mockImplementation(async (...keys: string[]) => {
+        let deleted = 0;
+        for (const key of keys) {
+          if (store.delete(key)) {
+            deleted += 1;
+          }
+        }
+        return deleted;
+      }),
+      publish: jest.fn().mockImplementation(async (channel: string, payload: string) => {
+        for (const subscriber of subscribers) {
+          subscriber(channel, payload);
+        }
+        return subscribers.size;
+      }),
+      subscribe: jest.fn().mockResolvedValue(1),
+      on: jest.fn().mockImplementation((event: string, handler: unknown) => {
+        if (event === 'message' && typeof handler === 'function') {
+          const messageHandler = handler as (channel: string, payload: string) => void;
+          messageHandlers.add(messageHandler);
+          subscribers.add(messageHandler);
+        }
+        return instance;
+      }),
+      duplicate: jest.fn().mockImplementation(() => createInstance()),
+      multi: jest.fn(),
+      quit: jest.fn().mockImplementation(async () => {
+        for (const handler of messageHandlers) {
+          subscribers.delete(handler);
+        }
+        messageHandlers.clear();
+      }),
+    };
+
+    return instance;
+  };
+
+  const RedisMock = Object.assign(
+    jest.fn().mockImplementation(() => createInstance()),
+    {
+      __store: store,
+      __subscribers: subscribers,
+    },
+  );
+
+  return {
+    __esModule: true,
+    default: RedisMock,
+  };
+});
 
 import Redis from 'ioredis';
 import type { ChatSummary } from '@maxim/contracts';
@@ -187,6 +242,10 @@ describe('ChatContextCacheService', () => {
   };
 
   beforeEach(() => {
+    (Redis as unknown as { __store: Map<string, string> }).__store.clear();
+    (
+      Redis as unknown as { __subscribers: Set<(channel: string, payload: string) => void> }
+    ).__subscribers.clear();
     jest.clearAllMocks();
   });
 
@@ -390,6 +449,76 @@ describe('ChatContextCacheService', () => {
     });
 
     expect(redisInstance.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('propagates chat context invalidation to other service instances', async () => {
+    const chatId = 'chat-1';
+    const initialSettings = buildSettings(chatId);
+    const updatedSettings = {
+      ...buildSettings(chatId),
+      nightModeForceCloseEnabled: true,
+      nightModeForceCloseForever: true,
+    };
+    const prismaReader = {
+      chat: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValueOnce({
+            id: chatId,
+            title: 'Chat title',
+            settings: initialSettings,
+            domains: [],
+            admins: [],
+            rules: null,
+          })
+          .mockResolvedValueOnce({
+            id: chatId,
+            title: 'Chat title',
+            settings: updatedSettings,
+            domains: [],
+            admins: [],
+            rules: null,
+          }),
+        upsert: jest.fn(),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const invalidator = new ChatContextCacheService(
+      { chat: {} } as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const reader = new ChatContextCacheService(
+      prismaReader as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await invalidator.onModuleInit();
+    await reader.onModuleInit();
+
+    await expect(reader.getChatContext(chatId, 'Chat title')).resolves.toMatchObject({
+      chatId,
+      settings: expect.objectContaining({
+        nightModeForceCloseEnabled: false,
+      }),
+    });
+    await invalidator.invalidate(chatId);
+    await expect(reader.getChatContext(chatId, 'Chat title')).resolves.toMatchObject({
+      chatId,
+      settings: expect.objectContaining({
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: true,
+      }),
+    });
+
+    expect(prismaReader.chat.findUnique).toHaveBeenCalledTimes(2);
+
+    await invalidator.onModuleDestroy();
+    await reader.onModuleDestroy();
   });
 
   it('patches cached chat titles without invalidating the full chat context', async () => {

@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatSettings } from '@prisma/client';
@@ -45,8 +45,10 @@ type LocalChatContextCacheEntry = {
   expiresAtMs: number;
 };
 
+const CHAT_CONTEXT_INVALIDATION_CHANNEL = 'chat:context:invalidate:v1';
+
 @Injectable()
-export class ChatContextCacheService implements OnModuleDestroy {
+export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly CHAT_CONTEXT_TTL_SEC = 60;
   private static readonly LOCAL_CHAT_CONTEXT_TTL_MS = 30_000;
   private static readonly CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS = 150;
@@ -60,11 +62,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
+  private readonly subscriber: Redis;
   private readonly localChatContextTtlMs: number;
   private readonly managedEntityHeaderTtlSec: number;
   private readonly managedEntityBotProfileTtlSec: number;
   private readonly localChatContextCache = new Map<string, LocalChatContextCacheEntry>();
   private readonly chatContextInFlightLoads = new Map<string, Promise<ChatContext>>();
+  private readonly localChatContextEpochs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -72,6 +76,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
     private readonly maxBotLinkService: MaxBotLinkService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+    this.subscriber = this.redis.duplicate();
     this.localChatContextTtlMs = this.readPositiveInt(
       (configService as { get?: (key: string) => unknown }).get?.(
         'CHAT_CONTEXT_LOCAL_CACHE_TTL_MS',
@@ -92,7 +97,24 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
+  async onModuleInit(): Promise<void> {
+    this.subscriber.on('message', (channel, payload) => {
+      if (channel !== CHAT_CONTEXT_INVALIDATION_CHANNEL) {
+        return;
+      }
+
+      const chatId = this.parseInvalidationPayload(payload);
+      if (!chatId) {
+        return;
+      }
+
+      this.applyLocalInvalidation(chatId);
+    });
+    await this.subscriber.subscribe(CHAT_CONTEXT_INVALIDATION_CHANNEL);
+  }
+
   async onModuleDestroy() {
+    await this.subscriber.quit();
     await this.redis.quit();
   }
 
@@ -181,26 +203,47 @@ export class ChatContextCacheService implements OnModuleDestroy {
       return this.reconcileCachedChatTitle(chatId, localCached, normalizedTitle);
     }
 
+    const expectedEpoch = this.readChatContextEpoch(chatId);
+
     const existingLoad = this.chatContextInFlightLoads.get(chatId);
     if (existingLoad) {
       const resolved = await existingLoad;
+      if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
+        return this.getChatContext(chatId, normalizedTitle);
+      }
       return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
     }
 
     let loadPromise!: Promise<ChatContext>;
-    loadPromise = this.loadCachedOrSource(chatId, normalizedTitle).finally(() => {
+    loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, expectedEpoch).finally(() => {
       if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
         this.chatContextInFlightLoads.delete(chatId);
       }
     });
     this.chatContextInFlightLoads.set(chatId, loadPromise);
     const resolved = await loadPromise;
+    if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
+      return this.getChatContext(chatId, normalizedTitle);
+    }
     return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
   }
 
   async invalidate(chatId: string) {
-    this.localChatContextCache.delete(chatId);
-    await this.redis.del(ChatContextCacheService.cacheKey(chatId));
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    this.applyLocalInvalidation(normalizedChatId);
+    await Promise.all([
+      this.redis.del(ChatContextCacheService.cacheKey(normalizedChatId)),
+      this.redis.publish(
+        CHAT_CONTEXT_INVALIDATION_CHANNEL,
+        JSON.stringify({
+          chatId: normalizedChatId,
+        }),
+      ),
+    ]);
   }
 
   async getAdminAccess(chatId: string, userId: string): Promise<ChatAdminAccessState | null> {
@@ -807,7 +850,11 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return fallback;
   }
 
-  private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
+  private async loadAndCache(
+    chatId: string,
+    chatTitle?: string | null,
+    expectedEpoch?: number,
+  ): Promise<ChatContext> {
     const title = chatTitle?.trim();
     let chat = await this.findChatContextRow(chatId);
     if (!chat?.settings) {
@@ -838,21 +885,24 @@ export class ChatContextCacheService implements OnModuleDestroy {
       rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
 
-    this.writeLocalChatContext(chatId, value);
-    this.writeChatContextToRedis(chatId, value);
+    if (expectedEpoch === undefined || this.readChatContextEpoch(chatId) === expectedEpoch) {
+      this.writeLocalChatContext(chatId, value);
+      this.writeChatContextToRedis(chatId, value);
+    }
     return value;
   }
 
   private async loadCachedOrSource(
     chatId: string,
     normalizedTitle: string | null,
+    expectedEpoch: number,
   ): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.readRedisStringWithin(
       key,
       ChatContextCacheService.CHAT_CONTEXT_REDIS_READ_TIMEOUT_MS,
     );
-    if (cached) {
+    if (cached && this.readChatContextEpoch(chatId) === expectedEpoch) {
       try {
         const parsed = JSON.parse(cached) as ChatContext;
         return this.reconcileCachedChatTitle(chatId, parsed, normalizedTitle);
@@ -864,7 +914,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       }
     }
 
-    return this.loadAndCache(chatId, normalizedTitle);
+    return this.loadAndCache(chatId, normalizedTitle, expectedEpoch);
   }
 
   private async findChatContextRow(chatId: string) {
@@ -1207,6 +1257,27 @@ export class ChatContextCacheService implements OnModuleDestroy {
       value,
       expiresAtMs: Date.now() + this.localChatContextTtlMs,
     });
+  }
+
+  private applyLocalInvalidation(chatId: string): void {
+    this.localChatContextCache.delete(chatId);
+    this.chatContextInFlightLoads.delete(chatId);
+    this.localChatContextEpochs.set(chatId, this.readChatContextEpoch(chatId) + 1);
+  }
+
+  private parseInvalidationPayload(payload: string): string | null {
+    try {
+      const parsed = JSON.parse(payload) as { chatId?: unknown };
+      return typeof parsed.chatId === 'string' && parsed.chatId.trim().length > 0
+        ? parsed.chatId.trim()
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private readChatContextEpoch(chatId: string): number {
+    return this.localChatContextEpochs.get(chatId) ?? 0;
   }
 
   private appendChatAdminUser(context: ChatContext, userId: string): ChatContext {
