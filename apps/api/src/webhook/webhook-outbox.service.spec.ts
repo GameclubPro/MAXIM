@@ -479,7 +479,6 @@ describe('WebhookOutboxService', () => {
   it('prioritizes manual-close messages ahead of older regular messages', async () => {
     const { service, queues } = createService({
       configOverrides: { ENQUEUE_BATCH_SIZE: 1 },
-      resolvedQueueName: 'moderation-default-0',
       manualCloseChatIds: ['chat-manual'],
       findManyResult: [
         {
@@ -505,8 +504,8 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queues['moderation-default-0'].add).toHaveBeenCalledTimes(1);
-    expect(queues['moderation-default-0'].add).toHaveBeenCalledWith(
+    expect(queues.criticalQueue.add).toHaveBeenCalledTimes(1);
+    expect(queues.criticalQueue.add).toHaveBeenCalledWith(
       'process-webhook-event',
       { webhookEventId: 'evt-manual-close-message' },
       expect.objectContaining({
@@ -514,6 +513,7 @@ describe('WebhookOutboxService', () => {
         priority: 3,
       }),
     );
+    expect(queues['moderation-default-0'].add).not.toHaveBeenCalled();
   });
 
   it('routes membership leave events into the background queue', async () => {

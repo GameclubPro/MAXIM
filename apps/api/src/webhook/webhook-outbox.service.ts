@@ -17,6 +17,7 @@ import {
   LEGACY_WEBHOOK_QUEUE,
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
+  WEBHOOK_JOB_PRIORITY,
   resolveWebhookJobPriority,
   WEBHOOK_QUEUE_BACKGROUND,
   WEBHOOK_QUEUE_CRITICAL,
@@ -380,12 +381,15 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           event.normalizedPayload,
           { botId: event.botId },
         );
+        const isManualCloseMessage = event.priority === WEBHOOK_JOB_PRIORITY.manualCloseMessage;
         const targetQueueName =
-          event.status === WebhookStatus.QUEUED &&
-          typeof event.queueName === 'string' &&
-          ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
-            ? (event.queueName as AnyWebhookQueueName)
-            : queueName;
+          isManualCloseMessage
+            ? WEBHOOK_QUEUE_CRITICAL
+            : event.status === WebhookStatus.QUEUED &&
+                typeof event.queueName === 'string' &&
+                ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
+              ? (event.queueName as AnyWebhookQueueName)
+              : queueName;
         await this.enqueueOne(
           event,
           event.priority,
