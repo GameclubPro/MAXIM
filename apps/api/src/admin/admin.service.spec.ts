@@ -1767,6 +1767,44 @@ describe('AdminService night mode settings normalization', () => {
       }),
     );
   });
+
+  it('does not probe manual-action bot access while reading chat settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      entityType: 'CHAT',
+      primaryBotId: 'id613002203036_bot',
+      botId: null,
+      botMemberships: [],
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: chatSettingsSchema.parse({}),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn().mockResolvedValue(undefined) } as never,
+      createConfigMock() as never,
+    );
+
+    await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
+  });
 });
 
 describe('AdminService required subscription settings', () => {
@@ -13253,6 +13291,47 @@ describe('AdminService.updateChannelSettings', () => {
         }),
       }),
     );
+  });
+
+  it('does not probe manual-action bot access while reading channel settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      entityType: 'CHANNEL',
+      primaryBotId: 'id613002203036_bot',
+      botId: null,
+      botMemberships: [],
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Канал MAX',
+      entityType: 'CHANNEL',
+      channelSettings: {
+        chatId: 'channel-1',
+        ...channelSettingsSchema.parse({ commentsEnabled: false }),
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    await service.getChannelSettings('channel-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
   });
 
   it('syncs auto post buttons mode with the comments and suggestion toggles', async () => {

@@ -5630,12 +5630,12 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ChatSettings> {
     if (!options.skipAdminCheck) {
-      await this.assertChatAdmin(chatId, user.userId, 'chat');
+      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
     }
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, 'chat');
     }
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -5707,7 +5707,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async getChatSettingsScreen(chatId: string, user: AuthUser): Promise<ChatSettingsScreenResponse> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
@@ -5835,7 +5835,7 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ChatRules> {
     if (!options.skipAdminCheck) {
-      await this.assertChatAdmin(chatId, user.userId, 'chat');
+      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
     }
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, 'chat');
@@ -6265,12 +6265,12 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ChannelSettings> {
     if (!options.skipAdminCheck) {
-      await this.assertChatAdmin(chatId, user.userId, 'channel');
+      await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel');
     }
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, 'channel');
     }
-    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const resolvedBotId = await this.resolveChatBotIdForRead(chatId);
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -6347,7 +6347,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     user: AuthUser,
   ): Promise<ChannelSettingsScreenResponse> {
-    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel');
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
     const [settings, header, managedBroadcasts] = await Promise.all([
@@ -8531,7 +8531,7 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedBroadcastSummary[]> {
     if (!options.skipAdminCheck) {
-      await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+      await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
     }
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(sourceChatId, user.userId, entityType);
@@ -8574,7 +8574,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.assertReadOnlyChatAdmin(sourceChatId, user.userId, entityType);
     await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const row = await this.prisma.managedBroadcast.findFirst({
@@ -11832,7 +11832,7 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityType,
   ): Promise<ManagedPoll> {
-    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, entityType);
     await this.ensureEntityType(chatId, user.userId, entityType);
 
     const poll = await this.upsertManagedPoll(chatId);
@@ -21292,7 +21292,7 @@ export class AdminService implements OnModuleDestroy {
     options: AdminReadBypassOptions = {},
   ): Promise<ManagedEntityHeader> {
     if (!options.skipAdminCheck) {
-      await this.assertChatAdmin(chatId, user.userId, entityType);
+      await this.assertReadOnlyChatAdmin(chatId, user.userId, entityType);
     }
     if (!options.skipEntityCheck) {
       await this.ensureEntityType(chatId, user.userId, entityType);
