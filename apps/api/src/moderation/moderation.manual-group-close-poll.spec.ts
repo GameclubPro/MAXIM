@@ -36,6 +36,24 @@ function createRedisCounterMock() {
 }
 
 describe('ModerationService manual group close polling', () => {
+  it('reads manual group close polling cadence from config overrides', () => {
+    const service = new ModerationService(
+      {} as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      undefined,
+      undefined,
+      createConfigMock({
+        MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS: 3_000,
+        MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS: 1_000,
+      }) as never,
+    );
+
+    expect((service as any).manualGroupCloseScanIntervalMs).toBe(3_000);
+    expect((service as any).manualGroupCloseStartupDelayMs).toBe(1_000);
+  });
+
   it('deletes fresh non-admin messages in manually closed chats via background polling', async () => {
     const dateNowSpy = jest
       .spyOn(Date, 'now')

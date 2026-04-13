@@ -635,11 +635,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS,
       CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS,
     );
-    this.manualGroupCloseScanIntervalMs = DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS;
+    this.manualGroupCloseScanIntervalMs = this.readPositiveConfigInt(
+      configService?.get<number>('MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS'),
+      DEFAULT_MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS,
+      1_000,
+    );
     this.manualGroupCloseScanMaxChats = DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_CHATS;
     this.manualGroupCloseInterChatDelayMs = DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS;
     this.manualGroupCloseIdleBackoffMaxMs = DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS;
-    this.manualGroupCloseStartupDelayMs = DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS;
+    this.manualGroupCloseStartupDelayMs = this.readNonNegativeConfigInt(
+      configService?.get<number>('MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS'),
+      DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS,
+    );
     this.manualGroupCloseMaxNewMessagesPerScan =
       DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN;
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
