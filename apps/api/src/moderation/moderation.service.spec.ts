@@ -5472,7 +5472,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('sends night mode notice before deleting the first blocked message in an active window', async () => {
+  it('deletes the first blocked night mode message before sending the notice', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
       hour: '2-digit',
@@ -5538,8 +5538,8 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
-      maxClient.deleteMessage.mock.invocationCallOrder[0],
+    expect(maxClient.deleteMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.sendMessage.mock.invocationCallOrder[0],
     );
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWithPrefix(
@@ -5555,22 +5555,22 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
         chatId: 'chat-1',
-        userId: 'system',
-        ruleCode: 'NIGHT_MODE_NOTICE',
-        action: SanctionAction.NONE,
-        metadata: expect.objectContaining({
-          reason: 'Night mode notice sent before blocked message',
-          sourceMessageId: 'msg-1',
-        }),
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'NIGHT_MODE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
       }),
     });
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         chatId: 'chat-1',
-        userId: 'user-1',
-        messageId: 'msg-1',
-        ruleCode: 'NIGHT_MODE_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        userId: 'system',
+        ruleCode: 'NIGHT_MODE_NOTICE',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          reason: 'Night mode notice sent after blocked message deletion',
+          sourceMessageId: 'msg-1',
+        }),
       }),
     });
   });

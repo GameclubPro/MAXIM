@@ -7119,8 +7119,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    const sendNightModeClosedNotice = async () => {
+      if (!nightModeBotMessageEnabled) {
+        return;
+      }
 
-    if (nightModeBotMessageEnabled) {
       try {
         await this.sendNightModeClosedNoticeIfNeeded({
           chatId,
@@ -7139,7 +7142,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           rulesPublishedUrl,
           rulesPublishedMessageId,
           sessionMoment: 'current',
-          reason: 'Night mode notice sent before blocked message',
+          reason: 'Night mode notice sent after blocked message deletion',
           sourceMessageId: messageId,
         });
       } catch (error: unknown) {
@@ -7150,10 +7153,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to send night mode notice before blocked message',
+          'Failed to send night mode notice after deleting blocked message',
         );
       }
-    }
+    };
 
     if (canDeleteMessage) {
       try {
@@ -7205,7 +7208,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to persist night mode deletion event',
         );
       }
+
+      // Keep enforcement ahead of the optional background-rate-limited notice.
+      await sendNightModeClosedNotice();
     } else {
+      await sendNightModeClosedNotice();
       await this.maxClient.notifyModerators(
         chatId,
         `Сообщение от ${userId} попало в закрытие чата на ночь, но старше 24 часов и не может быть удалено`,
