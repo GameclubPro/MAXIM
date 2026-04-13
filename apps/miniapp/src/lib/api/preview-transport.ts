@@ -91,6 +91,8 @@ type PreviewState = {
   channels: ChatSummary[];
   chatDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
   channelDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
+  chatDialogThreads: PreviewDialogThreadBuckets;
+  channelDialogThreads: PreviewDialogThreadBuckets;
   chatHeaderParticipantsCount: number;
   chatSettings: ChatSettings;
   chatRules: ChatRules;
@@ -116,6 +118,10 @@ type PreviewDialogBucket = {
   introText: string;
   messages: ChannelDialogMessage[];
 };
+
+type PreviewDialogThreadBuckets = Partial<
+  Record<ChannelDialogType, Record<string, PreviewDialogBucket>>
+>;
 
 const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
 const PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY = 'maxim.preview.giveaway.runtime';
@@ -1103,6 +1109,34 @@ function findPreviewDialogMessage(
   return bucket.messages.find((message) => message.id === normalizedMessageId) ?? null;
 }
 
+function getPreviewDialogBucket(
+  state: PreviewState,
+  entityType: 'chat' | 'channel',
+  dialogType: ChannelDialogType,
+  token: string | null | undefined,
+): PreviewDialogBucket {
+  const normalizedToken = token?.trim() ?? '';
+  const baseBuckets = entityType === 'channel' ? state.channelDialogs : state.chatDialogs;
+
+  if (!normalizedToken) {
+    return baseBuckets[dialogType];
+  }
+
+  const threadBuckets =
+    entityType === 'channel' ? state.channelDialogThreads : state.chatDialogThreads;
+  const bucketsForType =
+    threadBuckets[dialogType] ??
+    ((threadBuckets[dialogType] = {}) as Record<string, PreviewDialogBucket>);
+  const existingBucket = bucketsForType[normalizedToken];
+  if (existingBucket) {
+    return existingBucket;
+  }
+
+  const nextBucket = cloneJson(baseBuckets[dialogType]);
+  bucketsForType[normalizedToken] = nextBucket;
+  return nextBucket;
+}
+
 function togglePreviewDialogReaction(
   bucket: PreviewDialogBucket,
   messageId: string,
@@ -1936,6 +1970,7 @@ function createInitialState(): PreviewState {
     ],
     chatHeaderParticipantsCount: 1_584,
     chatDialogs,
+    chatDialogThreads: {},
     chatSettings,
     chatRules,
     chatDomains,
@@ -1954,6 +1989,7 @@ function createInitialState(): PreviewState {
     chatViolations: createChatViolations(now),
     channelHeaderParticipantsCount: 9_240,
     channelDialogs,
+    channelDialogThreads: {},
     channelSettings,
     channelPoll,
     channelBroadcasts,
@@ -2597,22 +2633,19 @@ async function handleChatRequest(
     const dialogType = channelDialogTypeSchema.parse(tail[1]);
 
     if (tail.length === 2 && method === 'GET') {
-      return cloneJson(
-        buildPreviewDialogResponse(
-          chatId,
-          dialogType,
-          state.chatDialogs[dialogType],
-          state.me.userId,
-        ),
+      const bucket = getPreviewDialogBucket(
+        state,
+        'chat',
+        dialogType,
+        url.searchParams.get('token'),
       );
+      return cloneJson(buildPreviewDialogResponse(chatId, dialogType, bucket, state.me.userId));
     }
 
     if (tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      const replyTarget = findPreviewDialogMessage(
-        state.chatDialogs[dialogType],
-        payload.replyToMessageId,
-      );
+      const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
+      const replyTarget = findPreviewDialogMessage(bucket, payload.replyToMessageId);
       const message = buildPreviewDialogMessage({
         id: `chat-${dialogType}-${Date.now()}`,
         type: dialogType,
@@ -2647,7 +2680,7 @@ async function handleChatRequest(
             }
           : {}),
       });
-      state.chatDialogs[dialogType].messages.push(message);
+      bucket.messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
@@ -2656,11 +2689,8 @@ async function handleChatRequest(
 
     if (tail[2] === 'messages' && tail[3] && method === 'PATCH') {
       const payload = updateChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      const message = updatePreviewDialogMessage(
-        state.chatDialogs[dialogType],
-        tail[3],
-        payload.text,
-      );
+      const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
+      const message = updatePreviewDialogMessage(bucket, tail[3], payload.text);
       return updateChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
@@ -2668,8 +2698,9 @@ async function handleChatRequest(
     }
 
     if (tail[2] === 'messages' && tail[3] && method === 'DELETE') {
-      deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      deletePreviewDialogMessage(state.chatDialogs[dialogType], tail[3]);
+      const payload = deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
+      deletePreviewDialogMessage(bucket, tail[3]);
       return deleteChannelDialogMessageResponseSchema.parse({
         ok: true,
         deletedMessageId: tail[3],
@@ -2678,11 +2709,8 @@ async function handleChatRequest(
 
     if (tail[2] === 'messages' && tail[3] && tail[4] === 'reactions' && method === 'POST') {
       const payload = toggleChannelDialogReactionRequestSchema.parse(parseJsonBody(init));
-      const message = togglePreviewDialogReaction(
-        state.chatDialogs[dialogType],
-        tail[3],
-        payload.emoji,
-      );
+      const bucket = getPreviewDialogBucket(state, 'chat', dialogType, payload.token);
+      const message = togglePreviewDialogReaction(bucket, tail[3], payload.emoji);
       return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
@@ -3169,22 +3197,19 @@ async function handleChannelRequest(
     const dialogType = channelDialogTypeSchema.parse(tail[1]);
 
     if (tail.length === 2 && method === 'GET') {
-      return cloneJson(
-        buildPreviewDialogResponse(
-          channelId,
-          dialogType,
-          state.channelDialogs[dialogType],
-          state.me.userId,
-        ),
+      const bucket = getPreviewDialogBucket(
+        state,
+        'channel',
+        dialogType,
+        url.searchParams.get('token'),
       );
+      return cloneJson(buildPreviewDialogResponse(channelId, dialogType, bucket, state.me.userId));
     }
 
     if (tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      const replyTarget = findPreviewDialogMessage(
-        state.channelDialogs[dialogType],
-        payload.replyToMessageId,
-      );
+      const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
+      const replyTarget = findPreviewDialogMessage(bucket, payload.replyToMessageId);
       const message = buildPreviewDialogMessage({
         id: `channel-${dialogType}-${Date.now()}`,
         type: dialogType,
@@ -3219,7 +3244,7 @@ async function handleChannelRequest(
             }
           : {}),
       });
-      state.channelDialogs[dialogType].messages.push(message);
+      bucket.messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
@@ -3228,11 +3253,8 @@ async function handleChannelRequest(
 
     if (tail[2] === 'messages' && tail[3] && method === 'PATCH') {
       const payload = updateChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      const message = updatePreviewDialogMessage(
-        state.channelDialogs[dialogType],
-        tail[3],
-        payload.text,
-      );
+      const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
+      const message = updatePreviewDialogMessage(bucket, tail[3], payload.text);
       return updateChannelDialogMessageResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),
@@ -3240,8 +3262,9 @@ async function handleChannelRequest(
     }
 
     if (tail[2] === 'messages' && tail[3] && method === 'DELETE') {
-      deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      deletePreviewDialogMessage(state.channelDialogs[dialogType], tail[3]);
+      const payload = deleteChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
+      deletePreviewDialogMessage(bucket, tail[3]);
       return deleteChannelDialogMessageResponseSchema.parse({
         ok: true,
         deletedMessageId: tail[3],
@@ -3250,11 +3273,8 @@ async function handleChannelRequest(
 
     if (tail[2] === 'messages' && tail[3] && tail[4] === 'reactions' && method === 'POST') {
       const payload = toggleChannelDialogReactionRequestSchema.parse(parseJsonBody(init));
-      const message = togglePreviewDialogReaction(
-        state.channelDialogs[dialogType],
-        tail[3],
-        payload.emoji,
-      );
+      const bucket = getPreviewDialogBucket(state, 'channel', dialogType, payload.token);
+      const message = togglePreviewDialogReaction(bucket, tail[3], payload.emoji);
       return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
         message: decoratePreviewDialogMessageAccess(message, state.me.userId),

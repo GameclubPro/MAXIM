@@ -1383,11 +1383,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     if (openMaxBotLinkAndClose(url)) {
       suggestRedirectOpenedRef.current = true;
     }
-  }, [
-    isChannelSuggestRedirect,
-    isPreviewChannelSuggestRedirect,
-    suggestRedirectQuery.data?.url,
-  ]);
+  }, [isChannelSuggestRedirect, isPreviewChannelSuggestRedirect, suggestRedirectQuery.data?.url]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
@@ -1481,6 +1477,37 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setEditingMessageId(null);
     setEditRestoreState(null);
   };
+
+  useEffect(() => {
+    clearMessagePress();
+    clearSwipeReplyGesture();
+    clearSourceHighlight();
+    setActiveMessageId(null);
+    setEditingMessageId(null);
+    setEditRestoreState(null);
+    setReplyToMessageId(null);
+    setIsReactionPickerExpanded(false);
+    setIsBodyScrolled(false);
+    setIsNearBottom(true);
+    setFirstUnreadMessageId(null);
+    setTerminalDialogError(null);
+    setReactionPopoverLayout(null);
+    setDraft('');
+    setSuggestionImages((current) => {
+      for (const image of current) {
+        URL.revokeObjectURL(image.previewUrl);
+      }
+      return [];
+    });
+    if (suggestionImageInputRef.current) {
+      suggestionImageInputRef.current.value = '';
+    }
+    lastMessageIdRef.current = null;
+    messageNodeRefs.current.clear();
+    messageLayoutContextRef.current = null;
+    messageRectsRef.current.clear();
+    ignoreNextBubbleClickRef.current = false;
+  }, [chatId, dialogType, entityType, token]);
 
   const handleDismiss = () => {
     maxImpact('light');
@@ -2608,11 +2635,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   >
                     Повторить
                   </button>
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={handleDismiss}
-                  >
+                  <button type="button" className="button button--ghost" onClick={handleDismiss}>
                     Назад
                   </button>
                 </div>
