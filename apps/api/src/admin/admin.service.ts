@@ -7845,7 +7845,15 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ManagedEntityHeader> {
     const normalizedValue = value.trim();
     if (!normalizedValue) {
-      throw new BadRequestException('Укажите публичную ссылку или ID канала.');
+      throw new BadRequestException(
+        'Укажите публичную ссылку, ссылку на чат/пост MAX или ID канала.',
+      );
+    }
+
+    const extractedChatId =
+      this.extractRequiredSubscriptionChannelIdFromValue(normalizedValue);
+    if (extractedChatId) {
+      return this.resolveRequiredSubscriptionChannelById(extractedChatId);
     }
 
     const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(normalizedValue);
@@ -7858,6 +7866,63 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.resolveRequiredSubscriptionChannelById(normalizedValue);
+  }
+
+  private buildRequiredSubscriptionChannelUrlCandidates(
+    value: string | null | undefined,
+  ): string[] {
+    if (typeof value !== 'string') {
+      return [];
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return [];
+    }
+
+    const candidates = [trimmed];
+    if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
+      if (trimmed.startsWith('/')) {
+        candidates.unshift(`https://max.ru${trimmed}`);
+      } else if (trimmed.startsWith('max.ru/') || trimmed.startsWith('www.max.ru/')) {
+        candidates.unshift(`https://${trimmed}`);
+      } else if (trimmed.includes('/') && !/\s/u.test(trimmed)) {
+        candidates.unshift(`https://max.ru/${trimmed.replace(/^\/+/u, '')}`);
+      }
+    }
+
+    return Array.from(new Set(candidates));
+  }
+
+  private extractRequiredSubscriptionChannelIdFromValue(
+    value: string | null | undefined,
+  ): string | null {
+    for (const candidate of this.buildRequiredSubscriptionChannelUrlCandidates(value)) {
+      try {
+        const parsed = new URL(candidate);
+        const hostname = parsed.hostname.trim().toLowerCase();
+        if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+          continue;
+        }
+
+        const pathSegments = parsed.pathname
+          .split('/')
+          .map((segment) => segment.trim())
+          .filter(Boolean);
+        if (pathSegments[0] !== 'chats' || pathSegments.length < 2) {
+          continue;
+        }
+
+        const chatId = decodeURIComponent(pathSegments[1] ?? '').trim();
+        if (chatId) {
+          return chatId;
+        }
+      } catch {
+        // Ignore invalid candidate and try the next one.
+      }
+    }
+
+    return null;
   }
 
   private async resolveRequiredSubscriptionChannelByLink(link: string): Promise<MaxBotChat> {
@@ -7945,12 +8010,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Этот идентификатор относится к чату, а не к каналу.');
     }
 
-    const link = snapshot.link?.trim() ?? '';
-    if (!link) {
-      throw new BadRequestException(
-        'Для обязательной подписки нужен публичный канал с рабочей ссылкой.',
-      );
-    }
+    const link = snapshot.link?.trim() || null;
 
     const header = this.createManagedEntityHeader({
       id: normalizedChatId,
@@ -8082,27 +8142,7 @@ export class AdminService implements OnModuleDestroy {
   private normalizeRequiredSubscriptionChannelLink(
     value: string | null | undefined,
   ): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-
-    const candidates = [trimmed];
-    if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
-      if (trimmed.startsWith('/')) {
-        candidates.unshift(`https://max.ru${trimmed}`);
-      } else if (trimmed.startsWith('max.ru/') || trimmed.startsWith('www.max.ru/')) {
-        candidates.unshift(`https://${trimmed}`);
-      } else if (trimmed.includes('/') && !/\s/u.test(trimmed)) {
-        candidates.unshift(`https://max.ru/${trimmed.replace(/^\/+/u, '')}`);
-      }
-    }
-
-    for (const candidate of candidates) {
+    for (const candidate of this.buildRequiredSubscriptionChannelUrlCandidates(value)) {
       try {
         const parsed = new URL(candidate);
         const hostname = parsed.hostname.trim().toLowerCase();
@@ -8157,7 +8197,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException({
         requiredSubscriptionChannelIds: {
           _errors: [
-            'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
+            'Для обязательной подписки нужны каналы MAX, где бот состоит администратором и может проверить подписку.',
           ],
         },
       });

@@ -1971,6 +1971,66 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('resolves an external required subscription channel from a MAX chat post link', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-3',
+        title: 'Канал по ссылке на пост',
+        participantsCount: 72,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'https://max.ru/chats/channel-ext-3/message/100',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'channel-ext-3',
+        title: 'Канал по ссылке на пост',
+        entityType: 'channel',
+        link: null,
+        participantsCount: 72,
+      }),
+    });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-ext-3',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'channel-ext-3',
+        title: 'Канал по ссылке на пост',
+        entityType: 'channel',
+        link: null,
+        participantsCount: 72,
+      }),
+    );
+  });
+
   it('accepts an external required subscription channel on update when the bot is admin there', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -2222,7 +2282,7 @@ describe('AdminService required subscription settings', () => {
       response: {
         requiredSubscriptionChannelIds: {
           _errors: [
-            'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
+            'Для обязательной подписки нужны каналы MAX, где бот состоит администратором и может проверить подписку.',
           ],
         },
       },
@@ -2260,8 +2320,9 @@ describe('AdminService required subscription settings', () => {
     });
   });
 
-  it('rejects required subscription channels without a working link', async () => {
+  it('accepts required subscription channels without a public link when the bot is admin there', async () => {
     const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
@@ -2285,27 +2346,24 @@ describe('AdminService required subscription settings', () => {
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      createChatContextCacheMock() as never,
+      chatContextCache as never,
       createConfigMock() as never,
     );
-    let thrown: unknown;
-    try {
-      await service.updateSettings('chat-1', actor, {
-        requiredSubscriptionEnabled: true,
-        requiredSubscriptionChannelIds: ['channel-1'],
-      });
-    } catch (error: unknown) {
-      thrown = error;
-    }
-
-    expect(thrown).toBeInstanceOf(BadRequestException);
-    expect((thrown as BadRequestException).getResponse()).toMatchObject({
-      requiredSubscriptionChannelIds: {
-        _errors: [
-          'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
-        ],
-      },
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
     });
+
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: null,
+        participantsCount: 125,
+      }),
+    );
   });
 
   it('applies the required subscription section to every cached chat', async () => {

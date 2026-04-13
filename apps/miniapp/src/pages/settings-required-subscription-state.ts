@@ -6,7 +6,7 @@ export type RequiredSubscriptionSelectedChannel = {
   link: string;
 };
 
-export type RequiredSubscriptionUnavailableChannelReason = 'missing_link' | 'unavailable';
+export type RequiredSubscriptionUnavailableChannelReason = 'unavailable';
 
 export type RequiredSubscriptionUnavailableChannel = {
   id: string;
@@ -45,15 +45,6 @@ function toManagedEntityHeader(channel: ChatSummary): ManagedEntityHeader {
   };
 }
 
-function createMissingLinkChannel(channel: ChatSummary): RequiredSubscriptionUnavailableChannel {
-  return {
-    id: channel.id,
-    title: channel.title,
-    reason: 'missing_link',
-    description: 'Нужна публичная ссылка для проверки подписки.',
-  };
-}
-
 function createUnavailableChannel(channelId: string): RequiredSubscriptionUnavailableChannel {
   return {
     id: channelId,
@@ -69,7 +60,6 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   selectedChannelIds: readonly string[] | null | undefined;
 }): RequiredSubscriptionChannelCollections {
   const availableChannelById = new Map<string, ManagedEntityHeader>();
-  const unavailableManagedChannelById = new Map<string, RequiredSubscriptionUnavailableChannel>();
   const selectedIds = new Set(params.selectedChannelIds ?? []);
 
   for (const channel of params.managedChannels ?? []) {
@@ -77,28 +67,17 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    const normalizedLink = normalizeLink(channel.link);
-    if (!normalizedLink) {
-      unavailableManagedChannelById.set(channel.id, createMissingLinkChannel(channel));
-      continue;
-    }
-
-    const header = toManagedEntityHeader({
-      ...channel,
-      link: normalizedLink,
-    });
-    availableChannelById.set(channel.id, header);
+    availableChannelById.set(channel.id, toManagedEntityHeader(channel));
   }
 
   for (const channel of params.resolvedChannels) {
     const existingChannel = availableChannelById.get(channel.id);
-    if (!existingChannel || !normalizeLink(existingChannel.link)) {
+    if (!existingChannel || (!normalizeLink(existingChannel.link) && normalizeLink(channel.link))) {
       availableChannelById.set(channel.id, {
         ...channel,
         link: normalizeLink(channel.link),
       });
     }
-    unavailableManagedChannelById.delete(channel.id);
   }
 
   const selectedChannels: RequiredSubscriptionSelectedChannel[] = [];
@@ -114,14 +93,10 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    selectedUnavailableChannels.push(
-      unavailableManagedChannelById.get(channelId) ?? createUnavailableChannel(channelId),
-    );
+    selectedUnavailableChannels.push(createUnavailableChannel(channelId));
   }
 
-  const unavailableManagedChannels = [...unavailableManagedChannelById.values()].filter(
-    (channel) => !selectedIds.has(channel.id),
-  );
+  const unavailableManagedChannels: RequiredSubscriptionUnavailableChannel[] = [];
   const availableChoices = [...availableChannelById.values()].filter(
     (channel) => !selectedIds.has(channel.id),
   );

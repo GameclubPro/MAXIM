@@ -37,7 +37,7 @@ function createResolvedChannel(
   };
 }
 
-test('separates channels without a public link from selectable required subscription channels', () => {
+test('keeps channels without a public link selectable for required subscription', () => {
   const collections = buildRequiredSubscriptionChannelCollections({
     managedChannels: [
       createChannel('channel-public'),
@@ -49,16 +49,9 @@ test('separates channels without a public link from selectable required subscrip
 
   assert.deepEqual(
     collections.availableChoices.map((channel) => channel.id),
-    ['channel-public'],
+    ['channel-public', 'channel-private'],
   );
-  assert.deepEqual(collections.unavailableManagedChannels, [
-    {
-      id: 'channel-private',
-      title: 'Закрытый канал',
-      reason: 'missing_link',
-      description: 'Нужна публичная ссылка для проверки подписки.',
-    },
-  ]);
+  assert.deepEqual(collections.unavailableManagedChannels, []);
 });
 
 test('keeps resolved external channels reusable after they were removed from selection', () => {
@@ -127,7 +120,7 @@ test('uses resolved metadata when the managed channel snapshot still has no publ
   assert.deepEqual(collections.selectedUnavailableChannels, []);
 });
 
-test('marks selected channels without a public link as unavailable instead of silently dropping them', () => {
+test('keeps selected channels without a public link in the chosen required subscription list', () => {
   const collections = buildRequiredSubscriptionChannelCollections({
     managedChannels: [
       createChannel('channel-public'),
@@ -143,14 +136,13 @@ test('marks selected channels without a public link as unavailable instead of si
       title: 'Channel channel-public',
       link: 'https://max.ru/channel-public',
     },
-  ]);
-  assert.deepEqual(collections.selectedUnavailableChannels, [
     {
       id: 'channel-no-link',
       title: 'Без ссылки',
-      reason: 'missing_link',
-      description: 'Нужна публичная ссылка для проверки подписки.',
+      link: '',
     },
+  ]);
+  assert.deepEqual(collections.selectedUnavailableChannels, [
     {
       id: 'channel-missing',
       title: 'channel-missing',

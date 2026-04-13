@@ -3105,7 +3105,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     if (!normalizedValue) {
-      setRequiredSubscriptionExternalChannelError('Укажите публичную ссылку или ID канала.');
+      setRequiredSubscriptionExternalChannelError(
+        'Укажите публичную ссылку, ссылку на чат/пост MAX или ID канала.',
+      );
       return;
     }
 
@@ -4499,8 +4501,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS
       ? 'Достигнут лимит выбранных каналов.'
       : requiredSubscriptionUnavailableCount > 0
-        ? 'Нет каналов с рабочей ссылкой. Каналы без ссылки показаны ниже.'
-        : 'Нет доступных каналов с рабочей ссылкой для добавления.';
+        ? 'Нет доступных каналов для добавления. Недоступные каналы показаны ниже.'
+        : 'Нет доступных каналов для добавления.';
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? areChannelsSyncing
       ? 'Синхронизируем каналы...'
@@ -10146,7 +10148,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             label="Пояснение для списка обязательных каналов"
                           >
                             Можно выбрать свои каналы ниже или добавить чужой канал по публичной
-                            ссылке. Чтобы MAX проверял подписку, бот должен быть администратором
+                            ссылке, ссылке на чат или пост MAX либо по ID канала. Чтобы MAX
+                            проверял подписку, один из наших ботов должен быть администратором
                             этого канала.
                           </SettingsHintAnchor>
                         </div>
@@ -10289,7 +10292,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Каналы без публичной ссылки нельзя выбрать для проверки.
+                              Эти каналы сейчас не удалось подготовить для выбора. Обновите список
+                              и проверьте права.
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
@@ -10345,7 +10349,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   handleResolveRequiredSubscriptionExternalChannel();
                                 }
                               }}
-                              placeholder="https://max.ru/..."
+                              placeholder="https://max.ru/... или channel-id"
                               disabled={isResolvingRequiredSubscriptionChannel}
                             />
                             {requiredSubscriptionExternalChannelError ? (
