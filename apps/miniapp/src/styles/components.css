@@ -2966,7 +2966,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-  padding: 56px 2px 14px;
+  padding: 70px 2px 14px;
 }
 
 .channel-dialog-skeletons,
@@ -4126,7 +4126,7 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-    padding: 50px 2px 12px;
+    padding: 65px 2px 12px;
   }
 
   .channel-dialog-reaction-popover {
