@@ -9971,7 +9971,7 @@ export class PrivateControlService {
     const mentionText = `<a href="${this.escapeHtmlAttribute(`max://user/${encodeURIComponent(userId)}`)}">${this.escapeHtml(displayName)}</a>`;
     await this.sendImmediate(
       privateChatId,
-      `<strong>${this.escapeHtml('Профиль пользователя')}</strong><br><br>${mentionText}`,
+      `<p><strong>${this.escapeHtml('Профиль пользователя')}</strong></p><p>${mentionText}</p>`,
       {
         textFormat: 'html',
       },

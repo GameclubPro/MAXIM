@@ -3409,7 +3409,7 @@ describe('PrivateControlService', () => {
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
     );
 
-    expect(getLastSentText(maxClient)).toContain('Профиль пользователя');
+    expect(getLastSentText(maxClient)).toContain('<p><strong>Профиль пользователя</strong></p>');
     expect(getLastSentText(maxClient)).toContain(
       '<a href="max://user/user-42">Юлия Максимова</a>',
     );
