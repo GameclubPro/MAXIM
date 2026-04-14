@@ -1,11 +1,10 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useRef } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 
 type ChatParticipantsRosterProps = {
   items: ChatParticipantItem[];
-  totalCount: number | null;
   hasMore: boolean;
   isReloading: boolean;
   isLoadingMore: boolean;
@@ -34,7 +33,7 @@ function resolveInitial(name: string): string {
   return matched ? matched[0]!.toUpperCase() : '•';
 }
 
-function resolveRoleLabel(item: ChatParticipantItem): string {
+function resolveRoleLabel(item: ChatParticipantItem): string | null {
   if (item.role === 'owner') {
     return 'Владелец';
   }
@@ -43,7 +42,7 @@ function resolveRoleLabel(item: ChatParticipantItem): string {
     return 'Админ';
   }
 
-  return 'Участник';
+  return null;
 }
 
 function resolveRoleTone(item: ChatParticipantItem): 'owner' | 'admin' | 'member' {
@@ -60,7 +59,6 @@ function resolveRoleTone(item: ChatParticipantItem): 'owner' | 'admin' | 'member
 
 export function ChatParticipantsRoster({
   items,
-  totalCount,
   hasMore,
   isReloading,
   isLoadingMore,
@@ -71,18 +69,6 @@ export function ChatParticipantsRoster({
 }: ChatParticipantsRosterProps) {
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoLoadLockRef = useRef(false);
-  const loadedCount = items.length;
-  const avatarsCount = useMemo(
-    () => items.filter((item) => Boolean(item.avatarUrl?.trim())).length,
-    [items],
-  );
-  const profileReadyCount = useMemo(
-    () =>
-      items.filter((item) =>
-        Boolean(item.profileHandoffUrl?.trim() || item.profileUrl?.trim()),
-      ).length,
-    [items],
-  );
 
   useEffect(() => {
     if (!isLoadingMore) {
@@ -123,36 +109,6 @@ export function ChatParticipantsRoster({
 
   return (
     <section className="participants-roster" aria-label="Список участников">
-      <div className="participants-roster__head">
-        <div className="participants-roster__copy">
-          <div className="participants-roster__eyebrow">Roster</div>
-          <h2>Участники чата</h2>
-          <p>Актуальный состав чата из MAX с аватарками, ролями и быстрым переходом в профиль.</p>
-        </div>
-
-        <div className="participants-roster__metrics">
-          <article className="participants-roster__metric participants-roster__metric--primary">
-            <small>Всего</small>
-            <strong>{totalCount ?? loadedCount}</strong>
-            <span>
-              {hasMore && totalCount !== null
-                ? `Загружено ${loadedCount} из ${totalCount}`
-                : 'Список синхронизирован'}
-            </span>
-          </article>
-          <article className="participants-roster__metric">
-            <small>Аватары</small>
-            <strong>{avatarsCount}</strong>
-            <span>Карточек с фото</span>
-          </article>
-          <article className="participants-roster__metric">
-            <small>Профили</small>
-            <strong>{profileReadyCount}</strong>
-            <span>Можно открыть в MAX</span>
-          </article>
-        </div>
-      </div>
-
       {error ? (
         <div className="participants-roster__status">
           <p>{error}</p>
@@ -164,13 +120,13 @@ export function ChatParticipantsRoster({
 
       {!error && isReloading && items.length === 0 ? (
         <div className="participants-roster__status">
-          <Spinner size="lg" label="Загружаем состав участников" />
+          <Spinner size="lg" label="Загружаем участников" />
         </div>
       ) : null}
 
       {!error && !isReloading && items.length === 0 ? (
         <div className="participants-roster__status">
-          <p>Участники пока не найдены. Попробуйте обновить список.</p>
+          <p>Участников пока нет.</p>
         </div>
       ) : null}
 
@@ -182,6 +138,7 @@ export function ChatParticipantsRoster({
             const canOpenProfile =
               item.userId.trim().length > 0 && typeof onProfileActivate === 'function';
             const roleTone = resolveRoleTone(item);
+            const roleLabel = resolveRoleLabel(item);
             const itemBody = (
               <>
                 <div className="participants-roster__avatar-shell">
@@ -198,23 +155,29 @@ export function ChatParticipantsRoster({
                     {username ? <span>@{username}</span> : null}
                   </div>
 
-                  <div className="participants-roster__meta">
-                    <span
-                      className={`participants-roster__pill participants-roster__pill--${roleTone}`}
-                    >
-                      {resolveRoleLabel(item)}
-                    </span>
-                    {item.isBot ? (
-                      <span className="participants-roster__pill participants-roster__pill--bot">
-                        Бот
-                      </span>
-                    ) : null}
-                  </div>
+                  {roleLabel || item.isBot ? (
+                    <div className="participants-roster__meta">
+                      {roleLabel ? (
+                        <span
+                          className={`participants-roster__pill participants-roster__pill--${roleTone}`}
+                        >
+                          {roleLabel}
+                        </span>
+                      ) : null}
+                      {item.isBot ? (
+                        <span className="participants-roster__pill participants-roster__pill--bot">
+                          Бот
+                        </span>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
 
-                <span className="participants-roster__chevron" aria-hidden="true">
-                  ↗
-                </span>
+                {canOpenProfile ? (
+                  <span className="participants-roster__chevron" aria-hidden="true">
+                    ↗
+                  </span>
+                ) : null}
               </>
             );
 
@@ -249,10 +212,8 @@ export function ChatParticipantsRoster({
           onClick={onLoadMore}
           disabled={isLoadingMore || isReloading}
         >
-          {isLoadingMore ? 'Загружаем ещё участников...' : 'Показать ещё'}
+          {isLoadingMore ? 'Загружаем...' : 'Показать ещё'}
         </button>
-      ) : items.length > 0 ? (
-        <p className="participants-roster__footnote">Показаны все доступные участники чата.</p>
       ) : null}
     </section>
   );

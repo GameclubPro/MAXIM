@@ -982,45 +982,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         ? 'Отток участников'
         : 'Баланс без изменений';
   const participantsTotal = participantsFeed.totalCount ?? participantsFeed.items.length;
-  const participantsLoaded = participantsFeed.items.length;
-  const participantsWithAvatars = participantsFeed.items.filter((item) =>
-    Boolean(item.avatarUrl?.trim()),
-  ).length;
-  const participantsWithProfiles = participantsFeed.items.filter((item) =>
-    Boolean(item.profileHandoffUrl?.trim() || item.profileUrl?.trim()),
-  ).length;
   const participantsHeroMetric = {
-    label: 'Участники',
+    label: 'Сейчас в чате',
     value: String(participantsTotal),
-    note:
-      participantsTotal > 0
-        ? 'Актуальный состав чата из MAX'
-        : 'Участники появятся после первой синхронизации',
     tone: 'accent' as const,
   };
-  const participantsSecondaryMetrics = [
-    {
-      label: 'Загружено',
-      value: String(participantsLoaded),
-      note:
-        participantsFeed.hasMore && participantsTotal > participantsLoaded
-          ? `из ${participantsTotal}`
-          : 'Видим весь доступный список',
-      tone: 'neutral' as const,
-    },
-    {
-      label: 'Аватары',
-      value: String(participantsWithAvatars),
-      note: 'Карточек с фото',
-      tone: 'success' as const,
-    },
-    {
-      label: 'Профили',
-      value: String(participantsWithProfiles),
-      note: 'Можно открыть в MAX',
-      tone: 'accent' as const,
-    },
-  ];
   const moderationHeroMetric = {
     label: 'События',
     value: String(violationsSummary.total),
@@ -1054,7 +1020,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     section === 'activity'
       ? 'Баланс и движение участников'
       : section === 'participants'
-        ? 'Актуальный roster чата и быстрый переход в профиль'
+        ? ''
         : 'Люди и меры за выбранный период';
   const activateProfile = (
     userId: string,
@@ -1184,7 +1150,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             <div className="events-dashboard__head">
               <div className="events-dashboard__head-copy">
                 <strong>{dashboardTitle}</strong>
-                <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
+                {dashboardSubtitle ? (
+                  <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
+                ) : null}
               </div>
 
               {section !== 'participants' ? (
@@ -1234,21 +1202,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 >
                   <small>{participantsHeroMetric.label}</small>
                   <strong>{participantsHeroMetric.value}</strong>
-                  <span>{participantsHeroMetric.note}</span>
                 </article>
-
-                <div className="events-dashboard__stack">
-                  {participantsSecondaryMetrics.map((item) => (
-                    <article
-                      key={item.label}
-                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                    >
-                      <small>{item.label}</small>
-                      <strong>{item.value}</strong>
-                      <span>{item.note}</span>
-                    </article>
-                  ))}
-                </div>
               </div>
             ) : section === 'activity' ? (
               <div className="events-dashboard__activity">
@@ -1355,7 +1309,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       {section === 'participants' ? (
         <ChatParticipantsRoster
           items={participantsFeed.items}
-          totalCount={participantsFeed.totalCount}
           hasMore={participantsFeed.hasMore}
           isReloading={participantsFeed.isReloading}
           isLoadingMore={participantsFeed.isLoadingMore}

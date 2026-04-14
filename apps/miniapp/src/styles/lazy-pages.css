@@ -10540,107 +10540,17 @@
 
 .participants-roster {
   display: grid;
-  gap: 14px;
-  padding: 14px;
-  border: 1px solid rgba(212, 224, 236, 0.94);
-  border-radius: 26px;
-  background:
-    radial-gradient(circle at 100% 0%, rgba(11, 132, 255, 0.08), transparent 30%),
-    linear-gradient(180deg, rgba(251, 253, 255, 0.99), rgba(243, 248, 253, 0.98)),
-    rgba(252, 253, 255, 0.98);
-  box-shadow:
-    0 18px 30px rgba(22, 44, 67, 0.05),
-    0 2px 0 rgba(255, 255, 255, 0.66) inset;
-}
-
-.participants-roster__head,
-.participants-roster__copy {
-  display: grid;
-}
-
-.participants-roster__head {
-  gap: 12px;
-}
-
-.participants-roster__copy {
-  gap: 6px;
-}
-
-.participants-roster__eyebrow {
-  color: #0a79db;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.participants-roster__copy h2,
-.participants-roster__copy p,
-.participants-roster__footnote {
-  margin: 0;
-}
-
-.participants-roster__copy h2 {
-  color: #17324a;
-  font-size: 1.04rem;
-  font-weight: 820;
-  letter-spacing: -0.03em;
-}
-
-.participants-roster__copy p,
-.participants-roster__footnote {
-  color: #68839a;
-  font-size: 0.78rem;
-  line-height: 1.42;
-}
-
-.participants-roster__metrics {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
-}
-
-.participants-roster__metric {
-  display: grid;
-  gap: 6px;
-  min-height: 88px;
-  padding: 12px 13px;
-  border-radius: 18px;
-  border: 1px solid rgba(214, 226, 238, 0.92);
-  background: rgba(255, 255, 255, 0.88);
-}
-
-.participants-roster__metric--primary {
-  background:
-    linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(230, 243, 255, 0.9)),
-    rgba(255, 255, 255, 0.92);
-}
-
-.participants-roster__metric small {
-  color: #70899f;
-  font-size: 0.64rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.participants-roster__metric strong {
-  color: #17324a;
-  font-family: var(--font-heading);
-  font-size: clamp(1.18rem, 0.98rem + 0.8vw, 1.56rem);
-  line-height: 0.98;
-  letter-spacing: -0.05em;
-}
-
-.participants-roster__metric span {
-  color: #657e95;
-  font-size: 0.73rem;
-  line-height: 1.3;
+  padding: 10px;
+  border: 1px solid rgba(212, 224, 236, 0.94);
+  border-radius: 22px;
+  background: rgba(252, 253, 255, 0.98);
+  box-shadow: 0 12px 24px rgba(22, 44, 67, 0.04);
 }
 
 .participants-roster__list {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .participants-roster__item {
@@ -10650,11 +10560,11 @@
   gap: 12px;
   align-items: center;
   width: 100%;
-  padding: 12px 13px;
+  padding: 11px 12px;
   border: 1px solid rgba(214, 226, 238, 0.94);
-  border-radius: 20px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 10px 18px rgba(25, 58, 88, 0.035);
+  box-shadow: 0 6px 14px rgba(25, 58, 88, 0.03);
   text-align: left;
 }
 
@@ -10675,17 +10585,15 @@
   display: inline-grid;
   place-items: center;
   padding: 2px;
-  border-radius: 18px;
-  background:
-    linear-gradient(145deg, rgba(11, 132, 255, 0.2), rgba(35, 185, 146, 0.18)),
-    rgba(240, 247, 255, 0.96);
+  border-radius: 16px;
+  background: rgba(244, 248, 252, 0.98);
 }
 
 .participants-roster__avatar {
-  width: 44px;
-  min-width: 44px;
-  height: 44px;
-  border-radius: 16px;
+  width: 42px;
+  min-width: 42px;
+  height: 42px;
+  border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -10769,12 +10677,6 @@
   border-color: rgba(39, 181, 124, 0.18);
 }
 
-.participants-roster__pill--member {
-  color: #4e677f;
-  background: rgba(244, 248, 252, 0.98);
-  border-color: rgba(62, 96, 127, 0.14);
-}
-
 .participants-roster__pill--bot {
   color: #8f5c06;
   background: rgba(255, 245, 225, 0.98);
@@ -10785,14 +10687,14 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
   border-radius: 999px;
   color: #5d7e9b;
-  background: rgba(245, 249, 253, 0.96);
+  background: rgba(248, 250, 253, 0.96);
   border: 1px solid rgba(214, 226, 238, 0.92);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
   line-height: 1;
 }
 
@@ -10961,14 +10863,6 @@
     gap: 12px;
     padding: 12px;
     border-radius: 22px;
-  }
-
-  .participants-roster__metrics {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .participants-roster__metric--primary {
-    grid-column: 1 / -1;
   }
 
   .participants-roster__item {
