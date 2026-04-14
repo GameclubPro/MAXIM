@@ -6,6 +6,7 @@ type VariantFamily = {
 
 const CYRILLIC_HARD_MASC_SUFFIXES = ['', 'а', 'у', 'е', 'ом', 'и', 'ов', 'ам', 'ами', 'ах'];
 const CYRILLIC_FEM_A_SUFFIXES = ['а', 'и', 'е', 'у', 'ой', 'ою', 'ам', 'ами', 'ах'];
+const CYRILLIC_HARD_FEM_A_SUFFIXES = ['а', 'ы', 'е', 'у', 'ой', 'ою', 'ам', 'ами', 'ах'];
 const CYRILLIC_SOFT_FEM_SUFFIXES = ['ь', 'и', 'ью', 'ей', 'ям', 'ями', 'ях'];
 const CYRILLIC_ADJECTIVE_SUFFIXES = [
   'ий',
@@ -465,6 +466,25 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     ],
   },
   {
+    stems: ['падл'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+    exact: [
+      'падло',
+      'падлы',
+      'падлу',
+      'падлой',
+      'падлюкой',
+      'падлюка',
+      'падлюки',
+      'падлюке',
+      'падлюку',
+      'падлюкою',
+      'падлюкам',
+      'падлюками',
+      'падлюках',
+    ],
+  },
+  {
     stems: ['подон'],
     suffixes: CYRILLIC_OK_SUFFIXES,
     exact: [
@@ -495,6 +515,22 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'мерзавского',
       'мерзавскому',
       'мерзавскую',
+    ],
+  },
+  {
+    stems: ['засран'],
+    suffixes: CYRILLIC_EC_SUFFIXES,
+    exact: [
+      'засранка',
+      'засранки',
+      'засранке',
+      'засранку',
+      'засранкой',
+      'засранцы',
+      'засранцев',
+      'засранцам',
+      'засранцами',
+      'засранцах',
     ],
   },
   {
@@ -536,6 +572,21 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     ],
   },
   {
+    stems: ['стерв'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+    exact: [
+      'стервец',
+      'стервеца',
+      'стервецу',
+      'стервецом',
+      'стервецы',
+      'стервецов',
+      'стервецам',
+      'стервецами',
+      'стервецах',
+    ],
+  },
+  {
     stems: ['имбецил'],
     suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
     exact: [
@@ -571,6 +622,60 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
       'скотскую',
       'скотским',
       'скотских',
+    ],
+  },
+  {
+    stems: ['залуп'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+    exact: [
+      'залупень',
+      'залупени',
+      'залупенью',
+      'залупоглазый',
+      'залупоглазая',
+      'залупоглазое',
+      'залупоглазые',
+    ],
+  },
+  {
+    stems: ['манд'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+    exact: [
+      'мандавошка',
+      'мандавошки',
+      'мандавошке',
+      'мандавошку',
+      'мандавошкой',
+      'мандавошками',
+      'мандавошках',
+    ],
+  },
+  {
+    stems: ['шалав'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+  },
+  {
+    stems: ['шмар'],
+    suffixes: CYRILLIC_HARD_FEM_A_SUFFIXES,
+  },
+  {
+    stems: ['швал'],
+    suffixes: CYRILLIC_SOFT_FEM_SUFFIXES,
+    exact: ['швалье', 'швалья', 'швалью', 'швальем'],
+  },
+  {
+    stems: ['мудозвон'],
+    suffixes: CYRILLIC_HARD_MASC_SUFFIXES,
+    exact: [
+      'мудозвонка',
+      'мудозвонки',
+      'мудозвонке',
+      'мудозвонку',
+      'мудозвонкой',
+      'мудозвонский',
+      'мудозвонская',
+      'мудозвонское',
+      'мудозвонские',
     ],
   },
   {
@@ -691,6 +796,49 @@ const PROFANITY_VARIANT_FAMILIES: readonly VariantFamily[] = [
     stems: ['dibil'],
     suffixes: LATIN_HARD_MASC_SUFFIXES,
     exact: ['dibilka', 'dibilki', 'dibilku', 'dibilnyy', 'dibilnaya', 'dibilnoe'],
+  },
+  {
+    stems: ['padl'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['padlo', 'padlyuka', 'padlyuki', 'padlyuku', 'padlyukoy'],
+  },
+  {
+    stems: ['zasran'],
+    suffixes: ['ec', 'ca', 'cu', 'ce', 'cem', 'cy', 'cev', 'cam', 'cami', 'cah'],
+    exact: ['zasranka', 'zasranki', 'zasranku', 'zasrankoy'],
+  },
+  {
+    stems: ['sterv'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['stervec', 'sterveca', 'stervecu', 'stervecom', 'stervecy'],
+  },
+  {
+    stems: ['zalup'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['zalupen', 'zalupenyu', 'zalupoglazyy', 'zalupoglazaya', 'zalupoglazoe'],
+  },
+  {
+    stems: ['mand'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+    exact: ['mandavoshka', 'mandavoshki', 'mandavoshku', 'mandavoshkoy'],
+  },
+  {
+    stems: ['shalav'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+  },
+  {
+    stems: ['shmar'],
+    suffixes: LATIN_FEM_A_SUFFIXES,
+  },
+  {
+    stems: ['shval'],
+    suffixes: ['', 'i', 'yu', 'ey', 'yam', 'yami', 'yah'],
+    exact: ['shvalyo', 'shvalya', 'shvalyu', 'shvalyem'],
+  },
+  {
+    stems: ['mudozvon'],
+    suffixes: LATIN_HARD_MASC_SUFFIXES,
+    exact: ['mudozvonka', 'mudozvonki', 'mudozvonku', 'mudozvonskiy', 'mudozvonskaya'],
   },
   {
     stems: ['mudag'],

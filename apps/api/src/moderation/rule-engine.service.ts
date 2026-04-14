@@ -192,6 +192,35 @@ const PROFANITY_CANINE_CONTEXT_MARKERS = [
   'котят',
   'питомник',
 ];
+const PROFANITY_LIVESTOCK_FORMS = new Set([
+  'скотина',
+  'скотины',
+  'скотине',
+  'скотину',
+  'скотиной',
+  'скотиною',
+  'скотинам',
+  'скотинами',
+  'скотинах',
+]);
+const PROFANITY_LIVESTOCK_CONTEXT_MARKERS = [
+  'ферм',
+  'крс',
+  'коров',
+  'быч',
+  'телк',
+  'телят',
+  'овц',
+  'коз',
+  'свин',
+  'стад',
+  'пастбищ',
+  'выпас',
+  'хлев',
+  'стойл',
+  'комбикорм',
+  'надой',
+];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
   'бляхер',
@@ -1365,12 +1394,38 @@ export class RuleEngineService {
   }
 
   private isContextualProfanityException(token: string, normalizedContext: string): boolean {
-    if (!normalizedContext || !PROFANITY_CANINE_FEMALE_FORMS.has(token)) {
+    if (!normalizedContext) {
+      return false;
+    }
+
+    return (
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_CANINE_FEMALE_FORMS,
+        PROFANITY_CANINE_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_LIVESTOCK_FORMS,
+        PROFANITY_LIVESTOCK_CONTEXT_MARKERS,
+      )
+    );
+  }
+
+  private matchesProfanityContextException(
+    token: string,
+    normalizedContext: string,
+    forms: ReadonlySet<string>,
+    markers: readonly string[],
+  ): boolean {
+    if (!forms.has(token)) {
       return false;
     }
 
     let matchedMarkers = 0;
-    for (const marker of PROFANITY_CANINE_CONTEXT_MARKERS) {
+    for (const marker of markers) {
       if (!normalizedContext.includes(marker)) {
         continue;
       }
