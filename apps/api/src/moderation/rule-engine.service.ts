@@ -153,12 +153,11 @@ const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^твар(?:ь|и|ин)[а-я0-9]*$/u,
   /^идиот[а-я0-9]*$/u,
   /^урод[а-я0-9]*$/u,
-  /^г[ао]нд(?:он|ош)[а-я0-9]*$/u,
 ];
 const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
   /^pizd[a-z0-9]*$/i,
-  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo)(?:y|i|e|ya|yu)?[a-z0-9]*$/i,
+  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo)(?:y|i|e|ya|yu)[a-z0-9]*$/i,
   /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a|o|i|y|e|u|l|n|t|s|k|sh|zh)[a-z0-9]*$/i,
   /^dolboe+b[a-z0-9]*$/i,
   /^mraz[a-z0-9]*$/i,
@@ -168,7 +167,6 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^ublyu?d[a-z0-9]*$/i,
   /^tvar(?:in)?[a-z0-9]*$/i,
   /^urod[a-z0-9]*$/i,
-  /^g[ao]nd(?:on|osh)[a-z0-9]*$/i,
 ];
 const PROFANITY_CANINE_FEMALE_FORMS = new Set([
   'сука',
@@ -218,8 +216,24 @@ const PROFANITY_LIVESTOCK_CONTEXT_MARKERS = [
   'выпас',
   'хлев',
   'стойл',
+  'хозяйств',
+  'выращен',
+  'откорм',
   'комбикорм',
   'надой',
+];
+const PROFANITY_PARASITE_FORMS = new Set(['гнида', 'гниды', 'гниде', 'гниду', 'гнидой', 'гнидою']);
+const PROFANITY_PARASITE_CONTEXT_MARKERS = [
+  'мошк',
+  'комар',
+  'укус',
+  'укус',
+  'насеком',
+  'вош',
+  'вши',
+  'клещ',
+  'паразит',
+  'личин',
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -1410,6 +1424,12 @@ export class RuleEngineService {
         normalizedContext,
         PROFANITY_LIVESTOCK_FORMS,
         PROFANITY_LIVESTOCK_CONTEXT_MARKERS,
+      ) ||
+      this.matchesProfanityContextException(
+        token,
+        normalizedContext,
+        PROFANITY_PARASITE_FORMS,
+        PROFANITY_PARASITE_CONTEXT_MARKERS,
       )
     );
   }
