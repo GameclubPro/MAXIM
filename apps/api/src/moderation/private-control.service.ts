@@ -9968,12 +9968,12 @@ export class PrivateControlService {
     displayName: string,
     userId: string,
   ): Promise<void> {
-    const mentionText = `[${this.escapeMarkdown(displayName)}](max://user/${encodeURIComponent(userId)})`;
+    const mentionText = `<a href="${this.escapeHtmlAttribute(`max://user/${encodeURIComponent(userId)}`)}">${this.escapeHtml(displayName)}</a>`;
     await this.sendImmediate(
       privateChatId,
-      [this.markdownTitle('Профиль пользователя'), '', mentionText].join('\n'),
+      `<strong>${this.escapeHtml('Профиль пользователя')}</strong><br><br>${mentionText}`,
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
     );
   }
@@ -12996,6 +12996,19 @@ export class PrivateControlService {
 
   private escapeMarkdown(value: string): string {
     return value.replace(/([\\_*[\]()`])/g, '\\$1');
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  private escapeHtmlAttribute(value: string): string {
+    return this.escapeHtml(value);
   }
 
   private formatIsoDate(iso: string, timeZone?: string | null): string {
