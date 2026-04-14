@@ -56,6 +56,11 @@ import { RedisCounterService } from './redis-counter.service';
 const CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES = [400, 404] as const;
 const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const LAUNCHER_INTRO_MARKER_TTL_SEC = 365 * 24 * 60 * 60;
+const DEFAULT_PRIVATE_CALLBACK_INLINE_BUDGET_MS = 2_500;
+const DEFAULT_PRIVATE_CALLBACK_ACK_TIMEOUT_MS = 800;
+const DEFAULT_PRIVATE_CALLBACK_EDIT_TIMEOUT_MS = 1_500;
+const DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS = 2_500;
+const DEFERRED_PRIVATE_CALLBACK_NOTIFICATION = 'Обрабатываю команду...';
 
 type PrivateSectionKey =
   | 'links'
@@ -1156,6 +1161,10 @@ export class PrivateControlService {
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
+  private readonly privateCallbackInlineBudgetMs: number;
+  private readonly privateCallbackAckTimeoutMs: number;
+  private readonly privateCallbackEditTimeoutMs: number;
+  private readonly privateDialogSendTimeoutMs: number;
   private readonly memorySession = new Map<
     string,
     { expiresAt: number; session: PrivateSession }
@@ -1194,6 +1203,22 @@ export class PrivateControlService {
     this.maxBotTokenValidationSecrets =
       this.maxBotLinkService?.getValidationTokens() ??
       (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
+    this.privateCallbackInlineBudgetMs = this.toPositiveInt(
+      configService?.get('PRIVATE_CALLBACK_INLINE_BUDGET_MS'),
+      DEFAULT_PRIVATE_CALLBACK_INLINE_BUDGET_MS,
+    );
+    this.privateCallbackAckTimeoutMs = this.toPositiveInt(
+      configService?.get('PRIVATE_CALLBACK_ACK_TIMEOUT_MS'),
+      DEFAULT_PRIVATE_CALLBACK_ACK_TIMEOUT_MS,
+    );
+    this.privateCallbackEditTimeoutMs = this.toPositiveInt(
+      configService?.get('PRIVATE_CALLBACK_EDIT_TIMEOUT_MS'),
+      DEFAULT_PRIVATE_CALLBACK_EDIT_TIMEOUT_MS,
+    );
+    this.privateDialogSendTimeoutMs = this.toPositiveInt(
+      configService?.get('PRIVATE_DIALOG_SEND_TIMEOUT_MS'),
+      DEFAULT_PRIVATE_DIALOG_SEND_TIMEOUT_MS,
+    );
   }
 
   async handleUpdate(update: MaxUpdate): Promise<void> {
@@ -1212,44 +1237,71 @@ export class PrivateControlService {
 
     try {
       if (context.callbackPayload) {
-        await this.processCallback(context);
+        await this.processCallbackWithinInlineBudget(context, callback);
         return;
       }
 
       await this.processTextMessage(context);
     } catch (error: unknown) {
-      const badRequestDetails = this.extractBadRequestDetails(error);
-      const userMessage =
-        typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
-          ? badRequestDetails
-          : error instanceof BadRequestException &&
-              typeof error.message === 'string' &&
-              error.message.trim().length > 0
-            ? error.message
-            : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
-      const session = await this.loadSessionForDiagnostics(context.actor.userId);
-      const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
+      await this.handlePrivateControlError(context, callback, error);
+    }
+  }
+
+  private async processCallbackWithinInlineBudget(
+    context: PrivateContext,
+    callback: CallbackAction | null,
+  ): Promise<void> {
+    const processingPromise = this.processCallback(context);
+    processingPromise.catch(() => undefined);
+
+    try {
+      await this.awaitWithTimeout(
+        processingPromise,
+        this.privateCallbackInlineBudgetMs,
+        `Private callback inline budget exceeded after ${this.privateCallbackInlineBudgetMs}ms`,
+      );
+    } catch (error: unknown) {
+      if (!this.isTimeoutError(error)) {
+        throw error;
+      }
+
+      if (context.callbackId) {
+        await this.answerCallbackQuiet(
+          context.callbackId,
+          DEFERRED_PRIVATE_CALLBACK_NOTIFICATION,
+          this.privateCallbackAckTimeoutMs,
+        );
+      }
 
       this.logger.warn(
         {
           chatId: context.chatId,
           userId: context.actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-          badRequestDetails,
-          ...(badRequestResponse ? { badRequestResponse } : {}),
           callbackAction: callback?.action ?? null,
           callbackArgs: callback?.args ?? [],
           callbackPayload: context.callbackPayload,
-          selectedChatId: session?.selectedChatId ?? null,
-          selectedEntityType: session?.selectedEntityType ?? null,
-          screen: session?.screen ?? null,
-          pendingInput: session?.pendingInput?.kind ?? null,
-          pendingMassAction: session?.pendingMassAction?.kind ?? null,
+          timeoutMs: this.privateCallbackInlineBudgetMs,
         },
-        'Private control flow failed',
+        'Private callback processing exceeded inline budget; continuing in background',
       );
 
-      await this.sendImmediate(context.chatId, userMessage);
+      void processingPromise.catch((backgroundError: unknown) => {
+        void this.handlePrivateControlError(context, callback, backgroundError).catch(
+          (notificationError: unknown) => {
+            this.logger.warn(
+              {
+                chatId: context.chatId,
+                userId: context.actor.userId,
+                err:
+                  notificationError instanceof Error
+                    ? notificationError.message
+                    : String(notificationError),
+              },
+              'Failed to report detached private callback error',
+            );
+          },
+        );
+      });
     }
   }
 
@@ -9530,12 +9582,17 @@ export class PrivateControlService {
         callback.notification ?? 'Готово',
         text,
         options,
+        this.privateCallbackEditTimeoutMs,
       );
       if (edited) {
         return;
       }
 
-      await this.answerCallbackQuiet(callback.callbackId, callback.notification ?? 'Готово');
+      await this.answerCallbackQuiet(
+        callback.callbackId,
+        callback.notification ?? 'Готово',
+        this.privateCallbackAckTimeoutMs,
+      );
     }
 
     await this.sendImmediate(context.chatId, text, options);
@@ -9548,7 +9605,11 @@ export class PrivateControlService {
     callback: { callbackId: string | null; notification: string | null },
   ): Promise<void> {
     if (callback.callbackId) {
-      await this.answerCallbackQuiet(callback.callbackId, callback.notification ?? 'Готово');
+      await this.answerCallbackQuiet(
+        callback.callbackId,
+        callback.notification ?? 'Готово',
+        this.privateCallbackAckTimeoutMs,
+      );
     }
 
     await this.respond(context, session, view, {
@@ -9566,6 +9627,7 @@ export class PrivateControlService {
       await this.maxClient.sendMessage(chatId, text, options, {
         immediate: true,
         ignoreFailureMetricStatuses: PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES,
+        timeoutMs: this.privateDialogSendTimeoutMs,
       });
     } catch (error: unknown) {
       if (this.isTerminalPrivateDialogDeliveryError(error)) {
@@ -10226,6 +10288,7 @@ export class PrivateControlService {
     notification: string,
     text: string,
     options?: MaxSendMessageOptions,
+    timeoutMs?: number,
   ): Promise<boolean> {
     try {
       await this.maxClient.answerCallback(
@@ -10237,6 +10300,7 @@ export class PrivateControlService {
         },
         {
           ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+          ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
         },
       );
       return true;
@@ -10252,11 +10316,21 @@ export class PrivateControlService {
     }
   }
 
-  private async answerCallbackQuiet(callbackId: string, notification: string): Promise<void> {
+  private async answerCallbackQuiet(
+    callbackId: string,
+    notification: string,
+    timeoutMs?: number,
+  ): Promise<void> {
     try {
-      await this.maxClient.answerCallback(callbackId, notification, undefined, {
-        ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
-      });
+      await this.maxClient.answerCallback(
+        callbackId,
+        notification,
+        undefined,
+        {
+          ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+          ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+        },
+      );
     } catch (error: unknown) {
       this.logger.debug(
         {
@@ -10266,6 +10340,73 @@ export class PrivateControlService {
         'Callback answer failed',
       );
     }
+  }
+
+  private async handlePrivateControlError(
+    context: PrivateContext,
+    callback: CallbackAction | null,
+    error: unknown,
+  ): Promise<void> {
+    const badRequestDetails = this.extractBadRequestDetails(error);
+    const userMessage =
+      typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
+        ? badRequestDetails
+        : error instanceof BadRequestException &&
+            typeof error.message === 'string' &&
+            error.message.trim().length > 0
+          ? error.message
+          : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
+    const session = await this.loadSessionForDiagnostics(context.actor.userId);
+    const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
+
+    this.logger.warn(
+      {
+        chatId: context.chatId,
+        userId: context.actor.userId,
+        err: error instanceof Error ? error.message : String(error),
+        badRequestDetails,
+        ...(badRequestResponse ? { badRequestResponse } : {}),
+        callbackAction: callback?.action ?? null,
+        callbackArgs: callback?.args ?? [],
+        callbackPayload: context.callbackPayload,
+        selectedChatId: session?.selectedChatId ?? null,
+        selectedEntityType: session?.selectedEntityType ?? null,
+        screen: session?.screen ?? null,
+        pendingInput: session?.pendingInput?.kind ?? null,
+        pendingMassAction: session?.pendingMassAction?.kind ?? null,
+      },
+      'Private control flow failed',
+    );
+
+    await this.sendImmediate(context.chatId, userMessage);
+  }
+
+  private async awaitWithTimeout<T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> {
+    let timeout: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => {
+        const error = new Error(message) as Error & { code?: string };
+        error.code = 'PRIVATE_CONTROL_TIMEOUT';
+        reject(error);
+      }, timeoutMs);
+      timeout.unref?.();
+    });
+
+    try {
+      return await Promise.race([promise, timeoutPromise]);
+    } finally {
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+    }
+  }
+
+  private isTimeoutError(error: unknown): boolean {
+    return (error as { code?: unknown })?.code === 'PRIVATE_CONTROL_TIMEOUT';
   }
 
   private callbackButton(

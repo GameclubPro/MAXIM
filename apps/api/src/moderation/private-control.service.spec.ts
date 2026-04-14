@@ -1231,10 +1231,11 @@ describe('PrivateControlService', () => {
       '152517912',
       expect.any(String),
       expect.any(Object),
-      {
+      expect.objectContaining({
         immediate: true,
         ignoreFailureMetricStatuses: [403, 404],
-      },
+        timeoutMs: 2500,
+      }),
     );
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
@@ -1530,8 +1531,36 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         text: expect.any(String),
       }),
+      expect.objectContaining({
+        ignoreFailureMetricStatuses: [400, 404],
+        timeoutMs: 1500,
+      }),
+    );
+  });
+
+  it('acknowledges slow private callbacks and continues them in background', async () => {
+    const { service, maxClient } = createHarness();
+
+    (service as unknown as { privateCallbackInlineBudgetMs: number }).privateCallbackInlineBudgetMs =
+      1;
+    maxClient.answerCallback
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>(() => undefined),
+      )
+      .mockResolvedValueOnce(undefined);
+
+    await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
+
+    expect(maxClient.answerCallback).toHaveBeenCalledTimes(2);
+    expect(maxClient.answerCallback).toHaveBeenNthCalledWith(
+      2,
+      'callback-1',
+      'Обрабатываю команду...',
+      undefined,
       {
         ignoreFailureMetricStatuses: [400, 404],
+        timeoutMs: 800,
       },
     );
   });
@@ -1587,6 +1616,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]).toBeUndefined();
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[3]).toEqual({
       ignoreFailureMetricStatuses: [400, 404],
+      timeoutMs: 800,
     });
 
     expect(getLastUiText(maxClient)).toContain('Правила');
@@ -3449,7 +3479,7 @@ describe('PrivateControlService', () => {
       '152517912',
       expect.stringContaining('Розыгрыши перенесены в mini app'),
       expect.anything(),
-      expect.objectContaining({ immediate: true }),
+      expect.objectContaining({ immediate: true, timeoutMs: 2500 }),
     );
 
     await service.handleBotStarted(

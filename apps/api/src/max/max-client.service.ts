@@ -214,6 +214,7 @@ export type MaxActionJob = {
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
   sourceTag?: string;
+  timeoutMs?: number;
   messageId?: string;
   userId?: string;
   text?: string;
@@ -232,6 +233,7 @@ export type MaxActionDispatchOptions = {
   trafficClass?: MaxApiTrafficClass;
   actionHealthLane?: ActionHealthLane;
   sourceTag?: string;
+  timeoutMs?: number;
   ignoreFailureMetricStatuses?: readonly number[];
   botId?: string;
 };
@@ -2491,6 +2493,9 @@ export class MaxClientService implements OnModuleDestroy {
       ...(options?.trafficClass ? { trafficClass: options.trafficClass } : {}),
       ...(options?.actionHealthLane ? { actionHealthLane: options.actionHealthLane } : {}),
       ...(sourceTag ? { sourceTag } : {}),
+      ...(typeof options?.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? { timeoutMs: Math.max(1, Math.trunc(options.timeoutMs)) }
+        : {}),
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
@@ -3336,6 +3341,10 @@ export class MaxClientService implements OnModuleDestroy {
       trafficClass: action.trafficClass,
       actionHealthLane: action.actionHealthLane,
       sourceTag: this.normalizeMetricSourceTag(action.sourceTag) ?? undefined,
+      timeoutMs:
+        typeof action.timeoutMs === 'number' && Number.isFinite(action.timeoutMs)
+          ? Math.max(1, Math.trunc(action.timeoutMs))
+          : undefined,
       ignoreFailureMetricStatuses: this.normalizeFailureMetricStatuses(
         action.ignoreFailureMetricStatuses,
       ),
