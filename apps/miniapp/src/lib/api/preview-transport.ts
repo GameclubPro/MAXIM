@@ -1,6 +1,7 @@
 import {
   applySectionToAllResponseSchema,
   broadcastHandoffStateSchema,
+  chatParticipantsPageSchema,
   channelDialogMessageSchema,
   channelDialogResponseSchema,
   channelSuggestionRedirectResponseSchema,
@@ -41,6 +42,8 @@ import {
   updateManagedEntityPrimaryBotRequestSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
+  type ChatParticipantItem,
+  type ChatParticipantsPage,
   type ChannelDialogMessage,
   type ChannelDialogResponse,
   type ChannelDialogType,
@@ -101,6 +104,7 @@ type PreviewState = {
   chatBroadcasts: ManagedBroadcastDetails[];
   channelBroadcasts: ManagedBroadcastDetails[];
   chatGiveaways: ManagedGiveawayDetails[];
+  chatParticipants: ChatParticipantItem[];
   chatActivity: MembershipActivityItem[];
   chatViolations: LogsDashboardResponse['violations'];
   channelHeaderParticipantsCount: number;
@@ -703,6 +707,30 @@ function buildActivityPage(
     items: pageItems,
     hasMore: nextOffset < filtered.length,
     nextCursor: nextOffset < filtered.length ? String(nextOffset) : null,
+  });
+}
+
+function buildParticipantsPage(
+  items: ChatParticipantItem[],
+  {
+    limit = 100,
+    cursor,
+  }: {
+    limit?: number;
+    cursor?: string | null;
+  },
+  totalCount: number,
+): ChatParticipantsPage {
+  const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+  const safeOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const pageItems = items.slice(safeOffset, safeOffset + limit);
+  const nextOffset = safeOffset + pageItems.length;
+
+  return chatParticipantsPageSchema.parse({
+    items: pageItems,
+    totalCount,
+    hasMore: nextOffset < items.length,
+    nextCursor: nextOffset < items.length ? String(nextOffset) : null,
   });
 }
 
@@ -1312,6 +1340,52 @@ function createActivityItems(
       };
     })
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
+}
+
+function createParticipantsItems(prefix: string, count: number): ChatParticipantItem[] {
+  const avatarPalette = [
+    ['#4d94ff', '#2b64dd'],
+    ['#3cc58b', '#0f9f70'],
+    ['#f1a44b', '#ea7b4b'],
+    ['#7f7dff', '#5350da'],
+    ['#ff82a8', '#eb577f'],
+  ] as const;
+  const names = [
+    'Александра',
+    'Марина Орлова',
+    'Павел',
+    'Ольга',
+    'Наталья',
+    'Илья',
+    'Екатерина',
+    'Артём',
+    'Диана',
+    'Юрий',
+  ];
+
+  return Array.from({ length: count }, (_, index) => {
+    const displayName = names[index % names.length] ?? `Участник ${index + 1}`;
+    const [startColor, endColor] = avatarPalette[index % avatarPalette.length] ?? [
+      '#4d94ff',
+      '#2b64dd',
+    ];
+    const role =
+      index === 0 ? 'owner' : index < 4 ? 'admin' : ('member' as ChatParticipantItem['role']);
+    const isBot = index === count - 1 || index === count - 2;
+    const username = isBot ? `helper_${index + 1}_bot` : `preview_member_${index + 1}`;
+    const label = isBot ? `MAXIM ${index === count - 1 ? 'Assist' : 'Guard'}` : displayName;
+
+    return {
+      userId: `${prefix}-member-${index + 1}${isBot ? '_bot' : ''}`,
+      userDisplayName: label,
+      username,
+      avatarUrl: buildPreviewAvatarDataUrl(label, startColor, endColor),
+      profileUrl: buildPreviewProfileUrl(username),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl(`${prefix}-member-${index + 1}`),
+      role: isBot ? 'admin' : role,
+      isBot,
+    };
+  });
 }
 
 function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
@@ -1977,6 +2051,7 @@ function createInitialState(): PreviewState {
     chatPoll,
     chatBroadcasts,
     chatGiveaways,
+    chatParticipants: createParticipantsItems('chat-roster', 48),
     chatActivity: createActivityItems(
       'chat-activity',
       ['Ольга Бойко', 'Юлия', 'Андрей Фёдоров', 'Марина', 'Александр', 'Наталья'],
@@ -2541,9 +2616,10 @@ function resolvePreviewUser(
   profileUrl: string | null;
   profileHandoffUrl: string | null;
 } {
+  const fromParticipants = state.chatParticipants.find((item) => item.userId === userId) ?? null;
   const fromActivity = state.chatActivity.find((item) => item.userId === userId) ?? null;
   const fromViolation = state.chatViolations.find((item) => item.userId === userId) ?? null;
-  const snapshot = fromActivity ?? fromViolation;
+  const snapshot = fromParticipants ?? fromActivity ?? fromViolation;
 
   return {
     displayName: snapshot?.userDisplayName?.trim() || 'Участник',
@@ -3182,6 +3258,19 @@ async function handleChatRequest(
           cursor: url.searchParams.get('cursor'),
         },
         new Date(),
+      ),
+    );
+  }
+
+  if (tail[0] === 'members' && method === 'GET') {
+    return cloneJson(
+      buildParticipantsPage(
+        state.chatParticipants,
+        {
+          limit: Number.parseInt(url.searchParams.get('limit') ?? '100', 10),
+          cursor: url.searchParams.get('cursor'),
+        },
+        state.chatParticipants.length,
       ),
     );
   }

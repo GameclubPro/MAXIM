@@ -1964,6 +1964,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns paginated chat member roster items with roles, avatars and bot markers', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                first_name: 'Алексей',
+                username: 'aleksey',
+                role: 'owner',
+                full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+              },
+              {
+                user: {
+                  user_id: 'moderation_bot',
+                  first_name: 'MAXIM',
+                  username: 'moderation_bot',
+                  avatar_url: 'https://cdn.max.ru/u/bot/avatar.jpg',
+                  is_bot: true,
+                },
+                role: 'admin',
+              },
+            ],
+            marker: 'page-2',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMembersPage('chat-1', {
+      limit: 100,
+      marker: 'page-1',
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members',
+        params: {
+          count: 100,
+          marker: 'page-1',
+        },
+      }),
+    );
+    expect(result).toEqual({
+      items: [
+        {
+          userId: 'user-1',
+          displayName: 'Алексей',
+          username: 'aleksey',
+          avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+          profileUrl: null,
+          role: 'owner',
+          isBot: false,
+        },
+        {
+          userId: 'moderation_bot',
+          displayName: 'MAXIM',
+          username: 'moderation_bot',
+          avatarUrl: 'https://cdn.max.ru/u/bot/avatar.jpg',
+          profileUrl: null,
+          role: 'admin',
+          isBot: true,
+        },
+      ],
+      nextMarker: 'page-2',
+    });
+
+    await service.onModuleDestroy();
+  });
+
   it('returns direct profile urls from chat member payloads', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

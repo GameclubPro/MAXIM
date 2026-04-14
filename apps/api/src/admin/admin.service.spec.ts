@@ -13234,6 +13234,113 @@ describe('AdminService.getChannelStats', () => {
   });
 });
 
+describe('AdminService.getChatParticipantsPage', () => {
+  it('returns a paginated chat roster with avatars, roles and profile handoff links', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMembersPage: jest.fn().mockResolvedValue({
+        items: [
+          {
+            userId: 'owner-1',
+            displayName: 'Александра',
+            username: 'alexandra',
+            avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
+            profileUrl: null,
+            role: 'owner',
+            isBot: false,
+          },
+          {
+            userId: 'id613002203036_bot',
+            displayName: 'MAXIM',
+            username: 'id613002203036_bot',
+            avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
+            profileUrl: 'https://max.ru/maxim-helper',
+            role: 'admin',
+            isBot: true,
+          },
+        ],
+        nextMarker: 'page-2',
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        participantsCount: 1584,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: '2026-04-14T10:00:00.000Z',
+        entityType: 'chat',
+        avatarUrl: 'https://cdn.max.ru/chats/chat-1/avatar.jpg',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatParticipantsPage(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { limit: 2 },
+    );
+
+    expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
+      'chat-1',
+      {
+        limit: 2,
+        marker: null,
+      },
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+      }),
+    );
+    expect(result).toEqual({
+      items: [
+        {
+          userId: 'owner-1',
+          userDisplayName: 'Александра',
+          username: 'alexandra',
+          avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
+          profileUrl: 'https://max.ru/alexandra',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+          role: 'owner',
+          isBot: false,
+        },
+        {
+          userId: 'id613002203036_bot',
+          userDisplayName: 'MAXIM',
+          username: 'id613002203036_bot',
+          avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
+          profileUrl: 'https://max.ru/maxim-helper',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+          role: 'admin',
+          isBot: true,
+        },
+      ],
+      totalCount: 1584,
+      hasMore: true,
+      nextCursor: 'page-2',
+    });
+  });
+});
+
 describe('AdminService.updateChannelSettings', () => {
   it('creates fresh channel settings with comments disabled by default', async () => {
     const prisma = createPrismaMock();

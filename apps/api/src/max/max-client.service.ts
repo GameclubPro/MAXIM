@@ -69,6 +69,23 @@ export type MaxChatMemberAccess = {
   permissions: string[];
 };
 
+export type MaxChatMemberRole = 'owner' | 'admin' | 'member';
+
+export type MaxChatRosterMember = {
+  userId: string;
+  displayName: string | null;
+  username: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+  role: MaxChatMemberRole;
+  isBot: boolean;
+};
+
+export type MaxChatMembersPage = {
+  items: MaxChatRosterMember[];
+  nextMarker: string | null;
+};
+
 export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
 
 export type MaxPublishedMessage = {
@@ -1641,6 +1658,71 @@ export class MaxClientService implements OnModuleDestroy {
     return profiles;
   }
 
+  async getChatMembersPage(
+    chatId: string,
+    query: {
+      limit?: number;
+      marker?: string | null;
+    } = {},
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatMembersPage> {
+    const timeoutMs =
+      typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs)
+        ? Math.max(1, Math.trunc(options.timeoutMs))
+        : undefined;
+    const limit =
+      typeof query.limit === 'number' && Number.isFinite(query.limit)
+        ? Math.max(1, Math.min(100, Math.trunc(query.limit)))
+        : 100;
+    const marker = query.marker?.trim() ?? '';
+    const params: Record<string, string | number> = {
+      count: limit,
+    };
+    if (marker) {
+      params.marker = marker;
+    }
+
+    const data = await this.executeChatRequest(
+      chatId,
+      async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+          params,
+          ...(timeoutMs ? { timeout: timeoutMs } : {}),
+        }),
+      options,
+    );
+    const members = Array.isArray(data.members)
+      ? data.members
+      : Array.isArray(data.users)
+        ? data.users
+        : [];
+
+    return {
+      items: members
+        .map((member) => {
+          const profile = this.parseChatMemberProfile(member);
+          if (!profile?.userId) {
+            return null;
+          }
+
+          return {
+            userId: profile.userId,
+            displayName: profile.displayName,
+            username: profile.username,
+            avatarUrl: profile.avatarUrl,
+            profileUrl: profile.profileUrl,
+            role: this.parseChatMemberRole(member),
+            isBot: this.parseChatMemberBot(member, profile),
+          };
+        })
+        .filter((member): member is MaxChatRosterMember => member !== null),
+      nextMarker:
+        typeof data.marker === 'string' || typeof data.marker === 'number'
+          ? String(data.marker).trim() || null
+          : null,
+    };
+  }
+
   async getOwnProfile(options: MaxApiRequestOptions = {}): Promise<MaxChatMemberProfile> {
     const bot = this.resolveBot(options.botId);
     const timeoutMs =
@@ -1987,6 +2069,19 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  private parseChatMemberRole(value: unknown): MaxChatMemberRole {
+    const access = this.parseChatMemberAccess(value);
+    if (access.isOwner) {
+      return 'owner';
+    }
+
+    if (access.isAdmin) {
+      return 'admin';
+    }
+
+    return 'member';
+  }
+
   private async listChatAdminMembers(
     chatId: string,
     options: MaxApiRequestOptions = {},
@@ -2100,6 +2195,42 @@ export class MaxClientService implements OnModuleDestroy {
         nestedUser?.link,
       ),
     };
+  }
+
+  private parseChatMemberBot(
+    value: unknown,
+    profile: Pick<MaxChatMemberProfile, 'userId' | 'username'>,
+  ): boolean {
+    if (!value || typeof value !== 'object') {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    const nestedUser =
+      row.user && typeof row.user === 'object' && !Array.isArray(row.user)
+        ? (row.user as Record<string, unknown>)
+        : null;
+    if (
+      row.is_bot === true ||
+      row.isBot === true ||
+      row.bot === true ||
+      row.is_service === true ||
+      row.isService === true ||
+      nestedUser?.is_bot === true ||
+      nestedUser?.isBot === true ||
+      nestedUser?.bot === true ||
+      nestedUser?.is_service === true ||
+      nestedUser?.isService === true
+    ) {
+      return true;
+    }
+
+    const username = this.readTrimmedString(profile.username);
+    if (username?.toLowerCase().endsWith('_bot')) {
+      return true;
+    }
+
+    return profile.userId.toLowerCase().endsWith('_bot');
   }
 
   private readProfileUrl(...candidates: unknown[]): string | null {

@@ -8969,6 +8969,10 @@
   background: linear-gradient(180deg, rgba(245, 250, 253, 0.99), rgba(238, 246, 251, 0.97));
 }
 
+.events-stage--participants {
+  background: linear-gradient(180deg, rgba(246, 250, 255, 0.99), rgba(238, 245, 252, 0.97));
+}
+
 .events-stage__appbar {
   position: sticky;
   top: 0;
@@ -10534,6 +10538,297 @@
   justify-self: stretch;
 }
 
+.participants-roster {
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+  border: 1px solid rgba(212, 224, 236, 0.94);
+  border-radius: 26px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(11, 132, 255, 0.08), transparent 30%),
+    linear-gradient(180deg, rgba(251, 253, 255, 0.99), rgba(243, 248, 253, 0.98)),
+    rgba(252, 253, 255, 0.98);
+  box-shadow:
+    0 18px 30px rgba(22, 44, 67, 0.05),
+    0 2px 0 rgba(255, 255, 255, 0.66) inset;
+}
+
+.participants-roster__head,
+.participants-roster__copy {
+  display: grid;
+}
+
+.participants-roster__head {
+  gap: 12px;
+}
+
+.participants-roster__copy {
+  gap: 6px;
+}
+
+.participants-roster__eyebrow {
+  color: #0a79db;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.participants-roster__copy h2,
+.participants-roster__copy p,
+.participants-roster__footnote {
+  margin: 0;
+}
+
+.participants-roster__copy h2 {
+  color: #17324a;
+  font-size: 1.04rem;
+  font-weight: 820;
+  letter-spacing: -0.03em;
+}
+
+.participants-roster__copy p,
+.participants-roster__footnote {
+  color: #68839a;
+  font-size: 0.78rem;
+  line-height: 1.42;
+}
+
+.participants-roster__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.participants-roster__metric {
+  display: grid;
+  gap: 6px;
+  min-height: 88px;
+  padding: 12px 13px;
+  border-radius: 18px;
+  border: 1px solid rgba(214, 226, 238, 0.92);
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.participants-roster__metric--primary {
+  background:
+    linear-gradient(155deg, rgba(255, 255, 255, 0.98), rgba(230, 243, 255, 0.9)),
+    rgba(255, 255, 255, 0.92);
+}
+
+.participants-roster__metric small {
+  color: #70899f;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.participants-roster__metric strong {
+  color: #17324a;
+  font-family: var(--font-heading);
+  font-size: clamp(1.18rem, 0.98rem + 0.8vw, 1.56rem);
+  line-height: 0.98;
+  letter-spacing: -0.05em;
+}
+
+.participants-roster__metric span {
+  color: #657e95;
+  font-size: 0.73rem;
+  line-height: 1.3;
+}
+
+.participants-roster__list {
+  display: grid;
+  gap: 10px;
+}
+
+.participants-roster__item {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid rgba(214, 226, 238, 0.94);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 10px 18px rgba(25, 58, 88, 0.035);
+  text-align: left;
+}
+
+.participants-roster__item--interactive {
+  appearance: none;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.participants-roster__item--interactive:focus-visible {
+  outline: 2px solid rgba(11, 132, 255, 0.36);
+  outline-offset: 2px;
+}
+
+.participants-roster__avatar-shell {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  padding: 2px;
+  border-radius: 18px;
+  background:
+    linear-gradient(145deg, rgba(11, 132, 255, 0.2), rgba(35, 185, 146, 0.18)),
+    rgba(240, 247, 255, 0.96);
+}
+
+.participants-roster__avatar {
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  border-radius: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #194060;
+  font-size: 0.86rem;
+  font-weight: 800;
+  background: rgba(239, 246, 253, 0.98);
+  border: 1px solid rgba(205, 222, 239, 0.94);
+}
+
+.participants-roster__avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.participants-roster__content,
+.participants-roster__identity {
+  min-width: 0;
+  display: grid;
+}
+
+.participants-roster__content {
+  gap: 7px;
+}
+
+.participants-roster__identity {
+  gap: 2px;
+}
+
+.participants-roster__identity strong {
+  min-width: 0;
+  color: #17324a;
+  font-size: 0.9rem;
+  line-height: 1.16;
+  font-weight: 780;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participants-roster__identity span {
+  min-width: 0;
+  color: #6a849b;
+  font-size: 0.73rem;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.participants-roster__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.participants-roster__pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 0.66rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.participants-roster__pill--owner {
+  color: #0a79db;
+  background: rgba(232, 244, 255, 0.98);
+  border-color: rgba(11, 132, 255, 0.16);
+}
+
+.participants-roster__pill--admin {
+  color: #157456;
+  background: rgba(230, 250, 241, 0.98);
+  border-color: rgba(39, 181, 124, 0.18);
+}
+
+.participants-roster__pill--member {
+  color: #4e677f;
+  background: rgba(244, 248, 252, 0.98);
+  border-color: rgba(62, 96, 127, 0.14);
+}
+
+.participants-roster__pill--bot {
+  color: #8f5c06;
+  background: rgba(255, 245, 225, 0.98);
+  border-color: rgba(240, 164, 43, 0.18);
+}
+
+.participants-roster__chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  color: #5d7e9b;
+  background: rgba(245, 249, 253, 0.96);
+  border: 1px solid rgba(214, 226, 238, 0.92);
+  font-size: 0.88rem;
+  line-height: 1;
+}
+
+.participants-roster__status {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(214, 226, 238, 0.94);
+  background: rgba(250, 252, 254, 0.98);
+  color: var(--text-secondary);
+  justify-items: start;
+}
+
+.participants-roster__status p {
+  margin: 0;
+  font-size: 0.8rem;
+}
+
+.participants-roster__sentinel {
+  height: 1px;
+}
+
+.participants-roster__load-more {
+  justify-self: stretch;
+  min-height: 42px;
+}
+
+@supports (content-visibility: auto) {
+  .participants-roster__item {
+    content-visibility: auto;
+    contain: layout paint style;
+    contain-intrinsic-size: 92px;
+  }
+}
+
 .logs-violation-item--premium {
   border-radius: 18px;
   background:
@@ -10618,6 +10913,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .events-dashboard__body--participants {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .events-dashboard__hero {
     min-height: 96px;
     padding: 14px 13px 12px;
@@ -10656,6 +10955,41 @@
 
   .events-dashboard__metric span {
     font-size: 0.68rem;
+  }
+
+  .participants-roster {
+    gap: 12px;
+    padding: 12px;
+    border-radius: 22px;
+  }
+
+  .participants-roster__metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .participants-roster__metric--primary {
+    grid-column: 1 / -1;
+  }
+
+  .participants-roster__item {
+    gap: 10px;
+    padding: 11px 12px;
+    border-radius: 18px;
+  }
+
+  .participants-roster__avatar {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    border-radius: 14px;
+  }
+
+  .participants-roster__identity strong {
+    font-size: 0.86rem;
+  }
+
+  .participants-roster__identity span {
+    font-size: 0.71rem;
   }
 
   .events-dashboard__activity {

@@ -5,6 +5,8 @@ import {
   manualModerationActionResultSchema,
   moderationFeedPageSchema,
   moderationFeedQuerySchema,
+  chatParticipantsPageSchema,
+  chatParticipantsQuerySchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   profileMentionHandoffRequestSchema,
@@ -15,6 +17,8 @@ import {
   type ManualModerationActionResult,
   type ModerationFeedPage,
   type ModerationFeedQuery,
+  type ChatParticipantsPage,
+  type ChatParticipantsQuery,
   type MembershipActivityPage,
   type MembershipActivityQuery,
   type BroadcastHandoffResponse,
@@ -95,6 +99,25 @@ export async function getChatModerationFeed(
     request,
   );
   return moderationFeedPageSchema.parse(response);
+}
+
+export async function getChatParticipantsPage(
+  api: ApiTransport,
+  chatId: string,
+  query: Partial<ChatParticipantsQuery> = {},
+  request: Pick<RequestInit, 'signal'> = {},
+): Promise<ChatParticipantsPage> {
+  const validatedQuery = chatParticipantsQuerySchema.parse(query);
+  const params = new URLSearchParams({
+    limit: String(validatedQuery.limit),
+  });
+
+  if (validatedQuery.cursor) {
+    params.set('cursor', validatedQuery.cursor);
+  }
+
+  const response = await api.request(`/chats/${chatId}/members?${params.toString()}`, request);
+  return chatParticipantsPageSchema.parse(response);
 }
 
 export async function applyManualModerationAction(

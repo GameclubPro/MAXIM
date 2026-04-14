@@ -2385,6 +2385,35 @@ export const membershipActivityQuerySchema = z.object({
 });
 export type MembershipActivityQuery = z.infer<typeof membershipActivityQuerySchema>;
 
+export const chatParticipantRoleSchema = z.enum(['owner', 'admin', 'member']);
+export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;
+
+export const chatParticipantItemSchema = z.object({
+  userId: z.string(),
+  userDisplayName: z.string().min(1),
+  username: z.string().trim().min(1).nullable().default(null),
+  avatarUrl: z.string().trim().url().nullable().default(null),
+  profileUrl: z.string().trim().url().nullable().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().default(null),
+  role: chatParticipantRoleSchema,
+  isBot: z.boolean().default(false),
+});
+export type ChatParticipantItem = z.infer<typeof chatParticipantItemSchema>;
+
+export const chatParticipantsPageSchema = z.object({
+  items: z.array(chatParticipantItemSchema),
+  totalCount: z.number().int().min(0).nullable().default(null),
+  hasMore: z.boolean(),
+  nextCursor: z.string().trim().min(1).nullable(),
+});
+export type ChatParticipantsPage = z.infer<typeof chatParticipantsPageSchema>;
+
+export const chatParticipantsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(100),
+  cursor: z.string().trim().min(1).optional(),
+});
+export type ChatParticipantsQuery = z.infer<typeof chatParticipantsQuerySchema>;
+
 export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
 export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
 

@@ -3,6 +3,8 @@ import {
   applySectionToAllResponseSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  chatParticipantsPageSchema,
+  chatParticipantsQuerySchema,
   chatSettingsScreenResponseSchema,
   chatRulesSchema,
   channelSettingsScreenResponseSchema,
@@ -35,6 +37,9 @@ import {
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
   type ChannelDialogSuggestionReviewStatus,
+  type ChatParticipantItem,
+  type ChatParticipantsPage,
+  type ChatParticipantsQuery,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -156,6 +161,7 @@ import {
   type MaxAttachmentPayload,
   type MaxBotChat,
   type MaxChatMemberAccess,
+  type MaxChatMemberRole,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -852,6 +858,10 @@ export class AdminService implements OnModuleDestroy {
   private readonly membershipActivityFeedPageCache = new Map<
     string,
     TimedPromiseCacheEntry<MembershipActivityPage>
+  >();
+  private readonly chatParticipantsPageCache = new Map<
+    string,
+    TimedPromiseCacheEntry<ChatParticipantsPage>
   >();
   private readonly resolvedUserProfileCache = new Map<
     string,
@@ -12605,6 +12615,22 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
+  async getChatParticipantsPage(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ChatParticipantsPage> {
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = chatParticipantsQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    return this.getCachedChatParticipantsPage(chatId, user.userId, parsed.data, 'chat');
+  }
+
   async applyManualModerationAction(
     chatId: string,
     targetUserIdRaw: string,
@@ -14370,6 +14396,7 @@ export class AdminService implements OnModuleDestroy {
     });
     this.invalidateLogsDashboardResponseCache(chatId);
     this.invalidateModerationFeedPageCache(chatId);
+    this.invalidateChatParticipantsPageCache(chatId);
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
@@ -15223,6 +15250,113 @@ export class AdminService implements OnModuleDestroy {
     });
 
     return pending;
+  }
+
+  private async buildChatParticipantsPage(
+    chatId: string,
+    userId: string,
+    query: ChatParticipantsQuery,
+    entityType: ManagedEntityType = 'chat',
+  ): Promise<ChatParticipantsPage> {
+    const limit = Math.max(1, Math.min(100, query.limit));
+    const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
+    const [membersPage, header] = await Promise.all([
+      this.maxClient.getChatMembersPage(
+        chatId,
+        {
+          limit,
+          marker: query.cursor ?? null,
+        },
+        {
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        },
+      ),
+      this.getManagedEntityHeader(
+        chatId,
+        {
+          userId,
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        entityType,
+        { skipAdminCheck: true, skipEntityCheck: true },
+      ),
+    ]);
+
+    return chatParticipantsPageSchema.parse({
+      items: membersPage.items.map((member) => {
+        const normalizedUsername = member.username?.replace(/^@+/u, '').trim() ?? '';
+        const userDisplayName =
+          member.displayName?.trim() || normalizedUsername || (member.isBot ? 'Бот MAX' : 'Участник');
+
+        return {
+          userId: member.userId,
+          userDisplayName,
+          username: normalizedUsername || null,
+          avatarUrl: this.readTrimmedString(member.avatarUrl) ?? null,
+          profileUrl:
+            this.normalizeMaxProfileUrl(this.readTrimmedString(member.profileUrl) ?? null) ??
+            this.buildUserProfileUrl(normalizedUsername || null),
+          profileHandoffUrl: this.buildProfileMentionHandoffUrl(
+            chatId,
+            entityType,
+            member.userId,
+            userDisplayName,
+          ),
+          role: this.mapChatMemberRole(member.role),
+          isBot: member.isBot,
+        } satisfies ChatParticipantItem;
+      }),
+      totalCount:
+        typeof header.participantsCount === 'number' && Number.isFinite(header.participantsCount)
+          ? Math.max(0, Math.trunc(header.participantsCount))
+          : null,
+      hasMore: Boolean(membersPage.nextMarker),
+      nextCursor: membersPage.nextMarker,
+    });
+  }
+
+  private async getCachedChatParticipantsPage(
+    chatId: string,
+    userId: string,
+    query: ChatParticipantsQuery,
+    entityType: ManagedEntityType,
+  ): Promise<ChatParticipantsPage> {
+    const cacheKey = this.buildChatParticipantsPageCacheKey(chatId, userId, entityType, query);
+    const cached = this.chatParticipantsPageCache.get(cacheKey);
+    if (cached && cached.expiresAtMs > Date.now()) {
+      return cached.promise;
+    }
+
+    let pending!: Promise<ChatParticipantsPage>;
+    pending = this.buildChatParticipantsPage(chatId, userId, query, entityType).catch(
+      (error: unknown) => {
+        const current = this.chatParticipantsPageCache.get(cacheKey);
+        if (current?.promise === pending) {
+          this.chatParticipantsPageCache.delete(cacheKey);
+        }
+        throw error;
+      },
+    );
+
+    this.chatParticipantsPageCache.set(cacheKey, {
+      expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
+      promise: pending,
+    });
+
+    return pending;
+  }
+
+  private mapChatMemberRole(role: MaxChatMemberRole): ChatParticipantItem['role'] {
+    if (role === 'owner' || role === 'admin') {
+      return role;
+    }
+
+    return 'member';
   }
 
   private buildEmptyModerationFeedPage(): ModerationFeedPage {
@@ -21494,6 +21628,21 @@ export class AdminService implements OnModuleDestroy {
     ].join(':');
   }
 
+  private buildChatParticipantsPageCacheKey(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType,
+    query: ChatParticipantsQuery,
+  ): string {
+    return [
+      chatId,
+      userId,
+      entityType,
+      String(query.limit),
+      query.cursor ?? '',
+    ].join(':');
+  }
+
   private buildResolvedUserProfileCacheKey(
     chatId: string,
     entityType: ManagedEntityType,
@@ -21522,6 +21671,15 @@ export class AdminService implements OnModuleDestroy {
     for (const key of this.moderationFeedPageCache.keys()) {
       if (key.startsWith(prefix)) {
         this.moderationFeedPageCache.delete(key);
+      }
+    }
+  }
+
+  private invalidateChatParticipantsPageCache(chatId: string): void {
+    const prefix = `${chatId}:`;
+    for (const key of this.chatParticipantsPageCache.keys()) {
+      if (key.startsWith(prefix)) {
+        this.chatParticipantsPageCache.delete(key);
       }
     }
   }

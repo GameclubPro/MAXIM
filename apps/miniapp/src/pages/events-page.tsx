@@ -3,6 +3,7 @@ import type {
   LogsDashboardViolation,
   ManualModerationAction,
   ManualModerationActionRequest,
+  ChatParticipantItem,
   ModerationFeedFilter,
   MembershipActivityItem,
 } from '@maxim/contracts';
@@ -17,6 +18,7 @@ import {
   useState,
 } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { PersonAvatar } from '../components/ui/person-avatar';
@@ -29,6 +31,7 @@ import { useToast } from '../components/ui/toast';
 import {
   applyManualModerationAction,
   getChatActivityFeed,
+  getChatParticipantsPage,
   getChatModerationFeed,
   getLogsDashboard,
   handoffChatMemberProfile,
@@ -38,13 +41,14 @@ import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
+import { useChatParticipantsFeed } from '../lib/use-chat-participants-feed';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
 
 type ViolationItem = LogsDashboardViolation;
 type DisplayAction = 'WARN' | 'DELETE_MESSAGE' | 'MUTE' | 'BAN' | 'UNMUTE' | 'UNBAN';
 type EventsFilter = ModerationFeedFilter;
-type EventsSection = 'activity' | 'moderation';
+type EventsSection = 'activity' | 'moderation' | 'participants';
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
@@ -111,6 +115,35 @@ function ActivityTabIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
         opacity="0.42"
+      />
+    </svg>
+  );
+}
+
+function ParticipantsTabIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M6.3 9.2a2.6 2.6 0 1 0 0-5.2 2.6 2.6 0 0 0 0 5.2Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M13.9 8.2a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <path
+        d="M3.8 15.7c.2-2.3 2-3.8 4.5-3.8s4.3 1.5 4.5 3.8"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M12.1 12.6c.6-.4 1.2-.6 2-.6 1.8 0 3 .9 3.3 2.4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
       />
     </svg>
   );
@@ -687,7 +720,11 @@ function formatViolationDate(value: string): string {
 
 function getInitialSection(search: string): EventsSection {
   const value = new URLSearchParams(search).get('section');
-  return value === 'activity' ? 'activity' : 'moderation';
+  if (value === 'activity' || value === 'participants') {
+    return value;
+  }
+
+  return 'moderation';
 }
 
 export function EventsPage({ api }: { api: ApiTransport }) {
@@ -804,6 +841,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     filter: eventsFilter,
     initialPage: null,
     loadPage: (query, request) => getChatModerationFeed(api, chatId ?? '', query, request),
+  });
+  const participantsFeed = useChatParticipantsFeed({
+    enabled: Boolean(chatId) && section === 'participants',
+    initialPage: null,
+    loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
@@ -939,6 +981,46 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : membershipSummary.netUsers < 0
         ? 'Отток участников'
         : 'Баланс без изменений';
+  const participantsTotal = participantsFeed.totalCount ?? participantsFeed.items.length;
+  const participantsLoaded = participantsFeed.items.length;
+  const participantsWithAvatars = participantsFeed.items.filter((item) =>
+    Boolean(item.avatarUrl?.trim()),
+  ).length;
+  const participantsWithProfiles = participantsFeed.items.filter((item) =>
+    Boolean(item.profileHandoffUrl?.trim() || item.profileUrl?.trim()),
+  ).length;
+  const participantsHeroMetric = {
+    label: 'Участники',
+    value: String(participantsTotal),
+    note:
+      participantsTotal > 0
+        ? 'Актуальный состав чата из MAX'
+        : 'Участники появятся после первой синхронизации',
+    tone: 'accent' as const,
+  };
+  const participantsSecondaryMetrics = [
+    {
+      label: 'Загружено',
+      value: String(participantsLoaded),
+      note:
+        participantsFeed.hasMore && participantsTotal > participantsLoaded
+          ? `из ${participantsTotal}`
+          : 'Видим весь доступный список',
+      tone: 'neutral' as const,
+    },
+    {
+      label: 'Аватары',
+      value: String(participantsWithAvatars),
+      note: 'Карточек с фото',
+      tone: 'success' as const,
+    },
+    {
+      label: 'Профили',
+      value: String(participantsWithProfiles),
+      note: 'Можно открыть в MAX',
+      tone: 'accent' as const,
+    },
+  ];
   const moderationHeroMetric = {
     label: 'События',
     value: String(violationsSummary.total),
@@ -962,9 +1044,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
     },
   ];
-  const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
+  const dashboardTitle =
+    section === 'activity'
+      ? 'Входы и выходы'
+      : section === 'participants'
+        ? 'Участники'
+        : 'Модерация';
   const dashboardSubtitle =
-    section === 'activity' ? 'Баланс и движение участников' : 'Люди и меры за выбранный период';
+    section === 'activity'
+      ? 'Баланс и движение участников'
+      : section === 'participants'
+        ? 'Актуальный roster чата и быстрый переход в профиль'
+        : 'Люди и меры за выбранный период';
   const activateProfile = (
     userId: string,
     displayName: string,
@@ -991,6 +1082,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       displayName: normalizedDisplayName,
     });
   };
+  const isAppbarBusy =
+    dashboardQuery.isFetching ||
+    (section === 'participants' && (participantsFeed.isReloading || participantsFeed.isLoadingMore));
 
   return (
     <div className="events-screen page-enter">
@@ -1021,7 +1115,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </div>
 
             <div className="events-stage__appbar-side">
-              {dashboardQuery.isFetching ? (
+              {isAppbarBusy ? (
                 <span className="events-stage__pulse" aria-label="Обновляем" title="Обновляем" />
               ) : (
                 <span
@@ -1052,6 +1146,19 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 role="tab"
+                aria-selected={section === 'participants'}
+                className={`events-primary-tab ${section === 'participants' ? 'is-active' : ''}`}
+                onClick={() => handleSectionChange('participants')}
+              >
+                <span className="events-primary-tab__icon" aria-hidden="true">
+                  <ParticipantsTabIcon />
+                </span>
+                <span className="events-primary-tab__label">Участники</span>
+              </button>
+
+              <button
+                type="button"
+                role="tab"
                 aria-selected={section === 'activity'}
                 className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
                 onClick={() => handleSectionChange('activity')}
@@ -1067,7 +1174,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           <section
             className={`events-dashboard events-dashboard--${section}`}
             aria-label={
-              section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'
+              section === 'activity'
+                ? 'Сводка по входам и выходам'
+                : section === 'participants'
+                  ? 'Сводка по участникам'
+                  : 'Сводка по модерации'
             }
           >
             <div className="events-dashboard__head">
@@ -1076,15 +1187,17 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
               </div>
 
-              <SegmentedControl
-                value={range}
-                options={periodOptions}
-                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
-                className="events-dashboard__range"
-              />
+              {section !== 'participants' ? (
+                <SegmentedControl
+                  value={range}
+                  options={periodOptions}
+                  onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
+                  className="events-dashboard__range"
+                />
+              ) : null}
             </div>
 
-            {isDashboardPending ? (
+            {section !== 'participants' && isDashboardPending ? (
               <GlassCard className="events-inline-state">
                 <div className="events-loading-state">
                   <Spinner
@@ -1097,7 +1210,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   />
                 </div>
               </GlassCard>
-            ) : hasBlockingDashboardError ? (
+            ) : section !== 'participants' && hasBlockingDashboardError ? (
               <GlassCard className="events-inline-state">
                 <StatusState
                   tone="danger"
@@ -1114,6 +1227,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   }
                 />
               </GlassCard>
+            ) : section === 'participants' ? (
+              <div className="events-dashboard__body events-dashboard__body--participants">
+                <article
+                  className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
+                >
+                  <small>{participantsHeroMetric.label}</small>
+                  <strong>{participantsHeroMetric.value}</strong>
+                  <span>{participantsHeroMetric.note}</span>
+                </article>
+
+                <div className="events-dashboard__stack">
+                  {participantsSecondaryMetrics.map((item) => (
+                    <article
+                      key={item.label}
+                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                    >
+                      <small>{item.label}</small>
+                      <strong>{item.value}</strong>
+                      <span>{item.note}</span>
+                    </article>
+                  ))}
+                </div>
+              </div>
             ) : section === 'activity' ? (
               <div className="events-dashboard__activity">
                 <article
@@ -1211,6 +1347,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           onLoadMore={() => void activityFeed.loadMore()}
           onRetry={() => void activityFeed.retry()}
           onProfileActivate={(item: MembershipActivityItem) =>
+            activateProfile(item.userId, item.userDisplayName, item.profileHandoffUrl)
+          }
+        />
+      ) : null}
+
+      {section === 'participants' ? (
+        <ChatParticipantsRoster
+          items={participantsFeed.items}
+          totalCount={participantsFeed.totalCount}
+          hasMore={participantsFeed.hasMore}
+          isReloading={participantsFeed.isReloading}
+          isLoadingMore={participantsFeed.isLoadingMore}
+          error={participantsFeed.error}
+          onLoadMore={() => void participantsFeed.loadMore()}
+          onRetry={() => void participantsFeed.retry()}
+          onProfileActivate={(item: ChatParticipantItem) =>
             activateProfile(item.userId, item.userDisplayName, item.profileHandoffUrl)
           }
         />
