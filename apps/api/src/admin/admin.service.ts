@@ -5748,6 +5748,12 @@ export class AdminService implements OnModuleDestroy {
     return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
   }
 
+  async resolveRequiredSubscriptionChannelReferenceValue(
+    value: string,
+  ): Promise<ManagedEntityHeader> {
+    return this.resolveRequiredSubscriptionChannelReference(value);
+  }
+
   async updateSettings(
     chatId: string,
     user: AuthUser,

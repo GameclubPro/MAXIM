@@ -28,6 +28,8 @@ import {
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
   managedGiveawaySummarySchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   chatSummarySchema,
@@ -60,6 +62,7 @@ import {
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type ResolveRequiredSubscriptionChannelResponse,
   type UpdateManagedGiveawayRequest,
   type BroadcastLinkButton,
   type BroadcastTextFormat,
@@ -538,6 +541,22 @@ export class ApiClient {
       },
     );
     return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async resolveManagedGiveawayRequiredChannel(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    value: string,
+  ): Promise<ResolveRequiredSubscriptionChannelResponse> {
+    const requestBody = resolveRequiredSubscriptionChannelRequestSchema.parse({ value });
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/required-channels/resolve`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return resolveRequiredSubscriptionChannelResponseSchema.parse(response);
   }
 
   async rerollManagedGiveawayWinner(

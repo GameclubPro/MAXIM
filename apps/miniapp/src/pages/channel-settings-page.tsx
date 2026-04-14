@@ -2319,7 +2319,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             <SettingsSectionToggle
               title="Розыгрыши"
               summary=""
-              status="Бот"
+              status="Mini app"
               icon="gift"
               tone="amber"
               open={expandedSections.giveaway}
@@ -2332,7 +2332,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-giveaway"
             open={expandedSections.giveaway}
             title="Розыгрыши"
-            summary="Управление через бота"
+            summary="Запуск, итоги и реролл в mini app"
             tone="amber"
             className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
             onClose={() => toggleSection('giveaway')}

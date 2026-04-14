@@ -6315,7 +6315,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   id="settings-giveaway-content"
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
-                  summary="Создание и управление в личке бота"
+                  summary="Запуск, итоги и реролл в mini app"
                   tone="amber"
                   className="settings-drilldown__panel--campaign settings-drilldown__panel--giveaway"
                   onClose={() => toggleSection('giveaway')}

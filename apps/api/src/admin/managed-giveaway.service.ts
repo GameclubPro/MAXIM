@@ -8,6 +8,8 @@ import {
   managedGiveawaySummarySchema,
   managedGiveawayWinnerSchema,
   markManagedGiveawayWinnerDeliveredRequestSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   rerollManagedGiveawayWinnerRequestSchema,
   type ClaimManagedGiveawayResponse,
   type ManagedEntityType,
@@ -16,6 +18,7 @@ import {
   type ManagedGiveawayPublic,
   type ManagedGiveawaySummary,
   type ManagedGiveawayWinner,
+  type ResolveRequiredSubscriptionChannelResponse,
   type UpdateManagedGiveawayRequest,
   updateManagedGiveawayRequestSchema,
 } from '@maxim/contracts';
@@ -640,13 +643,27 @@ export class ManagedGiveawayService {
     });
   }
 
-  async getPublicGiveaway(giveawayId: string, _user: AuthUser): Promise<ManagedGiveawayPublic> {
-    const giveaway = await this.findGiveawayById(giveawayId);
-    if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {
-      await this.activateScheduledGiveawayIfDue(giveaway);
+  async resolveManagedGiveawayRequiredChannel(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<ResolveRequiredSubscriptionChannelResponse> {
+    await this.assertAdminEntityAccess(sourceChatId, user, entityType);
+
+    const parsed = resolveRequiredSubscriptionChannelRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
     }
 
-    const refreshed = await this.findGiveawayById(giveawayId);
+    const channel = await this.adminService.resolveRequiredSubscriptionChannelReferenceValue(
+      parsed.data.value,
+    );
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
+  }
+
+  async getPublicGiveaway(giveawayId: string, _user: AuthUser): Promise<ManagedGiveawayPublic> {
+    const refreshed = await this.findPublicGiveawayById(giveawayId);
     await this.upsertParticipantChatAccess(refreshed);
 
     return managedGiveawayPublicSchema.parse(await this.mapPublicGiveaway(refreshed));
@@ -656,12 +673,7 @@ export class ManagedGiveawayService {
     giveawayId: string,
     user: AuthUser,
   ): Promise<ManagedGiveawayParticipantState> {
-    const giveaway = await this.findGiveawayById(giveawayId);
-    if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {
-      await this.activateScheduledGiveawayIfDue(giveaway);
-    }
-
-    const refreshed = await this.findGiveawayById(giveawayId);
+    const refreshed = await this.findPublicGiveawayById(giveawayId);
     await this.upsertParticipantChatAccess(refreshed);
 
     return managedGiveawayParticipantStateSchema.parse(
@@ -673,12 +685,7 @@ export class ManagedGiveawayService {
     giveawayId: string,
     user: AuthUser,
   ): Promise<ManagedGiveawayParticipantState> {
-    const giveaway = await this.findGiveawayById(giveawayId);
-    if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {
-      await this.activateScheduledGiveawayIfDue(giveaway);
-    }
-
-    const refreshed = await this.findGiveawayById(giveawayId);
+    const refreshed = await this.findPublicGiveawayById(giveawayId);
     this.assertGiveawayOpenForEntry(refreshed);
     await this.upsertParticipantChatAccess(refreshed);
 
@@ -736,7 +743,7 @@ export class ManagedGiveawayService {
     user: AuthUser,
     source: GiveawayActionSource = 'miniapp',
   ): Promise<ClaimManagedGiveawayResponse> {
-    const giveaway = await this.findGiveawayById(giveawayId);
+    const giveaway = await this.findPublicGiveawayById(giveawayId);
     if (giveaway.status !== ManagedGiveawayStatus.COMPLETED) {
       throw new BadRequestException('Розыгрыш ещё не завершён.');
     }
@@ -1103,6 +1110,34 @@ export class ManagedGiveawayService {
     }
 
     return row;
+  }
+
+  private async findPublicGiveawayById(giveawayId: string): Promise<PersistedGiveawayWithRelations> {
+    const giveaway = await this.findGiveawayById(giveawayId);
+    if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {
+      await this.activateScheduledGiveawayIfDue(giveaway);
+    }
+
+    const refreshed = await this.findGiveawayById(giveawayId);
+    this.assertGiveawayPubliclyAccessible(refreshed);
+    return refreshed;
+  }
+
+  private assertGiveawayPubliclyAccessible(giveaway: PersistedGiveawayWithRelations): void {
+    const hasPublicReference =
+      Boolean(giveaway.publishedAt) ||
+      Boolean(giveaway.publicationMessageId?.trim()) ||
+      Boolean(giveaway.publicationUrl?.trim()) ||
+      Boolean(giveaway.resultsMessageId?.trim()) ||
+      Boolean(giveaway.resultsUrl?.trim());
+
+    if (giveaway.status === ManagedGiveawayStatus.DRAFT) {
+      throw new NotFoundException('Розыгрыш не найден.');
+    }
+
+    if (giveaway.status === ManagedGiveawayStatus.CANCELED && !hasPublicReference) {
+      throw new NotFoundException('Розыгрыш не найден.');
+    }
   }
 
   private mapGiveawaySummary(

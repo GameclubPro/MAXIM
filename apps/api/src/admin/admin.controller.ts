@@ -583,6 +583,20 @@ export class AdminController {
     return this.managedGiveawayService.createManagedGiveaway(chatId, user, body, 'chat');
   }
 
+  @Post('chats/:chatId/giveaways/required-channels/resolve')
+  resolveChatGiveawayRequiredChannel(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.managedGiveawayService.resolveManagedGiveawayRequiredChannel(
+      chatId,
+      user,
+      body,
+      'chat',
+    );
+  }
+
   @Get('chats/:chatId/giveaways/:giveawayId')
   getChatGiveaway(
     @Param('chatId') chatId: string,
@@ -697,6 +711,20 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.managedGiveawayService.createManagedGiveaway(chatId, user, body, 'channel');
+  }
+
+  @Post('channels/:chatId/giveaways/required-channels/resolve')
+  resolveChannelGiveawayRequiredChannel(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.managedGiveawayService.resolveManagedGiveawayRequiredChannel(
+      chatId,
+      user,
+      body,
+      'channel',
+    );
   }
 
   @Get('channels/:chatId/giveaways/:giveawayId')

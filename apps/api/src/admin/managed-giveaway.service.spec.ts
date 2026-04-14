@@ -4,7 +4,7 @@ import {
   ManagedGiveawayStatus,
   ManagedGiveawayWinnerStatus,
 } from '@prisma/client';
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import {
   ManagedGiveawayMembershipLookupUnavailableError,
   ManagedGiveawayService,
@@ -638,6 +638,56 @@ describe('ManagedGiveawayService', () => {
     expect(maxClient.hasChatMember).not.toHaveBeenCalled();
     expect(result.eligibilityState).toBe('REJECTED');
     expect(result.missingChannelIds).toEqual(['extra-1']);
+  });
+
+  it('does not expose an unpublished draft through the public giveaway endpoint', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    prisma.managedGiveaway.findUnique.mockResolvedValueOnce(
+      createGiveaway({
+        status: ManagedGiveawayStatus.DRAFT,
+        publishedAt: null,
+        publicationMessageId: null,
+        publicationUrl: null,
+      }),
+    );
+
+    await expect(service.getPublicGiveaway('giveaway-1', user)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+  });
+
+  it('rejects participation for an unpublished giveaway id', async () => {
+    const prisma = createPrismaMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    prisma.managedGiveaway.findUnique.mockResolvedValueOnce(
+      createGiveaway({
+        status: ManagedGiveawayStatus.CANCELED,
+        publishedAt: null,
+        publicationMessageId: null,
+        publicationUrl: null,
+        resultsMessageId: null,
+        resultsUrl: null,
+      }),
+    );
+
+    await expect(service.enterGiveaway('giveaway-1', user)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
   });
 
   it('falls back to the full mandatory list for legacy rejected entries without missingChannelIds', async () => {

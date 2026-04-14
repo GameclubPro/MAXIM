@@ -4,10 +4,13 @@ import {
   managedGiveawayHandoffRequestSchema,
   managedGiveawaySummarySchema,
   markManagedGiveawayWinnerDeliveredRequestSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   rerollManagedGiveawayWinnerRequestSchema,
   updateManagedGiveawayRequestSchema,
   type ManagedGiveawayDetails,
   type ManagedGiveawaySummary,
+  type ResolveRequiredSubscriptionChannelResponse,
 } from '@maxim/contracts';
 import type { ManagedGiveawayHandoffPayload, UpdateManagedGiveawayPayload } from './shared-types';
 import type { ApiTransport } from './transport';
@@ -86,6 +89,19 @@ export async function publishManagedGiveaway(
   return managedGiveawayDetailsSchema.parse(response);
 }
 
+export async function closeManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+): Promise<ManagedGiveawayDetails> {
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}/close`,
+    { method: 'POST' },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
 export async function cancelManagedGiveaway(
   api: ApiTransport,
   entityType: 'chat' | 'channel',
@@ -108,6 +124,23 @@ export async function deleteManagedGiveaway(
   await api.request(`${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}`, {
     method: 'DELETE',
   });
+}
+
+export async function resolveManagedGiveawayRequiredChannel(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  value: string,
+): Promise<ResolveRequiredSubscriptionChannelResponse> {
+  const requestBody = resolveRequiredSubscriptionChannelRequestSchema.parse({ value });
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/required-channels/resolve`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return resolveRequiredSubscriptionChannelResponseSchema.parse(response);
 }
 
 export async function handoffManagedGiveaway(

@@ -3011,6 +3011,41 @@ async function handleChatRequest(
     }
   }
 
+  if (
+    tail[0] === 'giveaways' &&
+    tail[1] === 'required-channels' &&
+    tail[2] === 'resolve' &&
+    method === 'POST'
+  ) {
+    const payload = resolveRequiredSubscriptionChannelRequestSchema.parse(parseJsonBody(init));
+    const normalizedValue = payload.value.trim().toLowerCase();
+    const normalizedLink = normalizedValue.startsWith('http')
+      ? normalizedValue
+      : normalizedValue.startsWith('max.ru/')
+        ? `https://${normalizedValue}`
+        : normalizedValue;
+    const channel = state.channels.find(
+      (item) =>
+        item.id === payload.value.trim() ||
+        item.link?.trim().toLowerCase() === normalizedLink ||
+        item.link?.trim().toLowerCase() === payload.value.trim().toLowerCase(),
+    );
+
+    if (!channel) {
+      throw new Error('Канал по этой ссылке не найден.');
+    }
+
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({
+      channel: {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: channel.link ?? null,
+        participantsCount: null,
+      },
+    });
+  }
+
   if (tail[0] === 'giveaways' && tail[1] && tail.length === 2) {
     const details = findGiveaway(state.chatGiveaways, tail[1]);
     if (!details) {
@@ -3055,6 +3090,25 @@ async function handleChatRequest(
     });
     state.chatGiveaways = upsertGiveaway(state.chatGiveaways, published);
     return cloneJson(published);
+  }
+
+  if (tail[0] === 'giveaways' && tail[1] && tail[2] === 'close' && method === 'POST') {
+    const details = findGiveaway(state.chatGiveaways, tail[1]);
+    if (!details) {
+      throw new Error(`Preview giveaway not found: ${tail[1]}`);
+    }
+
+    const completed = managedGiveawayDetailsSchema.parse({
+      ...details,
+      status: 'COMPLETED',
+      completedAt: new Date().toISOString(),
+      winnersCount: details.prizes.length,
+      resultsMessageId: `giveaway-results-${Date.now()}`,
+      resultsUrl: 'https://max.ru/giveaway/results-preview',
+      updatedAt: new Date().toISOString(),
+    });
+    state.chatGiveaways = upsertGiveaway(state.chatGiveaways, completed);
+    return cloneJson(completed);
   }
 
   if (tail[0] === 'giveaways' && tail[1] && tail[2] === 'cancel' && method === 'POST') {
@@ -3440,6 +3494,41 @@ async function handleChannelRequest(
     }
   }
 
+  if (
+    tail[0] === 'giveaways' &&
+    tail[1] === 'required-channels' &&
+    tail[2] === 'resolve' &&
+    method === 'POST'
+  ) {
+    const payload = resolveRequiredSubscriptionChannelRequestSchema.parse(parseJsonBody(init));
+    const normalizedValue = payload.value.trim().toLowerCase();
+    const normalizedLink = normalizedValue.startsWith('http')
+      ? normalizedValue
+      : normalizedValue.startsWith('max.ru/')
+        ? `https://${normalizedValue}`
+        : normalizedValue;
+    const channel = state.channels.find(
+      (item) =>
+        item.id === payload.value.trim() ||
+        item.link?.trim().toLowerCase() === normalizedLink ||
+        item.link?.trim().toLowerCase() === payload.value.trim().toLowerCase(),
+    );
+
+    if (!channel) {
+      throw new Error('Канал по этой ссылке не найден.');
+    }
+
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({
+      channel: {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: channel.link ?? null,
+        participantsCount: null,
+      },
+    });
+  }
+
   if (tail[0] === 'giveaways' && tail[1] && tail.length === 2) {
     const details = findGiveaway(state.channelGiveaways, tail[1]);
     if (!details) {
@@ -3485,6 +3574,25 @@ async function handleChannelRequest(
     });
     state.channelGiveaways = upsertGiveaway(state.channelGiveaways, published);
     return cloneJson(published);
+  }
+
+  if (tail[0] === 'giveaways' && tail[1] && tail[2] === 'close' && method === 'POST') {
+    const details = findGiveaway(state.channelGiveaways, tail[1]);
+    if (!details) {
+      throw new Error(`Preview giveaway not found: ${tail[1]}`);
+    }
+
+    const completed = managedGiveawayDetailsSchema.parse({
+      ...details,
+      status: 'COMPLETED',
+      completedAt: new Date().toISOString(),
+      winnersCount: details.prizes.length,
+      resultsMessageId: `giveaway-channel-results-${Date.now()}`,
+      resultsUrl: 'https://max.ru/giveaway/channel-results-preview',
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelGiveaways = upsertGiveaway(state.channelGiveaways, completed);
+    return cloneJson(completed);
   }
 
   if (tail[0] === 'giveaways' && tail[1] && tail[2] === 'cancel' && method === 'POST') {

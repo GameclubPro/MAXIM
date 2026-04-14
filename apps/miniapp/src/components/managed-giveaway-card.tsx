@@ -6,6 +6,7 @@ import {
   MANAGED_GIVEAWAY_TITLE_MAX_LENGTH,
   type ManagedGiveawayDetails,
   type ManagedGiveawaySummary,
+  type ManagedGiveawayWinner,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
@@ -13,16 +14,22 @@ import { createPortal } from 'react-dom';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
+  closeManagedGiveaway,
   createManagedGiveaway,
+  deleteManagedGiveaway,
   getManagedGiveaway,
   getManagedGiveaways,
+  markManagedGiveawayWinnerDelivered,
   publishManagedGiveaway,
+  rerollManagedGiveawayWinner,
+  resolveManagedGiveawayRequiredChannel,
   updateManagedGiveaway,
 } from '../lib/api/managed-giveaway-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
+import { maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
 import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
@@ -555,6 +562,40 @@ function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
   return `Отменён: ${formatDateTime(item.updatedAt)}.`;
 }
 
+function buildWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string {
+  if (status === 'DELIVERED') {
+    return 'Выдан';
+  }
+  if (status === 'CLAIMED') {
+    return 'Ожидает выдачи';
+  }
+  if (status === 'SELECTED') {
+    return 'Новый победитель';
+  }
+  if (status === 'EXPIRED') {
+    return 'Нужен реролл';
+  }
+  return 'Архив';
+}
+
+function formatCompactMetricDate(value: string | null, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallback;
+  }
+
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 export function ManagedGiveawayCard({
   api,
   entityType,
@@ -577,6 +618,9 @@ export function ManagedGiveawayCard({
   const [channelModalOpen, setChannelModalOpen] = useState(false);
   const [channelModalSelection, setChannelModalSelection] = useState<string[]>([]);
   const [channelLinkValue, setChannelLinkValue] = useState('');
+  const [resolvedExternalChannels, setResolvedExternalChannels] = useState<
+    Record<string, { title: string; link: string | null }>
+  >({});
 
   const listQueryKey = useMemo(
     () => ['managed-giveaways', entityType, entityId] as const,
@@ -609,6 +653,8 @@ export function ManagedGiveawayCard({
       ) ?? null,
     [sortedItems],
   );
+  const featuredItem = currentItem ?? sortedItems[0] ?? null;
+  const featuredGiveawayId = featuredItem?.id ?? null;
 
   const draftDetailsQuery = useQuery({
     queryKey: ['managed-giveaway-details', entityType, entityId, editingGiveawayId] as const,
@@ -619,6 +665,18 @@ export function ManagedGiveawayCard({
       return getManagedGiveaway(api, entityType, entityId, editingGiveawayId);
     },
     enabled: editorMode === 'edit' && Boolean(entityId) && Boolean(editingGiveawayId),
+    refetchOnWindowFocus: false,
+  });
+
+  const featuredDetailsQuery = useQuery({
+    queryKey: ['managed-giveaway-details', entityType, entityId, featuredGiveawayId] as const,
+    queryFn: () => {
+      if (!featuredGiveawayId) {
+        throw new Error('Розыгрыш не выбран.');
+      }
+      return getManagedGiveaway(api, entityType, entityId, featuredGiveawayId);
+    },
+    enabled: editorMode === 'closed' && Boolean(entityId) && Boolean(featuredGiveawayId),
     refetchOnWindowFocus: false,
   });
 
@@ -782,31 +840,20 @@ export function ManagedGiveawayCard({
     return map;
   }, [ownedChannels]);
 
-  const channelByLink = useMemo(() => {
-    const map = new Map<string, ChatSummary>();
-    for (const channel of ownedChannels) {
-      if (channel.link) {
-        const normalized = normalizeChannelLink(channel.link);
-        if (normalized) {
-          map.set(normalized, channel);
-        }
-      }
-    }
-    return map;
-  }, [ownedChannels]);
-
   const selectedRequiredChannels = useMemo(() => {
     if (!draft) {
       return [];
     }
     return draft.requiredChannelIds.map((channelId) => {
       const channel = channelById.get(channelId);
+      const externalChannel = resolvedExternalChannels[channelId];
       return {
         id: channelId,
-        title: channel?.title?.trim() || 'Канал из условий',
+        title: channel?.title?.trim() || externalChannel?.title?.trim() || 'Канал из условий',
+        link: channel?.link ?? externalChannel?.link ?? null,
       };
     });
-  }, [channelById, draft]);
+  }, [channelById, draft, resolvedExternalChannels]);
 
   const ownedSelectableChannels = useMemo(
     () => ownedChannels.filter((channel) => channel.id !== entityId),
@@ -886,11 +933,45 @@ export function ManagedGiveawayCard({
       cancelManagedGiveaway(api, entityType, entityId, giveawayId),
   });
 
+  const resolveRequiredChannelMutation = useMutation({
+    mutationFn: (value: string) =>
+      resolveManagedGiveawayRequiredChannel(api, entityType, entityId, value),
+  });
+
+  const closeMutation = useMutation({
+    mutationFn: (giveawayId: string) => closeManagedGiveaway(api, entityType, entityId, giveawayId),
+  });
+
+  const rerollMutation = useMutation({
+    mutationFn: (params: { giveawayId: string; winnerId: string }) =>
+      rerollManagedGiveawayWinner(api, entityType, entityId, params.giveawayId, params.winnerId),
+  });
+
+  const deliverMutation = useMutation({
+    mutationFn: (params: { giveawayId: string; winnerId: string }) =>
+      markManagedGiveawayWinnerDelivered(
+        api,
+        entityType,
+        entityId,
+        params.giveawayId,
+        params.winnerId,
+      ),
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (giveawayId: string) => deleteManagedGiveaway(api, entityType, entityId, giveawayId),
+  });
+
   const isBusy =
     createMutation.isPending ||
     updateMutation.isPending ||
     publishMutation.isPending ||
-    cancelMutation.isPending;
+    cancelMutation.isPending ||
+    resolveRequiredChannelMutation.isPending ||
+    closeMutation.isPending ||
+    rerollMutation.isPending ||
+    deliverMutation.isPending ||
+    deleteMutation.isPending;
 
   const clearEditor = () => {
     setEditorMode('closed');
@@ -903,6 +984,7 @@ export function ManagedGiveawayCard({
     setChannelModalOpen(false);
     setChannelModalSelection([]);
     setChannelLinkValue('');
+    setResolvedExternalChannels({});
   };
 
   const applyEditorPayload = (giveaway: ManagedGiveawayDetails) => {
@@ -930,6 +1012,7 @@ export function ManagedGiveawayCard({
     setChannelModalOpen(false);
     setChannelModalSelection([]);
     setChannelLinkValue('');
+    setResolvedExternalChannels({});
   };
 
   const startEditCurrentDraft = () => {
@@ -1160,20 +1243,47 @@ export function ManagedGiveawayCard({
     setEditorError('');
   };
 
-  const addRequiredChannelByLink = () => {
+  const addRequiredChannelByLink = async () => {
     const normalized = normalizeChannelLink(channelLinkValue);
     if (!normalized) {
       setValidationHint('Вставьте ссылку канала.');
       return;
     }
 
-    const matched = channelByLink.get(normalized);
-    if (!matched) {
-      setValidationHint('Не нашли канал по ссылке. Используйте кнопку «Свой канал».');
-      return;
-    }
+    try {
+      const result = await resolveRequiredChannelMutation.mutateAsync(channelLinkValue);
+      const channel = result.channel;
+      if (channel.id === entityId) {
+        setValidationHint('Источник уже входит в обязательную проверку.');
+        return;
+      }
+      if (draft?.requiredChannelIds.includes(channel.id)) {
+        setValidationHint('Канал уже добавлен в условия.');
+        return;
+      }
 
-    addRequiredChannelById(matched.id);
+      setResolvedExternalChannels((current) => ({
+        ...current,
+        [channel.id]: {
+          title: channel.title,
+          link: channel.link ?? null,
+        },
+      }));
+      addRequiredChannelById(channel.id);
+      pushToast({
+        tone: 'success',
+        title: 'Канал добавлен',
+        description: channel.title,
+      });
+    } catch (error: unknown) {
+      const message = formatApiError(error, 'Не удалось проверить ссылку канала.');
+      setValidationHint(message);
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось добавить канал',
+        description: message,
+      });
+    }
   };
 
   const refetchManagedGiveaways = async () => {
@@ -1183,6 +1293,111 @@ export function ManagedGiveawayCard({
         queryKey: ['managed-giveaway-details', entityType, entityId],
       }),
     ]);
+  };
+
+  const openManagedGiveawayLink = (url: string | null) => {
+    const targetUrl = url?.trim() ?? '';
+    if (!targetUrl || typeof window === 'undefined') {
+      return;
+    }
+
+    if (window.MAX?.WebApp ?? window.WebApp) {
+      maxSelectionChanged();
+      openMaxBotLink(targetUrl);
+      return;
+    }
+
+    window.open(targetUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const closeFeaturedGiveaway = async () => {
+    if (!featuredItem) {
+      return;
+    }
+
+    try {
+      await closeMutation.mutateAsync(featuredItem.id);
+      await refetchManagedGiveaways();
+      pushToast({
+        tone: 'success',
+        title: 'Розыгрыш завершён',
+      });
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось завершить розыгрыш',
+        description: formatApiError(error, 'Не удалось завершить розыгрыш.'),
+      });
+    }
+  };
+
+  const rerollFeaturedWinner = async (winnerId: string) => {
+    if (!featuredItem) {
+      return;
+    }
+
+    try {
+      await rerollMutation.mutateAsync({
+        giveawayId: featuredItem.id,
+        winnerId,
+      });
+      await refetchManagedGiveaways();
+      pushToast({
+        tone: 'success',
+        title: 'Реролл выполнен',
+      });
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сделать реролл',
+        description: formatApiError(error, 'Не удалось сделать реролл.'),
+      });
+    }
+  };
+
+  const markFeaturedWinnerDelivered = async (winnerId: string) => {
+    if (!featuredItem) {
+      return;
+    }
+
+    try {
+      await deliverMutation.mutateAsync({
+        giveawayId: featuredItem.id,
+        winnerId,
+      });
+      await refetchManagedGiveaways();
+      pushToast({
+        tone: 'success',
+        title: 'Выдача отмечена',
+      });
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось отметить выдачу',
+        description: formatApiError(error, 'Не удалось отметить выдачу.'),
+      });
+    }
+  };
+
+  const deleteFeaturedGiveaway = async () => {
+    if (!featuredItem) {
+      return;
+    }
+
+    try {
+      await deleteMutation.mutateAsync(featuredItem.id);
+      await refetchManagedGiveaways();
+      pushToast({
+        tone: 'success',
+        title: 'Розыгрыш удалён',
+      });
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить розыгрыш',
+        description: formatApiError(error, 'Не удалось удалить розыгрыш.'),
+      });
+    }
   };
 
   const saveEditor = async ({
@@ -1508,27 +1723,144 @@ export function ManagedGiveawayCard({
       );
     }
 
-    if (currentItem) {
-      const currentIsDraft = currentItem.status === 'DRAFT';
+    if (featuredItem) {
+      const currentIsDraft = featuredItem.status === 'DRAFT';
+      const dashboardDetails = featuredDetailsQuery.data ?? null;
+      const featuredPrizes = dashboardDetails?.prizes ?? [];
+      const featuredWinners =
+        dashboardDetails?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
+      const requiredChannelsCount = dashboardDetails?.requiredChannelIds.length ?? 0;
+      const canStartNewScenario = !currentItem && !currentIsDraft;
+      const canCloseFeatured =
+        featuredItem.status === 'ACTIVE' || featuredItem.status === 'SCHEDULED';
+      const canDeleteFeatured =
+        featuredItem.status === 'COMPLETED' || featuredItem.status === 'CANCELED';
+      const dashboardEyebrow = currentIsDraft
+        ? 'Текущий черновик'
+        : currentItem
+          ? 'Текущий розыгрыш'
+          : featuredItem.status === 'COMPLETED'
+            ? 'Последний завершённый'
+            : 'Последний сценарий';
 
       return (
         <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
           <div className="managed-giveaway__hero-head">
             <div className="managed-giveaway__hero-copy">
-              <span className="managed-giveaway__eyebrow">
-                {currentIsDraft ? 'Текущий черновик' : 'Активный сценарий'}
-              </span>
-              <h2>{currentItem.title}</h2>
-              <p>{buildCurrentSubtitle(currentItem)}</p>
+              <span className="managed-giveaway__eyebrow">{dashboardEyebrow}</span>
+              <h2>{featuredItem.title}</h2>
+              <p>{buildCurrentSubtitle(featuredItem)}</p>
             </div>
             <div className="managed-giveaway__hero-badges">
-              <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
-                {buildStatusLabel(currentItem.status)}
+              <span
+                className={cn('managed-giveaway__badge', buildStatusTone(featuredItem.status))}
+              >
+                {buildStatusLabel(featuredItem.status)}
               </span>
+              {featuredItem.hasImage ? (
+                <span className="managed-giveaway__badge is-muted">С фото</span>
+              ) : null}
+              {featuredDetailsQuery.isLoading ? (
+                <span className="managed-giveaway__badge is-muted">Обновляем</span>
+              ) : null}
             </div>
           </div>
 
-          <div className="managed-giveaway__primary-actions">
+          <div className="managed-giveaway__dashboard-stat-grid">
+            <div className="managed-giveaway__dashboard-stat">
+              <span>Заявки</span>
+              <strong>{featuredItem.entriesCount}</strong>
+              <small>{featuredItem.verifiedEntriesCount} подтверждено</small>
+            </div>
+            <div className="managed-giveaway__dashboard-stat">
+              <span>Условия</span>
+              <strong>{1 + requiredChannelsCount}</strong>
+              <small>{requiredChannelsCount > 0 ? 'доп. каналы включены' : 'только источник'}</small>
+            </div>
+            <div className="managed-giveaway__dashboard-stat">
+              <span>Места</span>
+              <strong>{featuredPrizes.length || featuredItem.winnersCount || '—'}</strong>
+              <small>
+                {featuredWinners.length > 0
+                  ? `${featuredWinners.length} победителей уже выбрано`
+                  : currentIsDraft
+                    ? 'список призов готовится'
+                    : 'итоги появятся после закрытия'}
+              </small>
+            </div>
+            <div className="managed-giveaway__dashboard-stat">
+              <span>{featuredItem.status === 'COMPLETED' ? 'Итоги' : 'Финиш'}</span>
+              <strong>
+                {formatCompactMetricDate(
+                  featuredItem.completedAt ?? featuredItem.endsAt,
+                  'Без даты',
+                )}
+              </strong>
+              <small>
+                {featuredItem.status === 'SCHEDULED'
+                  ? `Старт ${formatCompactMetricDate(featuredItem.startsAt, 'сразу')}`
+                  : featuredItem.status === 'CANCELED'
+                    ? 'розыгрыш остановлен'
+                    : currentIsDraft
+                      ? 'можно донастроить и опубликовать'
+                      : 'актуальный тайминг сценария'}
+              </small>
+            </div>
+          </div>
+
+          {dashboardDetails?.description.trim() ? (
+            <div className="managed-giveaway__dashboard-note">
+              <strong>Публикация</strong>
+              <p>{dashboardDetails.description.trim()}</p>
+            </div>
+          ) : null}
+
+          {featuredPrizes.length > 0 ? (
+            <div className="managed-giveaway__dashboard-prize-rail">
+              {featuredPrizes.slice(0, 3).map((prize) => (
+                <div
+                  key={`featured-prize-${prize.id}`}
+                  className="managed-giveaway__dashboard-prize-chip"
+                >
+                  <span>{prize.position} место</span>
+                  <strong>{prize.title}</strong>
+                </div>
+              ))}
+              {featuredPrizes.length > 3 ? (
+                <div className="managed-giveaway__dashboard-prize-chip is-muted">
+                  <span>Ещё</span>
+                  <strong>+{featuredPrizes.length - 3}</strong>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {featuredItem.publicationUrl || featuredItem.resultsUrl ? (
+            <div className="managed-giveaway__dashboard-links">
+              {featuredItem.publicationUrl ? (
+                <button
+                  type="button"
+                  className="button button--ghost managed-giveaway__dashboard-link"
+                  onClick={() => openManagedGiveawayLink(featuredItem.publicationUrl)}
+                  disabled={isBusy}
+                >
+                  Открыть пост
+                </button>
+              ) : null}
+              {featuredItem.resultsUrl ? (
+                <button
+                  type="button"
+                  className="button button--ghost managed-giveaway__dashboard-link"
+                  onClick={() => openManagedGiveawayLink(featuredItem.resultsUrl)}
+                  disabled={isBusy}
+                >
+                  Открыть итоги
+                </button>
+              ) : null}
+            </div>
+          ) : null}
+
+          <div className="managed-giveaway__primary-actions managed-giveaway__primary-actions--dashboard">
             {currentIsDraft ? (
               <button
                 type="button"
@@ -1539,7 +1871,126 @@ export function ManagedGiveawayCard({
                 Продолжить настройку
               </button>
             ) : null}
+            {canCloseFeatured ? (
+              <button
+                type="button"
+                className="button button--accent"
+                disabled={isBusy}
+                onClick={() => {
+                  void closeFeaturedGiveaway();
+                }}
+              >
+                {closeMutation.isPending ? 'Завершаем…' : 'Завершить сейчас'}
+              </button>
+            ) : null}
+            {canStartNewScenario ? (
+              <button
+                type="button"
+                className="button button--accent"
+                disabled={isBusy}
+                onClick={startCreate}
+              >
+                Новый сценарий
+              </button>
+            ) : null}
+            {canDeleteFeatured ? (
+              <button
+                type="button"
+                className="button button--ghost managed-giveaway__dashboard-link managed-giveaway__dashboard-link--danger"
+                disabled={isBusy}
+                onClick={() => {
+                  void deleteFeaturedGiveaway();
+                }}
+              >
+                {deleteMutation.isPending ? 'Удаляем…' : 'Удалить сценарий'}
+              </button>
+            ) : null}
           </div>
+
+          {featuredWinners.length > 0 ? (
+            <div className="managed-giveaway__section managed-giveaway__section--dashboard">
+              <div className="managed-giveaway__title-row">
+                <div className="managed-giveaway__section-copy">
+                  <strong>Победители</strong>
+                  <small>Все ключевые действия теперь доступны прямо здесь.</small>
+                </div>
+                <div className="managed-giveaway__section-actions">
+                  <span className="managed-giveaway__chip">{featuredWinners.length} мест</span>
+                </div>
+              </div>
+
+              <div className="managed-giveaway__dashboard-winner-list">
+                {featuredWinners.map((winner) => {
+                  const canReroll =
+                    winner.status === 'SELECTED' ||
+                    winner.status === 'CLAIMED' ||
+                    winner.status === 'EXPIRED';
+                  const canDeliver =
+                    winner.status === 'SELECTED' || winner.status === 'CLAIMED';
+
+                  return (
+                    <div key={winner.id} className="managed-giveaway__dashboard-winner">
+                      <div className="managed-giveaway__dashboard-winner-rank">
+                        {winner.prizePosition}
+                      </div>
+                      <div className="managed-giveaway__dashboard-winner-copy">
+                        <strong>{winner.displayName?.trim() || 'Победитель определён'}</strong>
+                        <span>{winner.prizeTitle}</span>
+                      </div>
+                      <div className="managed-giveaway__dashboard-winner-side">
+                        <span
+                          className={cn(
+                            'managed-giveaway__badge',
+                            winner.status === 'DELIVERED'
+                              ? 'is-success'
+                              : winner.status === 'EXPIRED'
+                                ? 'is-danger'
+                                : 'is-warning',
+                          )}
+                        >
+                          {buildWinnerStatusLabel(winner.status)}
+                        </span>
+                        {canDeliver || canReroll ? (
+                          <div className="managed-giveaway__dashboard-winner-actions">
+                            {canDeliver ? (
+                              <button
+                                type="button"
+                                className="button button--ghost managed-giveaway__dashboard-link"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  void markFeaturedWinnerDelivered(winner.id);
+                                }}
+                              >
+                                {deliverMutation.isPending ? 'Сохраняем…' : 'Выдано'}
+                              </button>
+                            ) : null}
+                            {canReroll ? (
+                              <button
+                                type="button"
+                                className="button button--ghost managed-giveaway__dashboard-link"
+                                disabled={isBusy}
+                                onClick={() => {
+                                  void rerollFeaturedWinner(winner.id);
+                                }}
+                              >
+                                {rerollMutation.isPending ? 'Рероллим…' : 'Реролл'}
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
+          {featuredDetailsQuery.error ? (
+            <div className="managed-giveaway__error-inline">
+              {formatApiError(featuredDetailsQuery.error, 'Не удалось подгрузить детали розыгрыша.')}
+            </div>
+          ) : null}
         </div>
       );
     }
@@ -1895,6 +2346,7 @@ export function ManagedGiveawayCard({
                       <span className="managed-giveaway__channel-index">{index + 1}</span>
                       <div className="managed-giveaway__channel-copy">
                         <strong>{item.title}</strong>
+                        {item.link ? <small>{item.link}</small> : null}
                       </div>
                       <button
                         type="button"
@@ -1996,7 +2448,9 @@ export function ManagedGiveawayCard({
                       type="button"
                       className="button button--ghost managed-giveaway__channel-action"
                       disabled={isBusy}
-                      onClick={addRequiredChannelByLink}
+                      onClick={() => {
+                        void addRequiredChannelByLink();
+                      }}
                     >
                       Проверить и добавить
                     </button>
