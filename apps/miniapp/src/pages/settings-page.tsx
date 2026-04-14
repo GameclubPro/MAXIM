@@ -68,6 +68,7 @@ import {
   addDomain,
   applySettingsSectionToAll,
   cancelManagedBroadcast,
+  clearBroadcastHandoffState,
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
@@ -2083,7 +2084,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const broadcastHandoffStateQuery = useQuery({
     queryKey: ['broadcast-handoff-state', chatId],
     queryFn: () => getBroadcastHandoffState(api, chatId ?? ''),
-    enabled: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
+    enabled:
+      Boolean(chatId) &&
+      !editingManagedBroadcast &&
+      (expandedSections.mailing || (focusSection === 'broadcast' && handoffRequested)),
     refetchOnWindowFocus: false,
   });
   const meQuery = useQuery({
@@ -2382,14 +2386,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setExpandedSections((current) => ({ ...current, mailing: true }));
     setMailingWorkspaceView('compose');
-    if (broadcastHandoffStateQuery.data.hasContent) {
+    if (handoffRequested && broadcastHandoffStateQuery.data.hasContent) {
       pushToast({
         title: 'Контент сохранён в боте',
         description: 'Календарь восстановлен из личного чата бота.',
         tone: 'success',
       });
     }
-  }, [broadcastHandoffStateQuery.data, pushToast]);
+  }, [broadcastHandoffStateQuery.data, handoffRequested, pushToast]);
 
   useEffect(() => {
     if (!rulesQuery.data) {
@@ -2796,6 +2800,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть сбор контента',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const clearBroadcastHandoffMutation = useMutation({
+    mutationFn: () => clearBroadcastHandoffState(api, chatId ?? ''),
+    onSuccess: () => {
+      appliedBroadcastHandoffSignatureRef.current = null;
+      resetMailingComposer();
+      void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
+      pushToast({
+        tone: 'info',
+        title: 'Черновик очищен',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось очистить черновик',
         description: formatApiError(error),
       });
     },
@@ -3870,6 +3894,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingComposer();
   }
 
+  function handleClearMailingComposer() {
+    if (editingManagedBroadcast) {
+      handleCancelMailingEdit();
+      return;
+    }
+
+    if (!chatId || clearBroadcastHandoffMutation.isPending) {
+      resetMailingComposer();
+      return;
+    }
+
+    clearBroadcastHandoffMutation.mutate();
+  }
+
   function handleDeleteManagedBroadcast(broadcast: ManagedBroadcastListItem) {
     if (!chatId || cancelManagedBroadcastMutation.isPending) {
       return;
@@ -4586,6 +4624,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
     handoffBroadcastMutation.isPending ||
+    clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
@@ -4625,7 +4664,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduledSlots.length > 0 ||
     mailingText.trim().length > 0 ||
     mailingImageEnabled ||
-    mailingButtonEnabled;
+    mailingButtonEnabled ||
+    mailingBotHasContent;
   const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedMailingButtons),
   );
@@ -9538,14 +9578,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <button
                               type="button"
                               className="managed-broadcast-editor-note__link"
-                              onClick={
-                                editingManagedBroadcast
-                                  ? handleCancelMailingEdit
-                                  : resetMailingComposer
-                              }
+                              onClick={handleClearMailingComposer}
                               disabled={isMailingBusy}
                             >
-                              {editingManagedBroadcast ? 'Сбросить' : 'Очистить'}
+                              {clearBroadcastHandoffMutation.isPending ? 'Сбрасываем...' : 'Сбросить'}
                             </button>
                           </div>
                         ) : null}
@@ -9797,11 +9833,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             {broadcast.lastError}
                                           </small>
                                         ) : null}
-                                        <p className="managed-broadcast-card__note">
-                                          {canEditBroadcastSchedule
-                                            ? 'Можно изменить время отправки или удалить рассылку.'
-                                            : 'Удаление снимет будущие отправки и уберёт карточку из списка.'}
-                                        </p>
                                         <div className="managed-broadcast-card__actions">
                                           {canEditBroadcastSchedule ? (
                                             <button
@@ -9812,7 +9843,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             >
                                               {isOpeningBroadcastEditor
                                                 ? 'Открываем...'
-                                                : 'Изменить время'}
+                                                : 'Изменить'}
                                             </button>
                                           ) : null}
                                           {broadcast.canRetry ? (

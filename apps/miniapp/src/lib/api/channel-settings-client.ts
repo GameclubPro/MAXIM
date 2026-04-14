@@ -141,6 +141,16 @@ export async function getChannelBroadcastHandoffState(
   return broadcastHandoffStateSchema.parse(response);
 }
 
+export async function clearChannelBroadcastHandoffState(
+  api: ApiTransport,
+  chatId: string,
+): Promise<BroadcastHandoffState> {
+  const response = await api.request(`/channels/${chatId}/broadcast/handoff`, {
+    method: 'DELETE',
+  });
+  return broadcastHandoffStateSchema.parse(response);
+}
+
 export async function getChannelManagedBroadcasts(
   api: ApiTransport,
   chatId: string,

@@ -3113,6 +3113,74 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('clears broadcast handoff draft from miniapp reset for the same chat', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-24T12:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 24,
+        cycleCount: 1,
+      },
+      'chat',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+    await service.handleUpdate(createPrivateTextUpdate('Черновик для сброса'));
+
+    const beforeClear = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
+    expect(beforeClear.hasContent).toBe(true);
+    expect(beforeClear.scheduledSlots).toEqual(['2026-03-24T12:00:00.000Z']);
+
+    const cleared = await service.clearBroadcastHandoffState(chats[0].id, actor, 'chat');
+    expect(cleared.hasContent).toBe(false);
+    expect(cleared.scheduledSlots).toEqual([]);
+
+    const afterClear = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
+    expect(afterClear.hasContent).toBe(false);
+    expect(afterClear.scheduledSlots).toEqual([]);
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+    expect(getLastUiText(maxClient)).not.toContain('Черновик для сброса');
+  });
+
+  it('clears broadcast content from the private bot reset action', async () => {
+    const { service, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Текст для очистки'));
+
+    expect(getLastUiText(maxClient)).toContain('Текст для очистки');
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_clear_content'));
+
+    expect(getLastEditedText(maxClient)).not.toContain('Текст для очистки');
+    const buttonTexts = getLastEditedButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('✍️ Добавить');
+    expect(buttonTexts).not.toContain('🚀 Опубликовать');
+  });
+
   it('allows adding photo after text on the broadcast screen without extra button press', async () => {
     const { service, adminService, chats } = createHarness();
     const actor = {

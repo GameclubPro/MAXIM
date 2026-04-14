@@ -246,6 +246,16 @@ export async function getBroadcastHandoffState(
   return broadcastHandoffStateSchema.parse(response);
 }
 
+export async function clearBroadcastHandoffState(
+  api: ApiTransport,
+  chatId: string,
+): Promise<BroadcastHandoffState> {
+  const response = await api.request(`/chats/${chatId}/broadcast/handoff`, {
+    method: 'DELETE',
+  });
+  return broadcastHandoffStateSchema.parse(response);
+}
+
 export async function handoffRules(api: ApiTransport, chatId: string) {
   const response = await api.request(`/chats/${chatId}/rules/handoff`, {
     method: 'POST',

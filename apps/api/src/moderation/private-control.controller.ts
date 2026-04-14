@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { PrivateControlService } from './private-control.service';
@@ -31,9 +31,19 @@ export class PrivateControlController {
     return this.privateControlService.getBroadcastHandoffState(chatId, user, 'chat');
   }
 
+  @Delete('chats/:chatId/broadcast/handoff')
+  clearChatBroadcastHandoff(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.privateControlService.clearBroadcastHandoffState(chatId, user, 'chat');
+  }
+
   @Get('channels/:chatId/broadcast/handoff')
   getChannelBroadcastHandoff(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.privateControlService.getBroadcastHandoffState(chatId, user, 'channel');
+  }
+
+  @Delete('channels/:chatId/broadcast/handoff')
+  clearChannelBroadcastHandoff(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.privateControlService.clearBroadcastHandoffState(chatId, user, 'channel');
   }
 
   @Post('chats/:chatId/rules/handoff')

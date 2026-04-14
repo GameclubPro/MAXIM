@@ -575,6 +575,7 @@ const ENTITY_CALLBACK_ACTIONS = new Set<string>([
   'broadcast_view',
   'broadcast_toggle',
   'broadcast_input_prompt',
+  'broadcast_clear_content',
   'broadcast_clear_timer',
   'broadcast_clear_photo',
   'broadcast_send',
@@ -1568,21 +1569,31 @@ export class PrivateControlService {
       session.selectedChatId === sourceChatId && session.selectedEntityType === entityType;
     const draft = hasMatchingDraft ? session.broadcastDraft : DEFAULT_BROADCAST_DRAFT;
 
-    return broadcastHandoffStateSchema.parse({
-      applyToAllChats: entityType === 'channel' ? false : draft.applyToAllChats,
-      buttons: draft.buttons,
-      buttonEnabled: draft.buttonEnabled,
-      buttonUrl: draft.buttonUrl,
-      buttonText: draft.buttonText,
-      scheduleMode: draft.scheduleMode,
-      scheduleTimezone: draft.scheduleTimezone,
-      scheduledSlots: draft.scheduledSlots,
-      sendAt: draft.sendAt,
-      cycleEnabled: draft.cycleEnabled,
-      cycleEveryHours: draft.cycleEveryHours,
-      cycleCount: draft.cycleCount,
-      hasContent: Boolean(draft.text.trim() || draft.imageEnabled),
-    });
+    return this.buildBroadcastHandoffState(entityType, draft);
+  }
+
+  async clearBroadcastHandoffState(
+    sourceChatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffState> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelSettings(sourceChatId, user);
+    } else {
+      await this.adminService.getSettings(sourceChatId, user);
+    }
+
+    const session = await this.loadSession(user.userId);
+    if (session.selectedChatId === sourceChatId && session.selectedEntityType === entityType) {
+      session.broadcastDraft = this.cloneBroadcastDraft(DEFAULT_BROADCAST_DRAFT);
+      session.pendingInput = null;
+      if (session.pendingMassAction?.kind === 'broadcast') {
+        session.pendingMassAction = null;
+      }
+      await this.saveSession(user.userId, session);
+    }
+
+    return this.buildBroadcastHandoffState(entityType, DEFAULT_BROADCAST_DRAFT);
   }
 
   async handoffRulesFromMiniapp(
@@ -4344,6 +4355,23 @@ export class PrivateControlService {
         return;
       }
 
+      case 'broadcast_clear_content': {
+        this.assertChatSelected(session);
+        session.broadcastDraft.text = '';
+        session.broadcastDraft.textFormat = 'plain';
+        session.broadcastDraft.imageEnabled = false;
+        session.broadcastDraft.imageBase64 = '';
+        session.broadcastDraft.imageMimeType = '';
+        session.broadcastDraft.imageFileName = '';
+        session.pendingInput = null;
+        const view = await this.renderBroadcastScreen(context, session, 'Черновик очищен.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Черновик очищен',
+        });
+        return;
+      }
+
       case 'broadcast_clear_photo': {
         this.assertChatSelected(session);
         session.broadcastDraft.imageEnabled = false;
@@ -6088,6 +6116,27 @@ export class PrivateControlService {
     };
   }
 
+  private buildBroadcastHandoffState(
+    entityType: ManagedEntityType,
+    draft: PrivateBroadcastDraft,
+  ): BroadcastHandoffState {
+    return broadcastHandoffStateSchema.parse({
+      applyToAllChats: entityType === 'channel' ? false : draft.applyToAllChats,
+      buttons: draft.buttons.map((button) => ({ ...button })),
+      buttonEnabled: draft.buttonEnabled,
+      buttonUrl: draft.buttonUrl,
+      buttonText: draft.buttonText,
+      scheduleMode: draft.scheduleMode,
+      scheduleTimezone: draft.scheduleTimezone,
+      scheduledSlots: [...draft.scheduledSlots],
+      sendAt: draft.sendAt,
+      cycleEnabled: draft.cycleEnabled,
+      cycleEveryHours: draft.cycleEveryHours,
+      cycleCount: draft.cycleCount,
+      hasContent: Boolean(draft.text.trim() || draft.imageEnabled),
+    });
+  }
+
   private async sendBroadcastDraft(params: {
     selectedChatId: string;
     selectedEntityType: ManagedEntityType;
@@ -7278,6 +7327,12 @@ export class PrivateControlService {
         this.cb('broadcast_input_prompt', 'content'),
       ),
     ]);
+
+    if (hasContent) {
+      rows.push([
+        this.callbackButton('🧹 Сбросить', this.cb('broadcast_clear_content'), 'negative'),
+      ]);
+    }
 
     if (hasContent && draft.imageEnabled) {
       rows.push([this.callbackButton('🗑️ Убрать', this.cb('broadcast_clear_photo'), 'negative')]);
