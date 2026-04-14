@@ -26,6 +26,12 @@ type FeedState = {
   nextCursor: string | null;
 };
 
+const EMPTY_FEED: FeedState = {
+  items: [],
+  hasMore: false,
+  nextCursor: null,
+};
+
 function toFeedState(page: MembershipActivityPage): FeedState {
   return {
     items: page.items,
@@ -50,16 +56,19 @@ export function useMembershipActivityFeed({
   limit = 50,
 }: UseMembershipActivityFeedOptions) {
   const [filter, setFilter] = useState<MembershipActivityFilter>('all');
-  const [feed, setFeed] = useState<FeedState>(() => (initialPage ? toFeedState(initialPage) : {
-    items: [],
-    hasMore: false,
-    nextCursor: null,
-  }));
+  const [feed, setFeed] = useState<FeedState>(() =>
+    initialPage ? toFeedState(initialPage) : EMPTY_FEED,
+  );
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
+  const feedRef = useRef(feed);
   const runLoadPage = useEffectEvent(loadPage);
+
+  useEffect(() => {
+    feedRef.current = feed;
+  }, [feed]);
 
   useEffect(() => {
     requestIdRef.current += 1;
@@ -67,15 +76,6 @@ export function useMembershipActivityFeed({
     activeControllerRef.current = null;
 
     if (!enabled) {
-      setFeed(
-        initialPage
-          ? toFeedState(initialPage)
-          : {
-              items: [],
-              hasMore: false,
-              nextCursor: null,
-            },
-      );
       setError(null);
       setStatus('idle');
       return;
@@ -106,11 +106,9 @@ export function useMembershipActivityFeed({
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
-    setFeed({
-      items: [],
-      hasMore: false,
-      nextCursor: null,
-    });
+    if (feedRef.current.items.length === 0) {
+      setFeed(EMPTY_FEED);
+    }
 
     void runLoadPage({ range, filter, limit }, { signal: controller.signal })
       .then((page) => {
@@ -192,15 +190,6 @@ export function useMembershipActivityFeed({
 
   async function retry() {
     if (!enabled) {
-      setFeed(
-        initialPage
-          ? toFeedState(initialPage)
-          : {
-              items: [],
-              hasMore: false,
-              nextCursor: null,
-            },
-      );
       setError(null);
       setStatus('idle');
       return;
@@ -219,6 +208,9 @@ export function useMembershipActivityFeed({
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
+    if (feedRef.current.items.length === 0) {
+      setFeed(EMPTY_FEED);
+    }
 
     try {
       const page = await runLoadPage({ range, filter, limit }, { signal: controller.signal });

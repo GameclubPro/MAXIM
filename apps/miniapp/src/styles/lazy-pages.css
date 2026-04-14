@@ -8939,6 +8939,7 @@
 }
 
 .events-screen {
+  --events-sticky-top: calc(var(--app-safe-top) + 74px);
   display: grid;
   gap: 12px;
   width: min(100%, 840px);
@@ -8988,22 +8989,17 @@
   box-shadow:
     0 12px 24px rgba(22, 44, 67, 0.06),
     0 1px 0 rgba(255, 255, 255, 0.58) inset;
-  backdrop-filter: blur(16px) saturate(150%);
-  -webkit-backdrop-filter: blur(16px) saturate(150%);
   transition:
     padding 0.24s ease,
     background 0.24s ease,
     box-shadow 0.24s ease;
 }
 
-.events-stage__appbar.is-compact .events-stage__appbar-bar {
-  padding: calc(var(--app-safe-top) + 8px) 18px 8px;
-}
-
-.events-stage__appbar.is-hidden .events-stage__appbar-bar {
-  transform: none;
-  opacity: 1;
-  pointer-events: auto;
+@media (pointer: fine) {
+  .events-stage__appbar-bar {
+    backdrop-filter: blur(10px) saturate(138%);
+    -webkit-backdrop-filter: blur(10px) saturate(138%);
+  }
 }
 
 .events-stage__back {
@@ -10156,7 +10152,7 @@
 
 .membership-feed__day {
   position: sticky;
-  top: calc(var(--app-safe-top) + 74px);
+  top: var(--events-sticky-top, calc(var(--app-safe-top) + 74px));
   z-index: 1;
   justify-self: stretch;
   display: flex;
@@ -10398,6 +10394,22 @@
   min-height: 38px;
 }
 
+@supports (content-visibility: auto) {
+  .event-feed-item,
+  .membership-feed__item {
+    content-visibility: auto;
+    contain: layout paint style;
+  }
+
+  .event-feed-item {
+    contain-intrinsic-size: 112px;
+  }
+
+  .membership-feed__item {
+    contain-intrinsic-size: 96px;
+  }
+}
+
 .membership-feed--immersive {
   gap: 12px;
   padding: 14px;
@@ -10551,10 +10563,6 @@
   .events-stage__appbar-bar {
     padding: calc(var(--app-safe-top) + 8px) 14px 8px;
     gap: 10px;
-  }
-
-  .events-stage__appbar.is-compact .events-stage__appbar-bar {
-    padding: calc(var(--app-safe-top) + 6px) 14px 7px;
   }
 
   .events-stage__panel {
@@ -10729,7 +10737,7 @@
   }
 
   .membership-feed__day {
-    top: calc(env(safe-area-inset-top, 0px) + 72px);
+    top: var(--events-sticky-top, calc(env(safe-area-inset-top, 0px) + 72px));
   }
 
   .membership-feed__item {

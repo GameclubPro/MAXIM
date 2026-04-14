@@ -62,7 +62,12 @@ export function useModerationFeed({
   const [status, setStatus] = useState<'idle' | 'reloading' | 'loadingMore'>('idle');
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
+  const feedRef = useRef(feed);
   const runLoadPage = useEffectEvent(loadPage);
+
+  useEffect(() => {
+    feedRef.current = feed;
+  }, [feed]);
 
   useEffect(() => {
     requestIdRef.current += 1;
@@ -70,7 +75,6 @@ export function useModerationFeed({
     activeControllerRef.current = null;
 
     if (!enabled) {
-      setFeed(EMPTY_FEED);
       setError(null);
       setStatus('idle');
       return;
@@ -88,7 +92,9 @@ export function useModerationFeed({
     activeControllerRef.current = controller;
     setStatus('reloading');
     setError(null);
-    setFeed(EMPTY_FEED);
+    if (feedRef.current.items.length === 0) {
+      setFeed(EMPTY_FEED);
+    }
 
     void runLoadPage({ range, filter, limit }, { signal: controller.signal })
       .then((page) => {
@@ -170,7 +176,6 @@ export function useModerationFeed({
 
   async function retry() {
     if (!enabled) {
-      setFeed(EMPTY_FEED);
       setError(null);
       setStatus('idle');
       return;
@@ -190,6 +195,9 @@ export function useModerationFeed({
     requestIdRef.current = requestId;
     setStatus('reloading');
     setError(null);
+    if (feedRef.current.items.length === 0) {
+      setFeed(EMPTY_FEED);
+    }
 
     try {
       const page = await runLoadPage({ range, filter, limit }, { signal: controller.signal });

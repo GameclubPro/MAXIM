@@ -8,7 +8,14 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
-import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } from 'react';
+import {
+  startTransition,
+  type KeyboardEvent,
+  type MouseEvent,
+  useEffect,
+  useMemo,
+  useState,
+} from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -31,7 +38,6 @@ import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
-import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 import { useModerationFeed } from '../lib/use-moderation-feed';
 
@@ -692,7 +698,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
-  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -861,6 +866,42 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   );
   const isModerationInitialLoading =
     moderationFeed.isReloading && moderationFeed.items.length === 0;
+  const handleSectionChange = (nextSection: EventsSection) => {
+    if (nextSection === section) {
+      return;
+    }
+
+    startTransition(() => {
+      setSection(nextSection);
+    });
+  };
+  const handleRangeChange = (nextRange: LogsDashboardRange) => {
+    if (nextRange === range) {
+      return;
+    }
+
+    startTransition(() => {
+      setRange(nextRange);
+    });
+  };
+  const handleEventsFilterChange = (nextFilter: EventsFilter) => {
+    if (nextFilter === eventsFilter) {
+      return;
+    }
+
+    startTransition(() => {
+      setEventsFilter(nextFilter);
+    });
+  };
+  const handleActivityFilterChange = (nextFilter: Parameters<typeof activityFeed.setFilter>[0]) => {
+    if (nextFilter === activityFeed.filter) {
+      return;
+    }
+
+    startTransition(() => {
+      activityFeed.setFilter(nextFilter);
+    });
+  };
 
   const hardMeasures = violationsSummary.mute + violationsSummary.ban;
 
@@ -955,9 +996,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
         <header
-          className={`events-stage__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
-            isHeaderHidden ? 'is-hidden' : ''
-          }`}
+          className="events-stage__appbar"
         >
           <div className="events-stage__appbar-bar">
             <Link
@@ -1002,7 +1041,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 role="tab"
                 aria-selected={section === 'moderation'}
                 className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
-                onClick={() => setSection('moderation')}
+                onClick={() => handleSectionChange('moderation')}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ModerationTabIcon />
@@ -1015,7 +1054,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 role="tab"
                 aria-selected={section === 'activity'}
                 className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
-                onClick={() => setSection('activity')}
+                onClick={() => handleSectionChange('activity')}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ActivityTabIcon />
@@ -1040,7 +1079,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <SegmentedControl
                 value={range}
                 options={periodOptions}
-                onChange={(next) => setRange(next as LogsDashboardRange)}
+                onChange={(next) => handleRangeChange(next as LogsDashboardRange)}
                 className="events-dashboard__range"
               />
             </div>
@@ -1144,7 +1183,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     key={option.value}
                     type="button"
                     className={`events-filter-chip ${active ? 'is-active' : ''}`}
-                    onClick={() => setEventsFilter(option.value)}
+                    onClick={() => handleEventsFilterChange(option.value)}
                     role="tab"
                     aria-selected={active}
                   >
@@ -1163,7 +1202,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           joinedLabel="чату"
           leftLabel="чат"
           filter={activityFeed.filter}
-          onFilterChange={activityFeed.setFilter}
+          onFilterChange={handleActivityFilterChange}
           items={activityFeed.items}
           hasMore={activityFeed.hasMore}
           isReloading={activityFeed.isReloading}
@@ -1248,7 +1287,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           {moderationFeed.items.length > 0 ? (
             <>
               <section className="events-feed" aria-label="Список нарушений">
-                {moderationFeed.items.map((violation, index) => {
+                {moderationFeed.items.map((violation) => {
                   const displayAction = resolveDisplayAction(violation);
                   const isExpanded = expandedViolationId === violation.id;
                   const displayName = resolveOffenderName(violation);
@@ -1266,8 +1305,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                       key={violation.id}
                       className={`event-feed-item event-feed-item--${actionToneMap[displayAction]} ${
                         isExpanded ? 'is-expanded' : ''
-                      } stagger-in`}
-                      style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+                      }`}
                     >
                       <div
                         className="event-feed-item__trigger"
