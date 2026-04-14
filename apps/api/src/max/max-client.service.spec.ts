@@ -2366,6 +2366,35 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('detects channel snapshots from public /channels links when MAX omits an explicit type', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            title: 'Новости MAX',
+            participants_count: 10,
+            status: 'active',
+            is_public: true,
+            link: 'https://max.ru/channels/news-max',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getChatSnapshot('channel-1')).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/news-max',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('applies background MAX API rate limit to background snapshot reads', async () => {
     const httpService = {
       request: jest.fn(),

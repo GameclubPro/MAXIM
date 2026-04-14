@@ -13797,6 +13797,83 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).not.toHaveBeenCalled();
     });
 
+    it('prefers a cached required subscription channel header over a stale persisted chat entity type', async () => {
+      const prisma = createPrismaForRequiredSubscription();
+      prisma.chat.findMany.mockResolvedValue([
+        {
+          id: 'channel-1',
+          title: 'Старое имя чата',
+          entityType: ChatEntityType.CHAT,
+        },
+      ]);
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const chatContextCache = {
+        getChatContext: jest.fn().mockResolvedValue({
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            requiredSubscriptionEnabled: true,
+            requiredSubscriptionChannelIds: ['channel-1'],
+            rulesAttachViolationsEnabled: true,
+          }),
+          domainAllowlist: [],
+          adminUserIds: [],
+          rulesPublishedUrl: null,
+          rulesPublishedMessageId: 'mid-rules-1',
+        }),
+        getManagedEntityHeader: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Новости MAX',
+          entityType: 'channel',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: null,
+          primaryBotId: null,
+          assignedBots: [],
+          sharedMode: 'owned',
+        }),
+        setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+        invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+      };
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn(),
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/c/chat-1/rules'),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        chatContextCache as never,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      await service.handleUpdate(createUpdate());
+
+      expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+      const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
+      expect(noticeText).toContain('Новости MAX');
+      expect(ruleEngine.detect).not.toHaveBeenCalled();
+    });
+
     it('does not resolve rules links during ordinary chat context loads from cache', async () => {
       const prisma = createPrismaForRequiredSubscription();
       const ruleEngine = {
@@ -13854,11 +13931,22 @@ describe('ModerationService', () => {
       const redisCounter = createRequiredSubscriptionRedisCounter();
       const maxClient = {
         hasChatMember: jest.fn().mockResolvedValue(false),
-        getChatSnapshot: jest.fn().mockResolvedValue({
-          title: 'Новости MAX',
-          link: 'https://max.ru/channels/news-max',
-          participantsCount: 100,
-          entityType: 'channel',
+        getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => {
+          if (chatId === 'chat-2') {
+            return {
+              title: 'Общий чат',
+              link: 'https://max.ru/chats/chat-2',
+              participantsCount: 120,
+              entityType: 'chat',
+            };
+          }
+
+          return {
+            title: 'Новости MAX',
+            link: 'https://max.ru/channels/news-max',
+            participantsCount: 100,
+            entityType: 'channel',
+          };
         }),
         deleteMessage: jest.fn(),
         sendMessage: jest.fn(),
@@ -13887,8 +13975,13 @@ describe('ModerationService', () => {
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
       });
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
-      expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-1', {
+      expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(2);
+      expect(maxClient.getChatSnapshot).toHaveBeenNthCalledWith(1, 'chat-2', {
+        trafficClass: 'interactive',
+        timeoutMs: 2_500,
+        sourceTag: 'required_subscription_metadata',
+      });
+      expect(maxClient.getChatSnapshot).toHaveBeenNthCalledWith(2, 'channel-1', {
         trafficClass: 'interactive',
         timeoutMs: 2_500,
         sourceTag: 'required_subscription_metadata',

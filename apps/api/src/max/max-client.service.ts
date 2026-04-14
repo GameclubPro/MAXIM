@@ -2006,7 +2006,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const link = this.parseChatLink(row);
-    if (link && link.toLowerCase().includes('/channel/')) {
+    if (link && /\/channels?\//iu.test(link)) {
       return 'channel';
     }
 
