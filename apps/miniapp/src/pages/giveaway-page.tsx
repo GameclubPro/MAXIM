@@ -200,7 +200,7 @@ function buildModalPresentation(params: {
       glyph: 'clock',
       badge: 'Статус недоступен',
       title: 'Не удалось проверить участие',
-      description: 'Повторите чуть позже.',
+      description: 'Повторите позже.',
     };
   }
 
@@ -216,7 +216,7 @@ function buildModalPresentation(params: {
       description:
         participant.winnerStatus === 'EXPIRED'
           ? 'Место можно перевыбрать через админа.'
-          : 'Бот уже отправил победителю личное сообщение.',
+          : 'Победителю уже написал бот.',
     };
   }
 
@@ -249,7 +249,7 @@ function buildModalPresentation(params: {
       glyph: 'spark',
       badge: 'Проверяем',
       title: 'Заявка уже отправлена',
-      description: 'MAX ещё проверяет подписки.',
+      description: 'MAX ещё проверяет условия.',
     };
   }
 
@@ -496,7 +496,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     glyph: 'clock',
     badge: 'Проверяем статус',
     title: 'Уточняем участие',
-    description: 'Проверяем, вступали ли вы раньше и выполнены ли условия.',
+    description: 'Проверяем участие и условия.',
   };
 
   const presentation = giveawayQuery.error
@@ -830,7 +830,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                     <small>
                       {giveaway
                         ? `${giveaway.prizes.length} мест · ${giveaway.requiredChannels.length + 1} условий`
-                        : 'Подготавливаем сценарий'}
+                        : 'Подготавливаем'}
                     </small>
                   </div>
                 </div>
@@ -855,7 +855,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 <small className="giveaway-page__overlay-kicker">{giveaway.title}</small>
               ) : null}
               <strong id="giveaway-overlay-title">{presentation.title}</strong>
-              {presentation.description ? <p>{presentation.description}</p> : null}
             </div>
 
             {giveaway ? (
@@ -880,7 +879,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             <div className={cn('giveaway-page__overlay-state-block', `is-${presentation.tone}`)}>
               <GiveawayGlyphIcon tone={presentation.tone} glyph={presentation.glyph} />
               <div className="giveaway-page__overlay-state-copy">
-                <strong>{presentation.title}</strong>
+                <strong>{presentation.badge}</strong>
                 {presentation.description ? <p>{presentation.description}</p> : null}
               </div>
             </div>
@@ -936,10 +935,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                       <strong>{nextMissingChannel.title}</strong>
                       <small>
                         {subscriptionNeedsManualRetry
-                          ? 'Если нужно, откройте канал ещё раз.'
+                          ? 'Откройте ещё раз при необходимости.'
                           : awaitingSubscriptionReturn || subscriptionRecheckPending
-                            ? 'Возвращайтесь в mini app после подписки.'
-                            : 'Откройте в MAX и подпишитесь.'}
+                            ? 'Вернитесь после подписки.'
+                            : 'Откройте и подпишитесь.'}
                       </small>
                     </button>
                   ) : (
@@ -958,7 +957,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 <div className="giveaway-page__section-head">
                   <div className="giveaway-page__section-copy">
                     <h2>Призы</h2>
-                    <small>Каждое место фиксируется отдельно.</small>
                   </div>
                 </div>
                 <div className="giveaway-page__prize-rail">
@@ -977,7 +975,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 <div className="giveaway-page__section-head">
                   <div className="giveaway-page__section-copy">
                     <h2>Условия участия</h2>
-                    <small>Подписка на источник проверяется автоматически.</small>
+                    <small>Источник проверяется автоматически.</small>
                   </div>
                   <span className="giveaway-page__status is-muted">
                     {completedChannelSteps}/{totalChannelSteps}
@@ -1012,7 +1010,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                             <span>{channel.eyebrow}</span>
                             <strong>{channel.title}</strong>
                             <small>
-                              {isMissing ? 'Откройте канал и подпишитесь.' : 'Условие уже выполнено.'}
+                              {isMissing ? 'Откройте и подпишитесь.' : 'Условие выполнено.'}
                             </small>
                           </span>
                           <span className="giveaway-page__requirement-trailing">
@@ -1043,7 +1041,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                           <span>{channel.eyebrow}</span>
                           <strong>{channel.title}</strong>
                           <small>
-                            {isMissing ? 'У канала нет публичной ссылки.' : 'Условие уже выполнено.'}
+                            {isMissing ? 'Нет публичной ссылки.' : 'Условие выполнено.'}
                           </small>
                         </span>
                         <span className="giveaway-page__requirement-trailing">
@@ -1068,7 +1066,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 <div className="giveaway-page__section-head">
                   <div className="giveaway-page__section-copy">
                     <h2>Победители</h2>
-                    <small>Итоги показываются прямо в mini app.</small>
                   </div>
                 </div>
                 <div className="giveaway-page__winner-list">

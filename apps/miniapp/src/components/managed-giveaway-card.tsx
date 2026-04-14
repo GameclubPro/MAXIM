@@ -1912,7 +1912,6 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__title-row">
                 <div className="managed-giveaway__section-copy">
                   <strong>Победители</strong>
-                  <small>Все ключевые действия теперь доступны прямо здесь.</small>
                 </div>
                 <div className="managed-giveaway__section-actions">
                   <span className="managed-giveaway__chip">{featuredWinners.length} мест</span>
@@ -2001,7 +2000,7 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__hero-copy">
             <span className="managed-giveaway__eyebrow">Розыгрыши</span>
             <h2>Соберите сценарий</h2>
-            <p>3 шага и публикация полностью внутри mini app.</p>
+            <p>Запуск и итоги внутри mini app.</p>
           </div>
           <div className="managed-giveaway__hero-badges">
             <GiveawayHintAnchor
@@ -2010,8 +2009,7 @@ export function ManagedGiveawayCard({
               onToggleHint={toggleHint}
               label="Как устроен запуск розыгрыша"
             >
-              Здесь настраиваются тайминг, условия, призы и финальная публикация. Бот для запуска
-              больше не нужен.
+              Здесь настраиваются тайминг, условия, призы и публикация.
             </GiveawayHintAnchor>
           </div>
         </div>
