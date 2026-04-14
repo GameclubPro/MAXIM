@@ -15388,11 +15388,30 @@ export class AdminService implements OnModuleDestroy {
         event_type,
         user_id,
         sender_name
-      FROM chat_membership_activity_events
-      WHERE chat_id = ${chatId}
-        AND event_type IN (${Prisma.join(eventTypes)})
-        AND event_at >= ${from}
-        AND event_at <= ${to}
+      FROM (
+        SELECT
+          id,
+          event_at,
+          event_type,
+          user_id,
+          sender_name,
+          ROW_NUMBER() OVER (
+            PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at
+            ORDER BY
+              CASE
+                WHEN sender_name IS NULL OR BTRIM(sender_name) = '' THEN 1
+                ELSE 0
+              END ASC,
+              created_at DESC,
+              id DESC
+          ) AS membership_event_rank
+        FROM chat_membership_activity_events
+        WHERE chat_id = ${chatId}
+          AND event_type IN (${Prisma.join(eventTypes)})
+          AND event_at >= ${from}
+          AND event_at <= ${to}
+      ) membership_events_ranked
+      WHERE membership_event_rank = 1
       ORDER BY event_at DESC, id DESC
     `;
   }

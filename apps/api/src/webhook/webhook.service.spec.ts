@@ -288,7 +288,7 @@ describe('WebhookService', () => {
       data: [
         expect.objectContaining({
           id: 'u-read-models-1',
-          dedupeKey: 'membership:user_added:-100200:user-77:mid-read-models-1',
+          dedupeKey: 'membership:user_added:-100200:user-77:2026-04-06T00:00:00.000Z',
           chatId: '-100200',
           eventType: 'user_added',
           userId: 'user-77',
@@ -306,6 +306,82 @@ describe('WebhookService', () => {
           },
         },
       }),
+    );
+  });
+
+  it('uses the same membership dedupe key for equivalent join events from different bots', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-membership-dedupe' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      managedEntityLocalActivity: {
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+
+    await service.ingest(
+      {
+        updateId: 'u-membership-dedupe-1',
+        type: 'user_added',
+        botId: 'id613002203036_bot',
+        message: {
+          messageId: 'mid-membership-dedupe-1',
+          chatId: '-100333',
+          senderId: 'user-88',
+          senderName: 'Ольга',
+          text: '',
+          createdAt: new Date('2026-04-06T01:00:00.000Z').toISOString(),
+        },
+        membership: {
+          action: 'added',
+          memberUserIds: ['user-88'],
+        },
+      },
+      '127.0.0.1',
+    );
+
+    await service.ingest(
+      {
+        updateId: 'u-membership-dedupe-2',
+        type: 'user_added',
+        botId: 'id613002203036_4_bot',
+        message: {
+          messageId: 'mid-membership-dedupe-2',
+          chatId: '-100333',
+          senderId: 'user-88',
+          senderName: 'Ольга',
+          text: '',
+          createdAt: new Date('2026-04-06T01:00:00.000Z').toISOString(),
+        },
+        membership: {
+          action: 'added',
+          memberUserIds: ['user-88'],
+        },
+      },
+      '127.0.0.1',
+    );
+
+    const firstCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[0]?.[0];
+    const secondCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[1]?.[0];
+
+    expect(firstCall?.data?.[0]?.dedupeKey).toBe(
+      'membership:user_added:-100333:user-88:2026-04-06T01:00:00.000Z',
+    );
+    expect(secondCall?.data?.[0]?.dedupeKey).toBe(
+      'membership:user_added:-100333:user-88:2026-04-06T01:00:00.000Z',
     );
   });
 

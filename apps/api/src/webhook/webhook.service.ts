@@ -583,7 +583,6 @@ export class WebhookService {
         chatId,
         update.message?.senderId?.trim() || null,
         eventAt,
-        update.message?.messageId?.trim() || null,
       ),
       botId: update.botId?.trim() || null,
       chatId,
@@ -641,13 +640,7 @@ export class WebhookService {
     chatId: string,
     userId: string | null,
     eventAt: Date,
-    messageId: string | null,
   ): string {
-    const normalizedMessageId = messageId?.trim() ?? '';
-    if (normalizedMessageId.length > 0 && !normalizedMessageId.startsWith(`${eventType}:`)) {
-      return `membership:${eventType}:${chatId}:${userId ?? ''}:${normalizedMessageId}`;
-    }
-
     return `membership:${eventType}:${chatId}:${userId ?? ''}:${eventAt.toISOString()}`;
   }
 

@@ -3249,6 +3249,9 @@ describe('AdminService.getLogsDashboard', () => {
     );
     expect(dedupeSqlText).toContain('FROM chat_membership_activity_events');
     expect(dedupeSqlText).toContain('event_at AS created_at');
+    expect(dedupeSqlText).toContain('ROW_NUMBER() OVER');
+    expect(dedupeSqlText).toContain("PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at");
+    expect(dedupeSqlText).toContain('membership_event_rank = 1');
     expect(dedupeSqlText).toContain('event_type IN');
     expect(dedupeSqlText).toContain('ORDER BY event_at DESC, id DESC');
 
@@ -3637,6 +3640,64 @@ describe('AdminService.getChatActivityFeed', () => {
     const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(activitySqlText).toContain('WITH membership_events AS (');
     expect(activitySqlText).toContain('ORDER BY created_at');
+  });
+
+  it('deduplicates membership events produced by different bots for the same user and timestamp', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-join-canonical',
+          created_at: new Date('2026-03-02T11:00:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-7',
+          sender_name: 'Наталья',
+        },
+      ])
+      .mockResolvedValueOnce([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatActivityFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'joined', limit: 20 },
+    );
+
+    expect(result).toEqual({
+      items: [
+        {
+          id: 'wh-join-canonical',
+          type: 'joined',
+          userId: 'user-7',
+          userDisplayName: 'Наталья',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
+          createdAt: '2026-03-02T11:00:00.000Z',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
   });
 });
 
