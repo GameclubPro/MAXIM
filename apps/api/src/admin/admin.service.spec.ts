@@ -19496,6 +19496,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
   });
 
   it('publishes a reviewed suggestion and removes admin review buttons', async () => {
+    const sourceThreadId = '11111111-1111-4111-8111-111111111111';
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -19518,7 +19519,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         actorUserId: 'user-1',
         authorDisplayName: 'Пользователь',
         text: 'Готовый пост для канала',
-        threadId: '11111111-1111-4111-8111-111111111111',
+        threadId: sourceThreadId,
         reviewStatus: 'pending',
         deliveries: [
           {
@@ -19598,6 +19599,36 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         ],
       }),
     );
+    const [, , publishedOptions] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
+    const commentsButton = publishedOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
+    const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
+    const commentsStartParam = commentsButton?.url
+      ? new URL(commentsButton.url).searchParams.get('startapp')
+      : null;
+    const suggestStartParam = suggestButton?.url
+      ? new URL(suggestButton.url).searchParams.get('start')
+      : null;
+    const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
+    const commentsToken = decodeBase64UrlJson<{ d: string }>(commentsLaunch.t.slice(4));
+    const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
+    const suggestToken = decodeBase64UrlJson<{ d: string }>(parsedSuggestion!.token.slice(4));
+    const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      messageId?: unknown;
+      threadId?: unknown;
+      includeCommentsButton?: unknown;
+      includeSuggestButton?: unknown;
+      source?: unknown;
+      suggestButtonText?: unknown;
+    };
+    const publishedThreadId =
+      typeof autoAttachPayload.threadId === 'string' ? autoAttachPayload.threadId : '';
+
+    expect(publishedThreadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(publishedThreadId).not.toBe(sourceThreadId);
+    expect(commentsToken.d).toBe(publishedThreadId);
+    expect(suggestToken.d).toBe(publishedThreadId);
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'suggestion-review-1' },
@@ -19620,7 +19651,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
           payload: expect.objectContaining({
             messageId: 'mid-channel-post-1',
-            threadId: '11111111-1111-4111-8111-111111111111',
+            threadId: publishedThreadId,
             includeCommentsButton: true,
             includeSuggestButton: true,
             source: 'suggestion_review',
@@ -19638,6 +19669,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
   });
 
   it('publishes a reviewed photo suggestion with engagement buttons', async () => {
+    const sourceThreadId = '22222222-2222-4222-8222-222222222222';
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -19660,7 +19692,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         actorUserId: 'user-9',
         authorDisplayName: 'Фотограф',
         text: 'Фото с подписью',
-        threadId: '22222222-2222-4222-8222-222222222222',
+        threadId: sourceThreadId,
         reviewStatus: 'pending',
         imageBase64:
           'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
@@ -19747,13 +19779,23 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         ],
       }),
     );
+    const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      threadId?: unknown;
+    };
+    const publishedThreadId =
+      typeof autoAttachPayload.threadId === 'string' ? autoAttachPayload.threadId : '';
+
+    expect(publishedThreadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(publishedThreadId).not.toBe(sourceThreadId);
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
           payload: expect.objectContaining({
             messageId: 'mid-channel-photo-post-1',
-            threadId: '22222222-2222-4222-8222-222222222222',
+            threadId: publishedThreadId,
             includeCommentsButton: true,
             includeSuggestButton: true,
           }),
@@ -19763,6 +19805,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
   });
 
   it('publishes a reviewed multi-photo suggestion with engagement buttons', async () => {
+    const sourceThreadId = '23232323-2323-4232-8232-232323232323';
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -19785,7 +19828,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         actorUserId: 'user-9',
         authorDisplayName: 'Фотограф',
         text: 'Фото с места события',
-        threadId: '23232323-2323-4232-8232-232323232323',
+        threadId: sourceThreadId,
         reviewStatus: 'pending',
         imageCount: 2,
         imageFileNames: ['suggestion-1.png', 'suggestion-2.jpg'],
@@ -19879,13 +19922,23 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         ],
       }),
     );
+    const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      threadId?: unknown;
+    };
+    const publishedThreadId =
+      typeof autoAttachPayload.threadId === 'string' ? autoAttachPayload.threadId : '';
+
+    expect(publishedThreadId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u,
+    );
+    expect(publishedThreadId).not.toBe(sourceThreadId);
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
           payload: expect.objectContaining({
             messageId: 'mid-channel-multi-photo-post-1',
-            threadId: '23232323-2323-4232-8232-232323232323',
+            threadId: publishedThreadId,
             includeCommentsButton: true,
             includeSuggestButton: true,
           }),

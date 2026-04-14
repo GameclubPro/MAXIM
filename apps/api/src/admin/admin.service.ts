@@ -17868,7 +17868,10 @@ export class AdminService implements OnModuleDestroy {
       };
     }
 
-    const threadId = this.readTrimmedString(payload.threadId) ?? randomUUID();
+    // A published channel post must have its own dialog thread.
+    // Reusing the suggestion thread mixes comments between the source post/suggestion
+    // and the newly published post.
+    const threadId = randomUUID();
     const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
     const buttons: MaxMessageButton[][] = [];
 
