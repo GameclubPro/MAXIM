@@ -192,6 +192,7 @@ export function ChatParticipantSheet({
 
   const displayName = resolveDisplayName(item);
   const username = item.username?.replace(/^@+/u, '').trim() ?? '';
+  const roleLabel = resolveRoleLabel(item);
   const violationCount = Number.isFinite(item.violationCount)
     ? Math.max(0, Math.trunc(item.violationCount))
     : 0;
@@ -209,215 +210,226 @@ export function ChatParticipantSheet({
       id="participant-sheet"
       open={open}
       title={displayName}
-      summary={username ? `@${username}` : resolveRoleLabel(item)}
+      summary={username ? `@${username}` : roleLabel}
       tone="sky"
       onClose={onClose}
       className="participant-sheet"
     >
       <section className="participant-sheet__hero">
-        <PersonAvatar
-          avatarUrl={item.avatarUrl?.trim() || null}
-          fallback={resolveInitial(displayName)}
-          className="participant-sheet__avatar"
-        />
-
-        <div className="participant-sheet__hero-copy">
-          <div className="participant-sheet__chips">
-            <span className="participant-sheet__chip">{resolveRoleLabel(item)}</span>
-            {item.immunity ? (
-              <span className="participant-sheet__chip participant-sheet__chip--immune">
-                <ShieldIcon />
-                <span>{immunityValue}</span>
-              </span>
-            ) : null}
+        <div className="participant-sheet__hero-top">
+          <div className="participant-sheet__avatar-shell">
+            <PersonAvatar
+              avatarUrl={item.avatarUrl?.trim() || null}
+              fallback={resolveInitial(displayName)}
+              className="participant-sheet__avatar"
+            />
           </div>
 
-          <div className="participant-sheet__stats">
-            <article className="participant-sheet__stat">
-              <small>Наруш.</small>
-              <strong>{formatViolationCount(violationCount)}</strong>
-              <span>{rangeLabel}</span>
-            </article>
+          <div className="participant-sheet__hero-copy">
+            <div className="participant-sheet__identity">
+              <strong>{displayName}</strong>
+              <span>{username ? `@${username}` : roleLabel}</span>
+            </div>
 
-            <article className="participant-sheet__stat">
-              <small>Иммун.</small>
-              <strong>{immunityValue}</strong>
-              <span>{immunityMeta}</span>
-            </article>
+            <div className="participant-sheet__chips">
+              <span className="participant-sheet__chip">{roleLabel}</span>
+              {item.immunity ? (
+                <span className="participant-sheet__chip participant-sheet__chip--immune">
+                  <ShieldIcon />
+                  <span>{immunityValue}</span>
+                </span>
+              ) : null}
+            </div>
           </div>
+        </div>
+
+        <div className="participant-sheet__stats">
+          <article className="participant-sheet__stat">
+            <small>Наруш.</small>
+            <strong>{formatViolationCount(violationCount)}</strong>
+            <span>{rangeLabel}</span>
+          </article>
+
+          <article className="participant-sheet__stat">
+            <small>Иммун.</small>
+            <strong>{immunityValue}</strong>
+            <span>{immunityMeta}</span>
+          </article>
         </div>
       </section>
 
       <section className="participant-sheet__section">
-        <div className="participant-sheet__action-grid">
-          <button
-            type="button"
-            className="participant-sheet__action participant-sheet__action--neutral"
-            onClick={onProfileActivate}
-            disabled={isBusy}
-          >
-            <ProfileIcon />
-            <span>Профиль</span>
-          </button>
-
-          {canManageParticipant ? (
+        <div className="participant-sheet__dock">
+          <div className="participant-sheet__action-grid">
             <button
               type="button"
-              className={`participant-sheet__action participant-sheet__action--mute ${
-                isMuteComposerOpen ? 'is-active' : ''
-              }`}
-              onClick={() => setActiveComposer((current) => (current === 'mute' ? null : 'mute'))}
+              className="participant-sheet__action participant-sheet__action--neutral"
+              onClick={onProfileActivate}
               disabled={isBusy}
             >
-              <MuteIcon />
-              <span>Мут</span>
+              <ProfileIcon />
+              <span>Профиль</span>
             </button>
-          ) : null}
 
-          {canManageParticipant ? (
-            <button
-              type="button"
-              className={`participant-sheet__action participant-sheet__action--immunity ${
-                isImmunityComposerOpen ? 'is-active' : ''
-              }`}
-              onClick={() =>
-                setActiveComposer((current) => (current === 'immunity' ? null : 'immunity'))
-              }
-              disabled={isBusy}
-            >
-              <ShieldIcon />
-              <span>Иммун</span>
-            </button>
-          ) : null}
-
-          {canManageParticipant ? (
-            <button
-              type="button"
-              className="participant-sheet__action participant-sheet__action--ban"
-              onClick={() => {
-                if (window.confirm(`Забанить ${displayName}?`)) {
-                  onBan();
-                }
-              }}
-              disabled={isBusy}
-            >
-              <BanIcon />
-              <span>Бан</span>
-            </button>
-          ) : null}
-        </div>
-
-        {canManageParticipant && isMuteComposerOpen ? (
-          <div className="participant-sheet__composer">
-            <div className="participant-sheet__composer-head">
-              <span className="participant-sheet__composer-title">Мут</span>
-              <output aria-live="polite">{formatDuration(muteDurationHours)}</output>
-            </div>
-            <input
-              className="settings-length-limit__slider"
-              type="range"
-              min={MUTE_DURATION_MIN_HOURS}
-              max={MUTE_DURATION_MAX_HOURS}
-              step={1}
-              value={muteDurationHours}
-              onChange={(event) => setMuteDurationHours(Number(event.target.value))}
-              aria-label="Срок мута в часах"
-            />
-            <div className="participant-sheet__slider-labels" aria-hidden="true">
-              <span>{formatDuration(MUTE_DURATION_MIN_HOURS)}</span>
-              <span>{formatDuration(MUTE_DURATION_MAX_HOURS)}</span>
-            </div>
-
-            <div className="participant-sheet__row-actions">
+            {canManageParticipant ? (
               <button
                 type="button"
-                className="button button--accent"
-                onClick={() => onMute(muteDurationHours)}
+                className={`participant-sheet__action participant-sheet__action--mute ${
+                  isMuteComposerOpen ? 'is-active' : ''
+                }`}
+                onClick={() => setActiveComposer((current) => (current === 'mute' ? null : 'mute'))}
                 disabled={isBusy}
               >
-                {isApplyingModeration ? 'Применяем…' : 'Выдать'}
+                <MuteIcon />
+                <span>Мут</span>
               </button>
-            </div>
+            ) : null}
+
+            {canManageParticipant ? (
+              <button
+                type="button"
+                className={`participant-sheet__action participant-sheet__action--immunity ${
+                  isImmunityComposerOpen ? 'is-active' : ''
+                }`}
+                onClick={() =>
+                  setActiveComposer((current) => (current === 'immunity' ? null : 'immunity'))
+                }
+                disabled={isBusy}
+              >
+                <ShieldIcon />
+                <span>Иммун</span>
+              </button>
+            ) : null}
+
+            {canManageParticipant ? (
+              <button
+                type="button"
+                className="participant-sheet__action participant-sheet__action--ban"
+                onClick={() => {
+                  if (window.confirm(`Забанить ${displayName}?`)) {
+                    onBan();
+                  }
+                }}
+                disabled={isBusy}
+              >
+                <BanIcon />
+                <span>Бан</span>
+              </button>
+            ) : null}
           </div>
-        ) : null}
 
-        {canManageParticipant && isImmunityComposerOpen ? (
-          <div className="participant-sheet__composer participant-sheet__composer--stack">
-            <div className="participant-sheet__composer-head">
-              <span className="participant-sheet__composer-title">Иммун</span>
-              <output aria-live="polite">{immunityValue}</output>
-            </div>
-
-            <div className="participant-sheet__slider-block">
-              <div className="participant-sheet__slider-head">
-                <span>Срок</span>
-                <output aria-live="polite">{formatDuration(immunityDurationHours)}</output>
+          {canManageParticipant && isMuteComposerOpen ? (
+            <div className="participant-sheet__composer">
+              <div className="participant-sheet__composer-head">
+                <span className="participant-sheet__composer-title">Мут</span>
+                <output aria-live="polite">{formatDuration(muteDurationHours)}</output>
               </div>
               <input
                 className="settings-length-limit__slider"
                 type="range"
-                min={IMMUNITY_DURATION_MIN_HOURS}
-                max={IMMUNITY_DURATION_MAX_HOURS}
+                min={MUTE_DURATION_MIN_HOURS}
+                max={MUTE_DURATION_MAX_HOURS}
                 step={1}
-                value={immunityDurationHours}
-                onChange={(event) => setImmunityDurationHours(Number(event.target.value))}
-                aria-label="Срок иммунитета в часах"
+                value={muteDurationHours}
+                onChange={(event) => setMuteDurationHours(Number(event.target.value))}
+                aria-label="Срок мута в часах"
               />
               <div className="participant-sheet__slider-labels" aria-hidden="true">
-                <span>{formatDuration(IMMUNITY_DURATION_MIN_HOURS)}</span>
-                <span>{formatDuration(IMMUNITY_DURATION_MAX_HOURS)}</span>
+                <span>{formatDuration(MUTE_DURATION_MIN_HOURS)}</span>
+                <span>{formatDuration(MUTE_DURATION_MAX_HOURS)}</span>
               </div>
-            </div>
 
-            <div className="participant-sheet__slider-block">
-              <div className="participant-sheet__slider-head">
-                <span>Лимит</span>
-                <output aria-live="polite">{dailyViolationLimit}/д</output>
-              </div>
-              <input
-                className="settings-length-limit__slider"
-                type="range"
-                min={IMMUNITY_DAILY_LIMIT_MIN}
-                max={IMMUNITY_DAILY_LIMIT_MAX}
-                step={1}
-                value={dailyViolationLimit}
-                onChange={(event) => setDailyViolationLimit(Number(event.target.value))}
-                aria-label="Лимит нарушающих сообщений в день"
-              />
-              <div className="participant-sheet__slider-labels" aria-hidden="true">
-                <span>{IMMUNITY_DAILY_LIMIT_MIN}</span>
-                <span>{IMMUNITY_DAILY_LIMIT_MAX}</span>
-              </div>
-            </div>
-
-            <div className="participant-sheet__row-actions">
-              {item.immunity ? (
+              <div className="participant-sheet__row-actions">
                 <button
                   type="button"
-                  className="button button--ghost"
-                  onClick={onClearImmunity}
+                  className="button button--accent"
+                  onClick={() => onMute(muteDurationHours)}
                   disabled={isBusy}
                 >
-                  {isSavingImmunity ? 'Снимаем…' : 'Снять'}
+                  {isApplyingModeration ? 'Применяем…' : 'Выдать'}
                 </button>
-              ) : null}
-
-              <button
-                type="button"
-                className="button button--accent"
-                onClick={() =>
-                  onSaveImmunity({
-                    durationHours: immunityDurationHours,
-                    dailyViolationLimit,
-                  })
-                }
-                disabled={isBusy}
-              >
-                {isSavingImmunity ? 'Сохраняем…' : 'Сохранить'}
-              </button>
+              </div>
             </div>
-          </div>
-        ) : null}
+          ) : null}
+
+          {canManageParticipant && isImmunityComposerOpen ? (
+            <div className="participant-sheet__composer participant-sheet__composer--stack">
+              <div className="participant-sheet__composer-head">
+                <span className="participant-sheet__composer-title">Иммун</span>
+                <output aria-live="polite">{immunityValue}</output>
+              </div>
+
+              <div className="participant-sheet__slider-block">
+                <div className="participant-sheet__slider-head">
+                  <span>Срок</span>
+                  <output aria-live="polite">{formatDuration(immunityDurationHours)}</output>
+                </div>
+                <input
+                  className="settings-length-limit__slider"
+                  type="range"
+                  min={IMMUNITY_DURATION_MIN_HOURS}
+                  max={IMMUNITY_DURATION_MAX_HOURS}
+                  step={1}
+                  value={immunityDurationHours}
+                  onChange={(event) => setImmunityDurationHours(Number(event.target.value))}
+                  aria-label="Срок иммунитета в часах"
+                />
+                <div className="participant-sheet__slider-labels" aria-hidden="true">
+                  <span>{formatDuration(IMMUNITY_DURATION_MIN_HOURS)}</span>
+                  <span>{formatDuration(IMMUNITY_DURATION_MAX_HOURS)}</span>
+                </div>
+              </div>
+
+              <div className="participant-sheet__slider-block">
+                <div className="participant-sheet__slider-head">
+                  <span>Лимит</span>
+                  <output aria-live="polite">{dailyViolationLimit}/д</output>
+                </div>
+                <input
+                  className="settings-length-limit__slider"
+                  type="range"
+                  min={IMMUNITY_DAILY_LIMIT_MIN}
+                  max={IMMUNITY_DAILY_LIMIT_MAX}
+                  step={1}
+                  value={dailyViolationLimit}
+                  onChange={(event) => setDailyViolationLimit(Number(event.target.value))}
+                  aria-label="Лимит нарушающих сообщений в день"
+                />
+                <div className="participant-sheet__slider-labels" aria-hidden="true">
+                  <span>{IMMUNITY_DAILY_LIMIT_MIN}</span>
+                  <span>{IMMUNITY_DAILY_LIMIT_MAX}</span>
+                </div>
+              </div>
+
+              <div className="participant-sheet__row-actions">
+                {item.immunity ? (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={onClearImmunity}
+                    disabled={isBusy}
+                  >
+                    {isSavingImmunity ? 'Снимаем…' : 'Снять'}
+                  </button>
+                ) : null}
+
+                <button
+                  type="button"
+                  className="button button--accent"
+                  onClick={() =>
+                    onSaveImmunity({
+                      durationHours: immunityDurationHours,
+                      dailyViolationLimit,
+                    })
+                  }
+                  disabled={isBusy}
+                >
+                  {isSavingImmunity ? 'Сохраняем…' : 'Сохранить'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+        </div>
       </section>
     </SettingsDrilldownPanel>
   );
