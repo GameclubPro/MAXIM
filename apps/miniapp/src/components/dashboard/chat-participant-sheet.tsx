@@ -5,10 +5,14 @@ import { SettingsDrilldownPanel } from '../ui/settings-drilldown-panel';
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
-const IMMUNITY_DURATION_MIN_HOURS = 1;
-const IMMUNITY_DURATION_MAX_HOURS = 168;
+const IMMUNITY_DURATION_MIN_DAYS = 1;
+const IMMUNITY_DURATION_MAX_DAYS = 30;
+const IMMUNITY_DURATION_MIN_HOURS = IMMUNITY_DURATION_MIN_DAYS * 24;
+const IMMUNITY_DURATION_MAX_HOURS = IMMUNITY_DURATION_MAX_DAYS * 24;
 const IMMUNITY_DAILY_LIMIT_MIN = 1;
 const IMMUNITY_DAILY_LIMIT_MAX = 10;
+
+type ParticipantHintKey = 'immunity' | 'duration' | 'limit';
 
 type ChatParticipantSheetProps = {
   open: boolean;
@@ -65,6 +69,10 @@ function formatDuration(hours: number): string {
   }
 
   return `${hours}ч`;
+}
+
+function formatDays(days: number): string {
+  return `${Math.max(1, Math.trunc(days))}д`;
 }
 
 function formatImmunityLeft(expiresAt: string): string {
@@ -143,6 +151,37 @@ function ProfileIcon() {
   );
 }
 
+function InfoButton({
+  hintKey,
+  label,
+  openHintKey,
+  onToggle,
+}: {
+  hintKey: ParticipantHintKey;
+  label: string;
+  openHintKey: ParticipantHintKey | null;
+  onToggle: (hintKey: ParticipantHintKey) => void;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <button
+      type="button"
+      className={`settings-info-button participant-sheet__info-button ${isOpen ? 'is-open' : ''}`.trim()}
+      aria-label={label}
+      aria-controls={`participant-sheet-hint-${hintKey}`}
+      aria-expanded={isOpen}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggle(hintKey);
+      }}
+    >
+      <span aria-hidden>i</span>
+    </button>
+  );
+}
+
 export function ChatParticipantSheet({
   open,
   item,
@@ -158,8 +197,9 @@ export function ChatParticipantSheet({
 }: ChatParticipantSheetProps) {
   const [activeComposer, setActiveComposer] = useState<'mute' | 'immunity' | null>(null);
   const [muteDurationHours, setMuteDurationHours] = useState(24);
-  const [immunityDurationHours, setImmunityDurationHours] = useState(24);
+  const [immunityDurationDays, setImmunityDurationDays] = useState(3);
   const [dailyViolationLimit, setDailyViolationLimit] = useState(3);
+  const [openHintKey, setOpenHintKey] = useState<ParticipantHintKey | null>(null);
 
   useEffect(() => {
     if (!item || !open) {
@@ -167,24 +207,31 @@ export function ChatParticipantSheet({
     }
 
     setActiveComposer(null);
+    setOpenHintKey(null);
     setMuteDurationHours(24);
 
-    const nextImmunityDurationHours = item.immunity
+    const nextImmunityDurationDays = item.immunity
       ? Math.min(
-          IMMUNITY_DURATION_MAX_HOURS,
+          IMMUNITY_DURATION_MAX_DAYS,
           Math.max(
-            IMMUNITY_DURATION_MIN_HOURS,
+            IMMUNITY_DURATION_MIN_DAYS,
             Math.ceil(
-              (new Date(item.immunity.expiresAt).getTime() - Date.now()) / (60 * 60 * 1000),
+              (new Date(item.immunity.expiresAt).getTime() - Date.now()) / (24 * 60 * 60 * 1000),
             ),
           ),
         )
-      : 24;
-    setImmunityDurationHours(
-      Number.isFinite(nextImmunityDurationHours) ? nextImmunityDurationHours : 24,
+      : 3;
+    setImmunityDurationDays(
+      Number.isFinite(nextImmunityDurationDays) ? nextImmunityDurationDays : 3,
     );
     setDailyViolationLimit(item.immunity?.dailyViolationLimit ?? 3);
   }, [item, open]);
+
+  useEffect(() => {
+    if (activeComposer !== 'immunity' && openHintKey !== null) {
+      setOpenHintKey(null);
+    }
+  }, [activeComposer, openHintKey]);
 
   if (!item) {
     return null;
@@ -204,6 +251,9 @@ export function ChatParticipantSheet({
   const immunityMeta = item.immunity ? formatImmunityLeft(item.immunity.expiresAt) : '—';
   const isMuteComposerOpen = activeComposer === 'mute';
   const isImmunityComposerOpen = activeComposer === 'immunity';
+  const toggleHint = (hintKey: ParticipantHintKey) => {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
 
   return (
     <SettingsDrilldownPanel
@@ -355,36 +405,86 @@ export function ChatParticipantSheet({
           {canManageParticipant && isImmunityComposerOpen ? (
             <div className="participant-sheet__composer participant-sheet__composer--stack">
               <div className="participant-sheet__composer-head">
-                <span className="participant-sheet__composer-title">Иммун</span>
+                <div className="participant-sheet__label-with-info">
+                  <span className="participant-sheet__composer-title">Иммун</span>
+                  <InfoButton
+                    hintKey="immunity"
+                    label="Что делает иммунитет"
+                    openHintKey={openHintKey}
+                    onToggle={toggleHint}
+                  />
+                </div>
                 <output aria-live="polite">{immunityValue}</output>
               </div>
+              {openHintKey === 'immunity' ? (
+                <p
+                  id="participant-sheet-hint-immunity"
+                  className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
+                >
+                  Иммунитет временно не даёт боту наказывать этого участника за нарушения. Обычные
+                  сообщения лимит не тратят.
+                </p>
+              ) : null}
 
               <div className="participant-sheet__slider-block">
                 <div className="participant-sheet__slider-head">
-                  <span>Срок</span>
-                  <output aria-live="polite">{formatDuration(immunityDurationHours)}</output>
+                  <div className="participant-sheet__label-with-info">
+                    <span>Срок</span>
+                    <InfoButton
+                      hintKey="duration"
+                      label="Что значит срок иммунитета"
+                      openHintKey={openHintKey}
+                      onToggle={toggleHint}
+                    />
+                  </div>
+                  <output aria-live="polite">{formatDays(immunityDurationDays)}</output>
                 </div>
+                {openHintKey === 'duration' ? (
+                  <p
+                    id="participant-sheet-hint-duration"
+                    className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
+                  >
+                    Срок показывает, сколько дней иммунитет будет действовать для этого участника.
+                  </p>
+                ) : null}
                 <input
                   className="settings-length-limit__slider"
                   type="range"
-                  min={IMMUNITY_DURATION_MIN_HOURS}
-                  max={IMMUNITY_DURATION_MAX_HOURS}
+                  min={IMMUNITY_DURATION_MIN_DAYS}
+                  max={IMMUNITY_DURATION_MAX_DAYS}
                   step={1}
-                  value={immunityDurationHours}
-                  onChange={(event) => setImmunityDurationHours(Number(event.target.value))}
-                  aria-label="Срок иммунитета в часах"
+                  value={immunityDurationDays}
+                  onChange={(event) => setImmunityDurationDays(Number(event.target.value))}
+                  aria-label="Срок иммунитета в днях"
                 />
                 <div className="participant-sheet__slider-labels" aria-hidden="true">
-                  <span>{formatDuration(IMMUNITY_DURATION_MIN_HOURS)}</span>
-                  <span>{formatDuration(IMMUNITY_DURATION_MAX_HOURS)}</span>
+                  <span>{formatDays(IMMUNITY_DURATION_MIN_DAYS)}</span>
+                  <span>{formatDays(IMMUNITY_DURATION_MAX_DAYS)}</span>
                 </div>
               </div>
 
               <div className="participant-sheet__slider-block">
                 <div className="participant-sheet__slider-head">
-                  <span>Лимит</span>
+                  <div className="participant-sheet__label-with-info">
+                    <span>Лимит</span>
+                    <InfoButton
+                      hintKey="limit"
+                      label="Что значит лимит иммунитета"
+                      openHintKey={openHintKey}
+                      onToggle={toggleHint}
+                    />
+                  </div>
                   <output aria-live="polite">{dailyViolationLimit}/д</output>
                 </div>
+                {openHintKey === 'limit' ? (
+                  <p
+                    id="participant-sheet-hint-limit"
+                    className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint"
+                  >
+                    Лимит показывает, сколько нарушений в день бот пропустит без санкции. После
+                    лимита модерация снова сработает как обычно.
+                  </p>
+                ) : null}
                 <input
                   className="settings-length-limit__slider"
                   type="range"
@@ -418,7 +518,7 @@ export function ChatParticipantSheet({
                   className="button button--accent"
                   onClick={() =>
                     onSaveImmunity({
-                      durationHours: immunityDurationHours,
+                      durationHours: immunityDurationDays * 24,
                       dailyViolationLimit,
                     })
                   }

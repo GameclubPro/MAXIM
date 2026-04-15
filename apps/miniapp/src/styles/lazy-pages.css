@@ -11247,13 +11247,33 @@
   gap: 10px;
 }
 
+.participant-sheet__label-with-info {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .participant-sheet__composer-title,
-.participant-sheet__slider-head span {
+.participant-sheet__label-with-info > span {
   color: #33506a;
   font-size: 0.74rem;
   font-weight: 780;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.participant-sheet__info-button {
+  width: 22px;
+  height: 22px;
+  min-width: 22px;
+  border-color: rgba(61, 136, 208, 0.16);
+  background: rgba(255, 255, 255, 0.9);
+  color: #5f7c96;
+}
+
+.participant-sheet__hint {
+  margin-top: 2px;
 }
 
 .participant-sheet__composer-head output,

@@ -2428,7 +2428,12 @@ export type ChatParticipantsQuery = z.infer<typeof chatParticipantsQuerySchema>;
 export const chatParticipantImmunityUpdateRequestSchema = z
   .object({
     enabled: z.boolean(),
-    durationHours: z.number().int().min(1).max(168).optional(),
+    durationHours: z
+      .number()
+      .int()
+      .min(24, 'Срок должен быть от 1 до 30 дней.')
+      .max(720, 'Срок должен быть от 1 до 30 дней.')
+      .optional(),
     dailyViolationLimit: z.number().int().min(1).max(10).optional(),
   })
   .superRefine((value, ctx) => {
