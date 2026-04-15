@@ -2,6 +2,9 @@ import {
   applySectionToAllRequestSchema,
   applySectionToAllResponseSchema,
   addDomainRequestSchema,
+  chatParticipantImmunitySchema,
+  chatParticipantImmunityUpdateRequestSchema,
+  chatParticipantImmunityUpdateResultSchema,
   addAdminRequestSchema,
   chatParticipantsPageSchema,
   chatParticipantsQuerySchema,
@@ -37,7 +40,9 @@ import {
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
   type ChannelDialogSuggestionReviewStatus,
+  type ChatParticipantImmunity,
   type ChatParticipantItem,
+  type ChatParticipantImmunityUpdateResult,
   type ChatParticipantsPage,
   type ChatParticipantsQuery,
   type ChannelDialogType,
@@ -453,6 +458,7 @@ const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
+const DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE = 'Europe/Moscow';
 const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 2;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 220;
@@ -7866,8 +7872,7 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    const extractedChatId =
-      this.extractRequiredSubscriptionChannelIdFromValue(normalizedValue);
+    const extractedChatId = this.extractRequiredSubscriptionChannelIdFromValue(normalizedValue);
     if (extractedChatId) {
       return this.resolveRequiredSubscriptionChannelById(extractedChatId);
     }
@@ -8379,7 +8384,9 @@ export class AdminService implements OnModuleDestroy {
     const changes: Partial<ChatSettings> = {};
 
     for (const group of CHAT_SETTINGS_BUTTON_GROUPS) {
-      if (!this.areBroadcastButtonsEqual(sanitized[group.buttons], currentSettings[group.buttons])) {
+      if (
+        !this.areBroadcastButtonsEqual(sanitized[group.buttons], currentSettings[group.buttons])
+      ) {
         changes[group.buttons] = sanitized[group.buttons];
       }
 
@@ -11481,14 +11488,12 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private buildChatRulesButtonRows(
-    rules: {
-      buttons: unknown;
-      buttonEnabled: boolean;
-      buttonUrl: string;
-      buttonText: string;
-    },
-  ): MaxMessageButton[][] | null {
+  private buildChatRulesButtonRows(rules: {
+    buttons: unknown;
+    buttonEnabled: boolean;
+    buttonUrl: string;
+    buttonText: string;
+  }): MaxMessageButton[][] | null {
     if (!rules.buttonEnabled) {
       return null;
     }
@@ -12629,6 +12634,78 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.getCachedChatParticipantsPage(chatId, user.userId, parsed.data, 'chat');
+  }
+
+  async updateChatParticipantImmunity(
+    chatId: string,
+    targetUserIdRaw: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ChatParticipantImmunityUpdateResult> {
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
+    const parsed = chatParticipantImmunityUpdateRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    if (!parsed.data.enabled) {
+      await this.prisma.chatParticipantModerationImmunity.deleteMany({
+        where: {
+          chatId,
+          userId: targetUserId,
+        },
+      });
+
+      this.invalidateChatParticipantsPageCache(chatId);
+      return chatParticipantImmunityUpdateResultSchema.parse({
+        immunity: null,
+        message: 'Иммунитет снят.',
+      });
+    }
+
+    const [settings, now] = await Promise.all([
+      this.prisma.chatSettings.findUnique({
+        where: { chatId },
+        select: { nightModeTimezone: true },
+      }),
+      Promise.resolve(new Date()),
+    ]);
+    const timeZone = this.normalizeParticipantImmunityTimezone(settings?.nightModeTimezone ?? null);
+    const usageDateKey = this.formatParticipantImmunityDateKey(now, timeZone);
+    const expiresAt = new Date(now.getTime() + parsed.data.durationHours! * ONE_HOUR_MS);
+    const immunity = await this.prisma.chatParticipantModerationImmunity.upsert({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId: targetUserId,
+        },
+      },
+      create: {
+        chatId,
+        userId: targetUserId,
+        expiresAt,
+        dailyViolationLimit: parsed.data.dailyViolationLimit!,
+        dailyViolationUsage: 0,
+        usageDateKey,
+        createdByUserId: user.userId,
+        updatedByUserId: user.userId,
+      },
+      update: {
+        expiresAt,
+        dailyViolationLimit: parsed.data.dailyViolationLimit!,
+        dailyViolationUsage: 0,
+        usageDateKey,
+        updatedByUserId: user.userId,
+      },
+    });
+
+    this.invalidateChatParticipantsPageCache(chatId);
+    return chatParticipantImmunityUpdateResultSchema.parse({
+      immunity: this.buildChatParticipantImmunitySummary(immunity, now, timeZone),
+      message: 'Иммунитет обновлён.',
+    });
   }
 
   async applyManualModerationAction(
@@ -15286,7 +15363,7 @@ export class AdminService implements OnModuleDestroy {
     const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(query.range, now);
-    const [membersPage, header] = await Promise.all([
+    const [membersPage, header, settings] = await Promise.all([
       this.maxClient.getChatMembersPage(
         chatId,
         {
@@ -15311,6 +15388,10 @@ export class AdminService implements OnModuleDestroy {
         entityType,
         { skipAdminCheck: true, skipEntityCheck: true },
       ),
+      this.prisma.chatSettings.findUnique({
+        where: { chatId },
+        select: { nightModeTimezone: true },
+      }),
     ]);
     const participantUserIds = Array.from(
       new Set(
@@ -15319,15 +15400,29 @@ export class AdminService implements OnModuleDestroy {
           .filter((memberUserId) => memberUserId.length > 0),
       ),
     );
-    const violationCountRows =
+    const timeZone = this.normalizeParticipantImmunityTimezone(settings?.nightModeTimezone ?? null);
+    const [violationCountRows, immunityRows] = await Promise.all([
       participantUserIds.length > 0
-        ? await this.prisma.moderationEvent.groupBy({
+        ? this.prisma.moderationEvent.groupBy({
             by: ['userId'],
             where: this.buildParticipantViolationCountWhere(chatId, participantUserIds, from, now),
             _count: { _all: true },
           })
-        : [];
+        : Promise.resolve([]),
+      participantUserIds.length > 0
+        ? this.prisma.chatParticipantModerationImmunity.findMany({
+            where: {
+              chatId,
+              userId: { in: participantUserIds },
+              expiresAt: {
+                gt: now,
+              },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
     const violationCountByUserId = new Map<string, number>();
+    const immunityByUserId = new Map<string, ChatParticipantImmunity>();
 
     for (const row of violationCountRows) {
       const normalizedUserId = row.userId.trim();
@@ -15338,11 +15433,27 @@ export class AdminService implements OnModuleDestroy {
       violationCountByUserId.set(normalizedUserId, this.toSafeInteger(row._count._all));
     }
 
+    for (const immunity of immunityRows) {
+      const normalizedUserId = immunity.userId.trim();
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      const summary = this.buildChatParticipantImmunitySummary(immunity, now, timeZone);
+      if (!summary) {
+        continue;
+      }
+
+      immunityByUserId.set(normalizedUserId, summary);
+    }
+
     return chatParticipantsPageSchema.parse({
       items: membersPage.items.map((member) => {
         const normalizedUsername = member.username?.replace(/^@+/u, '').trim() ?? '';
         const userDisplayName =
-          member.displayName?.trim() || normalizedUsername || (member.isBot ? 'Бот MAX' : 'Участник');
+          member.displayName?.trim() ||
+          normalizedUsername ||
+          (member.isBot ? 'Бот MAX' : 'Участник');
 
         return {
           userId: member.userId,
@@ -15359,6 +15470,7 @@ export class AdminService implements OnModuleDestroy {
             userDisplayName,
           ),
           violationCount: violationCountByUserId.get(member.userId.trim()) ?? 0,
+          immunity: immunityByUserId.get(member.userId.trim()) ?? null,
           role: this.mapChatMemberRole(member.role),
           isBot: member.isBot,
         } satisfies ChatParticipantItem;
@@ -15409,6 +15521,78 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return 'member';
+  }
+
+  private normalizeParticipantImmunityTimezone(value: string | null | undefined): string {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE;
+    }
+
+    try {
+      Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(new Date());
+      return normalized;
+    } catch {
+      return DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE;
+    }
+  }
+
+  private formatParticipantImmunityDateKey(date: Date, timeZone: string): string {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(date);
+      const year = parts.find((item) => item.type === 'year')?.value;
+      const month = parts.find((item) => item.type === 'month')?.value;
+      const day = parts.find((item) => item.type === 'day')?.value;
+      if (!year || !month || !day) {
+        return date.toISOString().slice(0, 10);
+      }
+
+      return `${year}-${month}-${day}`;
+    } catch {
+      return date.toISOString().slice(0, 10);
+    }
+  }
+
+  private buildChatParticipantImmunitySummary(
+    immunity: {
+      expiresAt: Date;
+      dailyViolationLimit: number;
+      dailyViolationUsage: number;
+      usageDateKey: string | null;
+    },
+    now: Date,
+    timeZone: string,
+  ): ChatParticipantImmunity | null {
+    if (!(immunity.expiresAt instanceof Date) || !Number.isFinite(immunity.expiresAt.getTime())) {
+      return null;
+    }
+
+    if (immunity.expiresAt.getTime() <= now.getTime()) {
+      return null;
+    }
+
+    const todayKey = this.formatParticipantImmunityDateKey(now, timeZone);
+    const dailyViolationLimit = Math.max(
+      1,
+      Math.min(10, this.toSafeInteger(immunity.dailyViolationLimit)),
+    );
+    const usedViolatingMessagesToday =
+      immunity.usageDateKey === todayKey ? this.toSafeInteger(immunity.dailyViolationUsage) : 0;
+
+    return chatParticipantImmunitySchema.parse({
+      expiresAt: immunity.expiresAt.toISOString(),
+      dailyViolationLimit,
+      usedViolatingMessagesToday,
+      remainingViolatingMessagesToday: Math.max(
+        0,
+        dailyViolationLimit - usedViolatingMessagesToday,
+      ),
+    });
   }
 
   private buildEmptyModerationFeedPage(): ModerationFeedPage {
@@ -21705,14 +21889,9 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     query: ChatParticipantsQuery,
   ): string {
-    return [
-      chatId,
-      userId,
-      entityType,
-      query.range,
-      String(query.limit),
-      query.cursor ?? '',
-    ].join(':');
+    return [chatId, userId, entityType, query.range, String(query.limit), query.cursor ?? ''].join(
+      ':',
+    );
   }
 
   private buildResolvedUserProfileCacheKey(

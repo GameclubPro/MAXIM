@@ -248,6 +248,16 @@ export class AdminController {
     return this.adminService.getChatParticipantsPage(chatId, user, query);
   }
 
+  @Put('chats/:chatId/members/:userId/immunity')
+  updateChatParticipantImmunity(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChatParticipantImmunity(chatId, targetUserId, user, body);
+  }
+
   @Put('chats/:chatId/rules')
   updateRules(
     @Param('chatId') chatId: string,

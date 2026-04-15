@@ -1,6 +1,9 @@
 import {
   applySectionToAllResponseSchema,
   broadcastHandoffStateSchema,
+  chatParticipantImmunitySchema,
+  chatParticipantImmunityUpdateRequestSchema,
+  chatParticipantImmunityUpdateResultSchema,
   chatParticipantsPageSchema,
   channelDialogMessageSchema,
   channelDialogResponseSchema,
@@ -42,6 +45,7 @@ import {
   updateManagedEntityPrimaryBotRequestSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
+  type ChatParticipantImmunityUpdateRequest,
   type ChatParticipantItem,
   type ChatParticipantsPage,
   type ChannelDialogMessage,
@@ -590,6 +594,15 @@ function addHours(value: Date, hours: number): Date {
 
 function addDays(value: Date, days: number): Date {
   return addHours(value, days * 24);
+}
+
+function createPreviewImmunity(durationHours: number, dailyViolationLimit: number, used = 0) {
+  return chatParticipantImmunitySchema.parse({
+    expiresAt: addHours(new Date(), durationHours).toISOString(),
+    dailyViolationLimit,
+    usedViolatingMessagesToday: used,
+    remainingViolatingMessagesToday: Math.max(0, dailyViolationLimit - used),
+  });
 }
 
 function resolveRangeWindow(range: MembershipActivityRange, now: Date) {
@@ -1432,7 +1445,9 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
   return Array.from({ length: count }, (_, index) => {
     const featuredParticipant = featuredParticipants[index] ?? null;
     const displayName =
-      featuredParticipant?.userDisplayName ?? names[index % names.length] ?? `Участник ${index + 1}`;
+      featuredParticipant?.userDisplayName ??
+      names[index % names.length] ??
+      `Участник ${index + 1}`;
     const [startColor, endColor] = avatarPalette[index % avatarPalette.length] ?? [
       '#4d94ff',
       '#2b64dd',
@@ -1442,19 +1457,26 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
     const isBot = index === count - 1 || index === count - 2;
     const username = isBot
       ? `helper_${index + 1}_bot`
-      : featuredParticipant?.username ?? `preview_member_${index + 1}`;
+      : (featuredParticipant?.username ?? `preview_member_${index + 1}`);
     const label = isBot ? `MAXIM ${index === count - 1 ? 'Assist' : 'Guard'}` : displayName;
+    const immunity =
+      !isBot && index === 4
+        ? createPreviewImmunity(72, 5, 1)
+        : !isBot && index === 7
+          ? createPreviewImmunity(18, 3, 0)
+          : null;
 
     return {
       userId: isBot
         ? `${prefix}-member-${index + 1}_bot`
-        : featuredParticipant?.userId ?? `${prefix}-member-${index + 1}`,
+        : (featuredParticipant?.userId ?? `${prefix}-member-${index + 1}`),
       userDisplayName: label,
       username,
       avatarUrl: buildPreviewAvatarDataUrl(label, startColor, endColor),
       profileUrl: buildPreviewProfileUrl(username),
       profileHandoffUrl: buildPreviewProfileHandoffUrl(`${prefix}-member-${index + 1}`),
       violationCount: 0,
+      immunity,
       role: isBot ? 'admin' : role,
       isBot,
     };
@@ -3358,6 +3380,30 @@ async function handleChatRequest(
     const user = resolvePreviewUser(state, userId);
     state.chatViolations = [createManualViolation(userId, user, payload), ...state.chatViolations];
     return createModerationResult(userId, payload);
+  }
+
+  if (tail[0] === 'members' && tail[1] && tail[2] === 'immunity' && method === 'PUT') {
+    const userId = decodeURIComponent(tail[1]);
+    const payload = chatParticipantImmunityUpdateRequestSchema.parse(
+      parseJsonBody(init) as ChatParticipantImmunityUpdateRequest,
+    );
+    const immunity = payload.enabled
+      ? createPreviewImmunity(payload.durationHours!, payload.dailyViolationLimit!)
+      : null;
+
+    state.chatParticipants = state.chatParticipants.map((item) =>
+      item.userId === userId
+        ? {
+            ...item,
+            immunity,
+          }
+        : item,
+    );
+
+    return chatParticipantImmunityUpdateResultSchema.parse({
+      immunity,
+      message: payload.enabled ? 'Иммунитет обновлён.' : 'Иммунитет снят.',
+    });
   }
 
   throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);

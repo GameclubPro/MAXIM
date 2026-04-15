@@ -11,8 +11,8 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // Keep the guardrail strict, but give the startup path enough room for iterative design work.
 const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors
-// now legitimately push the incremental settings chunk a little higher.
-const SETTINGS_JS_BUDGET_GZIP = 107 * 1024;
+// plus tiny shared-chunk drift from reused drilldown UI make the old ceiling brittle.
+const SETTINGS_JS_BUDGET_GZIP = 107 * 1024 + 128;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

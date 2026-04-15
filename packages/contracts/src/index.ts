@@ -216,9 +216,7 @@ function buildStoredLinkButtonState(value: {
     buttons,
     buttonEnabled: value.buttonEnabled === true,
     buttonUrl: primaryButton?.url ?? value.buttonUrl?.trim() ?? '',
-    buttonText:
-      primaryButton?.text ??
-      (value.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT),
+    buttonText: primaryButton?.text ?? (value.buttonText?.trim() || DEFAULT_BROADCAST_BUTTON_TEXT),
   };
 }
 
@@ -814,11 +812,7 @@ export const chatSettingsSchema = z
       buttonUrl: value.linkBotButtonUrl,
       buttonText: value.linkBotButtonText,
     });
-    if (
-      value.linkBotMessageEnabled &&
-      value.linkBotButtonEnabled &&
-      linkBotButtons.length > 0
-    ) {
+    if (value.linkBotMessageEnabled && value.linkBotButtonEnabled && linkBotButtons.length > 0) {
       addStoredLinkButtonIssues(linkBotButtons, ctx, ['linkBotButtons']);
     } else if (
       value.linkBotMessageEnabled &&
@@ -833,11 +827,7 @@ export const chatSettingsSchema = z
       });
     }
 
-    if (
-      value.linkBotMessageEnabled &&
-      value.linkBotButtonEnabled &&
-      linkBotButtons.length > 0
-    ) {
+    if (value.linkBotMessageEnabled && value.linkBotButtonEnabled && linkBotButtons.length > 0) {
       // Validation already added above.
     } else if (
       value.linkBotMessageEnabled &&
@@ -1303,60 +1293,66 @@ const chatRulesObjectSchema = z.object({
   publishedAt: z.string().datetime().nullable().default(null),
 });
 
-export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) => {
-  const buttons = resolveStoredLinkButtons(value);
+export const chatRulesSchema = chatRulesObjectSchema
+  .superRefine((value, ctx) => {
+    const buttons = resolveStoredLinkButtons(value);
 
-  if (value.imageBase64) {
-    if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+    if (value.imageBase64) {
+      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['imageMimeType'],
+          message: 'Неверный формат фото.',
+        });
+      }
+    }
+
+    if (value.buttonEnabled && buttons.length > 0) {
+      addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
+    } else if (
+      value.buttonEnabled &&
+      value.buttons.length === 0 &&
+      !isValidBotButtonUrl(value.buttonUrl)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ['imageMimeType'],
-        message: 'Неверный формат фото.',
+        path: ['buttonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
       });
     }
-  }
 
-  if (value.buttonEnabled && buttons.length > 0) {
-    addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
-  } else if (value.buttonEnabled && value.buttons.length === 0 && !isValidBotButtonUrl(value.buttonUrl)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['buttonUrl'],
-      message: 'Укажите корректную ссылку для кнопки (http/https).',
-    });
-  }
+    if (
+      !(value.buttonEnabled && buttons.length > 0) &&
+      value.buttonEnabled &&
+      value.buttons.length === 0 &&
+      !isValidBotButtonText(value.buttonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
 
-  if (
-    !(value.buttonEnabled && buttons.length > 0) &&
-    value.buttonEnabled &&
-    value.buttons.length === 0 &&
-    !isValidBotButtonText(value.buttonText)
-  ) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['buttonText'],
-      message: 'Введите название кнопки.',
-    });
-  }
+    if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['publishedUrl'],
+        message: 'Сохранена некорректная ссылка на пост правил.',
+      });
+    }
+  })
+  .transform((value) => {
+    const buttonState = buildStoredLinkButtonState(value);
 
-  if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['publishedUrl'],
-      message: 'Сохранена некорректная ссылка на пост правил.',
-    });
-  }
-}).transform((value) => {
-  const buttonState = buildStoredLinkButtonState(value);
-
-  return {
-    ...value,
-    buttons: buttonState.buttons,
-    buttonEnabled: buttonState.buttonEnabled,
-    buttonUrl: buttonState.buttonUrl,
-    buttonText: buttonState.buttonText,
-  };
-});
+    return {
+      ...value,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
+    };
+  });
 export type ChatRules = z.infer<typeof chatRulesSchema>;
 
 export const updateChatRulesRequestSchema = chatRulesObjectSchema
@@ -1386,7 +1382,11 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema
 
     if (value.buttonEnabled && buttons.length > 0) {
       addStoredLinkButtonIssues(buttons, ctx, ['buttons']);
-    } else if (value.buttonEnabled && value.buttons.length === 0 && !isValidBotButtonUrl(value.buttonUrl)) {
+    } else if (
+      value.buttonEnabled &&
+      value.buttons.length === 0 &&
+      !isValidBotButtonUrl(value.buttonUrl)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
@@ -2388,6 +2388,14 @@ export type MembershipActivityQuery = z.infer<typeof membershipActivityQuerySche
 export const chatParticipantRoleSchema = z.enum(['owner', 'admin', 'member']);
 export type ChatParticipantRole = z.infer<typeof chatParticipantRoleSchema>;
 
+export const chatParticipantImmunitySchema = z.object({
+  expiresAt: z.string().datetime(),
+  dailyViolationLimit: z.number().int().min(1).max(10),
+  usedViolatingMessagesToday: z.number().int().min(0),
+  remainingViolatingMessagesToday: z.number().int().min(0),
+});
+export type ChatParticipantImmunity = z.infer<typeof chatParticipantImmunitySchema>;
+
 export const chatParticipantItemSchema = z.object({
   userId: z.string(),
   userDisplayName: z.string().min(1),
@@ -2396,6 +2404,7 @@ export const chatParticipantItemSchema = z.object({
   profileUrl: z.string().trim().url().nullable().default(null),
   profileHandoffUrl: z.string().trim().url().nullable().default(null),
   violationCount: z.number().int().min(0).default(0),
+  immunity: chatParticipantImmunitySchema.nullable().default(null),
   role: chatParticipantRoleSchema,
   isBot: z.boolean().default(false),
 });
@@ -2415,6 +2424,57 @@ export const chatParticipantsQuerySchema = z.object({
   cursor: z.string().trim().min(1).optional(),
 });
 export type ChatParticipantsQuery = z.infer<typeof chatParticipantsQuerySchema>;
+
+export const chatParticipantImmunityUpdateRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+    durationHours: z.number().int().min(1).max(168).optional(),
+    dailyViolationLimit: z.number().int().min(1).max(10).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.enabled && value.durationHours === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['durationHours'],
+        message: 'Укажите срок иммунитета.',
+      });
+    }
+
+    if (value.enabled && value.dailyViolationLimit === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dailyViolationLimit'],
+        message: 'Укажите лимит.',
+      });
+    }
+
+    if (!value.enabled && value.durationHours !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['durationHours'],
+        message: 'Срок доступен только для активного иммунитета.',
+      });
+    }
+
+    if (!value.enabled && value.dailyViolationLimit !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['dailyViolationLimit'],
+        message: 'Лимит доступен только для активного иммунитета.',
+      });
+    }
+  });
+export type ChatParticipantImmunityUpdateRequest = z.infer<
+  typeof chatParticipantImmunityUpdateRequestSchema
+>;
+
+export const chatParticipantImmunityUpdateResultSchema = z.object({
+  immunity: chatParticipantImmunitySchema.nullable().default(null),
+  message: z.string().min(1),
+});
+export type ChatParticipantImmunityUpdateResult = z.infer<
+  typeof chatParticipantImmunityUpdateResultSchema
+>;
 
 export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
 export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;

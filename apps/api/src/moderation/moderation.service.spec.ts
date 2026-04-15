@@ -15533,9 +15533,7 @@ describe('ModerationService', () => {
       undefined,
       backgroundRuntimeGovernorService as never,
     );
-    jest
-      .spyOn(service as any, 'processManagedChannelAutoPostButtons')
-      .mockResolvedValue(undefined);
+    jest.spyOn(service as any, 'processManagedChannelAutoPostButtons').mockResolvedValue(undefined);
 
     await (service as any).processChannelAutoPostButtons();
 
@@ -15558,5 +15556,85 @@ describe('ModerationService', () => {
       }),
     );
     expect((service as any).processManagedChannelAutoPostButtons).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe('ModerationService participant immunity', () => {
+  it('bypasses ordinary moderation when participant immunity is consumed', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commentsEnabled: false,
+          }),
+          domains: [],
+          admins: [],
+          rules: {
+            publishedUrl: null,
+            publishedMessageId: null,
+          },
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([]),
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'PROFANITY',
+            score: 0.91,
+            reason: 'мат',
+            metadata: null,
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+    const immunitySpy = jest
+      .spyOn(service as any, 'consumeChatParticipantModerationImmunity')
+      .mockResolvedValue(true);
+
+    await service.handleUpdate(createUpdate());
+
+    expect(immunitySpy).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      nightModeTimezone: 'Europe/Moscow',
+    });
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 });

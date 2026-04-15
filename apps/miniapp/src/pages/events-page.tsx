@@ -18,6 +18,7 @@ import {
   useState,
 } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { ChatParticipantSheet } from '../components/dashboard/chat-participant-sheet';
 import { ChatParticipantsRoster } from '../components/dashboard/chat-participants-roster';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -36,6 +37,7 @@ import {
   getLogsDashboard,
   handoffChatMemberProfile,
   handoffChatMemberProfileKeepalive,
+  updateChatParticipantImmunity,
 } from '../lib/api/events-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -128,11 +130,7 @@ function ParticipantsTabIcon() {
         stroke="currentColor"
         strokeWidth="1.8"
       />
-      <path
-        d="M13.9 8.2a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z"
-        stroke="currentColor"
-        strokeWidth="1.8"
-      />
+      <path d="M13.9 8.2a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z" stroke="currentColor" strokeWidth="1.8" />
       <path
         d="M3.8 15.7c.2-2.3 2-3.8 4.5-3.8s4.3 1.5 4.5 3.8"
         stroke="currentColor"
@@ -361,7 +359,10 @@ function formatMuteDurationCompact(hours: number): string {
   return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
 }
 
-function resolveApplyActionLabel(action: ManualModerationAction, muteDurationHours: number): string {
+function resolveApplyActionLabel(
+  action: ManualModerationAction,
+  muteDurationHours: number,
+): string {
   if (action === 'MUTE') {
     return `Замьютить на ${formatMuteDurationCompact(muteDurationHours)}`;
   }
@@ -395,7 +396,10 @@ function resolveConfirmMessage(
       return 'Снять бан и вернуть участника в чат?';
     }
 
-    if (violation?.ruleCode === 'GLOBAL_SPAMMER_BAN' || violation?.ruleCode === 'GLOBAL_SPAMMER_KICK') {
+    if (
+      violation?.ruleCode === 'GLOBAL_SPAMMER_BAN' ||
+      violation?.ruleCode === 'GLOBAL_SPAMMER_KICK'
+    ) {
       return 'Вернуть участника в чат и снять удаление по базе спаммеров?';
     }
 
@@ -422,7 +426,11 @@ function isMuteActiveFromViolation(violation: ViolationItem): boolean {
     return Number.isFinite(timestamp) && timestamp > now;
   };
 
-  if (readFutureIso('muteExpiresAt') || readFutureIso('banExpiresAt') || readFutureIso('unbanScheduledAt')) {
+  if (
+    readFutureIso('muteExpiresAt') ||
+    readFutureIso('banExpiresAt') ||
+    readFutureIso('unbanScheduledAt')
+  ) {
     return true;
   }
 
@@ -461,7 +469,9 @@ function isBanActiveFromViolation(violation: ViolationItem): boolean {
   return !metadata || !('muteDurationHours' in metadata);
 }
 
-function resolveReleaseAction(violation: ViolationItem): Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'> | null {
+function resolveReleaseAction(
+  violation: ViolationItem,
+): Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'> | null {
   if (isMuteActiveFromViolation(violation)) {
     return 'UNMUTE';
   }
@@ -473,9 +483,7 @@ function resolveReleaseAction(violation: ViolationItem): Extract<ManualModeratio
   return null;
 }
 
-function resolveReleaseLabel(
-  action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>,
-): string {
+function resolveReleaseLabel(action: Extract<ManualModerationAction, 'UNMUTE' | 'UNBAN'>): string {
   return action === 'UNMUTE' ? 'Снять мут' : 'Разбан';
 }
 
@@ -625,7 +633,12 @@ function ViolationModerationControls({
             </div>
             <output
               aria-live="polite"
-              style={{ padding: 0, color: 'var(--text-primary)', fontSize: '0.82rem', fontWeight: 800 }}
+              style={{
+                padding: 0,
+                color: 'var(--text-primary)',
+                fontSize: '0.82rem',
+                fontWeight: 800,
+              }}
             >
               {formatMuteDurationCompact(muteDurationHours)}
             </output>
@@ -735,6 +748,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
+  const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -869,6 +883,58 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const participantImmunityMutation = useMutation({
+    mutationFn: ({
+      userId,
+      durationHours,
+      dailyViolationLimit,
+    }: {
+      userId: string;
+      durationHours: number;
+      dailyViolationLimit: number;
+    }) =>
+      updateChatParticipantImmunity(api, chatId ?? '', userId, {
+        enabled: true,
+        durationHours,
+        dailyViolationLimit,
+      }),
+    onSuccess: (result) => {
+      setSelectedParticipantId(null);
+      pushToast({
+        tone: 'success',
+        title: result.message,
+      });
+      void participantsFeed.retry();
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить',
+        description: normalizeActionErrorMessage(error),
+      });
+    },
+  });
+  const participantImmunityClearMutation = useMutation({
+    mutationFn: ({ userId }: { userId: string }) =>
+      updateChatParticipantImmunity(api, chatId ?? '', userId, {
+        enabled: false,
+      }),
+    onSuccess: (result) => {
+      setSelectedParticipantId(null);
+      pushToast({
+        tone: 'success',
+        title: result.message,
+      });
+      void participantsFeed.retry();
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось снять',
+        description: normalizeActionErrorMessage(error),
+      });
+    },
+  });
   const filterOptions = useMemo<
     Array<{ value: EventsFilter; label: string; count: number }>
   >(() => {
@@ -902,6 +968,26 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     setExpandedViolationId(null);
   }, [eventsFilter, range, section]);
+
+  useEffect(() => {
+    if (section !== 'participants') {
+      setSelectedParticipantId(null);
+    }
+  }, [section]);
+
+  const selectedParticipant = useMemo(
+    () =>
+      selectedParticipantId
+        ? (participantsFeed.items.find((item) => item.userId === selectedParticipantId) ?? null)
+        : null,
+    [participantsFeed.items, selectedParticipantId],
+  );
+
+  useEffect(() => {
+    if (selectedParticipantId && participantsFeed.items.length > 0 && !selectedParticipant) {
+      setSelectedParticipantId(null);
+    }
+  }, [participantsFeed.items.length, selectedParticipant, selectedParticipantId]);
 
   const selectedFilterCount = useMemo(
     () => filterOptions.find((option) => option.value === eventsFilter)?.count ?? 0,
@@ -992,9 +1078,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     label: 'События',
     value: String(violationsSummary.total),
     note:
-      violationsSummary.total > 0
-        ? 'Зафиксировано за период'
-        : 'За период нарушений не найдено',
+      violationsSummary.total > 0 ? 'Зафиксировано за период' : 'За период нарушений не найдено',
     tone: 'accent' as const,
   };
   const moderationSecondaryMetrics = [
@@ -1051,14 +1135,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   };
   const isAppbarBusy =
     dashboardQuery.isFetching ||
-    (section === 'participants' && (participantsFeed.isReloading || participantsFeed.isLoadingMore));
+    (section === 'participants' &&
+      (participantsFeed.isReloading || participantsFeed.isLoadingMore));
 
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
-        <header
-          className="events-stage__appbar"
-        >
+        <header className="events-stage__appbar">
           <div className="events-stage__appbar-bar">
             <Link
               to={buildManagedEntitiesRoute('chat')}
@@ -1316,8 +1399,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           error={participantsFeed.error}
           onLoadMore={() => void participantsFeed.loadMore()}
           onRetry={() => void participantsFeed.retry()}
-          onProfileActivate={(item: ChatParticipantItem) =>
-            activateProfile(item.userId, item.userDisplayName, item.profileHandoffUrl)
+          onParticipantActivate={(item: ChatParticipantItem) =>
+            setSelectedParticipantId(item.userId)
           }
         />
       ) : null}
@@ -1535,6 +1618,46 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
         </>
       ) : null}
+
+      <ChatParticipantSheet
+        open={Boolean(selectedParticipant)}
+        item={selectedParticipant}
+        isSaving={
+          participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
+        }
+        onClose={() => setSelectedParticipantId(null)}
+        onSave={({ durationHours, dailyViolationLimit }) => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          participantImmunityMutation.mutate({
+            userId: selectedParticipant.userId,
+            durationHours,
+            dailyViolationLimit,
+          });
+        }}
+        onClear={() => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          participantImmunityClearMutation.mutate({
+            userId: selectedParticipant.userId,
+          });
+        }}
+        onProfileActivate={() => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          activateProfile(
+            selectedParticipant.userId,
+            selectedParticipant.userDisplayName,
+            selectedParticipant.profileHandoffUrl,
+          );
+        }}
+      />
     </div>
   );
 }

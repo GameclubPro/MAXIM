@@ -1,5 +1,5 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
-import { useEffect, useRef } from 'react';
+import { useDeferredValue, useEffect, useRef, useState } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 
@@ -11,7 +11,7 @@ type ChatParticipantsRosterProps = {
   error: string | null;
   onLoadMore: () => void;
   onRetry: () => void;
-  onProfileActivate?: ((item: ChatParticipantItem) => void) | null;
+  onParticipantActivate?: ((item: ChatParticipantItem) => void) | null;
 };
 
 function resolveDisplayName(item: ChatParticipantItem): string {
@@ -85,6 +85,31 @@ function describeViolationCount(count: number): string {
   return `${count} нарушений за выбранный период`;
 }
 
+function formatImmunityValue(item: ChatParticipantItem): string | null {
+  if (!item.immunity) {
+    return null;
+  }
+
+  return `${item.immunity.remainingViolatingMessagesToday}/${item.immunity.dailyViolationLimit}`;
+}
+
+function describeImmunity(item: ChatParticipantItem): string | null {
+  if (!item.immunity) {
+    return null;
+  }
+
+  return `Иммунитет: ${item.immunity.remainingViolatingMessagesToday} из ${item.immunity.dailyViolationLimit} нарушающих сообщений осталось на сегодня`;
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <circle cx="9" cy="9" r="5.5" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M13.4 13.4 17 17" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function ChatParticipantsRoster({
   items,
   hasMore,
@@ -93,8 +118,18 @@ export function ChatParticipantsRoster({
   error,
   onLoadMore,
   onRetry,
-  onProfileActivate = null,
+  onParticipantActivate = null,
 }: ChatParticipantsRosterProps) {
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
+  const isFiltering = deferredSearch.length > 0;
+  const filteredItems = isFiltering
+    ? items.filter((item) => {
+        const displayName = resolveDisplayName(item).toLowerCase();
+        const username = item.username?.replace(/^@+/u, '').trim().toLowerCase() ?? '';
+        return displayName.includes(deferredSearch) || username.includes(deferredSearch);
+      })
+    : items;
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoLoadLockRef = useRef(false);
 
@@ -105,7 +140,13 @@ export function ChatParticipantsRoster({
   }, [isLoadingMore]);
 
   useEffect(() => {
-    if (!hasMore || isLoadingMore || isReloading || typeof IntersectionObserver === 'undefined') {
+    if (
+      isFiltering ||
+      !hasMore ||
+      isLoadingMore ||
+      isReloading ||
+      typeof IntersectionObserver === 'undefined'
+    ) {
       return;
     }
 
@@ -133,10 +174,32 @@ export function ChatParticipantsRoster({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, isLoadingMore, isReloading, onLoadMore]);
+  }, [hasMore, isFiltering, isLoadingMore, isReloading, onLoadMore]);
+
+  const showSearch = items.length > 0 || isFiltering;
+  const showEmptySearch = !error && !isReloading && items.length > 0 && filteredItems.length === 0;
 
   return (
     <section className="participants-roster" aria-label="Список участников">
+      {showSearch ? (
+        <div className="participants-roster__toolbar">
+          <label className="participants-roster__search">
+            <span className="participants-roster__search-icon" aria-hidden="true">
+              <SearchIcon />
+            </span>
+            <input
+              type="search"
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+              placeholder="Поиск"
+              aria-label="Поиск участника"
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+        </div>
+      ) : null}
+
       {error ? (
         <div className="participants-roster__status">
           <p>{error}</p>
@@ -158,22 +221,32 @@ export function ChatParticipantsRoster({
         </div>
       ) : null}
 
-      {items.length > 0 ? (
+      {showEmptySearch ? (
+        <div className="participants-roster__status">
+          <p>Ничего не найдено.</p>
+        </div>
+      ) : null}
+
+      {filteredItems.length > 0 ? (
         <div className="participants-roster__list">
-          {items.map((item) => {
+          {filteredItems.map((item) => {
             const displayName = resolveDisplayName(item);
             const username = item.username?.replace(/^@+/u, '').trim() ?? '';
-            const canOpenProfile =
-              item.userId.trim().length > 0 && typeof onProfileActivate === 'function';
+            const canOpenDetails =
+              item.userId.trim().length > 0 && typeof onParticipantActivate === 'function';
             const roleTone = resolveRoleTone(item);
             const roleLabel = resolveRoleLabel(item);
             const violationCount = Number.isFinite(item.violationCount)
               ? Math.max(0, Math.trunc(item.violationCount))
               : 0;
             const violationTone = resolveViolationTone(violationCount);
+            const immunityValue = formatImmunityValue(item);
+            const immunityDescription = describeImmunity(item);
             const itemBody = (
               <>
-                <div className="participants-roster__avatar-shell">
+                <div
+                  className={`participants-roster__avatar-shell ${item.immunity ? 'participants-roster__avatar-shell--immune' : ''}`}
+                >
                   <PersonAvatar
                     avatarUrl={item.avatarUrl?.trim() || null}
                     fallback={resolveInitial(displayName)}
@@ -205,8 +278,30 @@ export function ChatParticipantsRoster({
                   ) : null}
                 </div>
 
-                {violationCount > 0 || canOpenProfile ? (
+                {item.immunity || violationCount > 0 || canOpenDetails ? (
                   <div className="participants-roster__aside">
+                    {item.immunity && immunityValue ? (
+                      <span
+                        className="participants-roster__immunity"
+                        role="img"
+                        aria-label={immunityDescription ?? undefined}
+                        title={immunityDescription ?? undefined}
+                      >
+                        <span className="participants-roster__immunity-shield" aria-hidden="true">
+                          <svg viewBox="0 0 20 20" fill="none" focusable="false">
+                            <path
+                              d="M10 2.8 15.8 5v4.2c0 3.2-1.9 5.8-5.8 8-3.9-2.2-5.8-4.8-5.8-8V5L10 2.8Z"
+                              stroke="currentColor"
+                              strokeWidth="1.7"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        </span>
+                        <span aria-hidden="true">{immunityValue}</span>
+                      </span>
+                    ) : null}
+
                     {violationCount > 0 ? (
                       <span
                         className={`participants-roster__violations participants-roster__violations--${violationTone}`}
@@ -218,9 +313,9 @@ export function ChatParticipantsRoster({
                       </span>
                     ) : null}
 
-                    {canOpenProfile ? (
+                    {canOpenDetails ? (
                       <span className="participants-roster__chevron" aria-hidden="true">
-                        ↗
+                        ›
                       </span>
                     ) : null}
                   </div>
@@ -228,13 +323,13 @@ export function ChatParticipantsRoster({
               </>
             );
 
-            if (canOpenProfile) {
+            if (canOpenDetails) {
               return (
                 <button
                   key={item.userId}
                   type="button"
                   className="participants-roster__item participants-roster__item--interactive"
-                  onClick={() => onProfileActivate?.(item)}
+                  onClick={() => onParticipantActivate?.(item)}
                 >
                   {itemBody}
                 </button>

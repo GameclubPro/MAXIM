@@ -150,6 +150,7 @@ model Chat {
   managedBroadcasts        ManagedBroadcast[]
   managedGiveaways         ManagedGiveaway[]
   botMemberships           ChatBotMembership[]
+  participantImmunities    ChatParticipantModerationImmunity[]
 
   @@index([botId], map: "chats_bot_id_idx")
   @@index([primaryBotId], map: "chats_primary_bot_id_idx")
@@ -175,6 +176,26 @@ model ChatBotMembership {
   @@index([botId, role, status], map: "chat_bot_memberships_bot_id_role_status_idx")
   @@index([chatId, status], map: "chat_bot_memberships_chat_id_status_idx")
   @@map("chat_bot_memberships")
+}
+
+model ChatParticipantModerationImmunity {
+  id                  String   @id @default(cuid())
+  chatId              String   @map("chat_id")
+  userId              String   @map("user_id")
+  expiresAt           DateTime @map("expires_at")
+  dailyViolationLimit Int      @map("daily_violation_limit")
+  dailyViolationUsage Int      @default(0) @map("daily_violation_usage")
+  usageDateKey        String?  @map("usage_date_key")
+  createdByUserId     String?  @map("created_by_user_id")
+  updatedByUserId     String?  @map("updated_by_user_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@unique([chatId, userId], map: "chat_participant_moderation_immunities_chat_id_user_id_key")
+  @@index([chatId, expiresAt], map: "chat_participant_moderation_immunities_chat_id_expires_at_idx")
+  @@map("chat_participant_moderation_immunities")
 }
 
 model ChatSettings {

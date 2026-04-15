@@ -5,6 +5,8 @@ import {
   manualModerationActionResultSchema,
   moderationFeedPageSchema,
   moderationFeedQuerySchema,
+  chatParticipantImmunityUpdateRequestSchema,
+  chatParticipantImmunityUpdateResultSchema,
   chatParticipantsPageSchema,
   chatParticipantsQuerySchema,
   membershipActivityPageSchema,
@@ -17,6 +19,8 @@ import {
   type ManualModerationActionResult,
   type ModerationFeedPage,
   type ModerationFeedQuery,
+  type ChatParticipantImmunityUpdateRequest,
+  type ChatParticipantImmunityUpdateResult,
   type ChatParticipantsPage,
   type ChatParticipantsQuery,
   type MembershipActivityPage,
@@ -136,6 +140,23 @@ export async function applyManualModerationAction(
     },
   );
   return manualModerationActionResultSchema.parse(response);
+}
+
+export async function updateChatParticipantImmunity(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  payload: ChatParticipantImmunityUpdateRequest,
+): Promise<ChatParticipantImmunityUpdateResult> {
+  const requestBody = chatParticipantImmunityUpdateRequestSchema.parse(payload);
+  const response = await api.request(
+    `/chats/${chatId}/members/${encodeURIComponent(userId)}/immunity`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return chatParticipantImmunityUpdateResultSchema.parse(response);
 }
 
 export async function handoffChatMemberProfile(

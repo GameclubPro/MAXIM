@@ -1423,6 +1423,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      const immunityConsumed = await this.consumeChatParticipantModerationImmunity({
+        chatId,
+        userId: senderId,
+        nightModeTimezone: settings.nightModeTimezone,
+      });
+      if (immunityConsumed) {
+        this.logger.debug(
+          {
+            chatId,
+            userId: senderId,
+          },
+          'Moderation bypassed for participant immunity',
+        );
+
+        if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
+          await this.tryAutoAttachChatMessageComments({
+            chatId,
+            messageId,
+            text: typeof text === 'string' && text.trim() ? text : null,
+            senderId,
+            senderIsAdmin: false,
+            update,
+          });
+        }
+
+        return;
+      }
+
       const topViolation =
         violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
         violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
@@ -4040,7 +4068,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const buttonRows = this.buildMessageButtonRows(buttons);
-    if (buttonRows.length === 1 && buttonRows[0].length === 1 && this.isLinkButton(buttonRows[0][0])) {
+    if (
+      buttonRows.length === 1 &&
+      buttonRows[0].length === 1 &&
+      this.isLinkButton(buttonRows[0][0])
+    ) {
       return {
         button: buttonRows[0][0],
         ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
@@ -6680,7 +6712,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (!batch.scheduled) {
       batch.scheduled = true;
-      void Promise.resolve().then(() => this.flushPendingGlobalSpammerExemptionLookupBatch(scopeKey));
+      void Promise.resolve().then(() =>
+        this.flushPendingGlobalSpammerExemptionLookupBatch(scopeKey),
+      );
     }
 
     return trackedLookupPromise;
@@ -7745,7 +7779,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const backoffUntilMs = this.requiredSubscriptionMembershipBackoffUntilMs.get(cacheKey) ?? 0;
     if (backoffUntilMs > now) {
-      return allowStaleOnError ? memoryCached?.isMember ?? null : null;
+      return allowStaleOnError ? (memoryCached?.isMember ?? null) : null;
     }
 
     const inFlight = this.requiredSubscriptionMembershipInFlight.get(cacheKey);
@@ -7787,7 +7821,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to resolve required subscription membership',
         );
-        return allowStaleOnError ? memoryCached?.isMember ?? null : null;
+        return allowStaleOnError ? (memoryCached?.isMember ?? null) : null;
       }
     })();
     let trackedLookupPromise!: Promise<boolean | null>;
@@ -9430,14 +9464,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       forcedSnapshotRefreshPerformed = forceRefresh;
       if (refreshedCandidateBotIds.length > 0) {
-        attempt = await this.attemptModerationActionWithCandidateBots(params, refreshedCandidateBotIds);
+        attempt = await this.attemptModerationActionWithCandidateBots(
+          params,
+          refreshedCandidateBotIds,
+        );
         if (attempt.status === 'success') {
           return true;
         }
       }
     }
 
-    if (!params.explicitBotId && attempt.status === 'terminal_error' && !forcedSnapshotRefreshPerformed) {
+    if (
+      !params.explicitBotId &&
+      attempt.status === 'terminal_error' &&
+      !forcedSnapshotRefreshPerformed
+    ) {
       const attemptedBotIds = attempt.attemptedBotIds;
       const refreshedCandidateBotIds = await this.refreshModerationActionCandidateBotIds({
         chatId: params.chatId,
@@ -9610,10 +9651,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     skipBackoffClearBotIds?: readonly string[];
   }): Promise<string[]> {
     await this.refreshModerationActionBotSnapshots(params);
-    const candidateBotIds = (await this.resolveModerationActionBotIds({
-      chatId: params.chatId,
-      action: params.action,
-    })).filter((botId): botId is string => typeof botId === 'string' && botId.trim().length > 0);
+    const candidateBotIds = (
+      await this.resolveModerationActionBotIds({
+        chatId: params.chatId,
+        action: params.action,
+      })
+    ).filter((botId): botId is string => typeof botId === 'string' && botId.trim().length > 0);
     const skippedBackoffClearBotIds = new Set(
       (params.skipBackoffClearBotIds ?? [])
         .map((botId) => botId.trim())
@@ -9645,13 +9688,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(params.chatId).finally(() => {
-      this.moderationActionSnapshotRefreshInFlight.delete(refreshKey);
-      this.moderationActionSnapshotRefreshUntilMs.set(
-        refreshKey,
-        Date.now() + MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
-      );
-    });
+    const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(params.chatId).finally(
+      () => {
+        this.moderationActionSnapshotRefreshInFlight.delete(refreshKey);
+        this.moderationActionSnapshotRefreshUntilMs.set(
+          refreshKey,
+          Date.now() + MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
+        );
+      },
+    );
     this.moderationActionSnapshotRefreshInFlight.set(refreshKey, refreshPromise);
     await refreshPromise;
   }
@@ -10589,9 +10634,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<RemoteChatAdminAccessState | null> {
     const chatContextCache = this.chatContextCache as
       | (ChatContextCacheService & {
-          getAdminAccessBatch?: (chatId: string, userIds: readonly string[]) => Promise<
-            Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>
-          >;
+          getAdminAccessBatch?: (
+            chatId: string,
+            userIds: readonly string[],
+          ) => Promise<Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>>;
         })
       | undefined;
     if (
@@ -10646,7 +10692,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (!batch.scheduled) {
       batch.scheduled = true;
-      void Promise.resolve().then(() => this.flushPendingChatAdminSharedCacheReadBatch(chatId, nowMs));
+      void Promise.resolve().then(() =>
+        this.flushPendingChatAdminSharedCacheReadBatch(chatId, nowMs),
+      );
     }
 
     return trackedReadPromise;
@@ -10697,9 +10745,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): Promise<Map<string, RemoteChatAdminAccessState>> {
     const chatContextCache = this.chatContextCache as
       | (ChatContextCacheService & {
-          getAdminAccessBatch?: (chatId: string, userIds: readonly string[]) => Promise<
-            Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>
-          >;
+          getAdminAccessBatch?: (
+            chatId: string,
+            userIds: readonly string[],
+          ) => Promise<Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>>;
         })
       | undefined;
     const normalizedUserIds = Array.from(
@@ -10736,7 +10785,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     } else if (typeof chatContextCache.getAdminAccess === 'function') {
       const cachedStates = await Promise.all(
-        normalizedVariantUserIds.map((variant) => chatContextCache.getAdminAccess!(chatId, variant)),
+        normalizedVariantUserIds.map((variant) =>
+          chatContextCache.getAdminAccess!(chatId, variant),
+        ),
       );
       normalizedVariantUserIds.forEach((variant, index) => {
         variantStates.set(variant, cachedStates[index] ?? null);
@@ -10833,6 +10884,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } catch {
       return DEFAULT_NIGHT_MODE_TIMEZONE;
     }
+  }
+
+  private async consumeChatParticipantModerationImmunity(params: {
+    chatId: string;
+    userId: string;
+    nightModeTimezone: string | null;
+  }): Promise<boolean> {
+    if (typeof this.prisma.$queryRaw !== 'function') {
+      return false;
+    }
+
+    const now = new Date();
+    const timezone = this.normalizeNightModeTimezone(params.nightModeTimezone ?? '');
+    const dateKey = this.formatDateKeyInTimeZone(now, timezone);
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        expires_at: Date | string;
+      }>
+    >(Prisma.sql`
+      UPDATE "chat_participant_moderation_immunities"
+      SET
+        "usage_date_key" = ${dateKey},
+        "daily_violation_usage" = CASE
+          WHEN "usage_date_key" = ${dateKey} THEN "daily_violation_usage" + 1
+          ELSE 1
+        END,
+        "updated_at" = CURRENT_TIMESTAMP
+      WHERE "chat_id" = ${params.chatId}
+        AND "user_id" = ${params.userId}
+        AND "expires_at" > ${now}
+        AND CASE
+          WHEN "usage_date_key" = ${dateKey} THEN "daily_violation_usage" < "daily_violation_limit"
+          ELSE TRUE
+        END
+      RETURNING "expires_at"
+    `);
+
+    return rows.length > 0;
   }
 
   private getCurrentMinutesInTimeZone(timeZone: string): number | null {

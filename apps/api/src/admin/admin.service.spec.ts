@@ -158,6 +158,23 @@ function createPrismaMock() {
       }),
       update: jest.fn().mockResolvedValue(undefined),
     },
+    chatParticipantModerationImmunity: {
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue({
+        id: 'immunity-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        expiresAt: new Date('2026-04-17T12:00:00.000Z'),
+        dailyViolationLimit: 3,
+        dailyViolationUsage: 0,
+        usageDateKey: '2026-04-15',
+        createdByUserId: 'admin-1',
+        updatedByUserId: 'admin-1',
+        createdAt: new Date('2026-04-15T12:00:00.000Z'),
+        updatedAt: new Date('2026-04-15T12:00:00.000Z'),
+      }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     chatAdminAllowlist: {
       upsert: jest.fn().mockResolvedValue(undefined),
       findMany: jest.fn().mockResolvedValue([]),
@@ -3250,7 +3267,9 @@ describe('AdminService.getLogsDashboard', () => {
     expect(dedupeSqlText).toContain('FROM chat_membership_activity_events');
     expect(dedupeSqlText).toContain('event_at AS created_at');
     expect(dedupeSqlText).toContain('ROW_NUMBER() OVER');
-    expect(dedupeSqlText).toContain("PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at");
+    expect(dedupeSqlText).toContain(
+      "PARTITION BY chat_id, event_type, COALESCE(user_id, ''), event_at",
+    );
     expect(dedupeSqlText).toContain('membership_event_rank = 1');
     expect(dedupeSqlText).toContain('event_type IN');
     expect(dedupeSqlText).toContain('ORDER BY event_at DESC, id DESC');
@@ -3697,7 +3716,6 @@ describe('AdminService.getChatActivityFeed', () => {
       hasMore: false,
       nextCursor: null,
     });
-
   });
 });
 
@@ -13297,130 +13315,293 @@ describe('AdminService.getChannelStats', () => {
 
 describe('AdminService.getChatParticipantsPage', () => {
   it('returns a paginated chat roster with avatars, roles and profile handoff links', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T12:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'CHAT',
+      });
+      prisma.chatSettings.findUnique.mockResolvedValue({
+        nightModeTimezone: 'Europe/Moscow',
+      });
+      prisma.moderationEvent.groupBy.mockResolvedValue([
+        {
+          userId: 'owner-1',
+          _count: { _all: 3 },
+        },
+      ]);
+      prisma.chatParticipantModerationImmunity.findMany.mockResolvedValue([
+        {
+          id: 'immunity-1',
+          chatId: 'chat-1',
+          userId: 'owner-1',
+          expiresAt: new Date('2026-04-16T12:00:00.000Z'),
+          dailyViolationLimit: 5,
+          dailyViolationUsage: 2,
+          usageDateKey: '2026-04-15',
+          createdByUserId: 'admin-1',
+          updatedByUserId: 'admin-1',
+          createdAt: new Date('2026-04-15T10:00:00.000Z'),
+          updatedAt: new Date('2026-04-15T10:00:00.000Z'),
+        },
+      ]);
+
+      const chatContextCache = createChatContextCacheMock();
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getChatMembersPage: jest.fn().mockResolvedValue({
+          items: [
+            {
+              userId: 'owner-1',
+              displayName: 'Александра',
+              username: 'alexandra',
+              avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
+              profileUrl: null,
+              role: 'owner',
+              isBot: false,
+            },
+            {
+              userId: 'id613002203036_bot',
+              displayName: 'MAXIM',
+              username: 'id613002203036_bot',
+              avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
+              profileUrl: 'https://max.ru/maxim-helper',
+              role: 'admin',
+              isBot: true,
+            },
+          ],
+          nextMarker: 'page-2',
+        }),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          chatId: 'chat-1',
+          title: 'Команда MAX',
+          participantsCount: 1584,
+          status: 'active',
+          isPublic: false,
+          link: null,
+          lastEventAt: '2026-04-14T10:00:00.000Z',
+          entityType: 'chat',
+          avatarUrl: 'https://cdn.max.ru/chats/chat-1/avatar.jpg',
+        }),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        chatContextCache as never,
+        createConfigMock() as never,
+      );
+
+      const result = await service.getChatParticipantsPage(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { limit: 2, range: '24h' },
+      );
+
+      expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
+        'chat-1',
+        {
+          limit: 2,
+          marker: null,
+        },
+        expect.objectContaining({
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+        }),
+      );
+      expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith({
+        by: ['userId'],
+        where: {
+          chatId: 'chat-1',
+          userId: { in: ['owner-1', 'id613002203036_bot'] },
+          createdAt: {
+            gte: expect.any(Date),
+            lte: expect.any(Date),
+          },
+          action: {
+            in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'],
+          },
+        },
+        _count: { _all: true },
+      });
+      expect(result).toEqual({
+        items: [
+          {
+            userId: 'owner-1',
+            userDisplayName: 'Александра',
+            username: 'alexandra',
+            avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
+            profileUrl: 'https://max.ru/alexandra',
+            profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+            violationCount: 3,
+            immunity: {
+              expiresAt: '2026-04-16T12:00:00.000Z',
+              dailyViolationLimit: 5,
+              usedViolatingMessagesToday: 2,
+              remainingViolatingMessagesToday: 3,
+            },
+            role: 'owner',
+            isBot: false,
+          },
+          {
+            userId: 'id613002203036_bot',
+            userDisplayName: 'MAXIM',
+            username: 'id613002203036_bot',
+            avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
+            profileUrl: 'https://max.ru/maxim-helper',
+            profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+            violationCount: 0,
+            immunity: null,
+            role: 'admin',
+            isBot: true,
+          },
+        ],
+        totalCount: 1584,
+        hasMore: true,
+        nextCursor: 'page-2',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('upserts participant immunity and returns a compact summary', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-15T09:00:00.000Z'));
+    try {
+      const prisma = createPrismaMock();
+      prisma.chat.findUnique.mockResolvedValue({
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'CHAT',
+      });
+      prisma.chatSettings.findUnique.mockResolvedValue({
+        nightModeTimezone: 'Europe/Moscow',
+      });
+      prisma.chatParticipantModerationImmunity.upsert.mockResolvedValue({
+        id: 'immunity-1',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        expiresAt: new Date('2026-04-17T09:00:00.000Z'),
+        dailyViolationLimit: 4,
+        dailyViolationUsage: 0,
+        usageDateKey: '2026-04-15',
+        createdByUserId: 'admin-1',
+        updatedByUserId: 'admin-1',
+        createdAt: new Date('2026-04-15T09:00:00.000Z'),
+        updatedAt: new Date('2026-04-15T09:00:00.000Z'),
+      });
+
+      const service = new AdminService(
+        prisma as never,
+        {
+          getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        } as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+
+      const result = await service.updateChatParticipantImmunity(
+        'chat-1',
+        'user-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          enabled: true,
+          durationHours: 48,
+          dailyViolationLimit: 4,
+        },
+      );
+
+      expect(prisma.chatParticipantModerationImmunity.upsert).toHaveBeenCalledWith({
+        where: {
+          chatId_userId: {
+            chatId: 'chat-1',
+            userId: 'user-1',
+          },
+        },
+        create: {
+          chatId: 'chat-1',
+          userId: 'user-1',
+          expiresAt: new Date('2026-04-17T09:00:00.000Z'),
+          dailyViolationLimit: 4,
+          dailyViolationUsage: 0,
+          usageDateKey: '2026-04-15',
+          createdByUserId: 'admin-1',
+          updatedByUserId: 'admin-1',
+        },
+        update: {
+          expiresAt: new Date('2026-04-17T09:00:00.000Z'),
+          dailyViolationLimit: 4,
+          dailyViolationUsage: 0,
+          usageDateKey: '2026-04-15',
+          updatedByUserId: 'admin-1',
+        },
+      });
+      expect(result).toEqual({
+        immunity: {
+          expiresAt: '2026-04-17T09:00:00.000Z',
+          dailyViolationLimit: 4,
+          usedViolatingMessagesToday: 0,
+          remainingViolatingMessagesToday: 4,
+        },
+        message: 'Иммунитет обновлён.',
+      });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('removes participant immunity', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'chat-1',
       title: 'Команда MAX',
       entityType: 'CHAT',
     });
-    prisma.moderationEvent.groupBy.mockResolvedValue([
-      {
-        userId: 'owner-1',
-        _count: { _all: 3 },
-      },
-    ]);
-
-    const chatContextCache = createChatContextCacheMock();
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getChatMembersPage: jest.fn().mockResolvedValue({
-        items: [
-          {
-            userId: 'owner-1',
-            displayName: 'Александра',
-            username: 'alexandra',
-            avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
-            profileUrl: null,
-            role: 'owner',
-            isBot: false,
-          },
-          {
-            userId: 'id613002203036_bot',
-            displayName: 'MAXIM',
-            username: 'id613002203036_bot',
-            avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
-            profileUrl: 'https://max.ru/maxim-helper',
-            role: 'admin',
-            isBot: true,
-          },
-        ],
-        nextMarker: 'page-2',
-      }),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'chat-1',
-        title: 'Команда MAX',
-        participantsCount: 1584,
-        status: 'active',
-        isPublic: false,
-        link: null,
-        lastEventAt: '2026-04-14T10:00:00.000Z',
-        entityType: 'chat',
-        avatarUrl: 'https://cdn.max.ru/chats/chat-1/avatar.jpg',
-      }),
-    };
 
     const service = new AdminService(
       prisma as never,
-      maxClient as never,
-      chatContextCache as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
 
-    const result = await service.getChatParticipantsPage(
+    const result = await service.updateChatParticipantImmunity(
       'chat-1',
+      'user-1',
       {
         userId: 'admin-1',
         username: null,
         displayName: null,
         chatTitle: null,
       },
-      { limit: 2, range: '24h' },
+      {
+        enabled: false,
+      },
     );
 
-    expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
-      'chat-1',
-      {
-        limit: 2,
-        marker: null,
-      },
-      expect.objectContaining({
-        trafficClass: 'interactive',
-        actionHealthLane: 'background',
-      }),
-    );
-    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith({
-      by: ['userId'],
+    expect(prisma.chatParticipantModerationImmunity.deleteMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
-        userId: { in: ['owner-1', 'id613002203036_bot'] },
-        createdAt: {
-          gte: expect.any(Date),
-          lte: expect.any(Date),
-        },
-        action: {
-          in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'],
-        },
+        userId: 'user-1',
       },
-      _count: { _all: true },
     });
     expect(result).toEqual({
-      items: [
-        {
-          userId: 'owner-1',
-          userDisplayName: 'Александра',
-          username: 'alexandra',
-          avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
-          profileUrl: 'https://max.ru/alexandra',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
-          violationCount: 3,
-          role: 'owner',
-          isBot: false,
-        },
-        {
-          userId: 'id613002203036_bot',
-          userDisplayName: 'MAXIM',
-          username: 'id613002203036_bot',
-          avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
-          profileUrl: 'https://max.ru/maxim-helper',
-          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
-          violationCount: 0,
-          role: 'admin',
-          isBot: true,
-        },
-      ],
-      totalCount: 1584,
-      hasMore: true,
-      nextCursor: 'page-2',
+      immunity: null,
+      message: 'Иммунитет снят.',
     });
   });
 });
@@ -19790,7 +19971,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         ],
       }),
     );
-    const [, , publishedOptions] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
+    const [, , publishedOptions] =
+      maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = publishedOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
     const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
     const commentsStartParam = commentsButton?.url
