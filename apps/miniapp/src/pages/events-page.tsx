@@ -844,6 +844,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   });
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
+    range,
     initialPage: null,
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });

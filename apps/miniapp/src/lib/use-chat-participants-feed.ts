@@ -1,15 +1,16 @@
-import type { ChatParticipantsPage } from '@maxim/contracts';
+import type { ChatParticipantsPage, ChatParticipantsQuery } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 
-type LoadChatParticipantsPage = (query: {
-  limit: number;
-  cursor?: string;
-}, request?: Pick<RequestInit, 'signal'>) => Promise<ChatParticipantsPage>;
+type LoadChatParticipantsPage = (
+  query: ChatParticipantsQuery,
+  request?: Pick<RequestInit, 'signal'>,
+) => Promise<ChatParticipantsPage>;
 
 type UseChatParticipantsFeedOptions = {
   enabled?: boolean;
   initialPage?: ChatParticipantsPage | null;
   loadPage: LoadChatParticipantsPage;
+  range?: ChatParticipantsQuery['range'];
   limit?: number;
 };
 
@@ -67,6 +68,7 @@ export function useChatParticipantsFeed({
   enabled = true,
   initialPage = null,
   loadPage,
+  range = '7d',
   limit = 100,
 }: UseChatParticipantsFeedOptions) {
   const [feed, setFeed] = useState<FeedState>(() =>
@@ -110,7 +112,7 @@ export function useChatParticipantsFeed({
       setFeed(EMPTY_FEED);
     }
 
-    void runLoadPage({ limit }, { signal: controller.signal })
+    void runLoadPage({ limit, range }, { signal: controller.signal })
       .then((page) => {
         if (requestId !== requestIdRef.current || controller.signal.aborted) {
           return;
@@ -140,7 +142,7 @@ export function useChatParticipantsFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, initialPage, limit]);
+  }, [enabled, initialPage, limit, range]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -159,6 +161,7 @@ export function useChatParticipantsFeed({
       const nextPage = await runLoadPage(
         {
           limit,
+          range,
           cursor: feed.nextCursor,
         },
         { signal: controller.signal },
@@ -216,7 +219,7 @@ export function useChatParticipantsFeed({
     }
 
     try {
-      const page = await runLoadPage({ limit }, { signal: controller.signal });
+      const page = await runLoadPage({ limit, range }, { signal: controller.signal });
       if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }

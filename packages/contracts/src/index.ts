@@ -2395,6 +2395,7 @@ export const chatParticipantItemSchema = z.object({
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
   profileHandoffUrl: z.string().trim().url().nullable().default(null),
+  violationCount: z.number().int().min(0).default(0),
   role: chatParticipantRoleSchema,
   isBot: z.boolean().default(false),
 });
@@ -2409,6 +2410,7 @@ export const chatParticipantsPageSchema = z.object({
 export type ChatParticipantsPage = z.infer<typeof chatParticipantsPageSchema>;
 
 export const chatParticipantsQuerySchema = z.object({
+  range: logsDashboardRangeSchema.default('7d'),
   limit: z.coerce.number().int().min(1).max(100).default(100),
   cursor: z.string().trim().min(1).optional(),
 });

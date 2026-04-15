@@ -57,6 +57,34 @@ function resolveRoleTone(item: ChatParticipantItem): 'owner' | 'admin' | 'member
   return 'member';
 }
 
+function resolveViolationTone(count: number): 'low' | 'medium' | 'high' {
+  if (count >= 4) {
+    return 'high';
+  }
+
+  if (count >= 2) {
+    return 'medium';
+  }
+
+  return 'low';
+}
+
+function formatViolationCount(count: number): string {
+  if (count > 99) {
+    return '99+';
+  }
+
+  return String(count);
+}
+
+function describeViolationCount(count: number): string {
+  if (count === 1) {
+    return '1 нарушение за выбранный период';
+  }
+
+  return `${count} нарушений за выбранный период`;
+}
+
 export function ChatParticipantsRoster({
   items,
   hasMore,
@@ -139,6 +167,10 @@ export function ChatParticipantsRoster({
               item.userId.trim().length > 0 && typeof onProfileActivate === 'function';
             const roleTone = resolveRoleTone(item);
             const roleLabel = resolveRoleLabel(item);
+            const violationCount = Number.isFinite(item.violationCount)
+              ? Math.max(0, Math.trunc(item.violationCount))
+              : 0;
+            const violationTone = resolveViolationTone(violationCount);
             const itemBody = (
               <>
                 <div className="participants-roster__avatar-shell">
@@ -173,10 +205,25 @@ export function ChatParticipantsRoster({
                   ) : null}
                 </div>
 
-                {canOpenProfile ? (
-                  <span className="participants-roster__chevron" aria-hidden="true">
-                    ↗
-                  </span>
+                {violationCount > 0 || canOpenProfile ? (
+                  <div className="participants-roster__aside">
+                    {violationCount > 0 ? (
+                      <span
+                        className={`participants-roster__violations participants-roster__violations--${violationTone}`}
+                        role="img"
+                        aria-label={describeViolationCount(violationCount)}
+                        title={describeViolationCount(violationCount)}
+                      >
+                        <span aria-hidden="true">{formatViolationCount(violationCount)}</span>
+                      </span>
+                    ) : null}
+
+                    {canOpenProfile ? (
+                      <span className="participants-roster__chevron" aria-hidden="true">
+                        ↗
+                      </span>
+                    ) : null}
+                  </div>
                 ) : null}
               </>
             );

@@ -710,20 +710,50 @@ function buildActivityPage(
   });
 }
 
+function isViolationCounterEvent(item: LogsDashboardResponse['violations'][number]): boolean {
+  return (
+    item.action === 'WARN' ||
+    item.action === 'DELETE_MESSAGE' ||
+    item.action === 'MUTE' ||
+    item.action === 'KICK' ||
+    item.action === 'BAN'
+  );
+}
+
 function buildParticipantsPage(
   items: ChatParticipantItem[],
   {
+    range = '7d',
     limit = 100,
     cursor,
   }: {
+    range?: LogsDashboardRange;
     limit?: number;
     cursor?: string | null;
   },
   totalCount: number,
+  violations: LogsDashboardResponse['violations'],
+  now: Date,
 ): ChatParticipantsPage {
   const offset = cursor ? Number.parseInt(cursor, 10) : 0;
   const safeOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
-  const pageItems = items.slice(safeOffset, safeOffset + limit);
+  const violationCountByUserId = new Map<string, number>();
+
+  for (const violation of violations) {
+    if (!isWithinRange(violation.createdAt, range, now) || !isViolationCounterEvent(violation)) {
+      continue;
+    }
+
+    violationCountByUserId.set(
+      violation.userId,
+      (violationCountByUserId.get(violation.userId) ?? 0) + 1,
+    );
+  }
+
+  const pageItems = items.slice(safeOffset, safeOffset + limit).map((item) => ({
+    ...item,
+    violationCount: violationCountByUserId.get(item.userId) ?? 0,
+  }));
   const nextOffset = safeOffset + pageItems.length;
 
   return chatParticipantsPageSchema.parse({
@@ -1362,9 +1392,47 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
     'Диана',
     'Юрий',
   ];
+  const featuredParticipants = [
+    null,
+    null,
+    null,
+    null,
+    {
+      userId: 'preview-spammer-1',
+      userDisplayName: 'Сергей Маркет',
+      username: 'sergey-market',
+    },
+    {
+      userId: 'preview-spammer-2',
+      userDisplayName: 'Мария Ссылкина',
+      username: 'maria-links',
+    },
+    {
+      userId: 'preview-user-3',
+      userDisplayName: 'Антон',
+      username: 'anton-preview',
+    },
+    {
+      userId: 'preview-user-4',
+      userDisplayName: 'Инфо Буст',
+      username: 'info-boost',
+    },
+    {
+      userId: 'preview-user-5',
+      userDisplayName: 'Юлия',
+      username: 'yulia-preview',
+    },
+    {
+      userId: 'preview-user-6',
+      userDisplayName: 'Олег Повтор',
+      username: 'oleg-repeat',
+    },
+  ] as const;
 
   return Array.from({ length: count }, (_, index) => {
-    const displayName = names[index % names.length] ?? `Участник ${index + 1}`;
+    const featuredParticipant = featuredParticipants[index] ?? null;
+    const displayName =
+      featuredParticipant?.userDisplayName ?? names[index % names.length] ?? `Участник ${index + 1}`;
     const [startColor, endColor] = avatarPalette[index % avatarPalette.length] ?? [
       '#4d94ff',
       '#2b64dd',
@@ -1372,16 +1440,21 @@ function createParticipantsItems(prefix: string, count: number): ChatParticipant
     const role =
       index === 0 ? 'owner' : index < 4 ? 'admin' : ('member' as ChatParticipantItem['role']);
     const isBot = index === count - 1 || index === count - 2;
-    const username = isBot ? `helper_${index + 1}_bot` : `preview_member_${index + 1}`;
+    const username = isBot
+      ? `helper_${index + 1}_bot`
+      : featuredParticipant?.username ?? `preview_member_${index + 1}`;
     const label = isBot ? `MAXIM ${index === count - 1 ? 'Assist' : 'Guard'}` : displayName;
 
     return {
-      userId: `${prefix}-member-${index + 1}${isBot ? '_bot' : ''}`,
+      userId: isBot
+        ? `${prefix}-member-${index + 1}_bot`
+        : featuredParticipant?.userId ?? `${prefix}-member-${index + 1}`,
       userDisplayName: label,
       username,
       avatarUrl: buildPreviewAvatarDataUrl(label, startColor, endColor),
       profileUrl: buildPreviewProfileUrl(username),
       profileHandoffUrl: buildPreviewProfileHandoffUrl(`${prefix}-member-${index + 1}`),
+      violationCount: 0,
       role: isBot ? 'admin' : role,
       isBot,
     };
@@ -3263,14 +3336,18 @@ async function handleChatRequest(
   }
 
   if (tail[0] === 'members' && method === 'GET') {
+    const now = new Date();
     return cloneJson(
       buildParticipantsPage(
         state.chatParticipants,
         {
+          range: (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d',
           limit: Number.parseInt(url.searchParams.get('limit') ?? '100', 10),
           cursor: url.searchParams.get('cursor'),
         },
         state.chatParticipants.length,
+        state.chatViolations,
+        now,
       ),
     );
   }

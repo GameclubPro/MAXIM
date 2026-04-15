@@ -109,6 +109,7 @@ export async function getChatParticipantsPage(
 ): Promise<ChatParticipantsPage> {
   const validatedQuery = chatParticipantsQuerySchema.parse(query);
   const params = new URLSearchParams({
+    range: validatedQuery.range,
     limit: String(validatedQuery.limit),
   });
 

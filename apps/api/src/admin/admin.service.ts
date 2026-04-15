@@ -14867,6 +14867,30 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private buildParticipantViolationCountWhere(
+    chatId: string,
+    userIds: readonly string[],
+    from: Date,
+    to: Date,
+  ): Prisma.ModerationEventWhereInput {
+    return {
+      chatId,
+      userId: {
+        in: [...userIds],
+      },
+      createdAt: { gte: from, lte: to },
+      action: {
+        in: [
+          SanctionAction.WARN,
+          SanctionAction.DELETE_MESSAGE,
+          SanctionAction.MUTE,
+          SanctionAction.KICK,
+          SanctionAction.BAN,
+        ],
+      },
+    };
+  }
+
   private normalizeModerationViolationMetadata(metadata: unknown): Record<string, unknown> | null {
     if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
       return null;
@@ -15260,6 +15284,8 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ChatParticipantsPage> {
     const limit = Math.max(1, Math.min(100, query.limit));
     const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
+    const now = new Date();
+    const from = this.resolveLogsDashboardFrom(query.range, now);
     const [membersPage, header] = await Promise.all([
       this.maxClient.getChatMembersPage(
         chatId,
@@ -15286,6 +15312,31 @@ export class AdminService implements OnModuleDestroy {
         { skipAdminCheck: true, skipEntityCheck: true },
       ),
     ]);
+    const participantUserIds = Array.from(
+      new Set(
+        membersPage.items
+          .map((member) => member.userId.trim())
+          .filter((memberUserId) => memberUserId.length > 0),
+      ),
+    );
+    const violationCountRows =
+      participantUserIds.length > 0
+        ? await this.prisma.moderationEvent.groupBy({
+            by: ['userId'],
+            where: this.buildParticipantViolationCountWhere(chatId, participantUserIds, from, now),
+            _count: { _all: true },
+          })
+        : [];
+    const violationCountByUserId = new Map<string, number>();
+
+    for (const row of violationCountRows) {
+      const normalizedUserId = row.userId.trim();
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      violationCountByUserId.set(normalizedUserId, this.toSafeInteger(row._count._all));
+    }
 
     return chatParticipantsPageSchema.parse({
       items: membersPage.items.map((member) => {
@@ -15307,6 +15358,7 @@ export class AdminService implements OnModuleDestroy {
             member.userId,
             userDisplayName,
           ),
+          violationCount: violationCountByUserId.get(member.userId.trim()) ?? 0,
           role: this.mapChatMemberRole(member.role),
           isBot: member.isBot,
         } satisfies ChatParticipantItem;
@@ -21657,6 +21709,7 @@ export class AdminService implements OnModuleDestroy {
       chatId,
       userId,
       entityType,
+      query.range,
       String(query.limit),
       query.cursor ?? '',
     ].join(':');

@@ -13303,6 +13303,12 @@ describe('AdminService.getChatParticipantsPage', () => {
       title: 'Команда MAX',
       entityType: 'CHAT',
     });
+    prisma.moderationEvent.groupBy.mockResolvedValue([
+      {
+        userId: 'owner-1',
+        _count: { _all: 3 },
+      },
+    ]);
 
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
@@ -13358,7 +13364,7 @@ describe('AdminService.getChatParticipantsPage', () => {
         displayName: null,
         chatTitle: null,
       },
-      { limit: 2 },
+      { limit: 2, range: '24h' },
     );
 
     expect(maxClient.getChatMembersPage).toHaveBeenCalledWith(
@@ -13372,6 +13378,21 @@ describe('AdminService.getChatParticipantsPage', () => {
         actionHealthLane: 'background',
       }),
     );
+    expect(prisma.moderationEvent.groupBy).toHaveBeenCalledWith({
+      by: ['userId'],
+      where: {
+        chatId: 'chat-1',
+        userId: { in: ['owner-1', 'id613002203036_bot'] },
+        createdAt: {
+          gte: expect.any(Date),
+          lte: expect.any(Date),
+        },
+        action: {
+          in: ['WARN', 'DELETE_MESSAGE', 'MUTE', 'KICK', 'BAN'],
+        },
+      },
+      _count: { _all: true },
+    });
     expect(result).toEqual({
       items: [
         {
@@ -13381,6 +13402,7 @@ describe('AdminService.getChatParticipantsPage', () => {
           avatarUrl: 'https://cdn.max.ru/u/owner-1/avatar-full.jpg',
           profileUrl: 'https://max.ru/alexandra',
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+          violationCount: 3,
           role: 'owner',
           isBot: false,
         },
@@ -13391,6 +13413,7 @@ describe('AdminService.getChatParticipantsPage', () => {
           avatarUrl: 'https://cdn.max.ru/u/maxim/avatar-full.jpg',
           profileUrl: 'https://max.ru/maxim-helper',
           profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start='),
+          violationCount: 0,
           role: 'admin',
           isBot: true,
         },
