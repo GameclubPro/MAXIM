@@ -1901,6 +1901,62 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('accepts a 14-day mute duration for required subscription', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 125,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+      requiredSubscriptionMuteEnabled: true,
+      requiredSubscriptionMuteDurationHours: 14 * 24,
+    });
+
+    expect(result.requiredSubscriptionMuteDurationHours).toBe(14 * 24);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionMuteEnabled: true,
+                requiredSubscriptionMuteDurationHours: 14 * 24,
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionMuteEnabled: true,
+                requiredSubscriptionMuteDurationHours: 14 * 24,
+              }),
+            },
+          },
+        },
+      }),
+    );
+  });
+
   it('refreshes bot access snapshots for the chat and required subscription chats/channels after settings update', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();

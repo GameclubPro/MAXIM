@@ -198,11 +198,20 @@ const LazyMessageLimitsBlockedWordPresets = lazy(
 const LazyPublishedRulesButtonToggle = lazy(
   () => import('../components/published-rules-button-toggle'),
 );
+const LazyRequiredSubscriptionHero = lazy(() => import('../components/required-subscription-hero'));
+const LazyRequiredSubscriptionMuteDurationEditor = lazy(
+  () => import('../components/required-subscription-mute-duration-editor'),
+);
 
 const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
+const REQUIRED_SUBSCRIPTION_MUTE_MIN_DAYS = 1;
+const REQUIRED_SUBSCRIPTION_MUTE_MAX_DAYS = 14;
+const REQUIRED_SUBSCRIPTION_MUTE_PRESET_DAYS = [1, 3, 7, 14] as const;
+const REQUIRED_SUBSCRIPTION_MUTE_MIN_HOURS = REQUIRED_SUBSCRIPTION_MUTE_MIN_DAYS * 24;
+const REQUIRED_SUBSCRIPTION_MUTE_MAX_HOURS = REQUIRED_SUBSCRIPTION_MUTE_MAX_DAYS * 24;
 const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 const DUPLICATE_ALLOWED_COUNT_MAX = 16;
 const MESSAGE_COUNT_LIMIT_MIN = 1;
@@ -1553,6 +1562,26 @@ function formatRequiredSubscriptionCount(count: number): string {
     return `${safeCount} чата/канала`;
   }
   return `${safeCount} чатов/каналов`;
+}
+
+function requiredSubscriptionMuteHoursToDays(hours: number): number {
+  const safeHours = Number.isFinite(hours) ? Math.max(1, Math.round(hours)) : 1;
+  return Math.min(
+    REQUIRED_SUBSCRIPTION_MUTE_MAX_DAYS,
+    Math.max(REQUIRED_SUBSCRIPTION_MUTE_MIN_DAYS, Math.ceil(safeHours / 24)),
+  );
+}
+
+function requiredSubscriptionMuteDaysToHours(days: number): number {
+  const safeDays = Math.min(
+    REQUIRED_SUBSCRIPTION_MUTE_MAX_DAYS,
+    Math.max(REQUIRED_SUBSCRIPTION_MUTE_MIN_DAYS, Math.round(days)),
+  );
+  return safeDays * 24;
+}
+
+function formatRequiredSubscriptionMuteDurationCompact(hours: number): string {
+  return `${requiredSubscriptionMuteHoursToDays(hours)}д`;
 }
 
 function formatRequiredSubscriptionEntityLabel(entityType: 'chat' | 'channel'): string {
@@ -3496,11 +3525,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
   }
 
+  function getMuteDurationBounds(key: AutoMuteDurationKey) {
+    if (key === 'requiredSubscriptionMuteDurationHours') {
+      return {
+        min: REQUIRED_SUBSCRIPTION_MUTE_MIN_HOURS,
+        max: REQUIRED_SUBSCRIPTION_MUTE_MAX_HOURS,
+      };
+    }
+
+    return {
+      min: AUTO_MUTE_DURATION_MIN_HOURS,
+      max: AUTO_MUTE_DURATION_MAX_HOURS,
+    };
+  }
+
   function setMuteDurationValue(key: AutoMuteDurationKey, nextValue: number) {
-    const safeValue = Math.min(
-      AUTO_MUTE_DURATION_MAX_HOURS,
-      Math.max(AUTO_MUTE_DURATION_MIN_HOURS, Math.round(nextValue)),
-    );
+    const bounds = getMuteDurationBounds(key);
+    const safeValue = Math.min(bounds.max, Math.max(bounds.min, Math.round(nextValue)));
     setFieldValue(key, safeValue as ChatSettings[AutoMuteDurationKey]);
   }
 
@@ -4105,6 +4146,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const value = Number(draft[key]);
+    const isRequiredSubscriptionDuration = key === 'requiredSubscriptionMuteDurationHours';
+
+    if (isRequiredSubscriptionDuration) {
+      const daysValue = requiredSubscriptionMuteHoursToDays(value);
+
+      return (
+        <Suspense fallback={null}>
+          <LazyRequiredSubscriptionMuteDurationEditor
+            id={`mute-duration-${key}`}
+            label={label}
+            daysValue={daysValue}
+            minDays={REQUIRED_SUBSCRIPTION_MUTE_MIN_DAYS}
+            maxDays={REQUIRED_SUBSCRIPTION_MUTE_MAX_DAYS}
+            presetDays={REQUIRED_SUBSCRIPTION_MUTE_PRESET_DAYS}
+            onSelectDays={(days) =>
+              setMuteDurationValue(key, requiredSubscriptionMuteDaysToHours(days))
+            }
+          />
+        </Suspense>
+      );
+    }
 
     return (
       <div id={`mute-duration-${key}`} className="logs-violation-item__ban-config">
@@ -4194,6 +4256,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const durationValue = Number(draft[params.durationKey]);
     const isOpen = openMuteDurationKey === params.durationKey;
     const error = fieldErrors[params.durationKey];
+    const isRequiredSubscriptionDuration =
+      params.durationKey === 'requiredSubscriptionMuteDurationHours';
+    const durationButtonLabel = isRequiredSubscriptionDuration
+      ? formatRequiredSubscriptionMuteDurationCompact(durationValue)
+      : formatMuteDurationCompact(durationValue);
 
     return (
       <div
@@ -4213,7 +4280,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 onClick={() => toggleMuteDurationEditor(params.durationKey)}
               >
                 <ClockIcon />
-                <span>{formatMuteDurationCompact(durationValue)}</span>
+                <span>{durationButtonLabel}</span>
               </button>
             </div>
           </div>
@@ -4558,6 +4625,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.requiredSubscriptionBanEnabled,
     draft?.requiredSubscriptionMuteEnabled,
   ].filter(Boolean).length;
+  const requiredSubscriptionMuteDays = requiredSubscriptionMuteHoursToDays(
+    Number(draft?.requiredSubscriptionMuteDurationHours ?? REQUIRED_SUBSCRIPTION_MUTE_MIN_HOURS),
+  );
   const areChannelsSyncing =
     requiredSubscriptionEntitiesLoading || requiredSubscriptionEntitiesSyncing;
   const requiredSubscriptionPickerEmptyState =
@@ -4571,7 +4641,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Синхронизируем список каналов...'
       : requiredSubscriptionStaleCount > 0
         ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
-        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
+        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени${draft.requiredSubscriptionMuteEnabled ? ` · мут ${formatRequiredSubscriptionMuteDurationCompact(draft.requiredSubscriptionMuteDurationHours)}` : ''}`
     : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
@@ -10187,10 +10257,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
-                      <div className="managed-giveaway__section">
+                      <Suspense fallback={null}>
+                        <LazyRequiredSubscriptionHero
+                          maxChannels={REQUIRED_SUBSCRIPTION_MAX_CHANNELS}
+                          muteDays={requiredSubscriptionMuteDays}
+                          muteEnabled={draft.requiredSubscriptionMuteEnabled}
+                          selectedCount={requiredSubscriptionSelectedCount}
+                          stagesEnabledCount={requiredSubscriptionStagesEnabledCount}
+                        />
+                      </Suspense>
+
+                      <div className="managed-giveaway__section required-subscription__channel-board">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
-                            <strong>Каналы для выбора</strong>
+                            <strong>Кого проверяем</strong>
                             <small>
                               {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
@@ -10393,7 +10473,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </>
                         ) : null}
 
-                        <div className="managed-giveaway__editor-grid">
+                        <div className="managed-giveaway__editor-grid required-subscription__link-grid">
                           <label
                             className={cn(
                               'field settings-text-field',

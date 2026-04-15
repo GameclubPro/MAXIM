@@ -129,6 +129,12 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
+const requiredSubscriptionMuteDurationHoursSchema = z
+  .number()
+  .int()
+  .min(1)
+  .max(336)
+  .default(6);
 const deleteBotMessagesDelayMinutesSchema = z
   .number()
   .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
@@ -667,7 +673,7 @@ export const chatSettingsSchema = z
       requiredSubscriptionWarnMessageText: botMessageTextSchema,
       requiredSubscriptionBanEnabled: z.boolean().default(false),
       requiredSubscriptionMuteEnabled: z.boolean().default(false),
-      requiredSubscriptionMuteDurationHours: autoMuteDurationHoursSchema,
+      requiredSubscriptionMuteDurationHours: requiredSubscriptionMuteDurationHoursSchema,
       commentsEnabled: z.boolean().default(false),
       commentsAdminsEnabled: z.boolean().default(true),
       commentsAllEnabled: z.boolean().default(false),
