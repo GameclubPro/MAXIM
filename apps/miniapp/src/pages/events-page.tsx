@@ -935,6 +935,26 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+  const participantModerationMutation = useMutation({
+    mutationFn: ({ userId, payload }: { userId: string; payload: ManualModerationActionRequest }) =>
+      applyManualModerationAction(api, chatId ?? '', userId, payload),
+    onSuccess: (result) => {
+      setSelectedParticipantId(null);
+      pushToast({
+        tone: 'success',
+        title: result.message,
+      });
+      void dashboardQuery.refetch();
+      void participantsFeed.retry();
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось применить',
+        description: normalizeActionErrorMessage(error),
+      });
+    },
+  });
   const filterOptions = useMemo<
     Array<{ value: EventsFilter; label: string; count: number }>
   >(() => {
@@ -1622,11 +1642,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       <ChatParticipantSheet
         open={Boolean(selectedParticipant)}
         item={selectedParticipant}
-        isSaving={
+        rangeLabel={periodOptions.find((option) => option.value === range)?.label ?? range}
+        isSavingImmunity={
           participantImmunityMutation.isPending || participantImmunityClearMutation.isPending
         }
+        isApplyingModeration={participantModerationMutation.isPending}
         onClose={() => setSelectedParticipantId(null)}
-        onSave={({ durationHours, dailyViolationLimit }) => {
+        onSaveImmunity={({ durationHours, dailyViolationLimit }) => {
           if (!selectedParticipant) {
             return;
           }
@@ -1637,7 +1659,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             dailyViolationLimit,
           });
         }}
-        onClear={() => {
+        onClearImmunity={() => {
           if (!selectedParticipant) {
             return;
           }
@@ -1656,6 +1678,31 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             selectedParticipant.userDisplayName,
             selectedParticipant.profileHandoffUrl,
           );
+        }}
+        onMute={(durationHours) => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          participantModerationMutation.mutate({
+            userId: selectedParticipant.userId,
+            payload: {
+              action: 'MUTE',
+              muteDurationHours: clampMuteDurationHours(durationHours),
+            },
+          });
+        }}
+        onBan={() => {
+          if (!selectedParticipant) {
+            return;
+          }
+
+          participantModerationMutation.mutate({
+            userId: selectedParticipant.userId,
+            payload: {
+              action: 'BAN',
+            },
+          });
         }}
       />
     </div>
