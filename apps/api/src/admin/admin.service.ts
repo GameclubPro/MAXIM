@@ -12665,6 +12665,8 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
+    await this.assertTargetUserCanReceiveParticipantImmunity(chatId, targetUserId);
+
     const [settings, now] = await Promise.all([
       this.prisma.chatSettings.findUnique({
         where: { chatId },
@@ -14083,6 +14085,38 @@ export class AdminService implements OnModuleDestroy {
           ? 'Через бота нельзя забанить владельца или администратора чата.'
           : 'Через бота нельзя замьютить владельца или администратора чата.',
       );
+    }
+  }
+
+  private async assertTargetUserCanReceiveParticipantImmunity(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<void> {
+    const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
+      getChatMemberAccess?: (
+        chatId: string,
+        userId: string,
+        options?: {
+          actionHealthLane?: string;
+          botId?: string;
+          trafficClass?: 'critical' | 'interactive' | 'background';
+          timeoutMs?: number;
+        },
+      ) => Promise<MaxChatMemberAccess | null>;
+    };
+    if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
+      return;
+    }
+
+    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId, {
+      actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+    });
+    if (!targetAccess) {
+      throw new BadRequestException('Пользователь уже не состоит в этом чате.');
+    }
+
+    if (targetAccess.isOwner || targetAccess.isAdmin) {
+      throw new BadRequestException('Иммунитет можно выдать только обычному участнику.');
     }
   }
 
