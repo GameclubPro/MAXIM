@@ -2390,7 +2390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     const channelsLabel = this.formatRequiredSubscriptionChannels(channelTitles);
-    const reason = 'для сообщений нужна подписка на обязательные каналы';
+    const reason = 'для сообщений нужна подписка на обязательные чаты или каналы';
     const warning = 'вынесено предупреждение за отсутствие обязательной подписки';
 
     return this.renderEditableBotSpeechTemplate({
@@ -2433,7 +2433,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       .map((item) => this.escapeMaxMarkdownText(item));
 
     if (normalizedTitles.length === 0) {
-      return 'обязательные каналы';
+      return 'обязательные чаты или каналы';
     }
 
     return normalizedTitles.join(', ');
@@ -7947,7 +7947,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       2,
       async (channelId) => {
         const persistedChat = persistedChatsById.get(channelId) ?? null;
-        const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
+        const cachedChannelHeader = await this.chatContextCache?.getManagedEntityHeader(
+          channelId,
+          'channel',
+        );
+        const cachedChatHeader =
+          cachedChannelHeader ??
+          (await this.chatContextCache?.getManagedEntityHeader(channelId, 'chat'));
+        const cached = cachedChannelHeader ?? cachedChatHeader;
         const cachedEntityType = this.readLowerString(cached?.entityType ?? '');
         const cachedTitle = this.readRequiredSubscriptionChannelTitle(
           channelId,
@@ -7955,11 +7962,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
         const cachedLink = this.normalizeBotButtonUrl(cached?.link ?? '');
         const persistedChatLooksLikeChat = persistedChat?.entityType === ChatEntityType.CHAT;
+        const cachedLooksLikeChat = cachedEntityType === 'chat';
         const cachedLooksLikeChannel = cachedEntityType === 'channel';
+        const fallbackLooksLikeChat = cachedLooksLikeChat || (!cachedLooksLikeChannel && persistedChatLooksLikeChat);
         const fallbackTitle =
           cachedTitle ||
           persistedChat?.title?.trim() ||
-          (persistedChatLooksLikeChat ? `Чат ${channelId}` : `Канал ${channelId}`);
+          (fallbackLooksLikeChat ? `Чат ${channelId}` : `Канал ${channelId}`);
         if (this.isUsableRequiredSubscriptionChannelMetadata(channelId, cachedTitle, cachedLink)) {
           return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
@@ -7970,13 +7979,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           });
         }
 
-        if (!allowRemoteFetch && !persistedChatLooksLikeChat) {
+        if (!allowRemoteFetch) {
           return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
             title: fallbackTitle,
             link: cachedLink,
             usable: false,
-            checkMembership: cachedLooksLikeChannel || !persistedChatLooksLikeChat,
+            checkMembership: true,
           });
         }
 
@@ -8001,20 +8010,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.readRequiredSubscriptionChannelTitle(channelId, snapshot.title ?? '') ||
             fallbackTitle;
           const link = this.normalizeBotButtonUrl(snapshot.link ?? '');
-          if (snapshot.entityType !== 'channel') {
-            await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
-            return this.rememberRequiredSubscriptionChannelMetadata({
-              id: channelId,
-              title,
-              link: null,
-              usable: false,
-              checkMembership: false,
-            });
-          }
           await this.chatContextCache?.setManagedEntityHeader({
             id: channelId,
             title,
-            entityType: 'channel',
+            entityType: snapshot.entityType,
             link,
             participantsCount: snapshot.participantsCount,
             primaryBotId: metadataBotId,
@@ -8036,15 +8035,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed to resolve required subscription channel metadata',
           );
-          if (persistedChatLooksLikeChat && !cachedLooksLikeChannel) {
-            await this.chatContextCache?.invalidateManagedEntityHeader(channelId, 'channel');
-          }
           return this.rememberRequiredSubscriptionChannelMetadata({
             id: channelId,
             title: fallbackTitle,
-            link: persistedChatLooksLikeChat && !cachedLooksLikeChannel ? null : cachedLink,
+            link: cachedLink,
             usable: false,
-            checkMembership: cachedLooksLikeChannel || !persistedChatLooksLikeChat,
+            checkMembership: true,
           });
         }
       },

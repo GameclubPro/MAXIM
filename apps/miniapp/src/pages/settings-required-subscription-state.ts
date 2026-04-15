@@ -4,6 +4,7 @@ export type RequiredSubscriptionSelectedChannel = {
   id: string;
   title: string;
   link: string;
+  entityType: 'chat' | 'channel';
 };
 
 export type RequiredSubscriptionUnavailableChannelReason = 'unavailable';
@@ -35,7 +36,7 @@ function toManagedEntityHeader(channel: ChatSummary): ManagedEntityHeader {
   return {
     id: channel.id,
     title: channel.title,
-    entityType: 'channel',
+    entityType: channel.entityType,
     link: normalizeLink(channel.link),
     participantsCount: null,
     avatarUrl: channel.avatarUrl ?? null,
@@ -55,12 +56,21 @@ function createUnavailableChannel(channelId: string): RequiredSubscriptionUnavai
 }
 
 export function buildRequiredSubscriptionChannelCollections(params: {
+  managedChats: readonly ChatSummary[] | null | undefined;
   managedChannels: readonly ChatSummary[] | null | undefined;
   resolvedChannels: readonly ManagedEntityHeader[];
   selectedChannelIds: readonly string[] | null | undefined;
 }): RequiredSubscriptionChannelCollections {
   const availableChannelById = new Map<string, ManagedEntityHeader>();
   const selectedIds = new Set(params.selectedChannelIds ?? []);
+
+  for (const channel of params.managedChats ?? []) {
+    if (channel.entityType !== 'chat') {
+      continue;
+    }
+
+    availableChannelById.set(channel.id, toManagedEntityHeader(channel));
+  }
 
   for (const channel of params.managedChannels ?? []) {
     if (channel.entityType !== 'channel') {
@@ -89,6 +99,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
         id: availableChannel.id,
         title: availableChannel.title,
         link: normalizeLink(availableChannel.link) ?? '',
+        entityType: availableChannel.entityType,
       });
       continue;
     }

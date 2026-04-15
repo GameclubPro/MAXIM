@@ -893,7 +893,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['requiredSubscriptionChannelIds'],
-        message: 'Выберите хотя бы один канал для обязательной подписки.',
+        message: 'Выберите хотя бы один чат или канал для обязательной подписки.',
       });
     }
 

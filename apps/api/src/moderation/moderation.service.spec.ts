@@ -13913,7 +13913,7 @@ describe('ModerationService', () => {
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     });
 
-    it('ignores chats in required subscription config and only checks real channels', async () => {
+    it('checks chats and channels in required subscription config', async () => {
       const prisma = createPrismaForRequiredSubscription({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['chat-2', 'channel-1'],
@@ -13969,8 +13969,13 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
-      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(2);
+      expect(maxClient.hasChatMember).toHaveBeenNthCalledWith(1, 'chat-2', 'user-1', {
+        trafficClass: 'critical',
+        timeoutMs: 2_000,
+        sourceTag: 'required_subscription_membership',
+      });
+      expect(maxClient.hasChatMember).toHaveBeenNthCalledWith(2, 'channel-1', 'user-1', {
         trafficClass: 'critical',
         timeoutMs: 2_000,
         sourceTag: 'required_subscription_membership',
@@ -13988,11 +13993,16 @@ describe('ModerationService', () => {
       });
       const [, noticeText, noticeOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
       expect(noticeText).toContain('Новости MAX');
-      expect(noticeText).not.toContain('chat-2');
-      expect(noticeText).not.toContain('Общий чат');
+      expect(noticeText).toContain('Общий чат');
       expect(noticeOptions).toEqual(
         expect.objectContaining({
           buttons: [
+            [
+              {
+                text: 'Общий чат',
+                url: 'https://max.ru/chats/chat-2',
+              },
+            ],
             [
               {
                 text: 'Новости MAX',
@@ -14050,7 +14060,7 @@ describe('ModerationService', () => {
       expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('обязательные каналы');
+      expect(noticeText).toContain('обязательные чаты или каналы');
       expect(prisma.violation.create).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
       expect(ruleEngine.detect).not.toHaveBeenCalled();
@@ -14110,7 +14120,7 @@ describe('ModerationService', () => {
       expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
       expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
       const [, noticeText] = maxClient.sendMessage.mock.calls[0] ?? [];
-      expect(noticeText).toContain('обязательные каналы');
+      expect(noticeText).toContain('обязательные чаты или каналы');
       expect(prisma.violation.create).toHaveBeenCalledTimes(1);
       expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
       expect(ruleEngine.detect).not.toHaveBeenCalled();

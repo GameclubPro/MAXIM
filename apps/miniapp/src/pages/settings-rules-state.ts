@@ -110,7 +110,7 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push(
       channelTitles.length > 0
         ? `Чтобы писать в чат, сначала подпишитесь на: ${formatPreviewList(channelTitles, 3)}.`
-        : 'Чтобы писать в чат, сначала подпишитесь на обязательные каналы.',
+        : 'Чтобы писать в чат, сначала подпишитесь на обязательные чаты или каналы.',
     );
   }
 

@@ -7050,7 +7050,7 @@ export class PrivateControlService {
       items.push(
         channelTitles.length > 0
           ? `Чтобы писать в чат, сначала подпишитесь на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
-          : 'Чтобы писать в чат, сначала подпишитесь на обязательные каналы.',
+          : 'Чтобы писать в чат, сначала подпишитесь на обязательные чаты или каналы.',
       );
     }
 

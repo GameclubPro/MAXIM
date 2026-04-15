@@ -2201,14 +2201,24 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
     },
     requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
       (channelId) => {
-        const channel = state.channels.find((item) => item.id === channelId);
+        const channel =
+          state.channels.find((item) => item.id === channelId) ??
+          state.chats.find((item) => item.id === channelId);
         return {
           id: channelId,
-          title: channel?.title ?? resolveChannelTitle(channelId, state),
-          entityType: 'channel',
+          title:
+            channel?.title ??
+            (channel?.entityType === 'chat'
+              ? resolveChatTitle(channelId, state)
+              : resolveChannelTitle(channelId, state)),
+          entityType: channel?.entityType ?? 'channel',
           link: channel?.link ?? null,
           participantsCount: null,
-          avatarUrl: channel?.avatarUrl ?? resolveChannelAvatarUrl(channelId, state),
+          avatarUrl:
+            channel?.avatarUrl ??
+            (channel?.entityType === 'chat'
+              ? resolveChatAvatarUrl(channelId, state)
+              : resolveChannelAvatarUrl(channelId, state)),
         };
       },
     ),
@@ -2777,7 +2787,7 @@ async function handleChatRequest(
       : normalizedValue.startsWith('max.ru/')
         ? `https://${normalizedValue}`
         : normalizedValue;
-    const channel = state.channels.find(
+    const channel = [...state.chats, ...state.channels].find(
       (item) =>
         item.id === payload.value.trim() ||
         item.link?.trim().toLowerCase() === normalizedLink ||
@@ -2785,17 +2795,21 @@ async function handleChatRequest(
     );
 
     if (!channel) {
-      throw new Error('Канал по этой ссылке не найден.');
+      throw new Error('Чат или канал по этой ссылке не найден.');
     }
 
     return resolveRequiredSubscriptionChannelResponseSchema.parse({
       channel: {
         id: channel.id,
         title: channel.title,
-        entityType: 'channel',
+        entityType: channel.entityType,
         link: channel.link ?? null,
         participantsCount: null,
-        avatarUrl: channel.avatarUrl ?? resolveChannelAvatarUrl(channel.id, state),
+        avatarUrl:
+          channel.avatarUrl ??
+          (channel.entityType === 'chat'
+            ? resolveChatAvatarUrl(channel.id, state)
+            : resolveChannelAvatarUrl(channel.id, state)),
       },
     });
   }

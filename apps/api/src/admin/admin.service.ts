@@ -7514,23 +7514,9 @@ export class AdminService implements OnModuleDestroy {
     );
 
     if (shouldValidateRequiredSubscription && normalizedSettings.requiredSubscriptionEnabled) {
-      const requiredSubscriptionChannelIds = Array.from(
-        new Set(
-          normalizedSettings.requiredSubscriptionChannelIds
-            .map((channelId) => channelId.trim())
-            .filter((channelId) => channelId.length > 0),
-        ),
-      );
-      await this.mapWithConcurrencyLimit(
-        requiredSubscriptionChannelIds,
-        REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
-        async (channelId) => {
-          await this.refreshManagedEntityBotAccessSnapshots(
-            channelId,
-            'channel',
-            'required subscription settings apply-to-all',
-          );
-        },
+      await this.refreshRequiredSubscriptionAccessSnapshots(
+        normalizedSettings.requiredSubscriptionChannelIds,
+        'required subscription settings apply-to-all',
       );
     }
 
@@ -7852,7 +7838,7 @@ export class AdminService implements OnModuleDestroy {
               channelId,
               err: error instanceof Error ? error.message : String(error),
             },
-            'Failed to resolve required subscription channel for settings screen',
+            'Failed to resolve required subscription entity for settings screen',
           );
           return null;
         }
@@ -7868,7 +7854,7 @@ export class AdminService implements OnModuleDestroy {
     const normalizedValue = value.trim();
     if (!normalizedValue) {
       throw new BadRequestException(
-        'Укажите публичную ссылку, ссылку на чат/пост MAX или ID канала.',
+        'Укажите публичную ссылку, ссылку на чат/пост MAX или ID чата/канала.',
       );
     }
 
@@ -7949,20 +7935,18 @@ export class AdminService implements OnModuleDestroy {
   private async resolveRequiredSubscriptionChannelByLink(link: string): Promise<MaxBotChat> {
     const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(link);
     if (!normalizedLink) {
-      throw new BadRequestException('Укажите корректную ссылку канала MAX.');
+      throw new BadRequestException('Укажите корректную ссылку чата или канала MAX.');
     }
 
     try {
       const discoveryAttempts: Array<{ bypassCache?: boolean }> = [{}, { bypassCache: true }];
       for (const attempt of discoveryAttempts) {
-        const chats = await this.loadManagedEntitiesDiscoverySnapshot('channel', {
+        const chats = await this.loadManagedEntitiesDiscoverySnapshot('all', {
           trafficClass: 'interactive',
           ...(attempt.bypassCache === true ? { bypassCache: true } : {}),
         });
         const matched = chats.find(
-          (chat) =>
-            chat.entityType === 'channel' &&
-            this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
+          (chat) => this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
         );
 
         if (matched?.chatId) {
@@ -7975,15 +7959,15 @@ export class AdminService implements OnModuleDestroy {
           link: normalizedLink,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to resolve required subscription channel by public link',
+        'Failed to resolve required subscription entity by public link',
       );
       throw new ServiceUnavailableException(
-        'Не удалось проверить публичную ссылку канала в MAX. Повторите попытку.',
+        'Не удалось проверить публичную ссылку чата или канала в MAX. Повторите попытку.',
       );
     }
 
     throw new BadRequestException(
-      'Канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит в канале.',
+      'Чат или канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит там администратором.',
     );
   }
 
@@ -7996,7 +7980,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ManagedEntityHeader> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
-      throw new BadRequestException('Укажите корректный ID канала.');
+      throw new BadRequestException('Укажите корректный ID чата или канала.');
     }
 
     const resolvedBotId =
@@ -8026,21 +8010,19 @@ export class AdminService implements OnModuleDestroy {
           chatId: normalizedChatId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to load required subscription channel snapshot',
+        'Failed to load required subscription entity snapshot',
       );
-      throw new BadRequestException('Канал не найден в MAX или бот не имеет к нему доступа.');
-    }
-
-    if (snapshot.entityType !== 'channel') {
-      throw new BadRequestException('Этот идентификатор относится к чату, а не к каналу.');
+      throw new BadRequestException('Чат или канал не найден в MAX или бот не имеет к нему доступа.');
     }
 
     const link = snapshot.link?.trim() || null;
+    const entityType = snapshot.entityType;
+    const prismaEntityType = this.mapManagedEntityTypeToChatEntityType(entityType);
 
     const header = this.createManagedEntityHeader({
       id: normalizedChatId,
       title: snapshot.title?.trim() || normalizedChatId,
-      entityType: 'channel',
+      entityType,
       link,
       participantsCount: snapshot.participantsCount,
       avatarUrl: snapshot.avatarUrl,
@@ -8053,12 +8035,12 @@ export class AdminService implements OnModuleDestroy {
         create: {
           id: normalizedChatId,
           title: header.title,
-          entityType: ChatEntityType.CHANNEL,
+          entityType: prismaEntityType,
           ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
         update: {
           title: header.title,
-          entityType: ChatEntityType.CHANNEL,
+          entityType: prismaEntityType,
           ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
       });
@@ -8072,7 +8054,7 @@ export class AdminService implements OnModuleDestroy {
               )
             : [],
         title: header.title,
-        entityType: ChatEntityType.CHANNEL,
+        entityType: prismaEntityType,
       });
     } catch (error: unknown) {
       this.logger.warn(
@@ -8080,7 +8062,7 @@ export class AdminService implements OnModuleDestroy {
           chatId: normalizedChatId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to persist resolved required subscription channel title',
+        'Failed to persist resolved required subscription entity title',
       );
     }
 
@@ -8148,7 +8130,7 @@ export class AdminService implements OnModuleDestroy {
 
     if (!serviceFailure) {
       throw new BadRequestException(
-        'Бот должен быть администратором этого канала, чтобы проверять подписку.',
+        'Бот должен быть администратором этого чата или канала, чтобы проверять подписку.',
       );
     }
 
@@ -8157,10 +8139,10 @@ export class AdminService implements OnModuleDestroy {
         chatId,
         err: serviceFailure instanceof Error ? serviceFailure.message : String(serviceFailure),
       },
-      'Failed to verify bot admin access for required subscription channel',
+      'Failed to verify bot admin access for required subscription entity',
     );
     throw new ServiceUnavailableException(
-      'Не удалось проверить права бота в канале MAX. Повторите попытку.',
+      'Не удалось проверить права бота в чате или канале MAX. Повторите попытку.',
     );
   }
 
@@ -8202,7 +8184,7 @@ export class AdminService implements OnModuleDestroy {
     if (selectedChannelIds.length === 0) {
       throw new BadRequestException({
         requiredSubscriptionChannelIds: {
-          _errors: ['Выберите хотя бы один канал для обязательной подписки.'],
+          _errors: ['Выберите хотя бы один чат или канал для обязательной подписки.'],
         },
       });
     }
@@ -8226,11 +8208,73 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException({
         requiredSubscriptionChannelIds: {
           _errors: [
-            'Для обязательной подписки нужны каналы MAX, где бот состоит администратором и может проверить подписку.',
+            'Для обязательной подписки нужны чаты или каналы MAX, где бот состоит администратором и может проверить подписку.',
           ],
         },
       });
     }
+  }
+
+  private async resolveRequiredSubscriptionEntityType(
+    chatId: string,
+  ): Promise<ManagedEntityType> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return 'channel';
+    }
+
+    const cachedChannelHeader = await this.chatContextCache.getManagedEntityHeader?.(
+      normalizedChatId,
+      'channel',
+    );
+    if (cachedChannelHeader) {
+      return 'channel';
+    }
+
+    const cachedChatHeader = await this.chatContextCache.getManagedEntityHeader?.(
+      normalizedChatId,
+      'chat',
+    );
+    if (cachedChatHeader) {
+      return 'chat';
+    }
+
+    try {
+      const resolved = await this.resolveRequiredSubscriptionChannelById(normalizedChatId);
+      return resolved.entityType;
+    } catch {
+      const persisted = await this.prisma.chat.findUnique({
+        where: { id: normalizedChatId },
+        select: {
+          entityType: true,
+        },
+      });
+      if (persisted?.entityType) {
+        return this.fromPrismaEntityType(persisted.entityType);
+      }
+    }
+
+    return 'channel';
+  }
+
+  private async refreshRequiredSubscriptionAccessSnapshots(
+    entityIds: readonly string[],
+    reason: string,
+  ): Promise<void> {
+    const normalizedEntityIds = Array.from(
+      new Set(entityIds.map((entityId) => entityId.trim()).filter((entityId) => entityId.length > 0)),
+    );
+    await this.mapWithConcurrencyLimit(
+      normalizedEntityIds,
+      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
+      async (entityId) => {
+        await this.refreshManagedEntityBotAccessSnapshots(
+          entityId,
+          await this.resolveRequiredSubscriptionEntityType(entityId),
+          reason,
+        );
+      },
+    );
   }
 
   private normalizeNightModeSettings(
@@ -11600,7 +11644,7 @@ export class AdminService implements OnModuleDestroy {
       items.push(
         channelTitles.length > 0
           ? `Чтобы писать в чат, сначала подпишитесь на: ${this.formatRulesPreviewList(channelTitles, 3)}.`
-          : 'Чтобы писать в чат, сначала подпишитесь на обязательные каналы.',
+          : 'Чтобы писать в чат, сначала подпишитесь на обязательные чаты или каналы.',
       );
     }
 
@@ -19525,16 +19569,9 @@ export class AdminService implements OnModuleDestroy {
       return;
     }
 
-    await this.mapWithConcurrencyLimit(
+    await this.refreshRequiredSubscriptionAccessSnapshots(
       settings.requiredSubscriptionChannelIds,
-      REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY,
-      async (channelId) => {
-        await this.refreshManagedEntityBotAccessSnapshots(
-          channelId,
-          'channel',
-          'required subscription settings update',
-        );
-      },
+      'required subscription settings update',
     );
   }
 

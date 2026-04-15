@@ -1832,7 +1832,7 @@ describe('AdminService required subscription settings', () => {
     chatTitle: null,
   };
 
-  it('normalizes and persists required subscription channel ids on update', async () => {
+  it('normalizes and persists required subscription entity ids on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -1901,7 +1901,7 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('refreshes bot access snapshots for the chat and required subscription channels after settings update', async () => {
+  it('refreshes bot access snapshots for the chat and required subscription chats/channels after settings update', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
@@ -1912,15 +1912,30 @@ describe('AdminService required subscription settings', () => {
         isOwner: false,
         permissions: [],
       }),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        title: 'Новости MAX',
-        participantsCount: 125,
-        status: 'active',
-        isPublic: true,
-        link: 'https://max.ru/news',
-        lastEventAt: null,
-        entityType: 'channel',
+      getChatSnapshot: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-remote-1') {
+          return {
+            chatId,
+            title: 'Общий чат',
+            participantsCount: 240,
+            status: 'active',
+            isPublic: true,
+            link: 'https://max.ru/chats/chat-remote-1',
+            lastEventAt: null,
+            entityType: 'chat',
+          };
+        }
+
+        return {
+          chatId,
+          title: 'Новости MAX',
+          participantsCount: 125,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/channels/news-max',
+          lastEventAt: null,
+          entityType: 'channel',
+        };
       }),
     };
     const maxBotExecutionPlanner = {
@@ -1943,7 +1958,7 @@ describe('AdminService required subscription settings', () => {
 
     await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1'],
+      requiredSubscriptionChannelIds: ['chat-remote-1', 'channel-1'],
     });
 
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenNthCalledWith(1, {
@@ -1951,6 +1966,10 @@ describe('AdminService required subscription settings', () => {
       entityType: 'chat',
     });
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenNthCalledWith(2, {
+      chatId: 'chat-remote-1',
+      entityType: 'chat',
+    });
+    expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenNthCalledWith(3, {
       chatId: 'channel-1',
       entityType: 'channel',
     });
@@ -2021,6 +2040,75 @@ describe('AdminService required subscription settings', () => {
         title: 'Партнерские новости',
         entityType: 'channel',
         link: 'https://max.ru/channels/partner-news',
+        participantsCount: 318,
+      }),
+    );
+  });
+
+  it('resolves an external required subscription chat by MAX chat link when the bot is admin there', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-ext-1',
+          title: 'Партнерский чат',
+          lastEventTime: 1,
+          entityType: 'chat',
+          link: 'https://max.ru/chats/chat-ext-1',
+        },
+      ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-ext-1',
+        title: 'Партнерский чат',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/chats/chat-ext-1',
+        lastEventAt: null,
+        entityType: 'chat',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'max.ru/chats/chat-ext-1',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'chat-ext-1',
+        title: 'Партнерский чат',
+        entityType: 'chat',
+        link: 'https://max.ru/chats/chat-ext-1',
+        participantsCount: 318,
+      }),
+    });
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'chat-ext-1',
+        title: 'Партнерский чат',
+        entityType: 'chat',
+        link: 'https://max.ru/chats/chat-ext-1',
         participantsCount: 318,
       }),
     );
@@ -2223,6 +2311,66 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('resolves an external required subscription chat from a MAX chat post link', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-ext-1',
+        title: 'Чат по ссылке на пост',
+        participantsCount: 72,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'chat',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'https://max.ru/chats/chat-ext-1/message/100',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'chat-ext-1',
+        title: 'Чат по ссылке на пост',
+        entityType: 'chat',
+        link: null,
+        participantsCount: 72,
+      }),
+    });
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'chat-ext-1',
+      expect.objectContaining({
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith(
+      createManagedEntityHeaderFixture({
+        id: 'chat-ext-1',
+        title: 'Чат по ссылке на пост',
+        entityType: 'chat',
+        link: null,
+        participantsCount: 72,
+      }),
+    );
+  });
+
   it('accepts an external required subscription channel on update when the bot is admin there', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -2260,6 +2408,50 @@ describe('AdminService required subscription settings', () => {
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-ext-1']);
     expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
       'channel-ext-1',
+      expect.objectContaining({
+        actionHealthLane: 'background',
+        sourceTag: 'required_subscription_metadata',
+      }),
+    );
+  });
+
+  it('accepts an external required subscription chat on update when the bot is admin there', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-ext-1',
+        title: 'Партнерский чат',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/chats/chat-ext-1',
+        lastEventAt: null,
+        entityType: 'chat',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['chat-ext-1'],
+    });
+
+    expect(result.requiredSubscriptionChannelIds).toEqual(['chat-ext-1']);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'chat-ext-1',
       expect.objectContaining({
         actionHealthLane: 'background',
         sourceTag: 'required_subscription_metadata',
@@ -2474,7 +2666,7 @@ describe('AdminService required subscription settings', () => {
       response: {
         requiredSubscriptionChannelIds: {
           _errors: [
-            'Для обязательной подписки нужны каналы MAX, где бот состоит администратором и может проверить подписку.',
+            'Для обязательной подписки нужны чаты или каналы MAX, где бот состоит администратором и может проверить подписку.',
           ],
         },
       },
@@ -2507,7 +2699,7 @@ describe('AdminService required subscription settings', () => {
     expect(thrown).toBeInstanceOf(BadRequestException);
     expect((thrown as BadRequestException).getResponse()).toMatchObject({
       requiredSubscriptionChannelIds: {
-        _errors: ['Выберите хотя бы один канал для обязательной подписки.'],
+        _errors: ['Выберите хотя бы один чат или канал для обязательной подписки.'],
       },
     });
   });
