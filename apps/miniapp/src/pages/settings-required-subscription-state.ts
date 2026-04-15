@@ -61,7 +61,8 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   resolvedChannels: readonly ManagedEntityHeader[];
   selectedChannelIds: readonly string[] | null | undefined;
 }): RequiredSubscriptionChannelCollections {
-  const availableChannelById = new Map<string, ManagedEntityHeader>();
+  const availableChoiceById = new Map<string, ManagedEntityHeader>();
+  const selectedChannelById = new Map<string, ManagedEntityHeader>();
   const selectedIds = new Set(params.selectedChannelIds ?? []);
 
   for (const channel of params.managedChats ?? []) {
@@ -69,7 +70,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    availableChannelById.set(channel.id, toManagedEntityHeader(channel));
+    selectedChannelById.set(channel.id, toManagedEntityHeader(channel));
   }
 
   for (const channel of params.managedChannels ?? []) {
@@ -77,13 +78,15 @@ export function buildRequiredSubscriptionChannelCollections(params: {
       continue;
     }
 
-    availableChannelById.set(channel.id, toManagedEntityHeader(channel));
+    const header = toManagedEntityHeader(channel);
+    availableChoiceById.set(channel.id, header);
+    selectedChannelById.set(channel.id, header);
   }
 
   for (const channel of params.resolvedChannels) {
-    const existingChannel = availableChannelById.get(channel.id);
+    const existingChannel = selectedChannelById.get(channel.id);
     if (!existingChannel || (!normalizeLink(existingChannel.link) && normalizeLink(channel.link))) {
-      availableChannelById.set(channel.id, {
+      selectedChannelById.set(channel.id, {
         ...channel,
         link: normalizeLink(channel.link),
       });
@@ -93,7 +96,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   const selectedChannels: RequiredSubscriptionSelectedChannel[] = [];
   const selectedUnavailableChannels: RequiredSubscriptionUnavailableChannel[] = [];
   for (const channelId of params.selectedChannelIds ?? []) {
-    const availableChannel = availableChannelById.get(channelId);
+    const availableChannel = selectedChannelById.get(channelId);
     if (availableChannel) {
       selectedChannels.push({
         id: availableChannel.id,
@@ -108,7 +111,7 @@ export function buildRequiredSubscriptionChannelCollections(params: {
   }
 
   const unavailableManagedChannels: RequiredSubscriptionUnavailableChannel[] = [];
-  const availableChoices = [...availableChannelById.values()].filter(
+  const availableChoices = [...availableChoiceById.values()].filter(
     (channel) => !selectedIds.has(channel.id),
   );
 

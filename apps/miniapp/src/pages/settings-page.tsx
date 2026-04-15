@@ -2134,12 +2134,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isSyncing: channelsList.isRefreshing,
     phase: channelsList.phase,
   };
-  const requiredSubscriptionEntitiesLoading = channelsQuery.isLoading || chatsList.isLoading;
+  const requiredSubscriptionEntitiesLoading = channelsQuery.isLoading;
   const requiredSubscriptionEntitiesSyncing =
-    (shouldLoadRequiredSubscriptionChannels && channelsQuery.isSyncing) || chatsList.isRefreshing;
-  const requiredSubscriptionEntitiesError = channelsQuery.error ?? chatsList.error;
-  const requiredSubscriptionEntitiesBackoffActive =
-    channelsQuery.isBackoffActive || chatsList.isBackoffActive;
+    shouldLoadRequiredSubscriptionChannels && channelsQuery.isSyncing;
+  const requiredSubscriptionEntitiesError = channelsQuery.error;
+  const requiredSubscriptionEntitiesBackoffActive = channelsQuery.isBackoffActive;
   const settledChatsListMarker = useMemo(
     () =>
       buildManagedEntitiesSettledMarker({
@@ -2228,19 +2227,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isLoading: settingsScreenQuery.isLoading,
     error: settingsScreenQuery.error,
   };
+  const resolvedRequiredSubscriptionChannelCandidates = useMemo(() => {
+    const channelById = new Map<string, ManagedEntityHeader>();
+    for (const channel of settingsScreenQuery.data?.requiredSubscriptionChannels ?? []) {
+      channelById.set(channel.id, channel);
+    }
+    for (const channel of resolvedRequiredSubscriptionChannels) {
+      channelById.set(channel.id, channel);
+    }
+    return [...channelById.values()];
+  }, [
+    resolvedRequiredSubscriptionChannels,
+    settingsScreenQuery.data?.requiredSubscriptionChannels,
+  ]);
   const requiredSubscriptionChannelCollections = useMemo(
     () =>
       buildRequiredSubscriptionChannelCollections({
-        managedChats: chatsList.data,
+        managedChats: [],
         managedChannels: channelsQuery.data,
-        resolvedChannels: resolvedRequiredSubscriptionChannels,
+        resolvedChannels: resolvedRequiredSubscriptionChannelCandidates,
         selectedChannelIds: draft?.requiredSubscriptionChannelIds ?? [],
       }),
     [
-      chatsList.data,
       channelsQuery.data,
       draft?.requiredSubscriptionChannelIds,
-      resolvedRequiredSubscriptionChannels,
+      resolvedRequiredSubscriptionChannelCandidates,
     ],
   );
   const selectedRequiredSubscriptionChannels =
@@ -3131,9 +3142,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function refreshRequiredSubscriptionChannels() {
-    startTransition(() => {
-      setChatsListReloadNonce((current) => current + 1);
-    });
     setRequiredSubscriptionChannelsRefreshRequest((current) => ({
       nonce: current.nonce + 1,
       behavior: 'manual',
@@ -4556,11 +4564,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     requiredSubscriptionSelectedCount >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS
       ? 'Достигнут лимит выбранных чатов и каналов.'
       : requiredSubscriptionUnavailableCount > 0
-        ? 'Нет доступных чатов и каналов для добавления. Недоступные элементы показаны ниже.'
-        : 'Нет доступных чатов и каналов для добавления.';
+        ? 'Нет доступных каналов для добавления. Недоступные каналы показаны ниже.'
+        : 'Нет доступных каналов в списке. Добавьте ссылку на чат или канал вручную.';
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? areChannelsSyncing
-      ? 'Синхронизируем чаты и каналы...'
+      ? 'Синхронизируем список каналов...'
       : requiredSubscriptionStaleCount > 0
         ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
         : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
@@ -10182,7 +10190,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="managed-giveaway__section">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
-                            <strong>Чаты и каналы для проверки</strong>
+                            <strong>Каналы для выбора</strong>
                             <small>
                               {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
@@ -10193,12 +10201,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             hintKey="requiredSubscriptionChannels"
                             openHintKey={openHintKey}
                             onToggleHint={toggleHint}
-                            label="Пояснение для списка обязательных чатов и каналов"
+                            label="Пояснение для обязательной подписки"
                           >
-                            Можно выбрать свои чаты и каналы ниже или добавить чужой чат или
-                            канал по публичной ссылке, ссылке на чат или пост MAX либо по ID.
-                            Чтобы MAX проверял подписку, один из наших ботов должен быть
-                            администратором этого чата или канала.
+                            Ниже показываем только ваши каналы. Чат или чужой канал можно
+                            добавить вручную по ссылке на чат или канал, ссылке на чат или пост
+                            MAX либо по ID. Чтобы MAX проверял подписку, один из наших ботов
+                            должен быть администратором этого чата или канала.
                           </SettingsHintAnchor>
                         </div>
 
@@ -10311,15 +10319,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         <div className="managed-giveaway__channel-picker">
                           {requiredSubscriptionEntitiesLoading ? (
-                            <span>Загружаем ваши чаты и каналы...</span>
+                            <span>Загружаем ваши каналы...</span>
                           ) : null}
                           {!requiredSubscriptionEntitiesLoading &&
                           requiredSubscriptionEntitiesSyncing ? (
-                            <span>Синхронизируем список чатов и каналов...</span>
+                            <span>Синхронизируем список каналов...</span>
                           ) : null}
                           {requiredSubscriptionEntitiesError ? (
                             <span>
-                              Ошибка загрузки чатов и каналов:{' '}
+                              Ошибка загрузки каналов:{' '}
                               {formatApiError(requiredSubscriptionEntitiesError)}
                             </span>
                           ) : null}
@@ -10351,8 +10359,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Эти чаты и каналы сейчас не удалось подготовить для выбора.
-                              Обновите список и проверьте права.
+                              Эти каналы сейчас не удалось подготовить для выбора. Обновите
+                              список и проверьте права.
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(
@@ -10392,7 +10400,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               requiredSubscriptionExternalChannelError && 'field--error',
                             )}
                           >
-                            <span>Чужой чат или канал</span>
+                            <span>Ссылка на чат или канал</span>
                             <input
                               type="text"
                               value={requiredSubscriptionExternalChannelValue}
@@ -10408,7 +10416,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   handleResolveRequiredSubscriptionExternalChannel();
                                 }
                               }}
-                              placeholder="https://max.ru/... или chat/channel id"
+                              placeholder="https://max.ru/... или id чата/канала"
                               disabled={isResolvingRequiredSubscriptionChannel}
                             />
                             {requiredSubscriptionExternalChannelError ? (
@@ -10429,8 +10437,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               onClick={handleResolveRequiredSubscriptionExternalChannel}
                             >
                               {isResolvingRequiredSubscriptionChannel
-                                ? 'Проверяем чат или канал...'
-                                : 'Добавить чужой чат или канал'}
+                                ? 'Проверяем ссылку...'
+                                : 'Добавить ссылку на чат или канал'}
                             </button>
                           </div>
                         </div>

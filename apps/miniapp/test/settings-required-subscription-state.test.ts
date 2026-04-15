@@ -60,7 +60,7 @@ test('keeps channels without a public link selectable for required subscription'
   assert.deepEqual(collections.unavailableManagedChannels, []);
 });
 
-test('keeps chats selectable for required subscription', () => {
+test('does not show chats in the available required subscription picker', () => {
   const collections = buildRequiredSubscriptionChannelCollections({
     managedChats: [
       createEntity('chat-public', 'chat', { title: 'Открытый чат' }),
@@ -71,19 +71,10 @@ test('keeps chats selectable for required subscription', () => {
     selectedChannelIds: [],
   });
 
-  assert.deepEqual(
-    collections.availableChoices.map((channel) => ({
-      id: channel.id,
-      entityType: channel.entityType,
-    })),
-    [
-      { id: 'chat-public', entityType: 'chat' },
-      { id: 'chat-private', entityType: 'chat' },
-    ],
-  );
+  assert.deepEqual(collections.availableChoices, []);
 });
 
-test('keeps resolved external channels reusable after they were removed from selection', () => {
+test('does not keep removed external channels in the available picker list', () => {
   const collections = buildRequiredSubscriptionChannelCollections({
     managedChats: [],
     managedChannels: [createEntity('channel-public', 'channel')],
@@ -95,7 +86,7 @@ test('keeps resolved external channels reusable after they were removed from sel
 
   assert.deepEqual(
     collections.availableChoices.map((channel) => channel.id),
-    ['channel-public', 'external-channel'],
+    ['channel-public'],
   );
 });
 
