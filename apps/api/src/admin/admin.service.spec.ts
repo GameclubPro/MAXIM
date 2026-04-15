@@ -2026,6 +2026,143 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('resolves an external required subscription channel when the input uses /channel/ but discovery returns /channels/', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-ext-2',
+          title: 'Канал партнера',
+          lastEventTime: 1,
+          entityType: 'channel',
+          link: 'https://max.ru/channels/partner-feed',
+        },
+      ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-2',
+        title: 'Канал партнера',
+        participantsCount: 207,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-feed',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'https://max.ru/channel/partner-feed?from=share',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'channel-ext-2',
+        title: 'Канал партнера',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/partner-feed',
+        participantsCount: 207,
+      }),
+    });
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries external required subscription channel discovery without cache when the first lookup misses the channel', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        return [];
+      }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'id613002203036_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      listBotChats: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          {
+            chatId: 'channel-ext-3',
+            title: 'Свежий канал',
+            lastEventTime: 1,
+            entityType: 'channel',
+            link: 'https://max.ru/channels/fresh-channel',
+          },
+        ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-3',
+        title: 'Свежий канал',
+        participantsCount: 88,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/fresh-channel',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'max.ru/channels/fresh-channel',
+    });
+
+    expect(result).toEqual({
+      channel: createManagedEntityHeaderFixture({
+        id: 'channel-ext-3',
+        title: 'Свежий канал',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/fresh-channel',
+        participantsCount: 88,
+      }),
+    });
+    expect(maxClient.listBotChats).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        sourceTag: 'managed_refresh',
+      }),
+    );
+    expect(maxClient.listBotChats).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        trafficClass: 'interactive',
+        sourceTag: 'managed_refresh',
+        bypassCache: true,
+      }),
+    );
+  });
+
   it('resolves an external required subscription channel from a MAX chat post link', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();

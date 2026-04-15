@@ -7953,17 +7953,21 @@ export class AdminService implements OnModuleDestroy {
     }
 
     try {
-      const chats = await this.loadManagedEntitiesDiscoverySnapshot('channel', {
-        trafficClass: 'interactive',
-      });
-      const matched = chats.find(
-        (chat) =>
-          chat.entityType === 'channel' &&
-          this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
-      );
+      const discoveryAttempts: Array<{ bypassCache?: boolean }> = [{}, { bypassCache: true }];
+      for (const attempt of discoveryAttempts) {
+        const chats = await this.loadManagedEntitiesDiscoverySnapshot('channel', {
+          trafficClass: 'interactive',
+          ...(attempt.bypassCache === true ? { bypassCache: true } : {}),
+        });
+        const matched = chats.find(
+          (chat) =>
+            chat.entityType === 'channel' &&
+            this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
+        );
 
-      if (matched?.chatId) {
-        return matched;
+        if (matched?.chatId) {
+          return matched;
+        }
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -8171,10 +8175,14 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
 
-        const pathname = parsed.pathname.replace(/\/+$/u, '');
+        let pathname = parsed.pathname.replace(/\/+$/u, '');
         if (!pathname) {
           continue;
         }
+
+        pathname = pathname.replace(/^\/channel\//iu, '/channels/');
+        parsed.search = '';
+        parsed.hash = '';
 
         return `https://max.ru${pathname}`;
       } catch {
