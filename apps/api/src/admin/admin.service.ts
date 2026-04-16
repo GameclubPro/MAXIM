@@ -5991,7 +5991,35 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const normalizedSourceText = this.normalizeImportedRulesText(input.text);
+    let normalizedSourceText = this.normalizeImportedRulesText(input.text);
+    const maxClientWithMessageMarkdown = this.maxClient as MaxClientService & {
+      getMessageTextAsMarkdown?: MaxClientService['getMessageTextAsMarkdown'];
+    };
+    if (
+      sourceMessageId &&
+      typeof maxClientWithMessageMarkdown.getMessageTextAsMarkdown === 'function'
+    ) {
+      try {
+        const formattedSourceText = await maxClientWithMessageMarkdown.getMessageTextAsMarkdown(
+          sourceMessageId,
+        );
+        const normalizedFormattedSourceText = this.normalizeImportedRulesText(formattedSourceText);
+        if (normalizedFormattedSourceText) {
+          normalizedSourceText = normalizedFormattedSourceText;
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: user.userId,
+            messageId: sourceMessageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to recover formatted chat rules text from source message',
+        );
+      }
+    }
+
     const publishedAt = new Date();
     const updatedRules = await this.prisma.chatRules.update({
       where: { chatId },

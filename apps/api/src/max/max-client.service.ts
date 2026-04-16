@@ -675,6 +675,26 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  async getMessageTextAsMarkdown(
+    messageId: string,
+    requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
+  ): Promise<string | null> {
+    const message = await this.getMessageById(messageId, requestOptions);
+    const body = this.asRecord(message?.body);
+    const sourceText =
+      typeof body?.text === 'string'
+        ? body.text
+        : typeof message?.text === 'string'
+          ? message.text
+          : null;
+    if (!sourceText) {
+      return null;
+    }
+
+    const markdown = this.renderMessageMarkupAsMarkdown(sourceText, this.extractMessageMarkup(message));
+    return markdown || sourceText;
+  }
+
   async resolveMessageLink(
     messageId: string,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = 'critical',
@@ -2980,6 +3000,169 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return html;
+  }
+
+  private renderMessageMarkupAsMarkdown(text: string, markup: MaxMessageMarkup[]): string | null {
+    if (markup.length === 0) {
+      return null;
+    }
+
+    const chars = Array.from(text);
+    const openTags = new Map<
+      number,
+      Array<{ open: string; close: string; end: number; priority: number }>
+    >();
+    const closeTags = new Map<
+      number,
+      Array<{ close: string; start: number; end: number; priority: number }>
+    >();
+    const boundaries = new Set<number>([0, chars.length]);
+
+    for (const item of markup) {
+      const start = item.from;
+      const end = item.from + item.length;
+      if (start < 0 || end <= start || end > chars.length) {
+        continue;
+      }
+
+      const delimiters = this.resolveMarkupMarkdownDelimiters(
+        item,
+        chars.slice(start, end).join(''),
+      );
+      if (!delimiters) {
+        continue;
+      }
+
+      const openBucket = openTags.get(start) ?? [];
+      openBucket.push({
+        open: delimiters.open,
+        close: delimiters.close,
+        end,
+        priority: delimiters.priority,
+      });
+      openTags.set(start, openBucket);
+
+      const closeBucket = closeTags.get(end) ?? [];
+      closeBucket.push({
+        close: delimiters.close,
+        start,
+        end,
+        priority: delimiters.priority,
+      });
+      closeTags.set(end, closeBucket);
+      boundaries.add(start);
+      boundaries.add(end);
+    }
+
+    if (openTags.size === 0 && closeTags.size === 0) {
+      return null;
+    }
+
+    let markdown = '';
+    let previousBoundary = 0;
+    const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
+
+    for (const boundary of sortedBoundaries) {
+      if (boundary > previousBoundary) {
+        markdown += this.escapeMarkdownText(chars.slice(previousBoundary, boundary).join(''));
+      }
+
+      const closing = closeTags.get(boundary);
+      if (closing) {
+        closing
+          .slice()
+          .sort(
+            (left, right) =>
+              right.start - left.start || left.end - right.end || right.priority - left.priority,
+          )
+          .forEach((tag) => {
+            markdown += tag.close;
+          });
+      }
+
+      const opening = openTags.get(boundary);
+      if (opening) {
+        opening
+          .slice()
+          .sort((left, right) => right.end - left.end || left.priority - right.priority)
+          .forEach((tag) => {
+            markdown += tag.open;
+          });
+      }
+
+      previousBoundary = boundary;
+    }
+
+    return markdown;
+  }
+
+  private resolveMarkupMarkdownDelimiters(
+    markup: MaxMessageMarkup,
+    visibleText: string,
+  ): { open: string; close: string; priority: number } | null {
+    switch (markup.type) {
+      case 'strong':
+        return { open: '**', close: '**', priority: 20 };
+      case 'heading':
+        return { open: '# ', close: '', priority: 5 };
+      case 'emphasized':
+        return { open: '_', close: '_', priority: 30 };
+      case 'underline':
+        return { open: '++', close: '++', priority: 40 };
+      case 'strikethrough':
+        return { open: '~~', close: '~~', priority: 50 };
+      case 'monospaced':
+        return visibleText.includes('\n') ? null : { open: '`', close: '`', priority: 60 };
+      case 'link':
+        return markup.url && !this.isRedundantMarkupAutoLink(visibleText, markup.url)
+          ? {
+              open: '[',
+              close: `](${markup.url})`,
+              priority: 10,
+            }
+          : null;
+      case 'user_mention': {
+        const mentionTarget = markup.userLink
+          ? markup.userLink.startsWith('max://')
+            ? markup.userLink
+            : `https://max.ru/${markup.userLink}`
+          : null;
+        return mentionTarget
+          ? {
+              open: '[',
+              close: `](${mentionTarget})`,
+              priority: 10,
+            }
+          : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private isRedundantMarkupAutoLink(visibleText: string, targetUrl: string): boolean {
+    const normalizedVisibleText = visibleText.trim();
+    const normalizedTargetUrl = targetUrl.trim();
+    if (!normalizedVisibleText || !normalizedTargetUrl) {
+      return false;
+    }
+
+    if (!/^(https?:\/\/|max:\/\/)\S+$/iu.test(normalizedVisibleText)) {
+      return false;
+    }
+
+    return (
+      this.normalizeComparableMarkupUrl(normalizedVisibleText) ===
+      this.normalizeComparableMarkupUrl(normalizedTargetUrl)
+    );
+  }
+
+  private normalizeComparableMarkupUrl(value: string): string {
+    return value.trim().replace(/\/+$/u, '').toLowerCase();
+  }
+
+  private escapeMarkdownText(value: string): string {
+    return value.replace(/([\\_*[\]()`])/g, '\\$1');
   }
 
   private resolveMarkupHtmlTags(

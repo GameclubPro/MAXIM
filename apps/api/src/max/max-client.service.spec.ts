@@ -748,6 +748,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('extracts MAX body markup as markdown text for imported rules', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-markup-1',
+                  text: '🔥MAX Docs',
+                  markup: [
+                    {
+                      from: 1,
+                      type: 'strong',
+                      length: 8,
+                    },
+                    {
+                      from: 1,
+                      type: 'emphasized',
+                      length: 8,
+                    },
+                    {
+                      from: 1,
+                      type: 'underline',
+                      length: 8,
+                    },
+                    {
+                      from: 1,
+                      type: 'link',
+                      length: 8,
+                      url: 'https://dev.max.ru/docs-api',
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageTextAsMarkdown('mid-rules-markup-1');
+
+    expect(result).toBe('🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)');
+    await service.onModuleDestroy();
+  });
+
   it('falls back to direct message lookup when batch lookup returns a different message', async () => {
     const httpService = {
       request: jest

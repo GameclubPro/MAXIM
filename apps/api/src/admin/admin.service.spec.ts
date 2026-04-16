@@ -17250,6 +17250,7 @@ describe('AdminService chat rules', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/321'),
+      getMessageTextAsMarkdown: jest.fn().mockResolvedValue('1. Без спама.\n2. Без ссылок.'),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -17279,6 +17280,7 @@ describe('AdminService chat rules', () => {
     );
 
     expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-source-1');
+    expect(maxClient.getMessageTextAsMarkdown).toHaveBeenCalledWith('mid-rules-source-1');
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
       data: expect.objectContaining({
@@ -17333,6 +17335,88 @@ describe('AdminService chat rules', () => {
       publishedMessageId: 'mid-rules-source-1',
       publishedUrl: 'https://max.ru/chats/chat-1/message/321',
       publishedAt: '2026-03-09T10:00:00.000Z',
+    });
+  });
+
+  it('recovers MAX rich-text formatting when adopting rules from an existing message', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: true,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:00:00.000Z'),
+    });
+    prisma.chatRules.update.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: 'mid-rules-source-2',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/654',
+      publishedAt: new Date('2026-03-09T10:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T10:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/654'),
+      getMessageTextAsMarkdown: jest
+        .fn()
+        .mockResolvedValue('🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)'),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.adoptChatRulesFromMessage(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        sourceMessageId: 'mid-rules-source-2',
+        sourceMessageUrl: null,
+        text: 'MAX Docs',
+      },
+      'group_command',
+    );
+
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+        autoTextEnabled: false,
+        publishedMessageId: 'mid-rules-source-2',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/654',
+      }),
     });
   });
 
