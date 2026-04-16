@@ -43,6 +43,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type MouseEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -206,7 +207,6 @@ const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
-const REQUIRED_SUBSCRIPTION_DURATION_PRESET_DAYS = [1, 3, 7, 14] as const;
 const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 const DUPLICATE_ALLOWED_COUNT_MAX = 16;
 const MESSAGE_COUNT_LIMIT_MIN = 1;
@@ -4683,6 +4683,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : !requiredSubscriptionTimerDirty && requiredSubscriptionExpiresAt
       ? formatRequiredSubscriptionExpiryBadge(requiredSubscriptionExpiresAt)
       : formatRequiredSubscriptionDurationDaysCompact(requiredSubscriptionDurationDays);
+  const requiredSubscriptionSliderProgress =
+    ((requiredSubscriptionDurationDays - REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN) /
+      (REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX - REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN)) *
+    100;
   const areChannelsSyncing =
     requiredSubscriptionEntitiesLoading || requiredSubscriptionEntitiesSyncing;
   const requiredSubscriptionPickerEmptyState =
@@ -10321,9 +10325,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="required-subscription__timer-head">
                           <div className="required-subscription__timer-copy">
                             <span className="required-subscription__hero-label">Таймер</span>
-                            <strong>
-                              {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
-                            </strong>
+                            <div className="required-subscription__timer-summary">
+                              <strong>
+                                {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
+                              </strong>
+                              <span className="required-subscription__timer-value-chip">
+                                {formatRequiredSubscriptionDurationDaysCompact(
+                                  requiredSubscriptionDurationDays,
+                                )}
+                              </span>
+                            </div>
                             <small>{requiredSubscriptionTimerBadge}</small>
                           </div>
                           <span className="required-subscription__timer-icon-shell" aria-hidden>
@@ -10331,56 +10342,35 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </span>
                         </div>
 
-                        <div className="logs-violation-item__ban-presets required-subscription__timer-presets">
-                          {REQUIRED_SUBSCRIPTION_DURATION_PRESET_DAYS.map((days) => (
-                            <button
-                              key={days}
-                              type="button"
-                              className={cn(
-                                'logs-violation-item__ban-preset',
-                                requiredSubscriptionDurationDays === days && 'is-active',
-                              )}
-                              onClick={() => setRequiredSubscriptionDurationDaysValue(days)}
-                            >
-                              {formatRequiredSubscriptionDurationDaysCompact(days)}
-                            </button>
-                          ))}
-                        </div>
-
-                        <div className="ban-duration-stepper required-subscription__timer-stepper">
-                          <button
-                            type="button"
-                            className="ban-duration-stepper__button"
-                            onClick={() =>
+                        <div className="required-subscription__timer-slider-card">
+                          <input
+                            className="required-subscription__timer-slider"
+                            type="range"
+                            min={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN}
+                            max={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX}
+                            step={1}
+                            value={requiredSubscriptionDurationDays}
+                            onChange={(event) =>
                               setRequiredSubscriptionDurationDaysValue(
-                                requiredSubscriptionDurationDays - 1,
+                                Number(event.target.value),
                               )
                             }
-                            disabled={
-                              requiredSubscriptionDurationDays <=
-                              REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN
+                            style={
+                              {
+                                '--required-subscription-slider-progress': `${requiredSubscriptionSliderProgress}%`,
+                              } as CSSProperties
                             }
-                          >
-                            -
-                          </button>
-                          <output className="ban-duration-stepper__value" aria-live="polite">
-                            {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
-                          </output>
-                          <button
-                            type="button"
-                            className="ban-duration-stepper__button"
-                            onClick={() =>
-                              setRequiredSubscriptionDurationDaysValue(
-                                requiredSubscriptionDurationDays + 1,
-                              )
-                            }
-                            disabled={
-                              requiredSubscriptionDurationDays >=
-                              REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX
-                            }
-                          >
-                            +
-                          </button>
+                            aria-label="Срок действия обязательной подписки в днях"
+                          />
+                          <div className="required-subscription__timer-scale" aria-hidden>
+                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN}д</span>
+                            <span>7д</span>
+                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX}д</span>
+                          </div>
+                          <div className="required-subscription__timer-foot" aria-hidden>
+                            <span>Коротко</span>
+                            <span>Дольше</span>
+                          </div>
                         </div>
                       </div>
 
