@@ -837,6 +837,13 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       return null;
     }
 
+    if (typeof this.maxBotLinkService.resolveBotIdForRead === 'function') {
+      const botId = await this.maxBotLinkService.resolveBotIdForRead({ chatId });
+      if (botId) {
+        return botId;
+      }
+    }
+
     if (typeof this.maxBotLinkService.resolveBotIdForMemberAccess === 'function') {
       const botId = await this.maxBotLinkService.resolveBotIdForMemberAccess({ chatId });
       if (botId) {

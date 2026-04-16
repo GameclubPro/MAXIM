@@ -193,12 +193,13 @@ function createServiceFixture() {
     getEntryBot: jest.fn(() => bots[0]),
   };
   const botContext = {
-    getActiveBotId: jest.fn(() => null),
+    getActiveBotId: jest.fn((): string | null => null),
   };
 
   return {
     service: new MaxBotLinkService(prisma as never, botRegistry as never, botContext as never),
     prisma,
+    botContext,
     chats,
     memberships,
   };
@@ -453,6 +454,63 @@ describe('MaxBotLinkService', () => {
 
     await expect(
       fixture.service.resolveBotIdForMemberAccess({ chatId: 'channel-1' }),
+    ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('reuses the member-access route for generic chat reads when the primary bot lost access', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-read-1', {
+      id: 'channel-read-1',
+      title: 'Readable channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'channel-read-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'channel-read-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotIdForRead({ chatId: 'channel-read-1' }),
+    ).resolves.toBe('id613002203036_4_bot');
+  });
+
+  it('falls back to the active bot context for chat reads when no binding exists yet', async () => {
+    const fixture = createServiceFixture();
+    fixture.botContext.getActiveBotId.mockReturnValue('id613002203036_4_bot');
+
+    await expect(
+      fixture.service.resolveBotIdForRead({ chatId: 'missing-chat' }),
     ).resolves.toBe('id613002203036_4_bot');
   });
 

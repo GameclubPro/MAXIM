@@ -9475,7 +9475,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveChatReadBotId(chatId: string): Promise<string | null> {
-    return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? null;
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
+      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      null
+    );
   }
 
   private async resolveAutoAttachBotId(

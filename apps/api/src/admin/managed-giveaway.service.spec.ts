@@ -88,6 +88,7 @@ function createMaxBotLinkMock(options: {
   return {
     getBotTokenSync: jest.fn().mockReturnValue(token),
     getValidationTokens: jest.fn().mockReturnValue([token]),
+    resolveBotIdForRead: jest.fn().mockResolvedValue(resolvedBotId),
     resolveBotId: jest.fn().mockResolvedValue(resolvedBotId),
     resolveContactIdSync: jest.fn((botId?: string | null) =>
       botId === resolvedBotId || botId == null ? contactId : null,
@@ -924,7 +925,7 @@ describe('ManagedGiveawayService', () => {
 
     await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
 
-    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId: 'source-1' });
+    expect(maxBotLinkService.resolveBotIdForRead).toHaveBeenCalledWith({ chatId: 'source-1' });
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('id613002203036_4_bot');
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',

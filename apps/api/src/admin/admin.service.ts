@@ -19770,7 +19770,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
-    return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? undefined;
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
+      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      undefined
+    );
   }
 
   private async resolveChatBotIdForRead(chatId: string): Promise<string | undefined> {

@@ -178,6 +178,20 @@ export class MaxBotLinkService {
     return this.getDefaultBotId();
   }
 
+  async resolveBotIdForRead(params: { chatId: string }): Promise<string | null> {
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return null;
+    }
+
+    const memberAccessBotId = await this.resolveBotIdForMemberAccess({ chatId });
+    if (memberAccessBotId) {
+      return memberAccessBotId;
+    }
+
+    return this.resolveBotId({ chatId });
+  }
+
   async getStoredChatPrimaryBotId(chatId: string | null | undefined): Promise<string | null> {
     const normalizedChatId = typeof chatId === 'string' ? chatId.trim() : '';
     if (!normalizedChatId) {

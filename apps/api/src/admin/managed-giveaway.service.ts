@@ -2720,7 +2720,11 @@ export class ManagedGiveawayService {
     giveaway: PersistedGiveawayWithRelations,
   ): Promise<void> {
     const resolvedBotId =
-      (await this.maxBotLinkService?.resolveBotId({ chatId: giveaway.sourceChatId })) ?? undefined;
+      (await this.maxBotLinkService?.resolveBotIdForRead?.({
+        chatId: giveaway.sourceChatId,
+      })) ??
+      (await this.maxBotLinkService?.resolveBotId({ chatId: giveaway.sourceChatId })) ??
+      undefined;
 
     await this.prisma.chat.upsert({
       where: { id: giveaway.sourceChatId },
@@ -2922,7 +2926,11 @@ export class ManagedGiveawayService {
     }
 
     try {
-      return await this.maxBotLinkService.resolveBotId({ chatId: normalizedSourceChatId });
+      return (
+        (await this.maxBotLinkService.resolveBotIdForRead?.({
+          chatId: normalizedSourceChatId,
+        })) ?? (await this.maxBotLinkService.resolveBotId({ chatId: normalizedSourceChatId }))
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
