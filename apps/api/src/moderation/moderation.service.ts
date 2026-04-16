@@ -11152,6 +11152,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      const scheduledBotId = await this.resolveScheduledChatBotId(params.chatId);
       const messageText = this.buildNightModeClosedNotice(
         params.startMinutes,
         params.endMinutes,
@@ -11166,6 +11167,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId: params.chatId,
           text: messageText,
           messageOptions: nightModeMessageOptions ?? undefined,
+          botId: scheduledBotId,
         });
       } catch (error: unknown) {
         if (
@@ -11191,6 +11193,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.createBotModerationEvent({
         data: {
           chatId: params.chatId,
+          ...(scheduledBotId ? { botId: scheduledBotId } : {}),
           userId: 'system',
           eventType: EventType.SYSTEM,
           ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
@@ -11243,17 +11246,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const closedNoticeMessageId = await this.findNightModeClosedNoticeMessageId(
+      const scheduledBotId = await this.resolveScheduledChatBotId(params.chatId);
+      const closedNotice = await this.findNightModeClosedNoticeDelivery(
         params.chatId,
         params.nightSessionKey,
       );
+      const closedNoticeMessageId = closedNotice?.noticeMessageId ?? null;
+      const closedNoticeBotId = closedNotice?.botId ?? scheduledBotId;
       let closedNoticeDeleted = false;
       if (closedNoticeMessageId) {
         try {
-          await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId, {
-            immediate: true,
-            ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-          });
+          await this.maxClient.deleteMessage(
+            params.chatId,
+            closedNoticeMessageId,
+            {
+              immediate: true,
+              ...(closedNoticeBotId ? { botId: closedNoticeBotId } : {}),
+              ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+            },
+          );
           closedNoticeDeleted = true;
         } catch (error: unknown) {
           if (
@@ -11291,6 +11302,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           reopenNoticeMessageId = await this.sendScheduledBotMessage({
             chatId: params.chatId,
             text: messageText,
+            botId: scheduledBotId,
           });
         } catch (error: unknown) {
           if (
@@ -11317,6 +11329,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.createBotModerationEvent({
         data: {
           chatId: params.chatId,
+          ...(scheduledBotId ? { botId: scheduledBotId } : {}),
           userId: 'system',
           eventType: EventType.SYSTEM,
           ruleCode: NIGHT_MODE_OPEN_NOTICE_RULE_CODE,
@@ -11342,10 +11355,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async findNightModeClosedNoticeMessageId(
+  private async findNightModeClosedNoticeDelivery(
     chatId: string,
     nightSessionKey: string,
-  ): Promise<string | null> {
+  ): Promise<{ noticeMessageId: string | null; botId: string | null } | null> {
     const existingNotice = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
@@ -11359,15 +11372,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         createdAt: 'desc',
       },
       select: {
+        botId: true,
         metadata: true,
       },
     });
 
+    if (!existingNotice) {
+      return null;
+    }
+
     const metadata = this.asRecord(existingNotice?.metadata);
     const noticeMessageId = metadata?.noticeMessageId;
-    return typeof noticeMessageId === 'string' && noticeMessageId.trim().length > 0
-      ? noticeMessageId.trim()
-      : null;
+    return {
+      noticeMessageId:
+        typeof noticeMessageId === 'string' && noticeMessageId.trim().length > 0
+          ? noticeMessageId.trim()
+          : null,
+      botId:
+        typeof existingNotice.botId === 'string' && existingNotice.botId.trim().length > 0
+          ? existingNotice.botId.trim()
+          : null,
+    };
   }
 
   private normalizeDayMinutes(value: number, fallback: number): number {
@@ -14636,10 +14661,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     text: string;
     messageOptions?: MaxSendMessageOptions;
+    botId?: string | null;
   }): Promise<string | null> {
     const options = {
       ...(params.messageOptions ?? {}),
       textFormat: 'markdown' as const,
+    };
+    const requestOptions = {
+      trafficClass: 'background' as const,
+      ...(params.botId ? { botId: params.botId } : {}),
+      ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
     };
 
     if (typeof this.maxClient.sendMessageImmediateWithId === 'function') {
@@ -14647,10 +14678,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.chatId,
         params.text,
         options,
-        {
-          trafficClass: 'background',
-          ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-        },
+        requestOptions,
       );
 
       return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
@@ -14663,10 +14691,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.chatId,
         params.text,
         options,
-        {
-          trafficClass: 'background',
-          ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-        },
+        requestOptions,
       );
 
       return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
@@ -14677,9 +14702,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     await this.maxClient.sendMessage(params.chatId, params.text, options, {
       trafficClass: 'background',
       actionHealthLane: 'background',
+      ...(params.botId ? { botId: params.botId } : {}),
       ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
     });
     return null;
+  }
+
+  private async resolveScheduledChatBotId(chatId: string): Promise<string | null> {
+    if (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function') {
+      const resolvedBotId = await this.maxBotLinkService.resolveBotIdForMemberAccess({ chatId });
+      if (typeof resolvedBotId === 'string' && resolvedBotId.trim().length > 0) {
+        return resolvedBotId.trim();
+      }
+    }
+
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    return typeof activeBotId === 'string' && activeBotId.trim().length > 0
+      ? activeBotId.trim()
+      : null;
   }
 
   private selectChannelAutoPostScanBatch<T extends { chatId: string }>(
