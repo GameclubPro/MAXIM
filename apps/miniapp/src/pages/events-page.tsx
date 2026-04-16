@@ -530,6 +530,9 @@ function ViolationModerationControls({
   const releaseAction = resolveReleaseAction(violation);
   const [muteDurationHours, setMuteDurationHours] = useState(6);
   const [muteExpanded, setMuteExpanded] = useState(false);
+  const [pendingAction, setPendingAction] = useState<
+    Extract<ManualModerationAction, 'BAN' | 'UNMUTE' | 'UNBAN'> | null
+  >(null);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const mutePresets = [1, 6, 24, 168];
 
@@ -539,6 +542,7 @@ function ViolationModerationControls({
     onSuccess: (result) => {
       setStatus({ tone: 'success', text: result.message });
       setMuteExpanded(false);
+      setPendingAction(null);
       onApplied();
     },
     onError: (error: unknown) => {
@@ -547,17 +551,13 @@ function ViolationModerationControls({
     },
   });
 
-  const confirmAndApply = (action: ManualModerationAction, hours?: number) => {
+  const applyAction = (action: ManualModerationAction, hours?: number) => {
     const normalizedHours =
       action === 'MUTE' ? clampMuteDurationHours(hours ?? muteDurationHours) : null;
-    const confirmed = window.confirm(
-      resolveConfirmMessage(action, normalizedHours ?? muteDurationHours, violation),
-    );
-    if (!confirmed) {
-      return;
-    }
-
     setStatus(null);
+    if (action !== 'MUTE') {
+      setPendingAction(null);
+    }
     applyMutation.mutate({
       action,
       ...(action === 'MUTE' ? { muteDurationHours: normalizedHours ?? muteDurationHours } : {}),
@@ -576,6 +576,7 @@ function ViolationModerationControls({
             disabled={applyMutation.isPending}
             onClick={() => {
               setStatus(null);
+              setPendingAction(null);
               setMuteExpanded((current) => !current);
             }}
           >
@@ -587,7 +588,11 @@ function ViolationModerationControls({
             type="button"
             className="logs-violation-item__quick-button logs-violation-item__quick-button--danger"
             disabled={applyMutation.isPending}
-            onClick={() => confirmAndApply('BAN')}
+            onClick={() => {
+              setStatus(null);
+              setMuteExpanded(false);
+              setPendingAction((current) => (current === 'BAN' ? null : 'BAN'));
+            }}
           >
             Бан
           </button>
@@ -597,7 +602,11 @@ function ViolationModerationControls({
             type="button"
             className="logs-violation-item__quick-button logs-violation-item__quick-button--success"
             disabled={applyMutation.isPending}
-            onClick={() => confirmAndApply(releaseAction)}
+            onClick={() => {
+              setStatus(null);
+              setMuteExpanded(false);
+              setPendingAction((current) => (current === releaseAction ? null : releaseAction));
+            }}
           >
             {resolveReleaseLabel(releaseAction)}
           </button>
@@ -706,12 +715,52 @@ function ViolationModerationControls({
             type="button"
             className="button button--accent logs-violation-item__apply-button"
             disabled={applyMutation.isPending}
-            onClick={() => confirmAndApply('MUTE', muteDurationHours)}
+            onClick={() => applyAction('MUTE', muteDurationHours)}
           >
             {applyMutation.isPending
               ? 'Применяем…'
               : resolveApplyActionLabel('MUTE', muteDurationHours)}
           </button>
+        </div>
+      ) : null}
+
+      {pendingAction ? (
+        <div className="logs-violation-item__ban-config">
+          <p
+            className="settings-native-toggle__hint settings-native-toggle__hint--inline"
+            style={{ margin: 0 }}
+          >
+            {resolveConfirmMessage(pendingAction, muteDurationHours, violation)}
+          </p>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'flex-end',
+              gap: 10,
+              flexWrap: 'wrap',
+              width: '100%',
+            }}
+          >
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={applyMutation.isPending}
+              onClick={() => setPendingAction(null)}
+            >
+              Отмена
+            </button>
+            <button
+              type="button"
+              className={`button ${pendingAction === 'BAN' ? 'button--danger' : 'button--accent'}`}
+              disabled={applyMutation.isPending}
+              onClick={() => applyAction(pendingAction)}
+            >
+              {applyMutation.isPending
+                ? 'Применяем…'
+                : resolveApplyActionLabel(pendingAction, muteDurationHours)}
+            </button>
+          </div>
         </div>
       ) : null}
 

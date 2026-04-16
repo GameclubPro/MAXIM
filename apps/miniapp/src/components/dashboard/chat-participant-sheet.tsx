@@ -195,7 +195,7 @@ export function ChatParticipantSheet({
   onMute,
   onBan,
 }: ChatParticipantSheetProps) {
-  const [activeComposer, setActiveComposer] = useState<'mute' | 'immunity' | null>(null);
+  const [activeComposer, setActiveComposer] = useState<'mute' | 'immunity' | 'ban' | null>(null);
   const [muteDurationHours, setMuteDurationHours] = useState(24);
   const [immunityDurationDays, setImmunityDurationDays] = useState(3);
   const [dailyViolationLimit, setDailyViolationLimit] = useState(3);
@@ -251,6 +251,7 @@ export function ChatParticipantSheet({
   const immunityMeta = item.immunity ? formatImmunityLeft(item.immunity.expiresAt) : '—';
   const isMuteComposerOpen = activeComposer === 'mute';
   const isImmunityComposerOpen = activeComposer === 'immunity';
+  const isBanComposerOpen = activeComposer === 'ban';
   const toggleHint = (hintKey: ParticipantHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   };
@@ -354,12 +355,10 @@ export function ChatParticipantSheet({
             {canManageParticipant ? (
               <button
                 type="button"
-                className="participant-sheet__action participant-sheet__action--ban"
-                onClick={() => {
-                  if (window.confirm(`Забанить ${displayName}?`)) {
-                    onBan();
-                  }
-                }}
+                className={`participant-sheet__action participant-sheet__action--ban ${
+                  isBanComposerOpen ? 'is-active' : ''
+                }`}
+                onClick={() => setActiveComposer((current) => (current === 'ban' ? null : 'ban'))}
                 disabled={isBusy}
               >
                 <BanIcon />
@@ -397,6 +396,35 @@ export function ChatParticipantSheet({
                   disabled={isBusy}
                 >
                   {isApplyingModeration ? 'Применяем…' : 'Выдать'}
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {canManageParticipant && isBanComposerOpen ? (
+            <div className="participant-sheet__composer">
+              <div className="participant-sheet__composer-head">
+                <span className="participant-sheet__composer-title">Подтвердите бан</span>
+              </div>
+              <p className="settings-native-toggle__hint settings-native-toggle__hint--inline participant-sheet__hint">
+                {`Забанить ${displayName} в этом чате?`}
+              </p>
+              <div className="participant-sheet__row-actions">
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => setActiveComposer(null)}
+                  disabled={isBusy}
+                >
+                  Отмена
+                </button>
+                <button
+                  type="button"
+                  className="button button--danger"
+                  onClick={onBan}
+                  disabled={isBusy}
+                >
+                  {isApplyingModeration ? 'Применяем…' : 'Забанить'}
                 </button>
               </div>
             </div>
