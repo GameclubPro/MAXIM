@@ -189,7 +189,10 @@ import {
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import {
+  containsSupportedMarkdownSyntax,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -6118,12 +6121,13 @@ export class AdminService implements OnModuleDestroy {
 
     let published: { messageId: string; url: string | null };
     const buttonRows = this.buildChatRulesButtonRows(rules);
+    const formattedMessage = this.buildFormattedRulesPublicationText(messageText);
     try {
       published = await this.publishMessageWithRetry(
         chatId,
-        messageText,
+        formattedMessage.text,
         {
-          textFormat: 'markdown',
+          textFormat: formattedMessage.textFormat,
           ...(imagePayload ? { imagePayload } : {}),
           ...(buttonRows ? { buttons: buttonRows } : {}),
         },
@@ -11778,6 +11782,23 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.buildBroadcastLinkButtonRows(normalizedButtons);
+  }
+
+  private buildFormattedRulesPublicationText(sourceText: string): {
+    text: string;
+    textFormat: MaxSendMessageOptions['textFormat'];
+  } {
+    if (!containsSupportedMarkdownSyntax(sourceText)) {
+      return {
+        text: sourceText,
+        textFormat: 'markdown',
+      };
+    }
+
+    return {
+      text: renderSupportedMarkdownAsHtml(sourceText),
+      textFormat: 'html',
+    };
   }
 
   private async buildAutofilledRulesTextFromCurrentSettings(

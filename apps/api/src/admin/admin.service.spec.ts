@@ -17632,6 +17632,64 @@ describe('AdminService chat rules', () => {
     );
   });
 
+  it('publishes rules with nested bold italic underline links as html', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-rich-1',
+        url: 'https://max.ru/chats/chat-1/message/654',
+      }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      '<p>🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a></p>',
+      {
+        textFormat: 'html',
+      },
+    );
+  });
+
   it('publishes rules with a custom post button from mini app settings', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({
