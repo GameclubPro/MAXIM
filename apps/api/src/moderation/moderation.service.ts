@@ -9478,6 +9478,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return (await this.maxBotLinkService?.resolveBotId({ chatId })) ?? null;
   }
 
+  private async resolveAutoAttachBotId(
+    chatId: string,
+    source: 'webhook' | 'poll',
+  ): Promise<string | null> {
+    const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
+    if (typeof activeBotId === 'string' && activeBotId.trim().length > 0) {
+      return activeBotId.trim();
+    }
+
+    if (source === 'poll') {
+      const scanBotId =
+        (await this.maxBotLinkService?.resolveBotIdForCapability?.({
+          chatId,
+          capability: 'background_scans',
+        })) ?? null;
+      if (typeof scanBotId === 'string' && scanBotId.trim().length > 0) {
+        return scanBotId.trim();
+      }
+    }
+
+    return await this.resolveChatReadBotId(chatId);
+  }
+
   private async executeModerationActionWithFallback(params: {
     chatId: string;
     action: 'delete_message' | 'moderate_member';
@@ -12798,14 +12821,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderId: string | null;
   }): Promise<void> {
     const { chatId, messageId, text, linkType, managedChannel, source, senderId } = params;
-    const backgroundMutationRequestOptions =
+    const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, source);
+    const mutationRequestOptions =
       source === 'poll'
         ? ({
             trafficClass: 'background',
             actionHealthLane: 'background',
             sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           } as const)
-        : undefined;
+        : autoAttachBotId
+          ? ({ botId: autoAttachBotId } as const)
+          : undefined;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
       managedChannel.channelSettings,
     );
@@ -12866,7 +12893,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                   : 'replace-forward-with-bot-copy',
             },
           },
-          backgroundMutationRequestOptions,
+          mutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
         deliveryMode = 'replace_with_bot_message';
@@ -12874,7 +12901,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         try {
           await this.maxClient.deleteMessage(chatId, messageId, {
             immediate: true,
-            ...(backgroundMutationRequestOptions ?? {}),
+            ...(mutationRequestOptions ?? {}),
           });
           originalDeleted = true;
         } catch (deleteError: unknown) {
@@ -12901,7 +12928,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
             },
           },
-          backgroundMutationRequestOptions,
+          mutationRequestOptions,
         );
       }
     } catch (error: unknown) {
@@ -12947,7 +12974,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                     : 'attach-buttons-reply-fallback',
               },
             },
-            backgroundMutationRequestOptions,
+            mutationRequestOptions,
           );
           deliveryMode = 'reply_message';
           replyMessageId = sent?.messageId ?? null;
@@ -13001,6 +13028,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
           source,
+          ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
         },
       },
     });
@@ -13234,6 +13262,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     update: MaxUpdate;
   }): Promise<void> {
     const { chatId, messageId, text, senderId, senderIsAdmin, update } = params;
+    const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, 'webhook');
+    const mutationRequestOptions = autoAttachBotId ? { botId: autoAttachBotId } : undefined;
 
     if (this.messageHasInlineKeyboard(update)) {
       return;
@@ -13286,6 +13316,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               action: 'replace-admin-message-with-bot-copy',
             },
           },
+          mutationRequestOptions,
         );
         replacementMessageId = sent.messageId;
         deliveryMode = 'replace_with_bot_message';
@@ -13309,6 +13340,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         await this.maxClient.deleteMessage(chatId, messageId, {
           immediate: true,
+          ...(mutationRequestOptions ?? {}),
         });
         originalDeleted = true;
       } catch (deleteError: unknown) {
@@ -13336,6 +13368,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             deliveryMode,
             replacementMessageId,
             originalDeleted,
+            ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
           },
         },
       });
@@ -13349,7 +13382,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           screen: 'chat-auto-comments',
           action: 'attach-comments',
         },
-      });
+      }, mutationRequestOptions);
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
       if (status && status < 500 && status !== 429) {
@@ -13373,6 +13406,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 mid: messageId,
               },
             },
+            mutationRequestOptions,
           );
           deliveryMode = 'reply_message';
           replyMessageId = sent.messageId;
@@ -13410,6 +13444,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           ...(replacementMessageId ? { replacementMessageId } : {}),
           ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
+          ...(autoAttachBotId ? { botId: autoAttachBotId } : {}),
         },
       },
     });
@@ -13441,8 +13476,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string,
   ): MaxMessageButton {
     if (type === 'suggest') {
+      const adminSuggestionPayloadBuilder = this.adminService as
+        | {
+            buildChannelSuggestionStartPayload?: (chatId: string, threadId: string) => string;
+          }
+        | undefined;
       const startPayload =
-        this.adminService?.buildChannelSuggestionStartPayload(chatId, threadId) ??
+        adminSuggestionPayloadBuilder?.buildChannelSuggestionStartPayload?.(chatId, threadId) ??
         this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
       const botStartUrl = this.buildBotStartUrl(startPayload);
       if (botStartUrl) {

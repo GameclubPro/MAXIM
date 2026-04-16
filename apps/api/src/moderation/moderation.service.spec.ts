@@ -15857,6 +15857,90 @@ describe('ModerationService', () => {
     );
     expect((service as any).processManagedChannelAutoPostButtons).toHaveBeenCalledTimes(4);
   });
+
+  it('uses the resolved scan bot when auto-attaching channel buttons during poll repair', async () => {
+    const prisma = {
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxBotLinkService = {
+      resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
+      getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`),
+      resolveContactIdSync: jest.fn().mockReturnValue(null),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await (service as any).tryAutoAttachChannelMessageButtons({
+      chatId: 'channel-1',
+      messageId: 'mid-channel-1',
+      text: 'Пост канала',
+      linkType: null,
+      managedChannel: {
+        channelSettings: {
+          updatedAt: new Date('2026-04-13T00:00:00.000Z'),
+          autoPostButtonsMode: 'COMMENTS',
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          postSuggestionsButtonText: '',
+        },
+        adminUserIds: ['admin-1'],
+      },
+      source: 'poll',
+      senderId: null,
+    });
+
+    expect(maxBotLinkService.resolveBotIdForCapability).toHaveBeenCalledWith({
+      chatId: 'channel-1',
+      capability: 'background_scans',
+    });
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Пост канала',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      {
+        trafficClass: 'background',
+        actionHealthLane: 'background',
+        sourceTag: 'channel_auto_post',
+        botId: 'scan-bot-2',
+      },
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: expect.objectContaining({
+          messageId: 'mid-channel-1',
+          source: 'poll',
+          botId: 'scan-bot-2',
+        }),
+      }),
+    });
+  });
 });
 
 describe('ModerationService participant immunity', () => {

@@ -1389,6 +1389,9 @@ describe('AdminService night mode settings normalization', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('channel-bot-2');
 
     const result = await service.updateSettings(
       'chat-1',
@@ -1414,9 +1417,9 @@ describe('AdminService night mode settings normalization', () => {
     expect(result.nightModeCommentsEnabled).toBe(false);
     expect(result.nightModeBotButtonEnabled).toBe(false);
     expect(result.nightModeRulesButtonEnabled).toBe(false);
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    expect(prisma.chat.upsert).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        update: {
+        update: expect.objectContaining({
           settings: {
             upsert: {
               update: expect.objectContaining({
@@ -1435,7 +1438,7 @@ describe('AdminService night mode settings normalization', () => {
               }),
             },
           },
-        },
+        }),
       }),
     );
   });
@@ -5718,6 +5721,14 @@ describe('AdminService.applyManualSystemBan', () => {
       immediate: true,
       botId: 'bot-2',
     });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
+      immediate: true,
+      botId: 'bot-1',
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-2', 'mid-fanout-1', {
+      immediate: true,
+      botId: 'bot-2',
+    });
   });
 
   it('queues manual mute fanout for group commands when background queue is available', async () => {
@@ -5850,6 +5861,9 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('bot-1');
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_mute_fanout',
@@ -5871,6 +5885,7 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
+      botId: 'bot-1',
     });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6024,6 +6039,9 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockImplementation(async (...args: unknown[]) => (args[0] === 'chat-2' ? 'bot-2' : 'bot-1'));
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_ban_fanout',
@@ -6042,12 +6060,15 @@ describe('AdminService.applyManualSystemBan', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
       immediate: true,
+      botId: 'bot-1',
     });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-2', {
       immediate: true,
+      botId: 'bot-1',
     });
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-2', 'mid-fanout-1', {
       immediate: true,
+      botId: 'bot-2',
     });
   });
 
@@ -17651,6 +17672,9 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -17667,6 +17691,7 @@ describe('AdminService chat rules', () => {
         textFormat: 'markdown',
         buttons: [[{ text: 'Подробнее', type: 'link', url: 'https://max.ru/help/rules' }]],
       },
+      { botId: 'chat-bot-2' },
     );
   });
 
@@ -17716,6 +17741,9 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -17739,6 +17767,7 @@ describe('AdminService chat rules', () => {
           [{ text: 'Сайт', type: 'link', url: 'https://example.com/rules' }],
         ],
       },
+      { botId: 'chat-bot-2' },
     );
   });
 
@@ -17783,6 +17812,9 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -17794,6 +17826,7 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-old-1', {
       immediate: true,
+      botId: 'chat-bot-2',
     });
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -17973,6 +18006,9 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('chat-bot-2');
 
     const result = await service.resetPublishedRules('chat-1', {
       userId: 'admin-1',
@@ -17983,6 +18019,7 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-4', {
       immediate: true,
+      botId: 'chat-bot-2',
     });
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
@@ -18187,10 +18224,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       createConfigMock({ previousToken }) as never,
     );
 
-    const startPayload = legacyService.buildChannelSuggestionStartPayload(
-      'channel-1',
-      '12345678-1234-1234-9234-1234567890ab',
-    );
+    const startPayload = (
+      legacyService as unknown as {
+        buildChannelSuggestionStartPayload: (chatId: string, threadId: string) => string;
+      }
+    ).buildChannelSuggestionStartPayload('channel-1', '12345678-1234-1234-9234-1234567890ab');
 
     expect(service.parseChannelSuggestionStartPayload(startPayload)).toMatchObject({
       chatId: 'channel-1',
@@ -18951,6 +18989,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         payload: {
           messageId: 'mid-channel-engagement-99',
           threadId: 'channel-thread-counter',
+          botId: 'channel-bot-2',
           commentsButtonText: 'Комментарии',
           includeCommentsButton: true,
           includeSuggestButton: true,
@@ -19012,6 +19051,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
         ],
       }),
+      { botId: 'channel-bot-2' },
     );
   });
 
@@ -20460,6 +20500,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         isOwner: false,
         permissions: [],
       }),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'entry-bot-upload-1' }),
       sendMessageImmediateWithId: jest.fn().mockResolvedValue({
         messageId: 'mid-suggestion-entry-bot-1',
         url: null,
@@ -20512,6 +20553,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       {
         token: suggestToken,
         text: 'Предложка',
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        imageMimeType: 'image/png',
+        imageFileName: 'entry-bot-suggestion.png',
       },
     );
 
@@ -20519,10 +20564,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatId: 'channel-1',
       capability: 'suggestion_delivery',
     });
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'entry-bot-suggestion.png',
+      'image/png',
+      { botId: '777000_bot' },
+    );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '777001',
       expect.stringContaining('[Пользователь](max://user/user-1)'),
       expect.objectContaining({
+        imagePayload: { token: 'entry-bot-upload-1' },
         textFormat: 'markdown',
       }),
       expect.objectContaining({
@@ -20564,6 +20616,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             adminUserId: 'admin-1',
             privateChatId: '555001',
             messageId: 'mid-admin-review-1',
+            botId: 'private-bot-2',
           },
         ],
       },
@@ -20597,6 +20650,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-1',
@@ -20636,6 +20692,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
+      { botId: 'channel-bot-2' },
     );
     const [, , publishedOptions] =
       maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
@@ -20694,6 +20751,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             includeCommentsButton: true,
             includeSuggestButton: true,
             source: 'suggestion_review',
+            botId: 'channel-bot-2',
             suggestButtonText: '📰 Предложить пост',
           }),
         }),
@@ -20704,6 +20762,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-admin-review-1',
       expect.stringContaining('**Контент публикации**'),
       { buttons: [], textFormat: 'markdown' },
+      { botId: 'private-bot-2' },
     );
   });
 
@@ -20776,6 +20835,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('channel-bot-2');
 
     const result = await service.reviewChannelSuggestionByAdmin(
       'suggestion-review-photo-1',
@@ -20797,6 +20859,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.png',
       'image/png',
+      { botId: 'channel-bot-2' },
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
@@ -20817,6 +20880,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
+      { botId: 'channel-bot-2' },
     );
     const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
       threadId?: unknown;
@@ -20837,6 +20901,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             threadId: publishedThreadId,
             includeCommentsButton: true,
             includeSuggestButton: true,
+            botId: 'channel-bot-2',
           }),
         }),
       }),

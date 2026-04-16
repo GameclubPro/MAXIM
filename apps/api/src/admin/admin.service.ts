@@ -802,6 +802,7 @@ type ChannelSuggestionAdminDelivery = {
   adminUserId: string;
   privateChatId: string;
   messageId: string;
+  botId?: string;
 };
 
 type ProfileMentionStartPayload = {
@@ -6131,7 +6132,16 @@ export class AdminService implements OnModuleDestroy {
 
     if (previousPublishedMessageId && previousPublishedMessageId !== published.messageId) {
       try {
-        await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, { immediate: true });
+        if (resolvedBotId) {
+          await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, {
+            immediate: true,
+            botId: resolvedBotId,
+          });
+        } else {
+          await this.maxClient.deleteMessage(chatId, previousPublishedMessageId, {
+            immediate: true,
+          });
+        }
       } catch (error: unknown) {
         if (!this.isMaxMessageMissingError(error)) {
           this.logger.warn(
@@ -6209,10 +6219,18 @@ export class AdminService implements OnModuleDestroy {
 
     const rules = await this.upsertChatRules(chatId);
     const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
 
     if (publishedMessageId) {
       try {
-        await this.maxClient.deleteMessage(chatId, publishedMessageId, { immediate: true });
+        if (resolvedBotId) {
+          await this.maxClient.deleteMessage(chatId, publishedMessageId, {
+            immediate: true,
+            botId: resolvedBotId,
+          });
+        } else {
+          await this.maxClient.deleteMessage(chatId, publishedMessageId, { immediate: true });
+        }
       } catch (error: unknown) {
         if (!this.isMaxMessageMissingError(error)) {
           const maxApiMessage = this.extractMaxApiErrorMessage(error);
@@ -6618,6 +6636,7 @@ export class AdminService implements OnModuleDestroy {
           commentsUrl,
           suggestPayload,
           suggestUrl,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
         },
       },
     });
@@ -6891,6 +6910,7 @@ export class AdminService implements OnModuleDestroy {
             includeSuggestButton: published.includeSuggestButton,
             autoPostButtonsMode: published.autoPostButtonsMode,
             source: 'suggestion_review',
+            ...(published.botId ? { botId: published.botId } : {}),
             ...(published.suggestButtonText
               ? { suggestButtonText: published.suggestButtonText }
               : {}),
@@ -13541,6 +13561,9 @@ export class AdminService implements OnModuleDestroy {
       sourceCleanup = await this.deleteRecentTrackedMessagesForManualAction(
         params.sourceChatId,
         params.targetUserId,
+        {
+          botId: await this.resolveManualActionBotAssignment(params.sourceChatId),
+        },
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -13800,7 +13823,7 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     targetUserId: string,
     actorUserId: string,
-    options: { logMessage?: string } = {},
+    options: { logMessage?: string; botId?: string } = {},
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
@@ -13811,6 +13834,7 @@ export class AdminService implements OnModuleDestroy {
       targetUserId,
       actorUserId,
       options.logMessage ?? 'Failed to run recent message cleanup after manual system ban',
+      options.botId,
     );
   }
 
@@ -13819,13 +13843,16 @@ export class AdminService implements OnModuleDestroy {
     targetUserId: string,
     actorUserId: string,
     logMessage: string,
+    botId?: string,
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
     failedMessageIds: string[];
   }> {
     try {
-      return await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId);
+      return await this.deleteRecentTrackedMessagesForManualAction(chatId, targetUserId, {
+        botId: botId ?? (await this.resolveManualActionBotAssignment(chatId)),
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -14055,6 +14082,7 @@ export class AdminService implements OnModuleDestroy {
 
       const cleanup = await this.deleteRecentTrackedMessagesForManualAction(chat.id, targetUserId, {
         spacingMs: this.manualFanoutActionSpacingMs,
+        botId: resolvedBotId,
       });
       result.removedChatIds.push(chat.id);
       result.deletedMessageCount += cleanup.deletedMessageIds.length;
@@ -14143,7 +14171,7 @@ export class AdminService implements OnModuleDestroy {
   private async deleteRecentTrackedMessagesForManualAction(
     chatId: string,
     targetUserId: string,
-    options: { spacingMs?: number } = {},
+    options: { spacingMs?: number; botId?: string } = {},
   ): Promise<{
     candidateMessageIds: string[];
     deletedMessageIds: string[];
@@ -14159,7 +14187,14 @@ export class AdminService implements OnModuleDestroy {
       }
 
       try {
-        await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
+        if (options.botId) {
+          await this.maxClient.deleteMessage(chatId, messageId, {
+            immediate: true,
+            botId: options.botId,
+          });
+        } else {
+          await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
+        }
         deletedMessageIds.push(messageId);
       } catch (error: unknown) {
         if (this.isMaxMessageMissingError(error)) {
@@ -17883,6 +17918,7 @@ export class AdminService implements OnModuleDestroy {
       const payload = this.readObjectPayload(row.payload);
       if (row.action === CHANNEL_DIALOG_ACTION_PUBLISH) {
         const messageId = this.readTrimmedString(payload.messageId);
+        const botId = this.readTrimmedString(payload.botId);
         const includeCommentsButton = payload.includeCommentsButton !== false;
         const includeSuggestButton = payload.includeSuggestButton === true;
         if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
@@ -17913,7 +17949,7 @@ export class AdminService implements OnModuleDestroy {
           ]);
         }
 
-        await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel');
+        await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
         continue;
       }
 
@@ -17922,6 +17958,7 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const messageId = this.resolveChannelCommentsTargetMessageId(payload);
+      const botId = this.readTrimmedString(payload.botId);
       const includeCommentsButton = payload.includeCommentsButton !== false;
       const includeSuggestButton = payload.includeSuggestButton === true;
       if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
@@ -17952,7 +17989,7 @@ export class AdminService implements OnModuleDestroy {
         ]);
       }
 
-      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel');
+      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel', botId);
     }
   }
 
@@ -17999,9 +18036,9 @@ export class AdminService implements OnModuleDestroy {
         continue;
       }
 
-      const messageId = this.resolveChatCommentsTargetMessageId(
-        this.readObjectPayload(row.payload),
-      );
+      const payload = this.readObjectPayload(row.payload);
+      const messageId = this.resolveChatCommentsTargetMessageId(payload);
+      const botId = this.readTrimmedString(payload.botId);
       if (!messageId) {
         continue;
       }
@@ -18020,6 +18057,7 @@ export class AdminService implements OnModuleDestroy {
           ],
         ],
         'chat',
+        botId,
       );
     }
   }
@@ -18043,11 +18081,28 @@ export class AdminService implements OnModuleDestroy {
     messageId: string,
     buttons: MaxMessageButton[][],
     entityType: ManagedEntityType,
+    botId?: string | null,
   ): Promise<void> {
     try {
-      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, null, {
-        buttons,
-      });
+      const resolvedBotId =
+        this.maxBotRegistry?.getBotById(botId)?.id ??
+        this.readTrimmedString(botId) ??
+        (await this.resolveDeliveryBotAssignment(chatId));
+      if (resolvedBotId) {
+        await this.maxClient.editMessageInlineKeyboard(
+          chatId,
+          messageId,
+          null,
+          {
+            buttons,
+          },
+          { botId: resolvedBotId },
+        );
+      } else {
+        await this.maxClient.editMessageInlineKeyboard(chatId, messageId, null, {
+          buttons,
+        });
+      }
     } catch (error) {
       this.logger.warn(
         {
@@ -18358,7 +18413,11 @@ export class AdminService implements OnModuleDestroy {
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorName = this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
-    const messageOptions = await this.buildChannelSuggestionMessageOptions(suggestion, buttons);
+    const messageOptions = await this.buildChannelSuggestionMessageOptions(
+      suggestion,
+      buttons,
+      privateDeliveryBotId,
+    );
     const message = this.buildChannelSuggestionAdminMessage({
       status: 'pending',
       channelTitle,
@@ -18409,6 +18468,7 @@ export class AdminService implements OnModuleDestroy {
           adminUserId,
           privateChatId,
           messageId: published.messageId,
+          ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
         });
       } catch (error: unknown) {
         this.logger.warn(
@@ -18513,18 +18573,23 @@ export class AdminService implements OnModuleDestroy {
     includeSuggestButton: boolean;
     suggestButtonText: string | null;
     autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+    botId: string | null;
   }> {
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
     const text = this.readTrimmedString(payload.text) ?? '';
-    const media = await this.resolveChannelSuggestionAttachments({
-      images: this.readChannelSuggestionImageAssets(payload.images),
-      imageBase64: this.readTrimmedString(payload.imageBase64),
-      imageMimeType: this.readTrimmedString(payload.imageMimeType),
-      imageFileName: this.readTrimmedString(payload.imageFileName),
-      mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
-      mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
-      mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
-      mediaFileName: this.readTrimmedString(payload.mediaFileName),
-    });
+    const media = await this.resolveChannelSuggestionAttachments(
+      {
+        images: this.readChannelSuggestionImageAssets(payload.images),
+        imageBase64: this.readTrimmedString(payload.imageBase64),
+        imageMimeType: this.readTrimmedString(payload.imageMimeType),
+        imageFileName: this.readTrimmedString(payload.imageFileName),
+        mediaType: this.readChannelSuggestionMediaType(payload.mediaType),
+        mediaPayload: this.readObjectPayloadOrNull(payload.mediaPayload),
+        mediaMimeType: this.readTrimmedString(payload.mediaMimeType),
+        mediaFileName: this.readTrimmedString(payload.mediaFileName),
+      },
+      resolvedBotId,
+    );
     const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
     const messageText = this.buildPublishedChannelSuggestionMessageText(payload, text);
 
@@ -18541,7 +18606,12 @@ export class AdminService implements OnModuleDestroy {
       ...(media.attachments?.length ? { attachments: media.attachments } : {}),
       textFormat: 'markdown',
     };
-    const published = await this.publishMessageWithRetry(chatId, messageText, messageOptions);
+    const published = await this.publishMessageWithRetry(
+      chatId,
+      messageText,
+      messageOptions,
+      resolvedBotId,
+    );
 
     return {
       messageId: published.messageId,
@@ -18551,6 +18621,7 @@ export class AdminService implements OnModuleDestroy {
       includeSuggestButton: buttonContext.includeSuggestButton,
       suggestButtonText: buttonContext.suggestButtonText,
       autoPostButtonsMode: buttonContext.autoPostButtonsMode,
+      botId: resolvedBotId ?? null,
     };
   }
 
@@ -18659,15 +18730,29 @@ export class AdminService implements OnModuleDestroy {
 
     for (const delivery of deliveries) {
       try {
-        await this.maxClient.editMessageInlineKeyboard(
-          delivery.privateChatId,
-          delivery.messageId,
-          message,
-          {
-            buttons: [],
-            textFormat: 'markdown',
-          },
-        );
+        const deliveryBotId = this.resolvePrivateDeliveryBotId(delivery.botId);
+        if (deliveryBotId) {
+          await this.maxClient.editMessageInlineKeyboard(
+            delivery.privateChatId,
+            delivery.messageId,
+            message,
+            {
+              buttons: [],
+              textFormat: 'markdown',
+            },
+            { botId: deliveryBotId },
+          );
+        } else {
+          await this.maxClient.editMessageInlineKeyboard(
+            delivery.privateChatId,
+            delivery.messageId,
+            message,
+            {
+              buttons: [],
+              textFormat: 'markdown',
+            },
+          );
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -18698,6 +18783,7 @@ export class AdminService implements OnModuleDestroy {
         const adminUserId = this.readTrimmedString(row.adminUserId);
         const privateChatId = this.readTrimmedString(row.privateChatId);
         const messageId = this.readTrimmedString(row.messageId);
+        const botId = this.resolvePrivateDeliveryBotId(this.readTrimmedString(row.botId));
         if (!adminUserId || !privateChatId || !messageId) {
           return null;
         }
@@ -18706,6 +18792,7 @@ export class AdminService implements OnModuleDestroy {
           adminUserId,
           privateChatId,
           messageId,
+          ...(botId ? { botId } : {}),
         };
       })
       .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
@@ -18810,11 +18897,14 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private async uploadChannelSuggestionImage(suggestion: {
-    imageBase64?: string | null;
-    imageMimeType?: string | null;
-    imageFileName?: string | null;
-  }): Promise<Record<string, unknown> | undefined> {
+  private async uploadChannelSuggestionImage(
+    suggestion: {
+      imageBase64?: string | null;
+      imageMimeType?: string | null;
+      imageFileName?: string | null;
+    },
+    botId?: string,
+  ): Promise<Record<string, unknown> | undefined> {
     const imageBase64 = suggestion.imageBase64?.trim() ?? '';
     if (!imageBase64) {
       return undefined;
@@ -18841,7 +18931,9 @@ export class AdminService implements OnModuleDestroy {
       this.resolveBroadcastImageFileName('', mimeType);
 
     try {
-      return await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
+      return botId
+        ? await this.maxClient.uploadImage(imageBuffer, fileName, mimeType, { botId })
+        : await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -18854,16 +18946,19 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async resolveChannelSuggestionAttachments(suggestion: {
-    images?: ChannelSuggestionImageAsset[] | null;
-    imageBase64?: string | null;
-    imageMimeType?: string | null;
-    imageFileName?: string | null;
-    mediaType?: 'image' | 'video' | null;
-    mediaPayload?: Record<string, unknown> | null;
-    mediaMimeType?: string | null;
-    mediaFileName?: string | null;
-  }): Promise<{
+  private async resolveChannelSuggestionAttachments(
+    suggestion: {
+      images?: ChannelSuggestionImageAsset[] | null;
+      imageBase64?: string | null;
+      imageMimeType?: string | null;
+      imageFileName?: string | null;
+      mediaType?: 'image' | 'video' | null;
+      mediaPayload?: Record<string, unknown> | null;
+      mediaMimeType?: string | null;
+      mediaFileName?: string | null;
+    },
+    botId?: string,
+  ): Promise<{
     imagePayload?: Record<string, unknown>;
     attachments?: MaxAttachmentPayload[];
   }> {
@@ -18887,7 +18982,7 @@ export class AdminService implements OnModuleDestroy {
               imageBase64: image.base64 ?? null,
               imageMimeType: image.mimeType ?? null,
               imageFileName: image.fileName ?? null,
-            });
+            }, botId);
 
       return payload ? { imagePayload: payload } : {};
     }
@@ -18903,7 +18998,7 @@ export class AdminService implements OnModuleDestroy {
                 imageBase64: image.base64 ?? null,
                 imageMimeType: image.mimeType ?? null,
                 imageFileName: image.fileName ?? null,
-              });
+              }, botId);
 
         if (!payload) {
           continue;
@@ -18937,7 +19032,7 @@ export class AdminService implements OnModuleDestroy {
       imageBase64: suggestion.imageBase64,
       imageMimeType: suggestion.imageMimeType,
       imageFileName: suggestion.imageFileName,
-    });
+    }, botId);
 
     return uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {};
   }
@@ -18954,10 +19049,11 @@ export class AdminService implements OnModuleDestroy {
       mediaFileName?: string | null;
     },
     buttons: MaxMessageButton[][],
+    botId?: string,
   ): Promise<
     Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
   > {
-    const media = await this.resolveChannelSuggestionAttachments(suggestion);
+    const media = await this.resolveChannelSuggestionAttachments(suggestion, botId);
     return {
       buttons,
       ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
@@ -19238,7 +19334,7 @@ export class AdminService implements OnModuleDestroy {
     return this.buildEntityDialogStartParam('channel', chatId, type, threadId);
   }
 
-  buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
+  public buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
     const normalizedChatId = chatId.trim();
     const normalizedThreadId = threadId.trim();
     const compactThreadId = this.compactSuggestionThreadId(normalizedThreadId);
