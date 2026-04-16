@@ -696,10 +696,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 {
                   body: {
                     mid: 'mid-edit-markup-1',
-                    text: 'Привет мир',
+                    text: '🔥Привет мир',
                     markup: [
                       {
-                        from: 0,
+                        from: 2,
                         type: 'strong',
                         length: 6,
                       },
@@ -722,7 +722,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-markup-1', 'Привет мир', {
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-markup-1', '🔥Привет мир', {
       button: {
         text: 'Открыть',
         url: 'https://maxim.play-team.ru/app/',
@@ -739,7 +739,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
           message_id: 'mid-edit-markup-1',
         },
         data: expect.objectContaining({
-          text: '<strong>Привет</strong> мир',
+          text: '🔥<strong>Привет</strong> мир',
           format: 'html',
         }),
       }),
@@ -755,31 +755,31 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             messages: [
-              {
-                body: {
-                  mid: 'mid-rules-markup-1',
-                  text: '🔥MAX Docs',
-                  markup: [
-                    {
-                      from: 1,
-                      type: 'strong',
-                      length: 8,
-                    },
-                    {
-                      from: 1,
-                      type: 'emphasized',
-                      length: 8,
-                    },
-                    {
-                      from: 1,
-                      type: 'underline',
-                      length: 8,
-                    },
-                    {
-                      from: 1,
-                      type: 'link',
-                      length: 8,
-                      url: 'https://dev.max.ru/docs-api',
+                {
+                  body: {
+                    mid: 'mid-rules-markup-1',
+                    text: '🔥MAX Docs',
+                    markup: [
+                      {
+                        from: 2,
+                        type: 'strong',
+                        length: 8,
+                      },
+                      {
+                        from: 2,
+                        type: 'emphasized',
+                        length: 8,
+                      },
+                      {
+                        from: 2,
+                        type: 'underline',
+                        length: 8,
+                      },
+                      {
+                        from: 2,
+                        type: 'link',
+                        length: 8,
+                        url: 'https://dev.max.ru/docs-api',
                     },
                   ],
                 },

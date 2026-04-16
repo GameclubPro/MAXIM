@@ -10187,7 +10187,6 @@ export class PrivateControlService {
       return null;
     }
 
-    const chars = Array.from(text);
     const openTags = new Map<
       number,
       Array<{ open: string; close: string; end: number; priority: number }>
@@ -10196,19 +10195,16 @@ export class PrivateControlService {
       number,
       Array<{ close: string; start: number; end: number; priority: number }>
     >();
-    const boundaries = new Set<number>([0, chars.length]);
+    const boundaries = new Set<number>([0, text.length]);
 
     for (const item of markup) {
       const start = item.from;
       const end = item.from + item.length;
-      if (start < 0 || end <= start || end > chars.length) {
+      if (start < 0 || end <= start || end > text.length) {
         continue;
       }
 
-      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(
-        item,
-        chars.slice(start, end).join(''),
-      );
+      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(item, text.slice(start, end));
       if (!delimiters) {
         continue;
       }
@@ -10244,7 +10240,7 @@ export class PrivateControlService {
 
     for (const boundary of sortedBoundaries) {
       if (boundary > previousBoundary) {
-        markdown += this.escapeMarkdownText(chars.slice(previousBoundary, boundary).join(''));
+        markdown += this.escapeMarkdownText(text.slice(previousBoundary, boundary));
       }
 
       const closing = closeTags.get(boundary);

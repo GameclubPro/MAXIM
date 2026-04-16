@@ -2925,19 +2925,19 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const chars = Array.from(text);
     const openTags = new Map<number, Array<{ open: string; close: string; end: number }>>();
     const closeTags = new Map<number, Array<{ close: string; start: number; end: number }>>();
+    const boundaries = new Set<number>([0, text.length]);
 
     for (const item of markup) {
       const start = item.from;
       const end = item.from + item.length;
 
-      if (start < 0 || end <= start || end > chars.length) {
+      if (start < 0 || end <= start || end > text.length) {
         continue;
       }
 
-      const tag = this.resolveMarkupHtmlTags(item, chars.slice(start, end).join(''));
+      const tag = this.resolveMarkupHtmlTags(item, text.slice(start, end));
       if (!tag) {
         continue;
       }
@@ -2957,6 +2957,8 @@ export class MaxClientService implements OnModuleDestroy {
         end,
       });
       closeTags.set(end, closeBucket);
+      boundaries.add(start);
+      boundaries.add(end);
     }
 
     if (openTags.size === 0 && closeTags.size === 0) {
@@ -2964,9 +2966,15 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     let html = '';
+    let previousBoundary = 0;
+    const sortedBoundaries = Array.from(boundaries).sort((left, right) => left - right);
 
-    for (let index = 0; index < chars.length; index += 1) {
-      const closing = closeTags.get(index);
+    for (const boundary of sortedBoundaries) {
+      if (boundary > previousBoundary) {
+        html += this.escapeHtml(text.slice(previousBoundary, boundary));
+      }
+
+      const closing = closeTags.get(boundary);
       if (closing) {
         closing
           .slice()
@@ -2976,7 +2984,7 @@ export class MaxClientService implements OnModuleDestroy {
           });
       }
 
-      const opening = openTags.get(index);
+      const opening = openTags.get(boundary);
       if (opening) {
         opening
           .slice()
@@ -2985,18 +2993,7 @@ export class MaxClientService implements OnModuleDestroy {
             html += tag.open;
           });
       }
-
-      html += this.escapeHtml(chars[index] ?? '');
-    }
-
-    const trailing = closeTags.get(chars.length);
-    if (trailing) {
-      trailing
-        .slice()
-        .sort((left, right) => right.start - left.start || left.end - right.end)
-        .forEach((tag) => {
-          html += tag.close;
-        });
+      previousBoundary = boundary;
     }
 
     return html;
@@ -3007,7 +3004,6 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const chars = Array.from(text);
     const openTags = new Map<
       number,
       Array<{ open: string; close: string; end: number; priority: number }>
@@ -3016,19 +3012,16 @@ export class MaxClientService implements OnModuleDestroy {
       number,
       Array<{ close: string; start: number; end: number; priority: number }>
     >();
-    const boundaries = new Set<number>([0, chars.length]);
+    const boundaries = new Set<number>([0, text.length]);
 
     for (const item of markup) {
       const start = item.from;
       const end = item.from + item.length;
-      if (start < 0 || end <= start || end > chars.length) {
+      if (start < 0 || end <= start || end > text.length) {
         continue;
       }
 
-      const delimiters = this.resolveMarkupMarkdownDelimiters(
-        item,
-        chars.slice(start, end).join(''),
-      );
+      const delimiters = this.resolveMarkupMarkdownDelimiters(item, text.slice(start, end));
       if (!delimiters) {
         continue;
       }
@@ -3064,7 +3057,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     for (const boundary of sortedBoundaries) {
       if (boundary > previousBoundary) {
-        markdown += this.escapeMarkdownText(chars.slice(previousBoundary, boundary).join(''));
+        markdown += this.escapeMarkdownText(text.slice(previousBoundary, boundary));
       }
 
       const closing = closeTags.get(boundary);

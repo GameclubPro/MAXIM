@@ -207,17 +207,12 @@ function createPrivateFormattedTextUpdate(
   };
 }
 
-function countCodePoints(value: string): number {
-  return Array.from(value).length;
+function countMessageOffsetUnits(value: string): number {
+  return value.length;
 }
 
-function codePointIndexOf(source: string, value: string): number {
-  const index = source.indexOf(value);
-  if (index < 0) {
-    return -1;
-  }
-
-  return countCodePoints(source.slice(0, index));
+function messageOffsetIndexOf(source: string, value: string): number {
+  return source.indexOf(value);
 }
 
 function createPrivatePhotoUpdate(options: { text?: string; photoIds?: string[] } = {}): MaxUpdate {
@@ -1942,9 +1937,9 @@ describe('PrivateControlService', () => {
     const secondUrl = 'https://wa.me/79362615370';
     const thirdUrl = 'https://linku.su/ekp4z9j';
     const sourceText = `🔗 ${firstUrl}\n📱 ${secondUrl}\nMAX: ${thirdUrl}`;
-    const firstUrlFrom = codePointIndexOf(sourceText, firstUrl);
-    const secondUrlFrom = codePointIndexOf(sourceText, secondUrl);
-    const thirdUrlFrom = codePointIndexOf(sourceText, thirdUrl);
+    const firstUrlFrom = messageOffsetIndexOf(sourceText, firstUrl);
+    const secondUrlFrom = messageOffsetIndexOf(sourceText, secondUrl);
+    const thirdUrlFrom = messageOffsetIndexOf(sourceText, thirdUrl);
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -1954,19 +1949,19 @@ describe('PrivateControlService', () => {
         {
           type: 'link',
           from: firstUrlFrom,
-          length: countCodePoints(firstUrl),
+          length: countMessageOffsetUnits(firstUrl),
           url: firstUrl,
         },
         {
           type: 'link',
           from: secondUrlFrom,
-          length: countCodePoints(secondUrl),
+          length: countMessageOffsetUnits(secondUrl),
           url: secondUrl,
         },
         {
           type: 'link',
           from: thirdUrlFrom,
-          length: countCodePoints(thirdUrl),
+          length: countMessageOffsetUnits(thirdUrl),
           url: thirdUrl,
         },
       ]),
@@ -1986,8 +1981,8 @@ describe('PrivateControlService', () => {
   it('preserves formatted links after emoji prefixes when saving rules from private bot', async () => {
     const { service, adminService, chats } = createHarness();
     const sourceText = '🔥MAX Docs';
-    const prefixLength = countCodePoints('🔥');
-    const labelLength = countCodePoints('MAX Docs');
+    const prefixLength = countMessageOffsetUnits('🔥');
+    const labelLength = countMessageOffsetUnits('MAX Docs');
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
@@ -2294,11 +2289,11 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('preserves emoji-prefixed formatted broadcast text with code-point offsets', async () => {
+  it('preserves emoji-prefixed formatted broadcast text with MAX string offsets', async () => {
     const { service, adminService, channels } = createHarness();
     const sourceText = '🔥MAX Docs';
-    const prefixLength = countCodePoints('🔥');
-    const labelLength = countCodePoints('MAX Docs');
+    const prefixLength = countMessageOffsetUnits('🔥');
+    const labelLength = countMessageOffsetUnits('MAX Docs');
 
     await service.handleUpdate(
       createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
