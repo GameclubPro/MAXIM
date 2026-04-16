@@ -95,6 +95,7 @@ import type {
   SendBroadcastPayload,
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
+import { HEALTH_BASE } from '../lib/public-config';
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
@@ -895,7 +896,7 @@ async function getHeaderBotLoadSnapshots(
     params.set('bots', botIds.join(','));
   }
 
-  const response = await fetch(`/api/health/bot-load?${params.toString()}`, {
+  const response = await fetch(`${HEALTH_BASE}/health/bot-load?${params.toString()}`, {
     headers: {
       Accept: 'application/json',
     },

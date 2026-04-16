@@ -24,6 +24,16 @@ The `.env.example` file now includes a multi-bot example:
 - additional bots are listed in `MAX_BOTS_JSON`,
 - use `state: "dormant"` for a pre-provisioned second bot that should appear in admin metadata but must not process webhooks or actions yet.
 
+## Standalone Bot On The Same VPS
+
+For an isolated custom bot that must not share the main multi-bot registry, use the dedicated standalone stack instead of `MAX_BOTS_JSON`:
+- env template: `infra/env/reshenie.env.example`
+- compose project: `infra/docker-compose.reshenie.yml`
+- VPS deploy: `./infra/scripts/vps-pull-build-up-reshenie.sh main`
+
+This stack runs the same API image as a separate single-process service with its own Postgres, Redis, webhook path, and ignored root env file `.env.reshenie`.
+It also ships its own mini-app under `/reshenie/app/`, so `APP_BASE_URL=https://maxim.play-team.ru/reshenie` stays consistent.
+
 ## Mini-app mobile emulator
 
 - iPhone preview: `npm run emulator:miniapp`

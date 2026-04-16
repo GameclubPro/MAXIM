@@ -77,8 +77,7 @@ import {
 } from '@maxim/contracts';
 
 import { buildApiErrorMessage } from './api-error';
-
-const API_BASE = '/api/v1';
+import { API_BASE } from './public-config';
 
 export type ApplySettingsToAllChatsResult = {
   sourceChatId: string;

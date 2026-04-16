@@ -1,5 +1,13 @@
 /// <reference types="vite/client" />
 
+interface ImportMetaEnv {
+  readonly VITE_API_BASE?: string;
+  readonly VITE_PUBLIC_BASE_PATH?: string;
+  readonly VITE_APP_NAME?: string;
+  readonly VITE_APP_DESCRIPTION?: string;
+  readonly VITE_APP_CANONICAL_URL?: string;
+}
+
 type MaxWebAppBridge = {
   version?: string;
   platform?: string;

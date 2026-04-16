@@ -55,9 +55,12 @@
 - Use `docker compose` only.
 - Main prod stack: `infra/docker-compose.yml`
 - Split/load-testing stack: `infra/docker-compose.scale.yml`
+- Independent custom bots that must stay out of the main multi-bot registry should run as separate compose projects with their own env/DB/Redis. Current example: `infra/docker-compose.reshenie.yml` + `./infra/scripts/vps-pull-build-up-reshenie.sh`.
 - Do not run both stacks at the same time.
 - The `vps-pull-build-up*.sh` scripts are designed to run on the VPS host. From local machine, invoke them through SSH.
 - If `/var/www/Chat_bot/.env` is missing, restore it from any running API role container before `docker compose exec` or `docker compose run`. Current scripts check role-based containers first and keep `infra-api-1` only as a legacy fallback.
+- For standalone stacks, keep secrets in a dedicated ignored env file such as `.env.reshenie`. Do not add independent bots to `MAX_BOTS_JSON`.
+- If a standalone bot uses its own `APP_BASE_URL` prefix, ship the matching prefixed mini app too, for example `/reshenie/app/` with `/reshenie/api/`.
 - If `git pull --ff-only` is blocked by a dirty VPS worktree:
   - if current tracked contents already match `origin/<branch>`, `git stash push -> git pull --ff-only -> git stash drop` is acceptable
   - if local VPS changes differ from `origin/<branch>`, stop and report the conflict
@@ -67,6 +70,7 @@
   - recreate containers with `--force-recreate`
   - check `/api/health/live` and `/api/health/ready` locally and publicly
   - check `https://maxim.play-team.ru/app/` when mini app flows were touched
+- For standalone bot deploys behind a path prefix, check the prefixed health endpoints too, for example `/reshenie/api/health/live` and `/reshenie/api/health/ready`.
 - During API deploys, `ready` can recover later than `live` while queues drain. Treat that as a recovery window first, not an instant regression.
 - If `/app/` returns `502`, check `docker compose ps miniapp-static` first.
 

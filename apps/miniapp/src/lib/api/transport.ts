@@ -1,6 +1,5 @@
 import { buildApiErrorMessage } from '../api-error';
-
-const API_BASE = '/api/v1';
+import { API_BASE } from '../public-config';
 const INIT_DATA_REFRESH_WAIT_MS = 1_000;
 const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 

@@ -18,6 +18,7 @@ import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData, waitForInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
 import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
+import { PUBLIC_BASE_PATH, PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
   LazyChannelDialogPage,
   LazyChannelSettingsPage,
@@ -209,8 +210,13 @@ export function App() {
             <ul>
               <li>Запуск идет из MAX, а не по прямой ссылке.</li>
               <li>В URL сохраняется `WebAppData` во фрагменте `#...` или bridge `window.WebApp.initData`.</li>
-              <li>Редирект на `/app/` не теряет hash-фрагмент и параметры запуска MAX.</li>
-              <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
+              <li>
+                Редирект на <code>{PUBLIC_BASE_PATH}</code> не теряет hash-фрагмент и параметры
+                запуска MAX.
+              </li>
+              <li>
+                Для дизайн-preview можно открыть <code>{PUBLIC_BASE_PATH}?preview=1</code>.
+              </li>
             </ul>
           </div>
         </GlassCard>
@@ -221,7 +227,7 @@ export function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
-        <Router basename="/app">
+        <Router basename={PUBLIC_ROUTER_BASENAME}>
           {preview.enabled && PreviewScaffold ? (
             <PreviewScaffold initialDevice={preview.device}>
               <AppRoutes apiClient={apiClient} launchInitData={null} />
