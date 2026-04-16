@@ -330,6 +330,7 @@ type AdminAccessResolution =
     };
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
+type ManualBanFollowUpSource = Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>;
 
 type AdoptChatRulesFromMessageInput = {
   sourceMessageId?: string | null;
@@ -13112,6 +13113,28 @@ export class AdminService implements OnModuleDestroy {
       }
 
       await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+      const shouldFanoutMiniappBan = source === 'miniapp';
+      const { sourceMessageCleanup, crossChatFanout } = shouldFanoutMiniappBan
+        ? await this.resolveManualBanFollowUpSummaries({
+            sourceChatId: chatId,
+            targetUserId,
+            actor: user,
+            source,
+          })
+        : {
+            sourceMessageCleanup: this.summarizeManualModerationCleanup({
+              candidateMessageIds: [],
+              deletedMessageIds: [],
+              failedMessageIds: [],
+            }),
+            crossChatFanout: this.summarizeManualBanFanout({
+              removedChatIds: [],
+              skippedChatIds: [],
+              failedChatIds: [],
+              deletedMessageCount: 0,
+              failedMessageDeleteCount: 0,
+            }),
+          };
 
       await this.recordManualModerationAction({
         chatId,
@@ -13125,12 +13148,24 @@ export class AdminService implements OnModuleDestroy {
           reason: `Ручной бан участника ${this.describeManualModerationActionSource(source)}`,
           mode: executionMode,
           permanent: true,
+          ...(shouldFanoutMiniappBan
+            ? {
+                sourceMessageCleanup,
+                crossChatFanout,
+              }
+            : {}),
         },
         auditPayload: {
           userId: targetUserId,
           source,
           mode: executionMode,
           permanent: true,
+          ...(shouldFanoutMiniappBan
+            ? {
+                sourceMessageCleanup,
+                crossChatFanout,
+              }
+            : {}),
         },
       });
       await this.sendManualBanChatNotice({
@@ -13317,10 +13352,6 @@ export class AdminService implements OnModuleDestroy {
 
     await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
 
-    const shouldQueuePostBanCleanup =
-      (source === 'group_command' || source === 'private_command') &&
-      Boolean(this.adminManualFanoutQueue);
-
     let recentMessageCleanup = this.summarizeManualModerationCleanup({
       candidateMessageIds: [],
       deletedMessageIds: [],
@@ -13335,30 +13366,14 @@ export class AdminService implements OnModuleDestroy {
     });
 
     if (source === 'group_command' || source === 'private_command') {
-      const fanoutParams = {
+      const followUp = await this.resolveManualBanFollowUpSummaries({
         sourceChatId: chatId,
         targetUserId,
         actor: user,
         source,
-      } as const;
-
-      if (shouldQueuePostBanCleanup) {
-        const queuedJob = this.buildManualBanFanoutJob(fanoutParams);
-        if (await this.enqueueManualModerationFanout(queuedJob)) {
-          recentMessageCleanup = this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId);
-          crossChatFanout = this.buildQueuedManualBanFanoutSummary(queuedJob.jobId);
-        } else {
-          recentMessageCleanup = this.summarizeManualModerationCleanup(
-            await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId),
-          );
-          crossChatFanout = await this.runManualBanFanoutInlineSummary(fanoutParams);
-        }
-      } else {
-        recentMessageCleanup = this.summarizeManualModerationCleanup(
-          await this.runManualBanSourceCleanup(chatId, targetUserId, user.userId),
-        );
-        crossChatFanout = await this.runManualBanFanoutInlineSummary(fanoutParams);
-      }
+      });
+      recentMessageCleanup = followUp.sourceMessageCleanup;
+      crossChatFanout = followUp.crossChatFanout;
     }
 
     await this.recordManualModerationAction({
@@ -13564,6 +13579,42 @@ export class AdminService implements OnModuleDestroy {
         }),
       };
     }
+  }
+
+  private async resolveManualBanFollowUpSummaries(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+    source: ManualBanFollowUpSource;
+  }): Promise<{
+    sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
+    crossChatFanout: ReturnType<AdminService['summarizeManualBanFanout']>;
+  }> {
+    if (params.source === 'group_command' || params.source === 'private_command') {
+      const queuedJob = this.buildManualBanFanoutJob({
+        sourceChatId: params.sourceChatId,
+        targetUserId: params.targetUserId,
+        actor: params.actor,
+        source: params.source,
+      });
+      if (await this.enqueueManualModerationFanout(queuedJob)) {
+        return {
+          sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
+          crossChatFanout: this.buildQueuedManualBanFanoutSummary(queuedJob.jobId),
+        };
+      }
+    }
+
+    const sourceCleanup = await this.runManualBanSourceCleanup(
+      params.sourceChatId,
+      params.targetUserId,
+      params.actor.userId,
+    );
+
+    return {
+      sourceMessageCleanup: this.summarizeManualModerationCleanup(sourceCleanup),
+      crossChatFanout: await this.runManualBanFanoutInlineSummary(params),
+    };
   }
 
   private async resolveManualBanFanoutSummary(params: {
@@ -13797,7 +13848,7 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualBanFollowUpSource;
   }) {
     try {
       const fanout = await this.applyManualSystemBanFanout(params);

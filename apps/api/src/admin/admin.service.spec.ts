@@ -4637,6 +4637,120 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('fans out miniapp manual ban after source chat cleanup and removes recent messages from the last 24 hours', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }])
+      .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN' },
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3');
+    expect(maxClient.banMember).toHaveBeenNthCalledWith(1, 'chat-1', 'user-3', {
+      immediate: true,
+    });
+    expect(maxClient.banMember).toHaveBeenNthCalledWith(2, 'chat-2', 'user-3', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(1, 'chat-1', 'mid-source-1', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(2, 'chat-1', 'mid-source-2', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenNthCalledWith(3, 'chat-2', 'mid-fanout-1', {
+      immediate: true,
+    });
+    expect(maxClient.banMember.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.deleteMessage.mock.invocationCallOrder[0],
+    );
+    expect(maxClient.deleteMessage.mock.invocationCallOrder[1]).toBeLessThan(
+      maxClient.banMember.mock.invocationCallOrder[1],
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-3',
+          ruleCode: 'MANUAL_BAN',
+          action: 'BAN',
+          metadata: expect.objectContaining({
+            source: 'miniapp',
+            sourceMessageCleanup: {
+              candidateCount: 2,
+              deletedCount: 2,
+              failedCount: 0,
+            },
+            crossChatFanout: expect.objectContaining({
+              removedChatsCount: 1,
+              removedChatIds: ['chat-2'],
+              deletedMessageCount: 1,
+              failedMessageDeleteCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-3',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь забанен.',
+    });
+  });
+
   it('falls back to removal-only permanent manual ban for closed chats without link', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
