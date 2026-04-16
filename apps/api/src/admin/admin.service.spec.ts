@@ -17632,12 +17632,12 @@ describe('AdminService chat rules', () => {
     );
   });
 
-  it('publishes rules with nested bold italic underline links as html', async () => {
+  it('publishes rules with nested formatting, spaces and paragraphs intact', async () => {
     const prisma = createPrismaMock();
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
       chatId: 'chat-1',
-      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n  Второй абзац с  пробелами',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
@@ -17683,9 +17683,9 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      '<p>🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a></p>',
+      '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n  Второй абзац с  пробелами',
       {
-        textFormat: 'html',
+        textFormat: 'markdown',
       },
     );
   });
