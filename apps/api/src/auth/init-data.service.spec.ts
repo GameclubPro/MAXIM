@@ -152,6 +152,17 @@ describe('InitDataService', () => {
     expect(user.userId).toBe('555');
   });
 
+  it('accepts init data inside the default one-hour freshness window', () => {
+    const service = new InitDataService(createRegistryMock() as never, createConfigMock());
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '808' }));
+    params.set('auth_date', String(Math.floor(Date.now() / 1000) - 3_590));
+    params.set('hash', sign(params));
+
+    const user = service.validate(params.toString());
+    expect(user.userId).toBe('808');
+  });
+
   it('rejects expired init data', () => {
     const service = new InitDataService(
       createRegistryMock() as never,

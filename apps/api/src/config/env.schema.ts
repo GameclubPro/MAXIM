@@ -38,7 +38,7 @@ const envSchema = z.object({
   REDIS_URL: z.string().url(),
 
   INIT_DATA_HMAC_SECRET: z.string().optional(),
-  INIT_DATA_MAX_AGE_SEC: z.coerce.number().int().positive().default(300),
+  INIT_DATA_MAX_AGE_SEC: z.coerce.number().int().positive().default(3600),
   SYSTEM_ADMIN_USER_IDS: z.string().optional(),
 
   WEBHOOK_GLOBAL_RPS_LIMIT: z.coerce.number().int().positive().default(300),

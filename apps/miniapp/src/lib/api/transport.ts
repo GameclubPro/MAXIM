@@ -1,6 +1,8 @@
 import { buildApiErrorMessage } from '../api-error';
 
 const API_BASE = '/api/v1';
+const INIT_DATA_REFRESH_WAIT_MS = 1_000;
+const INIT_DATA_REFRESH_POLL_INTERVAL_MS = 50;
 
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
@@ -9,6 +11,34 @@ export type ApiTransport = {
 
 function resolveInitDataValue(initData: string | (() => string)): string {
   return (typeof initData === 'function' ? initData() : initData).trim();
+}
+
+async function waitForUpdatedInitData(
+  readInitData: (refresh?: boolean) => string,
+  currentInitData: string,
+): Promise<string> {
+  const initialAttempt = readInitData(true);
+  if (initialAttempt && initialAttempt !== currentInitData) {
+    return initialAttempt;
+  }
+
+  const startedAt = Date.now();
+  let latestInitData = initialAttempt;
+
+  while (!latestInitData || latestInitData === currentInitData) {
+    const elapsedMs = Date.now() - startedAt;
+    const remainingMs = INIT_DATA_REFRESH_WAIT_MS - elapsedMs;
+    if (remainingMs <= 0) {
+      return latestInitData;
+    }
+
+    await new Promise<void>((resolve) => {
+      globalThis.setTimeout(resolve, Math.min(INIT_DATA_REFRESH_POLL_INTERVAL_MS, remainingMs));
+    });
+    latestInitData = readInitData(true);
+  }
+
+  return latestInitData;
 }
 
 export function createApiTransport(initData: string | (() => string)): ApiTransport {
@@ -49,7 +79,7 @@ export function createApiTransport(initData: string | (() => string)): ApiTransp
         headers: buildHeaders(authInitData, init),
       });
       if (response.status === 401 && typeof initData === 'function') {
-        const refreshedInitData = readInitData(true);
+        const refreshedInitData = await waitForUpdatedInitData(readInitData, authInitData);
         if (refreshedInitData && refreshedInitData !== authInitData) {
           response = await fetch(requestUrl, {
             ...init,

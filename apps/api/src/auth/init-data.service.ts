@@ -5,6 +5,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 
 const INIT_DATA_ALLOWED_CLOCK_SKEW_SEC = 30;
+const DEFAULT_INIT_DATA_MAX_AGE_SEC = 3_600;
 
 @Injectable()
 export class InitDataService {
@@ -13,7 +14,10 @@ export class InitDataService {
 
   constructor(botRegistry: MaxBotRegistryService, configService: ConfigService) {
     this.botTokens = botRegistry.getValidationTokens();
-    this.maxAgeSec = configService.get<number>('INIT_DATA_MAX_AGE_SEC', 300);
+    this.maxAgeSec = configService.get<number>(
+      'INIT_DATA_MAX_AGE_SEC',
+      DEFAULT_INIT_DATA_MAX_AGE_SEC,
+    );
   }
 
   validate(initData: string): AuthUser {
