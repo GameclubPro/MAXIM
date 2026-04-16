@@ -505,6 +505,64 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
+  it('returns a structured read route with provenance for generic chat reads', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('channel-read-route-1', {
+      id: 'channel-read-route-1',
+      title: 'Readable channel',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'channel-read-route-1',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:00.000Z',
+          isAdmin: false,
+          isOwner: false,
+          permissions: [],
+        },
+        createdAt: new Date('2026-03-30T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:00.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:00.000Z'),
+      },
+      {
+        chatId: 'channel-read-route-1',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-03-30T10:00:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-03-30T10:00:01.000Z'),
+        updatedAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastSeenAt: new Date('2026-03-30T10:00:01.000Z'),
+        lastWebhookAt: new Date('2026-03-30T10:00:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotRoute({
+        purpose: 'read',
+        chatId: 'channel-read-route-1',
+      }),
+    ).resolves.toMatchObject({
+      purpose: 'read',
+      chatId: 'channel-read-route-1',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'alternate_confirmed',
+    });
+  });
+
   it('falls back to the active bot context for chat reads when no binding exists yet', async () => {
     const fixture = createServiceFixture();
     fixture.botContext.getActiveBotId.mockReturnValue('id613002203036_4_bot');
@@ -814,6 +872,67 @@ describe('MaxBotLinkService', () => {
         fallbackToPrimary: false,
       }),
     ).resolves.toEqual(['id613002203036_bot', 'id613002203036_4_bot']);
+  });
+
+  it('returns a structured moderation route with ordered retry candidates', async () => {
+    const fixture = createServiceFixture();
+    fixture.chats.set('chat-route-7', {
+      id: 'chat-route-7',
+      title: 'Shared chat',
+      botId: 'id613002203036_bot',
+      primaryBotId: 'id613002203036_bot',
+    });
+    fixture.memberships.push(
+      {
+        chatId: 'chat-route-7',
+        botId: 'id613002203036_bot',
+        role: ChatBotMembershipRole.PRIMARY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-07T00:40:00.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['read_all_messages'],
+        },
+        createdAt: new Date('2026-04-07T00:40:00.000Z'),
+        updatedAt: new Date('2026-04-07T00:40:00.000Z'),
+        lastSeenAt: new Date('2026-04-07T00:40:00.000Z'),
+        lastWebhookAt: new Date('2026-04-07T00:40:00.000Z'),
+      },
+      {
+        chatId: 'chat-route-7',
+        botId: 'id613002203036_4_bot',
+        role: ChatBotMembershipRole.STANDBY,
+        status: ChatBotMembershipStatus.ACTIVE,
+        permissionsSnapshot: {
+          checkedAt: '2026-04-07T00:40:01.000Z',
+          isAdmin: true,
+          isOwner: false,
+          permissions: ['delete_messages'],
+        },
+        createdAt: new Date('2026-04-07T00:40:01.000Z'),
+        updatedAt: new Date('2026-04-07T00:40:01.000Z'),
+        lastSeenAt: new Date('2026-04-07T00:40:01.000Z'),
+        lastWebhookAt: new Date('2026-04-07T00:40:01.000Z'),
+      },
+    );
+
+    await expect(
+      fixture.service.resolveBotRoutes({
+        purpose: 'moderation_action',
+        chatId: 'chat-route-7',
+        action: 'delete_message',
+        fallbackToPrimary: false,
+      }),
+    ).resolves.toMatchObject({
+      purpose: 'moderation_action',
+      chatId: 'chat-route-7',
+      primaryBotId: 'id613002203036_bot',
+      botId: 'id613002203036_bot',
+      candidateBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
+      reason: 'primary_confirmed',
+      action: 'delete_message',
+    });
   });
 
   it('touches observed shared-bot membership without rewriting the chat row on every webhook', async () => {

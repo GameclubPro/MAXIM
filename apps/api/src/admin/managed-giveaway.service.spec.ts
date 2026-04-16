@@ -946,6 +946,74 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('uses the unified read route for giveaway mini app buttons when available', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:36:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const chatContextCache = { invalidate: jest.fn() };
+    const adminService = {
+      getChannelSettings: jest.fn().mockResolvedValue({}),
+      getSettings: jest.fn().mockResolvedValue({}),
+    };
+    const maxBotLinkService = {
+      ...createMaxBotLinkMock(),
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'source-route-1',
+        primaryBotId: 'id613002203036_4_bot',
+        botId: 'id613002203036_4_bot',
+        candidateBotIds: ['id613002203036_4_bot'],
+        reason: 'primary_confirmed',
+      }),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      adminService as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    const draft = createGiveaway({
+      sourceChatId: 'source-route-1',
+      status: ManagedGiveawayStatus.DRAFT,
+      description: 'Текст публикации',
+      entries: [],
+      winners: [],
+    });
+    const published = createGiveaway({
+      ...draft,
+      status: ManagedGiveawayStatus.ACTIVE,
+      publicationMessageId: 'publication-route-1',
+      publicationUrl: 'https://max.ru/channels/source-route-1/messages/publication-route-1',
+      publishedAt: new Date('2026-03-21T12:36:00.000Z'),
+    });
+
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
+    prisma.managedGiveaway.update.mockResolvedValue(published);
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'publication-route-1',
+      url: 'https://max.ru/channels/source-route-1/messages/publication-route-1',
+    });
+
+    await service.publishManagedGiveaway('source-route-1', 'giveaway-1', user as never, 'channel');
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'read',
+      chatId: 'source-route-1',
+    });
+    expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'source-route-1',
+      'Текст публикации',
+      expect.any(Object),
+      { botId: 'id613002203036_4_bot' },
+    );
+  });
+
   it('exposes winner name in public results immediately after draw', () => {
     const service = new ManagedGiveawayService(
       createPrismaMock() as never,

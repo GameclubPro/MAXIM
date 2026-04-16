@@ -65,7 +65,11 @@ import {
   isValidMaxMiniappStartPayload,
   parseCompactGiveawayClaimStartPayload,
 } from '../max/max-deep-link.util';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from '../max/max-bot-link.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdminService } from './admin.service';
 
@@ -2719,12 +2723,7 @@ export class ManagedGiveawayService {
   private async upsertParticipantChatAccess(
     giveaway: PersistedGiveawayWithRelations,
   ): Promise<void> {
-    const resolvedBotId =
-      (await this.maxBotLinkService?.resolveBotIdForRead?.({
-        chatId: giveaway.sourceChatId,
-      })) ??
-      (await this.maxBotLinkService?.resolveBotId({ chatId: giveaway.sourceChatId })) ??
-      undefined;
+    const resolvedBotId = await this.resolveReadBotAssignment(giveaway.sourceChatId);
 
     await this.prisma.chat.upsert({
       where: { id: giveaway.sourceChatId },
@@ -2919,6 +2918,41 @@ export class ManagedGiveawayService {
     return normalized.length > 0 ? normalized : null;
   }
 
+  private async resolveReadBotRoute(
+    chatId: string,
+  ): Promise<MaxBotRoute | null> {
+    if (!this.maxBotLinkService) {
+      return null;
+    }
+
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (typeof routeResolver.resolveBotRoute !== 'function') {
+      return null;
+    }
+
+    return routeResolver.resolveBotRoute({
+      purpose: 'read',
+      chatId,
+    });
+  }
+
+  private async resolveReadBotAssignment(chatId: string): Promise<string | undefined> {
+    const route = await this.resolveReadBotRoute(chatId);
+    if (route?.botId) {
+      return route.botId;
+    }
+
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForRead?.({
+        chatId,
+      })) ??
+      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      undefined
+    );
+  }
+
   private async resolveGiveawayButtonBotId(sourceChatId: string): Promise<string | null> {
     const normalizedSourceChatId = sourceChatId.trim();
     if (!normalizedSourceChatId || !this.maxBotLinkService) {
@@ -2926,11 +2960,7 @@ export class ManagedGiveawayService {
     }
 
     try {
-      return (
-        (await this.maxBotLinkService.resolveBotIdForRead?.({
-          chatId: normalizedSourceChatId,
-        })) ?? (await this.maxBotLinkService.resolveBotId({ chatId: normalizedSourceChatId }))
-      );
+      return (await this.resolveReadBotAssignment(normalizedSourceChatId)) ?? null;
     } catch (error: unknown) {
       this.logger.warn(
         {

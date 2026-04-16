@@ -173,7 +173,11 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from '../max/max-bot-link.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';
 import { MaxBotExecutionPlannerService } from '../max/max-bot-execution-planner.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
@@ -19769,7 +19773,36 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private async resolveUnifiedBotRoute(
+    request: MaxBotRouteRequest,
+  ): Promise<MaxBotRoute | null> {
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+      resolveBotRoutes?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (
+      request.purpose === 'moderation_action' &&
+      typeof routeResolver?.resolveBotRoutes === 'function'
+    ) {
+      return routeResolver.resolveBotRoutes(request);
+    }
+
+    if (typeof routeResolver?.resolveBotRoute === 'function') {
+      return routeResolver.resolveBotRoute(request);
+    }
+
+    return null;
+  }
+
   private async resolveBotAssignment(chatId: string): Promise<string | undefined> {
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'read',
+      chatId,
+    });
+    if (route?.botId) {
+      return route.botId;
+    }
+
     return (
       (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
@@ -19978,6 +20011,16 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     capability: ManagedEntityBotCapability,
   ): Promise<string | undefined> {
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'capability',
+      chatId,
+      capability,
+      fallbackToPrimary: true,
+    });
+    if (route?.botId) {
+      return route.botId;
+    }
+
     return (
       (await this.maxBotLinkService?.resolveBotIdForCapability({
         chatId,

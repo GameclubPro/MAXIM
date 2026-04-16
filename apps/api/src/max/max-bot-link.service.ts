@@ -58,20 +58,6 @@ type MembershipAccessSnapshot = {
   permissions: string[];
 };
 
-type ModerationActionChatRecord =
-  | {
-      entityType: ChatEntityType | null;
-      primaryBotId: string | null;
-      botId: string | null;
-      botMemberships: Array<{
-        botId: string;
-        role: ChatBotMembershipRole;
-        status: ChatBotMembershipStatus;
-        permissionsSnapshot: unknown;
-      }>;
-    }
-  | null;
-
 export type ChatBotExecutionBinding = {
   chatId: string;
   activeBotId: string | null;
@@ -79,6 +65,94 @@ export type ChatBotExecutionBinding = {
   activeMembershipStatus: ChatBotMembershipStatus | null;
   assignedBotIds: string[];
   shouldHandleGroupUpdate: boolean;
+};
+
+export type MaxBotRoutePurpose =
+  | 'default'
+  | 'read'
+  | 'member_access'
+  | 'moderation_action'
+  | 'capability';
+
+export type MaxBotRouteReason =
+  | 'explicit'
+  | 'chat_cache'
+  | 'chat_primary'
+  | 'context'
+  | 'default'
+  | 'primary_confirmed'
+  | 'alternate_confirmed'
+  | 'primary_soft'
+  | 'alternate_soft'
+  | 'primary_fallback'
+  | 'alternate_fallback';
+
+export type MaxBotRoute =
+  | {
+      purpose: 'default' | 'read' | 'member_access';
+      chatId: string | null;
+      primaryBotId: string | null;
+      botId: string | null;
+      candidateBotIds: string[];
+      reason: MaxBotRouteReason | null;
+    }
+  | {
+      purpose: 'moderation_action';
+      chatId: string | null;
+      primaryBotId: string | null;
+      botId: string | null;
+      candidateBotIds: string[];
+      reason: MaxBotRouteReason | null;
+      action: 'delete_message' | 'moderate_member';
+    }
+  | {
+      purpose: 'capability';
+      chatId: string | null;
+      primaryBotId: string | null;
+      botId: string | null;
+      candidateBotIds: string[];
+      reason: MaxBotRouteReason | null;
+      capability: ManagedEntityBotCapability;
+    };
+
+export type MaxBotRouteRequest =
+  | {
+      purpose: 'default';
+      chatId?: string | null;
+      botId?: string | null;
+    }
+  | {
+      purpose: 'read' | 'member_access';
+      chatId: string;
+    }
+  | {
+      purpose: 'moderation_action';
+      chatId: string;
+      action: 'delete_message' | 'moderate_member';
+      fallbackToPrimary?: boolean;
+    }
+  | {
+      purpose: 'capability';
+      chatId: string;
+      capability: ManagedEntityBotCapability;
+      fallbackToPrimary?: boolean;
+    };
+
+type ResolvedChatRouteMembership = {
+  botId: string;
+  role: ChatBotMembershipRole;
+  status: ChatBotMembershipStatus;
+  permissionsSnapshot: unknown;
+  capabilities: unknown;
+};
+
+type ResolvedChatRouteState = {
+  chatId: string;
+  entityType: ChatEntityType | null;
+  primaryBotId: string | null;
+  memberships: ResolvedChatRouteMembership[];
+  activeKnownMemberships: ResolvedChatRouteMembership[];
+  activeActionableMemberships: ResolvedChatRouteMembership[];
 };
 
 @Injectable()
@@ -146,50 +220,56 @@ export class MaxBotLinkService {
     return this.botRegistry.isKnownBotUserId(userId);
   }
 
+  async resolveBotRoute(request: MaxBotRouteRequest): Promise<MaxBotRoute> {
+    switch (request.purpose) {
+      case 'default':
+        return this.resolveDefaultBotRoute(request);
+      case 'read':
+        return this.resolveReadBotRoute(request.chatId);
+      case 'member_access':
+        return this.resolveMemberAccessBotRoute(request.chatId);
+      case 'moderation_action':
+        return this.resolveModerationActionBotRoute(
+          request.chatId,
+          request.action,
+          request.fallbackToPrimary,
+        );
+      case 'capability':
+        return this.resolveCapabilityBotRoute(
+          request.chatId,
+          request.capability,
+          request.fallbackToPrimary,
+        );
+    }
+  }
+
+  async resolveBotRoutes(request: MaxBotRouteRequest): Promise<MaxBotRoute> {
+    if (request.purpose === 'moderation_action') {
+      return this.resolveModerationActionBotRoute(
+        request.chatId,
+        request.action,
+        request.fallbackToPrimary,
+      );
+    }
+
+    return this.resolveBotRoute(request);
+  }
+
   async resolveBotId(options: { chatId?: string | null; botId?: string | null } = {}): Promise<string> {
-    const explicitBot = this.botRegistry.getBotById(options.botId);
-    if (explicitBot) {
-      return explicitBot.id;
-    }
-
-    const chatId = typeof options.chatId === 'string' ? options.chatId.trim() : '';
-    if (chatId) {
-      const cachedBotId = this.getCachedChatBotId(chatId);
-      if (cachedBotId) {
-        return cachedBotId;
-      }
-
-      const chat = await this.prisma.chat.findUnique({
-        where: { id: chatId },
-        select: { primaryBotId: true, botId: true },
-      });
-      const chatBot = this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null);
-      if (chatBot) {
-        this.rememberChatBotBinding(chatId, chatBot.id);
-        return chatBot.id;
-      }
-    }
-
-    const contextBotId = this.botContext.getActiveBotId();
-    if (contextBotId) {
-      return contextBotId;
-    }
-
-    return this.getDefaultBotId();
+    const route = await this.resolveBotRoute({
+      purpose: 'default',
+      chatId: options.chatId,
+      botId: options.botId,
+    });
+    return route.botId ?? this.getDefaultBotId();
   }
 
   async resolveBotIdForRead(params: { chatId: string }): Promise<string | null> {
-    const chatId = params.chatId.trim();
-    if (!chatId) {
-      return null;
-    }
-
-    const memberAccessBotId = await this.resolveBotIdForMemberAccess({ chatId });
-    if (memberAccessBotId) {
-      return memberAccessBotId;
-    }
-
-    return this.resolveBotId({ chatId });
+    const route = await this.resolveBotRoute({
+      purpose: 'read',
+      chatId: params.chatId,
+    });
+    return route.botId;
   }
 
   async getStoredChatPrimaryBotId(chatId: string | null | undefined): Promise<string | null> {
@@ -312,7 +392,12 @@ export class MaxBotLinkService {
   }
 
   async resolveContactId(options: { chatId?: string | null; botId?: string | null } = {}): Promise<string | null> {
-    return this.resolveContactIdSync(await this.resolveBotId(options));
+    const route = await this.resolveBotRoute({
+      purpose: 'default',
+      chatId: options.chatId,
+      botId: options.botId,
+    });
+    return this.resolveContactIdSync(route.botId);
   }
 
   async buildEntryMiniappStartUrl(startParam: string): Promise<string | null> {
@@ -339,7 +424,12 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const botId = await this.resolveBotId(options);
+    const route = await this.resolveBotRoute({
+      purpose: 'default',
+      chatId: options.chatId,
+      botId: options.botId,
+    });
+    const botId = route.botId ?? this.getDefaultBotId();
     return `https://max.ru/${encodeURIComponent(botId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
@@ -351,7 +441,12 @@ export class MaxBotLinkService {
       return null;
     }
 
-    const botId = await this.resolveBotId(options);
+    const route = await this.resolveBotRoute({
+      purpose: 'default',
+      chatId: options.chatId,
+      botId: options.botId,
+    });
+    const botId = route.botId ?? this.getDefaultBotId();
     return `https://max.ru/${encodeURIComponent(botId)}?start=${encodeURIComponent(startPayload)}`;
   }
 
@@ -368,7 +463,12 @@ export class MaxBotLinkService {
     }
 
     const explicitBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
-    const botId = explicitBotId ?? (await this.resolveBotId({ chatId, botId: params.botId }));
+    const defaultRoute = await this.resolveBotRoute({
+      purpose: 'default',
+      chatId,
+      botId: params.botId,
+    });
+    const botId = explicitBotId ?? defaultRoute.botId ?? this.getDefaultBotId();
     const title = params.title?.trim() || `Chat ${chatId}`;
     const entityType = params.entityType ?? undefined;
     const now = new Date();
@@ -515,74 +615,11 @@ export class MaxBotLinkService {
   }
 
   async resolveBotIdForMemberAccess(params: { chatId: string }): Promise<string | null> {
-    const chatId = params.chatId.trim();
-    if (!chatId) {
-      return null;
-    }
-
-    const chat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: {
-        primaryBotId: true,
-        botId: true,
-        botMemberships: {
-          select: {
-            botId: true,
-            role: true,
-            status: true,
-            permissionsSnapshot: true,
-          },
-          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
-        },
-      },
+    const route = await this.resolveBotRoute({
+      purpose: 'member_access',
+      chatId: params.chatId,
     });
-    const primaryBotId =
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
-    const activeKnownMemberships = (chat?.botMemberships ?? []).filter(
-      (membership) =>
-        membership.status === ChatBotMembershipStatus.ACTIVE &&
-        Boolean(this.botRegistry.getBotById(membership.botId)),
-    );
-    const adminCapableMembership =
-      activeKnownMemberships.find((membership) => {
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return (
-          membership.botId === primaryBotId &&
-          snapshot !== null &&
-          (snapshot.isAdmin || snapshot.isOwner)
-        );
-      }) ??
-      activeKnownMemberships.find((membership) => {
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
-      }) ??
-      null;
-    if (adminCapableMembership) {
-      return adminCapableMembership.botId;
-    }
-
-    const primaryActiveMembership =
-      primaryBotId !== null
-        ? activeKnownMemberships.find((membership) => membership.botId === primaryBotId) ?? null
-        : null;
-    if (
-      primaryActiveMembership &&
-      !this.membershipExplicitlyLacksAccess(primaryActiveMembership.permissionsSnapshot)
-    ) {
-      return primaryActiveMembership.botId;
-    }
-
-    const alternateMembership =
-      activeKnownMemberships.find(
-        (membership) =>
-          membership.botId !== primaryBotId &&
-          !this.membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
-      ) ?? null;
-    if (alternateMembership) {
-      return alternateMembership.botId;
-    }
-
-    return primaryBotId ?? activeKnownMemberships[0]?.botId ?? null;
+    return route.botId;
   }
 
   async resolveBotIdForModerationAction(params: {
@@ -590,8 +627,13 @@ export class MaxBotLinkService {
     action: ModerationActionPermission;
     fallbackToPrimary?: boolean;
   }): Promise<string | null> {
-    const candidateBotIds = await this.resolveBotIdsForModerationAction(params);
-    return candidateBotIds[0] ?? null;
+    const route = await this.resolveBotRoutes({
+      purpose: 'moderation_action',
+      chatId: params.chatId,
+      action: params.action,
+      fallbackToPrimary: params.fallbackToPrimary,
+    });
+    return route.botId;
   }
 
   async resolveBotIdsForModerationAction(params: {
@@ -599,109 +641,13 @@ export class MaxBotLinkService {
     action: ModerationActionPermission;
     fallbackToPrimary?: boolean;
   }): Promise<string[]> {
-    const chatId = params.chatId.trim();
-    if (!chatId) {
-      return [];
-    }
-
-    const chat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: {
-        entityType: true,
-        primaryBotId: true,
-        botId: true,
-        botMemberships: {
-          select: {
-            botId: true,
-            role: true,
-            status: true,
-            permissionsSnapshot: true,
-          },
-          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
-        },
-      },
+    const route = await this.resolveBotRoutes({
+      purpose: 'moderation_action',
+      chatId: params.chatId,
+      action: params.action,
+      fallbackToPrimary: params.fallbackToPrimary,
     });
-    return this.buildModerationActionCandidateBotIds(chat, params.action, params.fallbackToPrimary);
-  }
-
-  private buildModerationActionCandidateBotIds(
-    chat: ModerationActionChatRecord,
-    action: ModerationActionPermission,
-    fallbackToPrimary = true,
-  ): string[] {
-    const chatEntityType = chat?.entityType ?? null;
-    const primaryBotId =
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
-    const activeActionableMemberships = (chat?.botMemberships ?? []).filter((membership) => {
-      if (membership.status !== ChatBotMembershipStatus.ACTIVE) {
-        return false;
-      }
-
-      const bot = this.botRegistry.getBotById(membership.botId);
-      return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
-    });
-    const candidateBotIds: string[] = [];
-    const pushCandidate = (botId: string | null | undefined) => {
-      const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
-      if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
-        return;
-      }
-      candidateBotIds.push(normalizedBotId);
-    };
-
-    pushCandidate(
-      activeActionableMemberships.find((membership) => {
-        if (membership.botId !== primaryBotId) {
-          return false;
-        }
-
-        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-        return this.hasModerationActionPermission(snapshot, action, chatEntityType);
-      })?.botId ?? null,
-    );
-    for (const membership of activeActionableMemberships) {
-      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
-      if (this.hasModerationActionPermission(snapshot, action, chatEntityType)) {
-        pushCandidate(membership.botId);
-      }
-    }
-
-    const primaryActiveMembership =
-      primaryBotId !== null
-        ? activeActionableMemberships.find((membership) => membership.botId === primaryBotId) ??
-          null
-        : null;
-    if (
-      primaryActiveMembership &&
-      !this.membershipExplicitlyLacksModerationAction(
-        primaryActiveMembership.permissionsSnapshot,
-        action,
-        chatEntityType,
-      )
-    ) {
-      pushCandidate(primaryActiveMembership.botId);
-    }
-
-    for (const membership of activeActionableMemberships) {
-      if (
-        membership.botId === primaryBotId ||
-        this.membershipExplicitlyLacksModerationAction(
-          membership.permissionsSnapshot,
-          action,
-          chatEntityType,
-        )
-      ) {
-        continue;
-      }
-      pushCandidate(membership.botId);
-    }
-
-    if (fallbackToPrimary !== false) {
-      pushCandidate(primaryBotId);
-      pushCandidate(activeActionableMemberships[0]?.botId ?? null);
-    }
-
-    return candidateBotIds;
+    return route.candidateBotIds;
   }
 
   async resolveBotIdForCapability(params: {
@@ -709,55 +655,13 @@ export class MaxBotLinkService {
     capability: ManagedEntityBotCapability;
     fallbackToPrimary?: boolean;
   }): Promise<string | null> {
-    const chatId = params.chatId.trim();
-    if (!chatId) {
-      return null;
-    }
-
-    const chat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: {
-        primaryBotId: true,
-        botId: true,
-        botMemberships: {
-          select: {
-            botId: true,
-            role: true,
-            status: true,
-            capabilities: true,
-          },
-          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
-        },
-      },
+    const route = await this.resolveBotRoute({
+      purpose: 'capability',
+      chatId: params.chatId,
+      capability: params.capability,
+      fallbackToPrimary: params.fallbackToPrimary,
     });
-    const primaryBotId =
-      this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null)?.id ?? null;
-    const partnerBotId =
-      (chat?.botMemberships ?? []).find((membership) => {
-        if (
-          membership.status !== ChatBotMembershipStatus.ACTIVE ||
-          membership.role === ChatBotMembershipRole.PRIMARY
-        ) {
-          return false;
-        }
-
-        const bot = this.botRegistry.getBotById(membership.botId);
-        if (!bot || !ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state)) {
-          return false;
-        }
-
-        return this.normalizeBotCapabilities(membership.capabilities).includes(params.capability);
-      })?.botId ?? null;
-
-    if (partnerBotId) {
-      return partnerBotId;
-    }
-
-    if (params.fallbackToPrimary === false) {
-      return null;
-    }
-
-    return primaryBotId;
+    return route.botId;
   }
 
   async markChatBotRemoved(params: {
@@ -886,6 +790,550 @@ export class MaxBotLinkService {
 
     this.rememberChatBotBinding(chatId, nextPrimaryBotId);
     return nextPrimaryBotId;
+  }
+
+  private async resolveDefaultBotRoute(params: {
+    chatId?: string | null;
+    botId?: string | null;
+  }): Promise<MaxBotRoute> {
+    const chatId = typeof params.chatId === 'string' ? params.chatId.trim() : '';
+    const explicitBot = this.botRegistry.getBotById(params.botId);
+    if (explicitBot) {
+      return this.buildRoute({
+        purpose: 'default',
+        chatId,
+        botId: explicitBot.id,
+        candidateBotIds: [explicitBot.id],
+        reason: 'explicit',
+      });
+    }
+
+    if (chatId) {
+      const cachedBotId = this.getCachedChatBotId(chatId);
+      if (cachedBotId) {
+        return this.buildRoute({
+          purpose: 'default',
+          chatId,
+          primaryBotId: cachedBotId,
+          botId: cachedBotId,
+          candidateBotIds: [cachedBotId],
+          reason: 'chat_cache',
+        });
+      }
+
+      const chat = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { primaryBotId: true, botId: true },
+      });
+      const chatBot = this.botRegistry.getBotById(chat?.primaryBotId ?? chat?.botId ?? null);
+      if (chatBot) {
+        this.rememberChatBotBinding(chatId, chatBot.id);
+        return this.buildRoute({
+          purpose: 'default',
+          chatId,
+          primaryBotId: chatBot.id,
+          botId: chatBot.id,
+          candidateBotIds: [chatBot.id],
+          reason: 'chat_primary',
+        });
+      }
+    }
+
+    const contextBotId = this.botContext.getActiveBotId();
+    if (contextBotId) {
+      return this.buildRoute({
+        purpose: 'default',
+        chatId,
+        botId: contextBotId,
+        candidateBotIds: [contextBotId],
+        reason: 'context',
+      });
+    }
+
+    const defaultBotId = this.getDefaultBotId();
+    return this.buildRoute({
+      purpose: 'default',
+      chatId,
+      botId: defaultBotId,
+      candidateBotIds: [defaultBotId],
+      reason: 'default',
+    });
+  }
+
+  private async resolveReadBotRoute(chatId: string): Promise<MaxBotRoute> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return this.buildRoute({
+        purpose: 'read',
+        chatId: null,
+      });
+    }
+
+    const memberAccessRoute = await this.resolveMemberAccessBotRoute(normalizedChatId);
+    if (memberAccessRoute.botId) {
+      return this.buildRoute({
+        purpose: 'read',
+        chatId: normalizedChatId,
+        primaryBotId: memberAccessRoute.primaryBotId,
+        botId: memberAccessRoute.botId,
+        candidateBotIds: memberAccessRoute.candidateBotIds,
+        reason: memberAccessRoute.reason,
+      });
+    }
+
+    const defaultRoute = await this.resolveDefaultBotRoute({ chatId: normalizedChatId });
+    return this.buildRoute({
+      purpose: 'read',
+      chatId: normalizedChatId,
+      primaryBotId: defaultRoute.primaryBotId,
+      botId: defaultRoute.botId,
+      candidateBotIds: defaultRoute.candidateBotIds,
+      reason: defaultRoute.reason,
+    });
+  }
+
+  private async resolveMemberAccessBotRoute(chatId: string): Promise<MaxBotRoute> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: null,
+      });
+    }
+
+    const state = await this.loadChatRouteState(normalizedChatId);
+    if (!state) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+      });
+    }
+
+    const primaryAdminCapableMembership =
+      state.primaryBotId !== null
+        ? state.activeKnownMemberships.find((membership) => {
+            if (membership.botId !== state.primaryBotId) {
+              return false;
+            }
+
+            const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+            return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+          }) ?? null
+        : null;
+    if (primaryAdminCapableMembership) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        botId: primaryAdminCapableMembership.botId,
+        candidateBotIds: [primaryAdminCapableMembership.botId],
+        reason: 'primary_confirmed',
+      });
+    }
+
+    const alternateAdminCapableMembership =
+      state.activeKnownMemberships.find((membership) => {
+        if (membership.botId === state.primaryBotId) {
+          return false;
+        }
+
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
+      }) ?? null;
+    if (alternateAdminCapableMembership) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        botId: alternateAdminCapableMembership.botId,
+        candidateBotIds: [alternateAdminCapableMembership.botId],
+        reason: 'alternate_confirmed',
+      });
+    }
+
+    const primaryActiveMembership =
+      state.primaryBotId !== null
+        ? state.activeKnownMemberships.find((membership) => membership.botId === state.primaryBotId) ??
+          null
+        : null;
+    if (
+      primaryActiveMembership &&
+      !this.membershipExplicitlyLacksAccess(primaryActiveMembership.permissionsSnapshot)
+    ) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        botId: primaryActiveMembership.botId,
+        candidateBotIds: [primaryActiveMembership.botId],
+        reason: 'primary_soft',
+      });
+    }
+
+    const alternateMembership =
+      state.activeKnownMemberships.find(
+        (membership) =>
+          membership.botId !== state.primaryBotId &&
+          !this.membershipExplicitlyLacksAccess(membership.permissionsSnapshot),
+      ) ?? null;
+    if (alternateMembership) {
+      return this.buildRoute({
+        purpose: 'member_access',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        botId: alternateMembership.botId,
+        candidateBotIds: [alternateMembership.botId],
+        reason: 'alternate_soft',
+      });
+    }
+
+    const fallbackBotId = state.primaryBotId ?? state.activeKnownMemberships[0]?.botId ?? null;
+    return this.buildRoute({
+      purpose: 'member_access',
+      chatId: normalizedChatId,
+      primaryBotId: state.primaryBotId,
+      botId: fallbackBotId,
+      candidateBotIds: fallbackBotId ? [fallbackBotId] : [],
+      reason:
+        fallbackBotId === null
+          ? null
+          : fallbackBotId === state.primaryBotId
+            ? 'primary_fallback'
+            : 'alternate_fallback',
+    });
+  }
+
+  private async resolveModerationActionBotRoute(
+    chatId: string,
+    action: ModerationActionPermission,
+    fallbackToPrimary?: boolean,
+  ): Promise<MaxBotRoute> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return this.buildRoute({
+        purpose: 'moderation_action',
+        chatId: null,
+        action,
+      });
+    }
+
+    const state = await this.loadChatRouteState(normalizedChatId);
+    const candidateBotIds = state
+      ? this.buildModerationActionCandidateBotIdsFromState(
+          state,
+          action,
+          fallbackToPrimary !== false,
+        )
+      : [];
+    const selectedBotId = candidateBotIds[0] ?? null;
+
+    return this.buildRoute({
+      purpose: 'moderation_action',
+      chatId: normalizedChatId,
+      primaryBotId: state?.primaryBotId ?? null,
+      botId: selectedBotId,
+      candidateBotIds,
+      reason:
+        state && selectedBotId
+          ? this.resolveModerationActionRouteReason(state, selectedBotId, action)
+          : null,
+      action,
+    });
+  }
+
+  private async resolveCapabilityBotRoute(
+    chatId: string,
+    capability: ManagedEntityBotCapability,
+    fallbackToPrimary?: boolean,
+  ): Promise<MaxBotRoute> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return this.buildRoute({
+        purpose: 'capability',
+        chatId: null,
+        capability,
+      });
+    }
+
+    const state = await this.loadChatRouteState(normalizedChatId);
+    if (!state) {
+      return this.buildRoute({
+        purpose: 'capability',
+        chatId: normalizedChatId,
+        capability,
+      });
+    }
+
+    const partnerBotId =
+      state.activeActionableMemberships.find((membership) => {
+        if (membership.role === ChatBotMembershipRole.PRIMARY) {
+          return false;
+        }
+
+        return this.normalizeBotCapabilities(membership.capabilities).includes(capability);
+      })?.botId ?? null;
+    if (partnerBotId) {
+      return this.buildRoute({
+        purpose: 'capability',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        botId: partnerBotId,
+        candidateBotIds: [partnerBotId],
+        reason: 'alternate_confirmed',
+        capability,
+      });
+    }
+
+    if (fallbackToPrimary === false || !state.primaryBotId) {
+      return this.buildRoute({
+        purpose: 'capability',
+        chatId: normalizedChatId,
+        primaryBotId: state.primaryBotId,
+        capability,
+      });
+    }
+
+    return this.buildRoute({
+      purpose: 'capability',
+      chatId: normalizedChatId,
+      primaryBotId: state.primaryBotId,
+      botId: state.primaryBotId,
+      candidateBotIds: [state.primaryBotId],
+      reason: 'primary_fallback',
+      capability,
+    });
+  }
+
+  private async loadChatRouteState(chatId: string): Promise<ResolvedChatRouteState | null> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return null;
+    }
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: normalizedChatId },
+      select: {
+        entityType: true,
+        primaryBotId: true,
+        botId: true,
+        botMemberships: {
+          select: {
+            botId: true,
+            role: true,
+            status: true,
+            permissionsSnapshot: true,
+            capabilities: true,
+          },
+          orderBy: [{ updatedAt: 'desc' }, { createdAt: 'asc' }],
+        },
+      },
+    });
+    if (!chat) {
+      return null;
+    }
+
+    const memberships = (chat.botMemberships ?? []).filter((membership) =>
+      Boolean(this.botRegistry.getBotById(membership.botId)),
+    );
+    const activeKnownMemberships = memberships.filter(
+      (membership) => membership.status === ChatBotMembershipStatus.ACTIVE,
+    );
+    const activeActionableMemberships = activeKnownMemberships.filter((membership) => {
+      const bot = this.botRegistry.getBotById(membership.botId);
+      return Boolean(bot && ACTIONABLE_BOT_LIFECYCLE_STATES.has(bot.state));
+    });
+    const primaryBotId =
+      this.botRegistry.getBotById(chat.primaryBotId ?? chat.botId ?? null)?.id ??
+      activeKnownMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
+        ?.botId ??
+      activeKnownMemberships[0]?.botId ??
+      null;
+
+    return {
+      chatId: normalizedChatId,
+      entityType: chat.entityType ?? null,
+      primaryBotId,
+      memberships,
+      activeKnownMemberships,
+      activeActionableMemberships,
+    };
+  }
+
+  private buildModerationActionCandidateBotIdsFromState(
+    state: ResolvedChatRouteState,
+    action: ModerationActionPermission,
+    fallbackToPrimary = true,
+  ): string[] {
+    const candidateBotIds: string[] = [];
+    const pushCandidate = (botId: string | null | undefined) => {
+      const normalizedBotId = this.botRegistry.getBotById(botId)?.id ?? null;
+      if (!normalizedBotId || candidateBotIds.includes(normalizedBotId)) {
+        return;
+      }
+      candidateBotIds.push(normalizedBotId);
+    };
+
+    pushCandidate(
+      state.activeActionableMemberships.find((membership) => {
+        if (membership.botId !== state.primaryBotId) {
+          return false;
+        }
+
+        const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+        return this.hasModerationActionPermission(snapshot, action, state.entityType);
+      })?.botId ?? null,
+    );
+    for (const membership of state.activeActionableMemberships) {
+      const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
+      if (this.hasModerationActionPermission(snapshot, action, state.entityType)) {
+        pushCandidate(membership.botId);
+      }
+    }
+
+    const primaryActiveMembership =
+      state.primaryBotId !== null
+        ? state.activeActionableMemberships.find(
+            (membership) => membership.botId === state.primaryBotId,
+          ) ?? null
+        : null;
+    if (
+      primaryActiveMembership &&
+      !this.membershipExplicitlyLacksModerationAction(
+        primaryActiveMembership.permissionsSnapshot,
+        action,
+        state.entityType,
+      )
+    ) {
+      pushCandidate(primaryActiveMembership.botId);
+    }
+
+    for (const membership of state.activeActionableMemberships) {
+      if (
+        membership.botId === state.primaryBotId ||
+        this.membershipExplicitlyLacksModerationAction(
+          membership.permissionsSnapshot,
+          action,
+          state.entityType,
+        )
+      ) {
+        continue;
+      }
+      pushCandidate(membership.botId);
+    }
+
+    if (fallbackToPrimary !== false) {
+      pushCandidate(state.primaryBotId);
+      pushCandidate(state.activeActionableMemberships[0]?.botId ?? null);
+    }
+
+    return candidateBotIds;
+  }
+
+  private resolveModerationActionRouteReason(
+    state: ResolvedChatRouteState,
+    botId: string,
+    action: ModerationActionPermission,
+  ): MaxBotRouteReason {
+    if (botId === state.primaryBotId) {
+      const primaryMembership =
+        state.activeActionableMemberships.find((membership) => membership.botId === botId) ?? null;
+      const primarySnapshot = this.normalizeMembershipAccessSnapshot(
+        primaryMembership?.permissionsSnapshot,
+      );
+      if (this.hasModerationActionPermission(primarySnapshot, action, state.entityType)) {
+        return 'primary_confirmed';
+      }
+      if (
+        primaryMembership &&
+        !this.membershipExplicitlyLacksModerationAction(
+          primaryMembership.permissionsSnapshot,
+          action,
+          state.entityType,
+        )
+      ) {
+        return 'primary_soft';
+      }
+      return 'primary_fallback';
+    }
+
+    const selectedMembership =
+      state.activeActionableMemberships.find((membership) => membership.botId === botId) ?? null;
+    const selectedSnapshot = this.normalizeMembershipAccessSnapshot(
+      selectedMembership?.permissionsSnapshot,
+    );
+    if (this.hasModerationActionPermission(selectedSnapshot, action, state.entityType)) {
+      return 'alternate_confirmed';
+    }
+    if (
+      selectedMembership &&
+      !this.membershipExplicitlyLacksModerationAction(
+        selectedMembership.permissionsSnapshot,
+        action,
+        state.entityType,
+      )
+    ) {
+      return 'alternate_soft';
+    }
+    return 'alternate_fallback';
+  }
+
+  private buildRoute(params: {
+    purpose: MaxBotRoutePurpose;
+    chatId?: string | null;
+    primaryBotId?: string | null;
+    botId?: string | null;
+    candidateBotIds?: Array<string | null | undefined>;
+    reason?: MaxBotRouteReason | null;
+    action?: ModerationActionPermission;
+    capability?: ManagedEntityBotCapability;
+  }): MaxBotRoute {
+    const normalizedChatId =
+      typeof params.chatId === 'string' && params.chatId.trim().length > 0
+        ? params.chatId.trim()
+        : null;
+    const normalizedPrimaryBotId = this.botRegistry.getBotById(params.primaryBotId)?.id ?? null;
+    const normalizedBotId = this.botRegistry.getBotById(params.botId)?.id ?? null;
+    const normalizedCandidateBotIds = Array.from(
+      new Set(
+        (params.candidateBotIds ?? [])
+          .map((botId) => this.botRegistry.getBotById(botId)?.id ?? null)
+          .filter((botId): botId is string => Boolean(botId)),
+      ),
+    );
+    const candidateBotIds =
+      normalizedBotId && !normalizedCandidateBotIds.includes(normalizedBotId)
+        ? [normalizedBotId, ...normalizedCandidateBotIds]
+        : normalizedCandidateBotIds;
+    const botId = normalizedBotId ?? candidateBotIds[0] ?? null;
+    const baseRoute = {
+      purpose: params.purpose,
+      chatId: normalizedChatId,
+      primaryBotId: normalizedPrimaryBotId,
+      botId,
+      candidateBotIds,
+      reason: params.reason ?? null,
+    };
+
+    if (params.purpose === 'moderation_action') {
+      return {
+        ...baseRoute,
+        purpose: 'moderation_action',
+        action: params.action ?? 'delete_message',
+      };
+    }
+
+    if (params.purpose === 'capability') {
+      return {
+        ...baseRoute,
+        purpose: 'capability',
+        capability: params.capability ?? 'access_prewarm',
+      };
+    }
+
+    return {
+      ...baseRoute,
+      purpose: params.purpose,
+    };
   }
 
   private isPrismaKnownError(error: unknown, code: string): boolean {

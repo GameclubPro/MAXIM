@@ -7,7 +7,11 @@ import {
   MaxClientService,
   type MaxApiTrafficClass,
 } from './max-client.service';
-import { MaxBotLinkService } from './max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from './max-bot-link.service';
 import { MaxBotRegistryService } from './max-bot-registry.service';
 
 export type MaxMembershipLookupPolicy =
@@ -835,6 +839,19 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
   ): Promise<string | null> {
     if (!this.maxBotLinkService) {
       return null;
+    }
+
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (typeof routeResolver.resolveBotRoute === 'function') {
+      const route = await routeResolver.resolveBotRoute({
+        purpose: 'read',
+        chatId,
+      });
+      if (route.botId) {
+        return route.botId;
+      }
     }
 
     if (typeof this.maxBotLinkService.resolveBotIdForRead === 'function') {

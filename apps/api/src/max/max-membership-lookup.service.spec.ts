@@ -248,6 +248,48 @@ describe('MaxMembershipLookupService', () => {
     );
   });
 
+  it('uses the unified read route when the link service exposes it', async () => {
+    const maxClient = {
+      hasChatMember: jest.fn(),
+      getChatMembersAccess: jest
+        .fn()
+        .mockResolvedValue(new Map([['user-1', { userId: 'user-1', isAdmin: false }]])),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'read',
+        chatId: 'channel-route-lookup',
+        primaryBotId: 'id613002203036_bot',
+        botId: 'id613002203036_4_bot',
+        candidateBotIds: ['id613002203036_4_bot'],
+        reason: 'alternate_confirmed',
+      }),
+    };
+    const service = new MaxMembershipLookupService(
+      maxClient as never,
+      createConfigMock() as never,
+      maxBotLinkService as never,
+    );
+
+    await expect(
+      service.getMembership('channel-route-lookup', 'user-1', 'moderation_required_subscription', {
+        forceRefresh: true,
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'read',
+      chatId: 'channel-route-lookup',
+    });
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'channel-route-lookup',
+      ['user-1'],
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+      }),
+    );
+  });
+
   it('keeps membership cache isolated per bot scope while leaving chat-level hot state shared', async () => {
     const maxClient = {
       hasChatMember: jest.fn(),

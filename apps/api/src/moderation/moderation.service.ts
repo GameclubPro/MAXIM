@@ -49,7 +49,12 @@ import {
   isValidMaxBotStartPayload,
   isValidMaxMiniappStartPayload,
 } from '../max/max-deep-link.util';
-import { MaxBotLinkService, type ChatBotExecutionBinding } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type ChatBotExecutionBinding,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from '../max/max-bot-link.service';
 import { MaxMembershipLookupService } from '../max/max-membership-lookup.service';
 import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -7904,12 +7909,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const cachedMembership =
       typeof options.cachedMembership === 'boolean' ? options.cachedMembership : null;
     try {
+      const memberAccessRoute = await this.resolveUnifiedBotRoute({
+        purpose: 'member_access',
+        chatId: normalizedChannelId,
+      });
       const botId =
-        (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function'
+        memberAccessRoute?.botId ??
+        ((typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function'
           ? await this.maxBotLinkService.resolveBotIdForMemberAccess({
               chatId: normalizedChannelId,
             })
-          : await this.resolveChatReadBotId(normalizedChannelId)) ?? null;
+          : await this.resolveChatReadBotId(normalizedChannelId)) ?? null);
       const lookupOptions = {
         trafficClass: 'critical' as const,
         timeoutMs: 2_000,
@@ -9484,7 +9494,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${MINIAPP_ROUTE_START_PARAM_PREFIX}${encoded}`;
   }
 
+  private async resolveUnifiedBotRoute(
+    request: MaxBotRouteRequest,
+  ): Promise<MaxBotRoute | null> {
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+      resolveBotRoutes?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (
+      request.purpose === 'moderation_action' &&
+      typeof routeResolver?.resolveBotRoutes === 'function'
+    ) {
+      return routeResolver.resolveBotRoutes(request);
+    }
+
+    if (typeof routeResolver?.resolveBotRoute === 'function') {
+      return routeResolver.resolveBotRoute(request);
+    }
+
+    return null;
+  }
+
   private async resolveChatReadBotId(chatId: string): Promise<string | null> {
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'read',
+      chatId,
+    });
+    if (route?.botId) {
+      return route.botId;
+    }
+
     return (
       (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
       (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
@@ -9502,11 +9541,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (source === 'poll') {
+      const scanBotRoute = await this.resolveUnifiedBotRoute({
+        purpose: 'capability',
+        chatId,
+        capability: 'background_scans',
+        fallbackToPrimary: true,
+      });
       const scanBotId =
-        (await this.maxBotLinkService?.resolveBotIdForCapability?.({
+        scanBotRoute?.botId ??
+        ((await this.maxBotLinkService?.resolveBotIdForCapability?.({
           chatId,
           capability: 'background_scans',
-        })) ?? null;
+        })) ?? null);
       if (typeof scanBotId === 'string' && scanBotId.trim().length > 0) {
         return scanBotId.trim();
       }
@@ -9682,6 +9728,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         : null;
     if (explicitBotId) {
       return [explicitBotId];
+    }
+
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'moderation_action',
+      chatId: params.chatId,
+      action: params.action,
+      fallbackToPrimary: true,
+    });
+    if (route) {
+      return Array.from(
+        new Set(
+          route.candidateBotIds
+            .map((botId) => (typeof botId === 'string' ? botId.trim() : ''))
+            .filter((botId) => botId.length > 0),
+        ),
+      );
     }
 
     const maxBotLinkService = this.maxBotLinkService as unknown as {
@@ -12285,10 +12347,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const scanBotId =
-      (await this.maxBotLinkService?.resolveBotIdForCapability({
+      (
+        await this.resolveUnifiedBotRoute({
+          purpose: 'capability',
+          chatId,
+          capability: 'background_scans',
+          fallbackToPrimary: true,
+        })
+      )?.botId ??
+      ((await this.maxBotLinkService?.resolveBotIdForCapability({
         chatId,
         capability: 'background_scans',
-      })) ?? undefined;
+      })) ?? undefined);
     const messages = await this.maxClient.listMessages(chatId, {
       count: 10,
       trafficClass: 'background',
@@ -12566,10 +12636,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const scanBotId =
-      (await this.maxBotLinkService?.resolveBotIdForCapability({
+      (
+        await this.resolveUnifiedBotRoute({
+          purpose: 'capability',
+          chatId,
+          capability: 'background_scans',
+          fallbackToPrimary: true,
+        })
+      )?.botId ??
+      ((await this.maxBotLinkService?.resolveBotIdForCapability({
         chatId,
         capability: 'background_scans',
-      })) ?? undefined;
+      })) ?? undefined);
     let messages: Record<string, unknown>[];
     try {
       messages = await this.maxClient.listMessages(chatId, {
@@ -14763,6 +14841,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async resolveScheduledChatBotId(chatId: string): Promise<string | null> {
+    const route = await this.resolveUnifiedBotRoute({
+      purpose: 'member_access',
+      chatId,
+    });
+    if (typeof route?.botId === 'string' && route.botId.trim().length > 0) {
+      return route.botId.trim();
+    }
+
     if (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function') {
       const resolvedBotId = await this.maxBotLinkService.resolveBotIdForMemberAccess({ chatId });
       if (typeof resolvedBotId === 'string' && resolvedBotId.trim().length > 0) {

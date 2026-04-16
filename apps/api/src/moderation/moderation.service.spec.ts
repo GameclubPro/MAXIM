@@ -12999,6 +12999,52 @@ describe('ModerationService', () => {
     }
 
     describe('moderation action fallback', () => {
+      it('accepts unified moderation routes when the link service exposes them', async () => {
+        const operation = jest.fn().mockResolvedValue(undefined);
+        const maxBotLinkService = {
+          resolveBotRoutes: jest.fn().mockResolvedValue({
+            purpose: 'moderation_action',
+            chatId: 'chat-route-1',
+            primaryBotId: 'id613002203036_bot',
+            botId: 'id613002203036_4_bot',
+            candidateBotIds: ['id613002203036_4_bot'],
+            reason: 'alternate_confirmed',
+            action: 'delete_message',
+          }),
+        };
+        const service = new ModerationService(
+          {} as never,
+          {} as never,
+          {} as never,
+          {} as never,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          maxBotLinkService as never,
+        );
+
+        await expect(
+          (service as any).executeModerationActionWithFallback({
+            chatId: 'chat-route-1',
+            action: 'delete_message',
+            messageId: 'message-1',
+            operation,
+          }),
+        ).resolves.toBe(true);
+
+        expect(maxBotLinkService.resolveBotRoutes).toHaveBeenCalledWith({
+          purpose: 'moderation_action',
+          chatId: 'chat-route-1',
+          action: 'delete_message',
+          fallbackToPrimary: true,
+        });
+        expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
+      });
+
       it('refreshes bot access snapshots when stale member-moderation snapshots leave no candidates', async () => {
         const prisma = {
           chat: {
