@@ -1620,6 +1620,31 @@ function formatRequiredSubscriptionEntityLabel(entityType: 'chat' | 'channel'): 
   return entityType === 'chat' ? 'Чат' : 'Канал';
 }
 
+function formatRequiredSubscriptionLinkPreview(value: string | null | undefined): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const url = new URL(normalized);
+    const host = url.hostname.replace(/^www\./, '');
+    const pathSegments = url.pathname.split('/').filter(Boolean);
+    if (pathSegments.length === 0) {
+      return host;
+    }
+
+    const tail = decodeURIComponent(pathSegments[pathSegments.length - 1] ?? '');
+    return tail ? `${host}/${tail}` : host;
+  } catch {
+    return normalized.length > 28 ? `${normalized.slice(0, 25)}...` : normalized;
+  }
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -1727,10 +1752,11 @@ function ClockIcon() {
 
 function RequiredSubscriptionTimerIcon({ days }: { days: number }) {
   const safeDays = clampRequiredSubscriptionDurationDays(days);
+  const minuteHandY = safeDays >= 10 ? '9.2' : '8.6';
 
   return (
     <svg
-      viewBox="0 0 28 28"
+      viewBox="0 0 24 24"
       fill="none"
       aria-hidden
       focusable="false"
@@ -1739,31 +1765,26 @@ function RequiredSubscriptionTimerIcon({ days }: { days: number }) {
     >
       <circle
         cx="12"
-        cy="14"
-        r="7.4"
+        cy="12"
+        r="8.2"
         stroke="currentColor"
-        strokeWidth="1.8"
-        opacity="0.92"
+        strokeWidth="1.75"
+        opacity="0.95"
       />
       <path
-        d="M12 10.1v4.4l3.25 1.9"
+        d={`M12 ${minuteHandY}v3.95l3 1.85`}
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth="1.75"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <circle cx="20.25" cy="8.6" r="5.15" fill="currentColor" opacity="0.14" />
-      <circle cx="20.25" cy="8.6" r="4.85" stroke="currentColor" strokeWidth="1.4" />
-      <text
-        x="20.25"
-        y="10.65"
-        textAnchor="middle"
-        fontSize="5.8"
-        fontWeight="800"
-        fill="currentColor"
-      >
-        {safeDays}
-      </text>
+      <path
+        d="M8.45 4.85h7.1"
+        stroke="currentColor"
+        strokeWidth="1.55"
+        strokeLinecap="round"
+        opacity="0.72"
+      />
     </svg>
   );
 }
@@ -10397,68 +10418,87 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
-                          <div className="managed-giveaway__prize-editor-list">
-                            {selectedRequiredSubscriptionChannels.map((channel, index) => (
-                              <div
-                                key={`required-subscription-channel-${channel.id}`}
-                                className="managed-giveaway__prize-editor-row"
-                              >
-                                <span className="managed-giveaway__prize-position">
-                                  {index + 1}
-                                </span>
-                                <span
-                                  className="managed-giveaway__selected-channel"
-                                  title={channel.link}
+                          <div className="required-subscription__selection-list">
+                            {selectedRequiredSubscriptionChannels.map((channel, index) => {
+                              const linkPreview = formatRequiredSubscriptionLinkPreview(channel.link);
+
+                              return (
+                                <div
+                                  key={`required-subscription-channel-${channel.id}`}
+                                  className="required-subscription__selection-card"
                                 >
-                                  {formatRequiredSubscriptionEntityLabel(channel.entityType)} ·{' '}
-                                  {channel.title}
-                                </span>
-                                <button
-                                  type="button"
-                                  className="managed-giveaway__prize-remove"
-                                  onClick={() => removeRequiredSubscriptionChannel(channel.id)}
-                                  aria-label={`Удалить ${formatRequiredSubscriptionEntityLabel(channel.entityType).toLowerCase()} ${channel.title}`}
-                                >
-                                  ×
-                                </button>
-                              </div>
-                            ))}
+                                  <span className="required-subscription__selection-rank">
+                                    {index + 1}
+                                  </span>
+                                  <div
+                                    className="required-subscription__selection-body"
+                                    title={channel.link || channel.title}
+                                  >
+                                    <div className="required-subscription__selection-meta">
+                                      <span className="required-subscription__selection-kind">
+                                        {formatRequiredSubscriptionEntityLabel(channel.entityType)}
+                                      </span>
+                                      {linkPreview ? (
+                                        <span className="required-subscription__selection-link">
+                                          {linkPreview}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    <strong className="required-subscription__selection-title">
+                                      {channel.title}
+                                    </strong>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    className="required-subscription__selection-remove"
+                                    onClick={() => removeRequiredSubscriptionChannel(channel.id)}
+                                    aria-label={`Удалить ${formatRequiredSubscriptionEntityLabel(channel.entityType).toLowerCase()} ${channel.title}`}
+                                  >
+                                    <TrashIcon />
+                                  </button>
+                                </div>
+                              );
+                            })}
                           </div>
                         ) : null}
 
                         {selectedUnavailableRequiredSubscriptionChannels.length > 0 ? (
-                          <div className="managed-giveaway__prize-editor-list">
+                          <div className="required-subscription__selection-list">
                             {selectedUnavailableRequiredSubscriptionChannels.map(
                               (channel, index) => (
                                 <div
                                   key={`required-subscription-stale-${channel.id}`}
-                                  className="managed-giveaway__prize-editor-row"
+                                  className={cn(
+                                    'required-subscription__selection-card',
+                                    'is-warning',
+                                  )}
                                 >
-                                  <span className="managed-giveaway__prize-position">
+                                  <span className="required-subscription__selection-rank">
                                     {selectedRequiredSubscriptionChannels.length + index + 1}
                                   </span>
-                                  <span
-                                    className={cn(
-                                      'managed-giveaway__selected-channel',
-                                      'managed-giveaway__selected-channel--multiline',
-                                      'managed-giveaway__selected-channel--warning',
-                                    )}
+                                  <div
+                                    className="required-subscription__selection-body"
                                     title={channel.description}
                                   >
-                                    <strong className="managed-giveaway__selected-channel-label">
+                                    <div className="required-subscription__selection-meta">
+                                      <span className="required-subscription__selection-state">
+                                        Недоступно
+                                      </span>
+                                    </div>
+                                    <strong className="required-subscription__selection-title">
                                       {channel.title}
                                     </strong>
-                                    <small className="managed-giveaway__selected-channel-detail">
+                                    <small className="required-subscription__selection-detail">
                                       {channel.description}
                                     </small>
-                                  </span>
+                                  </div>
                                   <button
                                     type="button"
-                                    className="managed-giveaway__prize-remove"
+                                    className="required-subscription__selection-remove"
                                     onClick={() => removeRequiredSubscriptionChannel(channel.id)}
                                     aria-label={`Удалить недоступный чат или канал ${channel.title}`}
                                   >
-                                    ×
+                                    <TrashIcon />
                                   </button>
                                 </div>
                               ),
