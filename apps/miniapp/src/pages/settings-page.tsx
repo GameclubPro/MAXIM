@@ -10324,25 +10324,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       >
                         <div className="required-subscription__timer-head">
                           <div className="required-subscription__timer-copy">
-                            <span className="required-subscription__hero-label">Таймер</span>
-                            <div className="required-subscription__timer-summary">
-                              <strong>
-                                {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
-                              </strong>
-                              <span className="required-subscription__timer-value-chip">
-                                {formatRequiredSubscriptionDurationDaysCompact(
-                                  requiredSubscriptionDurationDays,
-                                )}
-                              </span>
+                            <div className="required-subscription__timer-caption">
+                              <span className="required-subscription__hero-label">Таймер</span>
+                              <small>{requiredSubscriptionTimerBadge}</small>
                             </div>
-                            <small>{requiredSubscriptionTimerBadge}</small>
+                            <strong>
+                              {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
+                            </strong>
                           </div>
                           <span className="required-subscription__timer-icon-shell" aria-hidden>
                             <RequiredSubscriptionTimerIcon days={requiredSubscriptionDurationDays} />
                           </span>
                         </div>
 
-                        <div className="required-subscription__timer-slider-card">
+                        <div className="required-subscription__timer-slider-wrap">
                           <input
                             className="required-subscription__timer-slider"
                             type="range"
@@ -10363,13 +10358,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             aria-label="Срок действия обязательной подписки в днях"
                           />
                           <div className="required-subscription__timer-scale" aria-hidden>
-                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN}д</span>
-                            <span>7д</span>
-                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX}д</span>
-                          </div>
-                          <div className="required-subscription__timer-foot" aria-hidden>
-                            <span>Коротко</span>
-                            <span>Дольше</span>
+                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN} день</span>
+                            <span>{REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX} дней</span>
                           </div>
                         </div>
                       </div>
