@@ -7043,7 +7043,7 @@ export class PrivateControlService {
       items.push('Ссылки бот проверяет, но не удаляет автоматически.');
     }
 
-    if (settings.requiredSubscriptionEnabled) {
+    if (this.isRequiredSubscriptionCurrentlyActive(settings)) {
       const channelTitles = requiredSubscriptionChannels
         .map((channel) => channel.title.trim())
         .filter(Boolean);
@@ -7126,12 +7126,37 @@ export class PrivateControlService {
       );
     }
 
-    const sanctionsSummary = this.buildRulesSanctionsSummary(settings);
+    const sanctionsSummary = this.buildRulesSanctionsSummary(
+      this.isRequiredSubscriptionCurrentlyActive(settings)
+        ? settings
+        : {
+            ...settings,
+            requiredSubscriptionWarnEnabled: false,
+            requiredSubscriptionMuteEnabled: false,
+            requiredSubscriptionBanEnabled: false,
+          },
+    );
     if (sanctionsSummary) {
       items.push(sanctionsSummary);
     }
 
     return items;
+  }
+
+  private isRequiredSubscriptionCurrentlyActive(
+    settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionExpiresAt'>,
+  ): boolean {
+    if (!settings.requiredSubscriptionEnabled) {
+      return false;
+    }
+
+    const expiresAt = settings.requiredSubscriptionExpiresAt.trim();
+    if (!expiresAt) {
+      return true;
+    }
+
+    const timestampMs = Date.parse(expiresAt);
+    return !Number.isFinite(timestampMs) || timestampMs > Date.now();
   }
 
   private buildRulesSanctionsSummary(

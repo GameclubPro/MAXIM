@@ -114,6 +114,9 @@ export const MANAGED_GIVEAWAY_TITLE_MAX_LENGTH = 120;
 export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
+export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN = 1;
+export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX = 14;
+export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT = 7;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 500;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
@@ -135,6 +138,13 @@ const requiredSubscriptionMuteDurationHoursSchema = z
   .min(1)
   .max(336)
   .default(6);
+const requiredSubscriptionDurationDaysSchema = z
+  .number()
+  .int()
+  .min(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN)
+  .max(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX)
+  .default(REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT);
+const requiredSubscriptionExpiresAtSchema = z.string().trim().max(64).default('');
 const deleteBotMessagesDelayMinutesSchema = z
   .number()
   .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
@@ -667,6 +677,8 @@ export const chatSettingsSchema = z
       greetingRulesButtonEnabled: z.boolean().default(false),
       requiredSubscriptionEnabled: z.boolean().default(false),
       requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
+      requiredSubscriptionDurationDays: requiredSubscriptionDurationDaysSchema,
+      requiredSubscriptionExpiresAt: requiredSubscriptionExpiresAtSchema,
       requiredSubscriptionBotMessageEnabled: z.boolean().default(true),
       requiredSubscriptionBotMessageText: botMessageTextSchema,
       requiredSubscriptionWarnEnabled: z.boolean().default(false),

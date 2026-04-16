@@ -449,6 +449,52 @@ type ActiveBotSpeechProfile = {
   characterName: string;
 };
 
+function normalizeRequiredSubscriptionExpiresAt(value: string | null | undefined): string {
+  if (typeof value !== 'string') {
+    return '';
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const timestampMs = Date.parse(normalized);
+  if (!Number.isFinite(timestampMs)) {
+    return '';
+  }
+
+  return new Date(timestampMs).toISOString();
+}
+
+function hasRequiredSubscriptionExpired(
+  settings: Pick<ChatSettings, 'requiredSubscriptionExpiresAt'>,
+): boolean {
+  const expiresAt = normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
+  if (!expiresAt) {
+    return false;
+  }
+
+  return Date.parse(expiresAt) <= Date.now();
+}
+
+function isRequiredSubscriptionCurrentlyActive(
+  settings: Pick<
+    ChatSettings,
+    'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds' | 'requiredSubscriptionExpiresAt'
+  >,
+): boolean {
+  const channelIds = Array.isArray(settings.requiredSubscriptionChannelIds)
+    ? settings.requiredSubscriptionChannelIds
+    : [];
+
+  return (
+    settings.requiredSubscriptionEnabled &&
+    channelIds.length > 0 &&
+    !hasRequiredSubscriptionExpired(settings)
+  );
+}
+
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
@@ -1158,7 +1204,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const deferHotChatModerationSkipUntilAfterRequiredSubscription =
-        hotChatBackoffActive && settings.requiredSubscriptionEnabled;
+        hotChatBackoffActive && isRequiredSubscriptionCurrentlyActive(settings);
       if (
         this.shouldSkipHotChatModeration(mode, hotChatBackoffActive) &&
         !deferHotChatModerationSkipUntilAfterRequiredSubscription
@@ -7331,6 +7377,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ChatSettings,
       | 'requiredSubscriptionEnabled'
       | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionExpiresAt'
       | 'requiredSubscriptionBotMessageEnabled'
       | 'requiredSubscriptionBotMessageText'
       | 'requiredSubscriptionWarnEnabled'
@@ -7348,7 +7395,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedMessageId: string | null;
     hotPathProfile?: WebhookHotPathProfile | null;
   }): Promise<boolean> {
-    if (!params.settings.requiredSubscriptionEnabled) {
+    if (!isRequiredSubscriptionCurrentlyActive(params.settings)) {
       return false;
     }
 

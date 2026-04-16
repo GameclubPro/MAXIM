@@ -1901,8 +1901,81 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('accepts a 14-day mute duration for required subscription', async () => {
+  it('starts a required subscription timer when the block is enabled', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-16T12:00:00.000Z'));
+
+    try {
+      const prisma = createPrismaMock();
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'id613002203036_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        }),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          participantsCount: 125,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/news',
+          lastEventAt: null,
+          entityType: 'channel',
+        }),
+      };
+
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      const result = await service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionDurationDays: 10,
+      });
+
+      expect(result.requiredSubscriptionDurationDays).toBe(10);
+      expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-26T12:00:00.000Z');
+      expect(prisma.chat.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: {
+            settings: {
+              upsert: {
+                update: expect.objectContaining({
+                  requiredSubscriptionDurationDays: 10,
+                  requiredSubscriptionExpiresAt: '2026-04-26T12:00:00.000Z',
+                }),
+                create: expect.objectContaining({
+                  requiredSubscriptionDurationDays: 10,
+                  requiredSubscriptionExpiresAt: '2026-04-26T12:00:00.000Z',
+                }),
+              },
+            },
+          },
+        }),
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('keeps the existing required subscription timer until channels or days change', async () => {
     const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue({
+      nightModeForceCloseEnabled: false,
+      nightModeForceCloseForever: false,
+      nightModeForceCloseHours: 0,
+      nightModeForceCloseDays: 0,
+      nightModeForceCloseUntil: '',
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+      requiredSubscriptionDurationDays: 7,
+      requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
+    });
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
@@ -1932,27 +2005,24 @@ describe('AdminService required subscription settings', () => {
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: ['channel-1'],
-      requiredSubscriptionMuteEnabled: true,
-      requiredSubscriptionMuteDurationHours: 14 * 24,
+      requiredSubscriptionDurationDays: 7,
+      requiredSubscriptionBotMessageEnabled: true,
+      requiredSubscriptionBotMessageText: 'Новая подсказка.',
     });
 
-    expect(result.requiredSubscriptionMuteDurationHours).toBe(14 * 24);
+    expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-24T09:30:00.000Z');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: {
-          settings: {
-            upsert: {
+        update: expect.objectContaining({
+          settings: expect.objectContaining({
+            upsert: expect.objectContaining({
               update: expect.objectContaining({
-                requiredSubscriptionMuteEnabled: true,
-                requiredSubscriptionMuteDurationHours: 14 * 24,
+                requiredSubscriptionDurationDays: 7,
+                requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
               }),
-              create: expect.objectContaining({
-                requiredSubscriptionMuteEnabled: true,
-                requiredSubscriptionMuteDurationHours: 14 * 24,
-              }),
-            },
-          },
-        },
+            }),
+          }),
+        }),
       }),
     );
   });

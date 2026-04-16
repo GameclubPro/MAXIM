@@ -130,6 +130,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     requiredSubscriptionBanEnabled: false,
     requiredSubscriptionMuteEnabled: false,
     requiredSubscriptionMuteDurationHours: 6,
+    requiredSubscriptionDurationDays: 7,
+    requiredSubscriptionExpiresAt: '',
     commentsEnabled: false,
     commentsAdminsEnabled: true,
     commentsAllEnabled: false,

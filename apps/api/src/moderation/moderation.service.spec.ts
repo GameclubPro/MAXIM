@@ -244,6 +244,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     nightModeForceCloseUntil: '',
     requiredSubscriptionEnabled: false,
     requiredSubscriptionChannelIds: [],
+    requiredSubscriptionDurationDays: 7,
+    requiredSubscriptionExpiresAt: '',
     requiredSubscriptionBotMessageEnabled: true,
     requiredSubscriptionBotMessageText: '',
     requiredSubscriptionWarnEnabled: false,
@@ -14181,6 +14183,49 @@ describe('ModerationService', () => {
         '1',
         15 * 60,
       );
+    });
+
+    it('skips required subscription checks after the timer expires', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-04-16T12:00:00.000Z'));
+
+      try {
+        const prisma = createPrismaForRequiredSubscription({
+          requiredSubscriptionEnabled: true,
+          requiredSubscriptionChannelIds: ['channel-1'],
+          requiredSubscriptionExpiresAt: '2026-04-10T12:00:00.000Z',
+        });
+        const ruleEngine = {
+          detect: jest.fn().mockResolvedValue({ violations: [] }),
+        };
+        const maxClient = {
+          hasChatMember: jest.fn().mockResolvedValue(false),
+          getChatSnapshot: jest.fn(),
+          deleteMessage: jest.fn(),
+          sendMessage: jest.fn(),
+          kickMember: jest.fn(),
+          banMember: jest.fn(),
+          notifyModerators: jest.fn(),
+          resolveMessageLink: jest.fn().mockResolvedValue(null),
+        };
+
+        const service = new ModerationService(
+          prisma as never,
+          ruleEngine as never,
+          { resolveAction: jest.fn() } as never,
+          maxClient as never,
+        );
+
+        await service.handleUpdate(createUpdate());
+
+        expect(maxClient.hasChatMember).not.toHaveBeenCalled();
+        expect(maxClient.getChatSnapshot).not.toHaveBeenCalled();
+        expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+        expect(maxClient.sendMessage).not.toHaveBeenCalled();
+        expect(prisma.violation.create).not.toHaveBeenCalled();
+        expect(ruleEngine.detect).toHaveBeenCalled();
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
     it('enforces required subscription while degraded under pressure', async () => {

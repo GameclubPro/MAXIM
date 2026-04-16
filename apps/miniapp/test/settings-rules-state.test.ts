@@ -142,3 +142,27 @@ test('buildRulesTextFromSettingsScreen assembles a publishable draft from active
   assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
   assert.match(text, /Ночью чат работает тише: ограничения действуют с 23:00 до 07:00\./);
 });
+
+test('buildRulesTextFromSettingsScreen skips expired required subscription rules', () => {
+  const screen = createScreen({
+    settings: chatSettingsSchema.parse({
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-1'],
+      requiredSubscriptionExpiresAt: '2026-04-01T00:00:00.000Z',
+      antiSpamEnabled: true,
+    }),
+    requiredSubscriptionChannels: [
+      {
+        id: 'channel-1',
+        title: 'Новости проекта',
+        entityType: 'channel',
+        link: null,
+        participantsCount: null,
+      },
+    ],
+  });
+
+  const text = buildRulesTextFromSettingsScreen(screen);
+  assert.doesNotMatch(text, /Чтобы писать в чат, сначала подпишитесь/);
+  assert.match(text, /Пожалуйста, не флудите и не спамьте\./);
+});

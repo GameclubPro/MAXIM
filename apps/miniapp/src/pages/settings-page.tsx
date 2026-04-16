@@ -4,6 +4,9 @@ import {
   BOT_SPEECH_STYLE_OPTIONS,
   DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
   type BroadcastLinkButton,
@@ -203,6 +206,7 @@ const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
+const REQUIRED_SUBSCRIPTION_DURATION_PRESET_DAYS = [1, 3, 7, 14] as const;
 const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 const DUPLICATE_ALLOWED_COUNT_MAX = 16;
 const MESSAGE_COUNT_LIMIT_MIN = 1;
@@ -1555,6 +1559,63 @@ function formatRequiredSubscriptionCount(count: number): string {
   return `${safeCount} чатов/каналов`;
 }
 
+function clampRequiredSubscriptionDurationDays(days: number): number {
+  return Math.min(
+    REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
+    Math.max(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN, Math.round(days)),
+  );
+}
+
+function formatRequiredSubscriptionDurationDays(days: number): string {
+  const safeDays = clampRequiredSubscriptionDurationDays(days);
+  const mod10 = safeDays % 10;
+  const mod100 = safeDays % 100;
+
+  if (mod10 === 1 && mod100 !== 11) {
+    return `${safeDays} день`;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${safeDays} дня`;
+  }
+  return `${safeDays} дней`;
+}
+
+function formatRequiredSubscriptionDurationDaysCompact(days: number): string {
+  return `${clampRequiredSubscriptionDurationDays(days)}д`;
+}
+
+function parseRequiredSubscriptionExpiresAt(value: string | null | undefined): Date | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  const normalized = value.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function formatRequiredSubscriptionExpiryBadge(value: string | null | undefined): string {
+  const parsed = parseRequiredSubscriptionExpiresAt(value);
+  if (!parsed) {
+    return 'Без срока';
+  }
+
+  const formatter = new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+  });
+  return `до ${formatter.format(parsed)}`;
+}
+
+function isRequiredSubscriptionExpired(value: string | null | undefined): boolean {
+  const parsed = parseRequiredSubscriptionExpiresAt(value);
+  return parsed ? parsed.getTime() <= Date.now() : false;
+}
+
 function formatRequiredSubscriptionEntityLabel(entityType: 'chat' | 'channel'): string {
   return entityType === 'chat' ? 'Чат' : 'Канал';
 }
@@ -1660,6 +1721,49 @@ function ClockIcon() {
     >
       <circle cx="12" cy="12" r="8.25" />
       <path d="M12 7.75v4.8l3.45 1.95" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function RequiredSubscriptionTimerIcon({ days }: { days: number }) {
+  const safeDays = clampRequiredSubscriptionDurationDays(days);
+
+  return (
+    <svg
+      viewBox="0 0 28 28"
+      fill="none"
+      aria-hidden
+      focusable="false"
+      width="22"
+      height="22"
+    >
+      <circle
+        cx="12"
+        cy="14"
+        r="7.4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        opacity="0.92"
+      />
+      <path
+        d="M12 10.1v4.4l3.25 1.9"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="20.25" cy="8.6" r="5.15" fill="currentColor" opacity="0.14" />
+      <circle cx="20.25" cy="8.6" r="4.85" stroke="currentColor" strokeWidth="1.4" />
+      <text
+        x="20.25"
+        y="10.65"
+        textAnchor="middle"
+        fontSize="5.8"
+        fontWeight="800"
+        fill="currentColor"
+      >
+        {safeDays}
+      </text>
     </svg>
   );
 }
@@ -3512,6 +3616,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMuteDurationValue(key, Number(draft[key]) + deltaHours);
   }
 
+  function setRequiredSubscriptionDurationDaysValue(nextValue: number) {
+    setFieldValue(
+      'requiredSubscriptionDurationDays',
+      clampRequiredSubscriptionDurationDays(
+        nextValue,
+      ) as ChatSettings['requiredSubscriptionDurationDays'],
+    );
+  }
+
   function adjustDeleteBotMessagesDelayValue(
     key: 'deleteBotMessagesDelayMinutes' | 'greetingDeleteBotMessageDelayMinutes',
     direction: number,
@@ -4552,12 +4665,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const requiredSubscriptionStaleCount = selectedUnavailableRequiredSubscriptionChannels.length;
   const requiredSubscriptionUnavailableCount =
     unavailableManagedRequiredSubscriptionChannels.length;
-  const requiredSubscriptionStagesEnabledCount = [
-    draft?.requiredSubscriptionBotMessageEnabled,
-    draft?.requiredSubscriptionWarnEnabled,
-    draft?.requiredSubscriptionBanEnabled,
-    draft?.requiredSubscriptionMuteEnabled,
-  ].filter(Boolean).length;
+  const requiredSubscriptionDurationDays = clampRequiredSubscriptionDurationDays(
+    Number(draft?.requiredSubscriptionDurationDays ?? REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT),
+  );
+  const requiredSubscriptionExpiresAt = draft?.requiredSubscriptionExpiresAt?.trim() ?? '';
+  const requiredSubscriptionTimerDirty =
+    requiredSubscriptionDurationDays !==
+      (settingsQuery.data?.requiredSubscriptionDurationDays ??
+        REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT) ||
+    draft?.requiredSubscriptionEnabled !== settingsQuery.data?.requiredSubscriptionEnabled ||
+    JSON.stringify(draft?.requiredSubscriptionChannelIds ?? []) !==
+      JSON.stringify(settingsQuery.data?.requiredSubscriptionChannelIds ?? []);
+  const requiredSubscriptionTimerExpired =
+    draft?.requiredSubscriptionEnabled && isRequiredSubscriptionExpired(requiredSubscriptionExpiresAt);
+  const requiredSubscriptionTimerBadge = requiredSubscriptionTimerExpired
+    ? 'Срок истек'
+    : !requiredSubscriptionTimerDirty && requiredSubscriptionExpiresAt
+      ? formatRequiredSubscriptionExpiryBadge(requiredSubscriptionExpiresAt)
+      : formatRequiredSubscriptionDurationDaysCompact(requiredSubscriptionDurationDays);
   const areChannelsSyncing =
     requiredSubscriptionEntitiesLoading || requiredSubscriptionEntitiesSyncing;
   const requiredSubscriptionPickerEmptyState =
@@ -4571,7 +4696,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Синхронизируем список каналов...'
       : requiredSubscriptionStaleCount > 0
         ? `Нужно исправить: ${formatRequiredSubscriptionCount(requiredSubscriptionStaleCount)}`
-        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
+        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionTimerBadge}`
     : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
@@ -10116,13 +10241,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-required-subscription-content"
                 open={expandedSections.requiredSubscription}
-                title="Подписка на чат или канал"
+                title="Обязательная подписка"
                 summary={requiredSubscriptionHeaderSummary}
                 tone="sky"
                 className="settings-drilldown__panel--ladder settings-drilldown__panel--required-subscription"
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  note: 'Сначала сохраните в этом чате. Потом можно применить во все чаты.',
                   applyToAllLabel: 'Применить во всех чатах',
                   emphasize: 'save',
                 })}
@@ -10182,15 +10306,88 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="required-subscription-enabled-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Без подписки сообщение удаляется.
+                            Сообщения без подписки удаляются.
                           </p>
                         ) : null}
                       </div>
 
-                      <div className="managed-giveaway__section">
+                      <div
+                        className={cn(
+                          'managed-giveaway__section',
+                          'required-subscription__timer-card',
+                          requiredSubscriptionTimerExpired && 'is-expired',
+                        )}
+                      >
+                        <div className="required-subscription__timer-head">
+                          <div className="required-subscription__timer-copy">
+                            <span className="required-subscription__hero-label">Таймер</span>
+                            <strong>
+                              {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
+                            </strong>
+                            <small>{requiredSubscriptionTimerBadge}</small>
+                          </div>
+                          <span className="required-subscription__timer-icon-shell" aria-hidden>
+                            <RequiredSubscriptionTimerIcon days={requiredSubscriptionDurationDays} />
+                          </span>
+                        </div>
+
+                        <div className="logs-violation-item__ban-presets required-subscription__timer-presets">
+                          {REQUIRED_SUBSCRIPTION_DURATION_PRESET_DAYS.map((days) => (
+                            <button
+                              key={days}
+                              type="button"
+                              className={cn(
+                                'logs-violation-item__ban-preset',
+                                requiredSubscriptionDurationDays === days && 'is-active',
+                              )}
+                              onClick={() => setRequiredSubscriptionDurationDaysValue(days)}
+                            >
+                              {formatRequiredSubscriptionDurationDaysCompact(days)}
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="ban-duration-stepper required-subscription__timer-stepper">
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() =>
+                              setRequiredSubscriptionDurationDaysValue(
+                                requiredSubscriptionDurationDays - 1,
+                              )
+                            }
+                            disabled={
+                              requiredSubscriptionDurationDays <=
+                              REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN
+                            }
+                          >
+                            -
+                          </button>
+                          <output className="ban-duration-stepper__value" aria-live="polite">
+                            {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
+                          </output>
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() =>
+                              setRequiredSubscriptionDurationDaysValue(
+                                requiredSubscriptionDurationDays + 1,
+                              )
+                            }
+                            disabled={
+                              requiredSubscriptionDurationDays >=
+                              REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX
+                            }
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="managed-giveaway__section required-subscription__board">
                         <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
-                            <strong>Каналы для выбора</strong>
+                            <strong>Каналы</strong>
                             <small>
                               {requiredSubscriptionSelectedCount}/
                               {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
@@ -10203,10 +10400,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onToggleHint={toggleHint}
                             label="Пояснение для обязательной подписки"
                           >
-                            Ниже показываем только ваши каналы. Чат или чужой канал можно
-                            добавить вручную по ссылке на чат или канал, ссылке на чат или пост
-                            MAX либо по ID. Чтобы MAX проверял подписку, один из наших ботов
-                            должен быть администратором этого чата или канала.
+                            В списке только ваши каналы. Чаты и чужие каналы добавляйте ссылкой,
+                            если бот там администратор.
                           </SettingsHintAnchor>
                         </div>
 
@@ -10217,7 +10412,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               'settings-native-toggle__hint--danger',
                             )}
                           >
-                            Есть недоступные чаты или каналы. Исправьте ссылку или удалите их.
+                            Есть недоступные ссылки. Исправьте или удалите их.
                           </p>
                         ) : null}
 
@@ -10449,7 +10644,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         role="separator"
                         aria-label="Действия бота для обязательной подписки"
                       >
-                        <span>Стандартные действия бота</span>
+                        <span>Санкции</span>
                       </div>
 
                       <div className="settings-native-toggle">

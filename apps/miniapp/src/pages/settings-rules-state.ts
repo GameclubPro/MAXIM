@@ -31,6 +31,25 @@ type RulesTextScreenState = Pick<
   'settings' | 'domains' | 'requiredSubscriptionChannels'
 >;
 
+function isRequiredSubscriptionCurrentlyActive(
+  settings: Pick<
+    ChatSettings,
+    'requiredSubscriptionEnabled' | 'requiredSubscriptionExpiresAt'
+  >,
+): boolean {
+  if (!settings.requiredSubscriptionEnabled) {
+    return false;
+  }
+
+  const expiresAt = settings.requiredSubscriptionExpiresAt.trim();
+  if (!expiresAt) {
+    return true;
+  }
+
+  const timestampMs = Date.parse(expiresAt);
+  return !Number.isFinite(timestampMs) || timestampMs > Date.now();
+}
+
 export function serializeRulesDraftPayload(value: RulesDraftSerializable): string {
   return JSON.stringify({
     text: value.text,
@@ -103,7 +122,7 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     items.push('Ссылки бот проверяет, но не удаляет автоматически.');
   }
 
-  if (settings.requiredSubscriptionEnabled) {
+  if (isRequiredSubscriptionCurrentlyActive(settings)) {
     const channelTitles = requiredSubscriptionChannels
       .map((channel) => channel.title.trim())
       .filter(Boolean);
@@ -186,7 +205,16 @@ function buildRulesTextItems(screen: RulesTextScreenState): string[] {
     );
   }
 
-  const sanctionsSummary = buildRulesSanctionsSummary(settings);
+  const sanctionsSummary = buildRulesSanctionsSummary(
+    isRequiredSubscriptionCurrentlyActive(settings)
+      ? settings
+      : {
+          ...settings,
+          requiredSubscriptionWarnEnabled: false,
+          requiredSubscriptionMuteEnabled: false,
+          requiredSubscriptionBanEnabled: false,
+        },
+  );
   if (sanctionsSummary) {
     items.push(sanctionsSummary);
   }

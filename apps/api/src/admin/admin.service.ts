@@ -116,6 +116,9 @@ import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
+  REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -713,6 +716,8 @@ const SETTINGS_SECTION_KEYS = {
   requiredSubscription: [
     'requiredSubscriptionEnabled',
     'requiredSubscriptionChannelIds',
+    'requiredSubscriptionDurationDays',
+    'requiredSubscriptionExpiresAt',
     'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
     'requiredSubscriptionWarnEnabled',
@@ -729,6 +734,7 @@ const SETTINGS_SECTION_KEYS = {
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
 const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
+const REQUIRED_SUBSCRIPTION_DURATION_DAY_MS = 24 * 60 * 60 * 1_000;
 const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
@@ -5790,6 +5796,10 @@ export class AdminService implements OnModuleDestroy {
         nightModeForceCloseHours: true,
         nightModeForceCloseDays: true,
         nightModeForceCloseUntil: true,
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: true,
+        requiredSubscriptionDurationDays: true,
+        requiredSubscriptionExpiresAt: true,
       },
     });
     const normalizedSettings = this.normalizeChatSettings(
@@ -5800,6 +5810,21 @@ export class AdminService implements OnModuleDestroy {
         nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
         nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
         nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
+        requiredSubscriptionEnabled: currentSettings?.requiredSubscriptionEnabled ?? false,
+        requiredSubscriptionChannelIds: Array.isArray(
+          currentSettings?.requiredSubscriptionChannelIds,
+        )
+          ? currentSettings.requiredSubscriptionChannelIds
+              .filter((item): item is string => typeof item === 'string')
+              .map((item) => item.trim())
+              .filter((item) => item.length > 0)
+          : [],
+        requiredSubscriptionDurationDays:
+          currentSettings?.requiredSubscriptionDurationDays ??
+          REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
+        requiredSubscriptionExpiresAt: this.normalizeRequiredSubscriptionExpiresAt(
+          currentSettings?.requiredSubscriptionExpiresAt,
+        ),
       },
       chatId,
     );
@@ -7406,7 +7431,9 @@ export class AdminService implements OnModuleDestroy {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, sourceChatId);
+    const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, sourceChatId, {
+      resetRequiredSubscriptionExpiration: true,
+    });
 
     const availableChats = await this.listChatsForMassBroadcast(user);
     const appliedChatIds = Array.from(
@@ -7513,7 +7540,10 @@ export class AdminService implements OnModuleDestroy {
       },
     );
 
-    if (shouldValidateRequiredSubscription && normalizedSettings.requiredSubscriptionEnabled) {
+    if (
+      shouldValidateRequiredSubscription &&
+      this.isRequiredSubscriptionCurrentlyActive(normalizedSettings)
+    ) {
       await this.refreshRequiredSubscriptionAccessSnapshots(
         normalizedSettings.requiredSubscriptionChannelIds,
         'required subscription settings apply-to-all',
@@ -7566,18 +7596,39 @@ export class AdminService implements OnModuleDestroy {
       | 'nightModeForceCloseHours'
       | 'nightModeForceCloseDays'
       | 'nightModeForceCloseUntil'
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionDurationDays'
+      | 'requiredSubscriptionExpiresAt'
     > | null,
     chatId?: string,
+    options?: {
+      resetRequiredSubscriptionExpiration?: boolean;
+    },
   ): ChatSettings {
     const normalized = this.normalizeNightModeSettings(
-      this.normalizeMessageLimitsBlockedWords(this.normalizeRequiredSubscriptionSettings(settings)),
+      this.normalizeMessageLimitsBlockedWords(
+        this.normalizeRequiredSubscriptionSettings(settings, currentState, options),
+      ),
       currentState,
     );
 
     return chatId ? this.normalizeChatSettingsButtonUrls(chatId, normalized) : normalized;
   }
 
-  private normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSettings {
+  private normalizeRequiredSubscriptionSettings(
+    settings: ChatSettings,
+    currentState?: Pick<
+      ChatSettings,
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionDurationDays'
+      | 'requiredSubscriptionExpiresAt'
+    > | null,
+    options?: {
+      resetRequiredSubscriptionExpiration?: boolean;
+    },
+  ): ChatSettings {
     const requiredSubscriptionChannelIds = Array.from(
       new Set(
         settings.requiredSubscriptionChannelIds
@@ -7585,11 +7636,150 @@ export class AdminService implements OnModuleDestroy {
           .filter((item) => item.length > 0),
       ),
     );
+    const requiredSubscriptionDurationDays = Math.min(
+      REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
+      Math.max(
+        REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
+        Math.round(Number(settings.requiredSubscriptionDurationDays)),
+      ),
+    );
+    const requiredSubscriptionEnabled =
+      settings.requiredSubscriptionEnabled && requiredSubscriptionChannelIds.length > 0;
+    const requiredSubscriptionExpiresAt = requiredSubscriptionEnabled
+      ? this.resolveRequiredSubscriptionExpiresAt(
+          {
+            ...settings,
+            requiredSubscriptionEnabled,
+            requiredSubscriptionChannelIds,
+            requiredSubscriptionDurationDays,
+            requiredSubscriptionExpiresAt: settings.requiredSubscriptionExpiresAt,
+          },
+          currentState,
+          options,
+        )
+      : '';
 
     return {
       ...settings,
+      requiredSubscriptionEnabled,
       requiredSubscriptionChannelIds,
+      requiredSubscriptionDurationDays,
+      requiredSubscriptionExpiresAt,
     };
+  }
+
+  private normalizeRequiredSubscriptionExpiresAt(value: unknown): string {
+    if (typeof value !== 'string') {
+      return '';
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return '';
+    }
+
+    const timestampMs = Date.parse(normalized);
+    if (!Number.isFinite(timestampMs)) {
+      return '';
+    }
+
+    return new Date(timestampMs).toISOString();
+  }
+
+  private hasRequiredSubscriptionExpired(
+    settings: Pick<ChatSettings, 'requiredSubscriptionExpiresAt'>,
+  ): boolean {
+    const expiresAt = this.normalizeRequiredSubscriptionExpiresAt(
+      settings.requiredSubscriptionExpiresAt,
+    );
+    if (!expiresAt) {
+      return false;
+    }
+
+    return Date.parse(expiresAt) <= Date.now();
+  }
+
+  private isRequiredSubscriptionCurrentlyActive(
+    settings: Pick<
+      ChatSettings,
+      'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds' | 'requiredSubscriptionExpiresAt'
+    >,
+  ): boolean {
+    return (
+      settings.requiredSubscriptionEnabled &&
+      settings.requiredSubscriptionChannelIds.length > 0 &&
+      !this.hasRequiredSubscriptionExpired(settings)
+    );
+  }
+
+  private buildRequiredSubscriptionExpiresAt(durationDays: number): string {
+    return new Date(Date.now() + durationDays * REQUIRED_SUBSCRIPTION_DURATION_DAY_MS).toISOString();
+  }
+
+  private resolveRequiredSubscriptionExpiresAt(
+    settings: Pick<
+      ChatSettings,
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionDurationDays'
+      | 'requiredSubscriptionExpiresAt'
+    >,
+    currentState?:
+      | Pick<
+          ChatSettings,
+          | 'requiredSubscriptionEnabled'
+          | 'requiredSubscriptionChannelIds'
+          | 'requiredSubscriptionDurationDays'
+          | 'requiredSubscriptionExpiresAt'
+        >
+      | null,
+    options?: {
+      resetRequiredSubscriptionExpiration?: boolean;
+    },
+  ): string {
+    if (!settings.requiredSubscriptionEnabled || settings.requiredSubscriptionChannelIds.length === 0) {
+      return '';
+    }
+
+    if (options?.resetRequiredSubscriptionExpiration) {
+      return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+    }
+
+    if (currentState === undefined) {
+      return this.normalizeRequiredSubscriptionExpiresAt(settings.requiredSubscriptionExpiresAt);
+    }
+
+    if (!currentState?.requiredSubscriptionEnabled) {
+      return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+    }
+
+    const currentExpiresAt = this.normalizeRequiredSubscriptionExpiresAt(
+      currentState.requiredSubscriptionExpiresAt,
+    );
+    if (!currentExpiresAt || this.hasRequiredSubscriptionExpired(currentState)) {
+      return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+    }
+
+    if (
+      currentState.requiredSubscriptionDurationDays !== settings.requiredSubscriptionDurationDays
+    ) {
+      return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+    }
+
+    if (
+      currentState.requiredSubscriptionChannelIds.length !==
+      settings.requiredSubscriptionChannelIds.length
+    ) {
+      return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+    }
+
+    for (const [index, channelId] of settings.requiredSubscriptionChannelIds.entries()) {
+      if (currentState.requiredSubscriptionChannelIds[index] !== channelId) {
+        return this.buildRequiredSubscriptionExpiresAt(settings.requiredSubscriptionDurationDays);
+      }
+    }
+
+    return currentExpiresAt;
   }
 
   private normalizeMessageLimitsBlockedWords(settings: ChatSettings): ChatSettings {
@@ -11574,7 +11764,7 @@ export class AdminService implements OnModuleDestroy {
       settings.linkPolicy === 'ALLOWLIST_ONLY'
         ? this.getDomainAllowlistDetails(chatId, user)
         : Promise.resolve([] as DomainAllowlistEntry[]),
-      settings.requiredSubscriptionEnabled
+      this.isRequiredSubscriptionCurrentlyActive(settings)
         ? this.resolveRequiredSubscriptionChannelHeaders(settings.requiredSubscriptionChannelIds)
         : Promise.resolve([] as ManagedEntityHeader[]),
     ]);
@@ -11637,7 +11827,7 @@ export class AdminService implements OnModuleDestroy {
       items.push('Ссылки бот проверяет, но не удаляет автоматически.');
     }
 
-    if (settings.requiredSubscriptionEnabled) {
+    if (this.isRequiredSubscriptionCurrentlyActive(settings)) {
       const channelTitles = requiredSubscriptionChannels
         .map((channel) => channel.title.trim())
         .filter(Boolean);
@@ -11720,7 +11910,16 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    const sanctionsSummary = this.buildRulesSanctionsSummary(settings);
+    const sanctionsSummary = this.buildRulesSanctionsSummary(
+      this.isRequiredSubscriptionCurrentlyActive(settings)
+        ? settings
+        : {
+            ...settings,
+            requiredSubscriptionWarnEnabled: false,
+            requiredSubscriptionMuteEnabled: false,
+            requiredSubscriptionBanEnabled: false,
+          },
+    );
     if (sanctionsSummary) {
       items.push(sanctionsSummary);
     }
@@ -19565,7 +19764,7 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<void> {
     await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'chat settings update');
 
-    if (!settings.requiredSubscriptionEnabled) {
+    if (!this.isRequiredSubscriptionCurrentlyActive(settings)) {
       return;
     }
 
