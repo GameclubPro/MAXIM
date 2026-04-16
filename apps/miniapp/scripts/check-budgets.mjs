@@ -11,10 +11,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 // Keep the guardrail strict, but give the startup path enough room for iterative design work.
 const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
-// shared drilldown UI reuse, chat/channel required-subscription support,
-// and the newer mobile required-subscription duration controls
+// shared drilldown UI reuse, and chat/channel required-subscription support
 // now add a few hundred bytes of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024;
+const SETTINGS_JS_BUDGET_GZIP = 107 * 1024 + 512;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
