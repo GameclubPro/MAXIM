@@ -17721,7 +17721,8 @@ describe('AdminService chat rules', () => {
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
       chatId: 'chat-1',
-      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n  Второй абзац с  пробелами',
+      text:
+        '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
@@ -17767,9 +17768,9 @@ describe('AdminService chat rules', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
-      '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелами',
+      '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
       {
-        textFormat: 'html',
+        textFormat: 'markdown',
       },
     );
   });

@@ -189,10 +189,7 @@ import {
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-import {
-  containsSupportedMarkdownSyntax,
-  renderSupportedMarkdownAsHtml,
-} from '../common/max-markdown.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -11816,16 +11813,9 @@ export class AdminService implements OnModuleDestroy {
     text: string;
     textFormat: MaxSendMessageOptions['textFormat'];
   } {
-    if (!containsSupportedMarkdownSyntax(sourceText)) {
-      return {
-        text: sourceText,
-        textFormat: 'markdown',
-      };
-    }
-
     return {
-      text: renderSupportedMarkdownAsHtml(sourceText, { blockMode: 'raw' }),
-      textFormat: 'html',
+      text: sourceText,
+      textFormat: 'markdown',
     };
   }
 
