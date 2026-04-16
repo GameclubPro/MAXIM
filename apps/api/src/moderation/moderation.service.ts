@@ -136,6 +136,7 @@ type SharedChatExecutionGuard =
       primaryBotId: string | null;
       assignedBotIds: string[];
       requiresExecutionLock: boolean;
+      lockScope?: 'owner' | 'chat';
     }
   | {
       mode: 'skip' | 'blocked-join-check-only';
@@ -8435,6 +8436,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         primaryBotId: null,
         assignedBotIds: [],
         requiresExecutionLock: false,
+        lockScope: 'owner',
       };
     }
 
@@ -8446,6 +8448,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         primaryBotId: null,
         assignedBotIds: [],
         requiresExecutionLock: false,
+        lockScope: 'owner',
       };
     }
 
@@ -8458,6 +8461,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           primaryBotId: executionOwnerBotId,
           assignedBotIds: [executionOwnerBotId],
           requiresExecutionLock: false,
+          lockScope: 'owner',
         };
       }
 
@@ -8505,14 +8509,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           updateId: update.updateId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Shared chat execution binding lookup stalled; allowing local execution without shared lock',
+        'Shared chat execution binding lookup stalled; falling back to a conservative chat-scoped execution lock',
       );
       return {
         mode: 'allow',
         activeBotId,
-        primaryBotId: activeBotId,
+        primaryBotId: null,
         assignedBotIds: activeBotId ? [activeBotId] : [],
-        requiresExecutionLock: false,
+        requiresExecutionLock: true,
+        lockScope: 'chat',
       };
     }
     if (executionBinding.shouldHandleGroupUpdate) {
@@ -8522,6 +8527,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         primaryBotId: executionBinding.primaryBotId,
         assignedBotIds: executionBinding.assignedBotIds,
         requiresExecutionLock: executionBinding.assignedBotIds.length > 1,
+        lockScope: 'owner',
       };
     }
 
@@ -8580,8 +8586,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageId = update.message?.messageId?.trim() ?? '';
     const callbackId = this.extractCallbackId(update)?.trim() ?? '';
     const updateType = this.readLowerString(update.type);
-    const ownerBotId = guard.primaryBotId ?? guard.activeBotId ?? 'unknown';
     const discriminator = updateId || callbackId || messageId || `${updateType}:${chatId}`;
+    if (guard.lockScope === 'chat') {
+      return `shared-chat-execution:v2:chat:${chatId}:${discriminator}`;
+    }
+
+    const ownerBotId = guard.primaryBotId ?? guard.activeBotId ?? 'unknown';
     return `shared-chat-execution:v1:${ownerBotId}:${chatId}:${discriminator}`;
   }
 

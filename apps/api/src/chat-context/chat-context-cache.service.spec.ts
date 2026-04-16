@@ -239,6 +239,7 @@ function buildSettings(chatId: string): ChatSettings {
 
 describe('ChatContextCacheService', () => {
   const maxBotLinkService = {
+    resolveBotId: jest.fn().mockResolvedValue('777000_bot'),
     getContextOrDefaultBotId: jest.fn().mockReturnValue('777000_bot'),
     rememberChatBotBinding: jest.fn(),
   };
@@ -338,6 +339,50 @@ describe('ChatContextCacheService', () => {
 
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers the chat-specific bot route when initializing a missing chat context row', async () => {
+    const chatId = 'chat-2';
+    const settings = buildSettings(chatId);
+    maxBotLinkService.resolveBotId.mockResolvedValueOnce('id613002203036_4_bot');
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({
+          id: chatId,
+          title: 'Chat title',
+          settings,
+          domains: [],
+          admins: [],
+          rules: null,
+        }),
+      },
+    };
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+    );
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      get: jest.Mock;
+    };
+    redisInstance.get.mockResolvedValue(null);
+
+    await service.getChatContext(chatId, 'Chat title');
+
+    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId });
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          botId: 'id613002203036_4_bot',
+          primaryBotId: 'id613002203036_4_bot',
+        }),
+      }),
+    );
   });
 
   it('deduplicates concurrent cold chat context loads', async () => {

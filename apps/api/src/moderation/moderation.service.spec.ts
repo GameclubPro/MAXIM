@@ -8462,6 +8462,7 @@ describe('ModerationService', () => {
       primaryBotId: 'bot-1',
       assignedBotIds: ['bot-1'],
       requiresExecutionLock: false,
+      lockScope: 'owner',
     });
 
     expect(maxBotLinkService.getChatExecutionBinding).not.toHaveBeenCalled();
@@ -8545,11 +8546,50 @@ describe('ModerationService', () => {
       primaryBotId: 'bot-1',
       assignedBotIds: ['bot-1', 'bot-2'],
       requiresExecutionLock: true,
+      lockScope: 'owner',
     });
 
     expect(maxBotLinkService.getChatExecutionBinding).toHaveBeenCalledWith({
       chatId: '-68829672464520',
       activeBotId: 'bot-1',
+    });
+  });
+
+  it('falls back to a conservative chat-scoped lock when shared binding lookup stalls', async () => {
+    const maxBotLinkService = {
+      getChatExecutionBinding: jest.fn(),
+    };
+    const maxBotContextService = {
+      getActiveBotId: jest.fn().mockReturnValue('bot-1'),
+    };
+    const service = new ModerationService(
+      {} as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      {} as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+      maxBotContextService as never,
+    );
+    (service as any).executeSharedChatOperationWithGuard = jest
+      .fn()
+      .mockRejectedValue(new Error('timed out'));
+
+    await expect(
+      (service as any).resolveSharedChatExecutionGuard(createUpdate(), '-68829672464520'),
+    ).resolves.toEqual({
+      mode: 'allow',
+      activeBotId: 'bot-1',
+      primaryBotId: null,
+      assignedBotIds: ['bot-1'],
+      requiresExecutionLock: true,
+      lockScope: 'chat',
     });
   });
 

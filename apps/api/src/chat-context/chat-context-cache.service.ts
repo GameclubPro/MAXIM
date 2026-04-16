@@ -946,13 +946,16 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async initializeChatContextRow(chatId: string, title?: string | null) {
-    const defaultBotId = this.maxBotLinkService.getContextOrDefaultBotId();
+    const resolvedBotId =
+      (typeof this.maxBotLinkService.resolveBotId === 'function'
+        ? await this.maxBotLinkService.resolveBotId({ chatId })
+        : null) ?? this.maxBotLinkService.getContextOrDefaultBotId();
     return this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
-        botId: defaultBotId,
-        primaryBotId: defaultBotId,
+        botId: resolvedBotId,
+        primaryBotId: resolvedBotId,
         title: title || `Chat ${chatId}`,
         settings: {
           create: {},
