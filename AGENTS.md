@@ -81,6 +81,8 @@
   2. `https://dev.max.ru/docs-api/`
   3. `https://help.max.ru/help/bots`
   4. `https://github.com/max-messenger`
+- When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
+- Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
 - Treat `initDataUnsafe` as convenience only. Authentication and trust must rely on validated `initData`.
 - Keep bot tokens and webhook secrets only in VPS secrets or `.env`, never in git.
 - In hot moderation paths, prefer targeted MAX access checks such as `getCurrentChatMemberAccess` or `getChatMembersAccess` over full admin-list fetches unless the feature truly needs the full roster.
