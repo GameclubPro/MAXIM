@@ -59,6 +59,17 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
+  it('renders raw html output for MAX publication without paragraph tags', () => {
+    expect(
+      renderSupportedMarkdownAsHtml(
+        '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n  Второй абзац с  пробелами',
+        { blockMode: 'raw' },
+      ),
+    ).toBe(
+      '🔥<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелами',
+    );
+  });
+
   it('renders escaped markdown punctuation as literal text', () => {
     expect(
       renderSupportedMarkdownAsHtml('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_'),

@@ -6,6 +6,7 @@ type InlineToken =
 
 type RenderMarkdownOptions = {
   linkMode?: 'anchor' | 'underline';
+  blockMode?: 'paragraphs' | 'raw';
 };
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
@@ -24,6 +25,26 @@ export function renderSupportedMarkdownAsHtml(
   const normalized = source.replace(/\r/g, '');
   if (!normalized.trim()) {
     return '';
+  }
+
+  if (options.blockMode === 'raw') {
+    return normalized
+      .split('\n')
+      .map((rawLine) => {
+        const trimmedLine = rawLine.trim();
+        if (!trimmedLine) {
+          return '';
+        }
+
+        const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+        if (headingMatch) {
+          const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+          return `<strong>${content}</strong>`;
+        }
+
+        return renderInlineTokens(parseInlineTokens(rawLine), options);
+      })
+      .join('\n');
   }
 
   const blocks: string[] = [];
