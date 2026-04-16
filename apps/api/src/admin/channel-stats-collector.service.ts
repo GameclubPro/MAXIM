@@ -9,7 +9,11 @@ import {
   MaxClientService,
   type MaxChannelMessageSnapshot,
 } from '../max/max-client.service';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -344,11 +348,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       async () => {
         const now = new Date();
         const lookbackFrom = new Date(now.getTime() - CHANNEL_STATS_LOOKBACK_MS);
-        const statsBotId =
-          (await this.maxBotLinkService?.resolveBotIdForCapability({
-            chatId,
-            capability: 'channel_stats',
-          })) ?? undefined;
+        const statsBotId = await this.resolveCapabilityRouteBotId(chatId, 'channel_stats');
         const state = await this.prisma.channelStatsSyncState.findUnique({
           where: { chatId },
         });
@@ -667,6 +667,33 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async resolveCapabilityRouteBotId(
+    chatId: string,
+    capability: 'channel_stats',
+  ): Promise<string | undefined> {
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    if (typeof routeResolver?.resolveBotRoute === 'function') {
+      const route = await routeResolver.resolveBotRoute({
+        purpose: 'capability',
+        chatId,
+        capability,
+        fallbackToPrimary: true,
+      });
+      if (route.botId) {
+        return route.botId;
+      }
+    }
+
+    return (
+      (await this.maxBotLinkService?.resolveBotIdForCapability({
+        chatId,
+        capability,
+      })) ?? undefined
+    );
   }
 
   private async withRedisLock(

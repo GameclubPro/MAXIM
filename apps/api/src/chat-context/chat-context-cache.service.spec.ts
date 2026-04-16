@@ -239,6 +239,14 @@ function buildSettings(chatId: string): ChatSettings {
 
 describe('ChatContextCacheService', () => {
   const maxBotLinkService = {
+    resolveBotRoute: jest.fn().mockResolvedValue({
+      purpose: 'default',
+      chatId: 'chat-1',
+      primaryBotId: '777000_bot',
+      botId: '777000_bot',
+      candidateBotIds: ['777000_bot'],
+      reason: 'chat_primary',
+    }),
     resolveBotId: jest.fn().mockResolvedValue('777000_bot'),
     getContextOrDefaultBotId: jest.fn().mockReturnValue('777000_bot'),
     rememberChatBotBinding: jest.fn(),
@@ -250,6 +258,16 @@ describe('ChatContextCacheService', () => {
       Redis as unknown as { __subscribers: Set<(channel: string, payload: string) => void> }
     ).__subscribers.clear();
     jest.clearAllMocks();
+    maxBotLinkService.resolveBotRoute.mockResolvedValue({
+      purpose: 'default',
+      chatId: 'chat-1',
+      primaryBotId: '777000_bot',
+      botId: '777000_bot',
+      candidateBotIds: ['777000_bot'],
+      reason: 'chat_primary',
+    });
+    maxBotLinkService.resolveBotId.mockResolvedValue('777000_bot');
+    maxBotLinkService.getContextOrDefaultBotId.mockReturnValue('777000_bot');
   });
 
   it('loads existing chat context with a single read and caches the result', async () => {
@@ -341,10 +359,17 @@ describe('ChatContextCacheService', () => {
     expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
   });
 
-  it('prefers the chat-specific bot route when initializing a missing chat context row', async () => {
+  it('prefers the unified chat route when initializing a missing chat context row', async () => {
     const chatId = 'chat-2';
     const settings = buildSettings(chatId);
-    maxBotLinkService.resolveBotId.mockResolvedValueOnce('id613002203036_4_bot');
+    maxBotLinkService.resolveBotRoute.mockResolvedValueOnce({
+      purpose: 'default',
+      chatId,
+      primaryBotId: 'id613002203036_4_bot',
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'chat_cache',
+    });
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue(null),
@@ -374,7 +399,11 @@ describe('ChatContextCacheService', () => {
 
     await service.getChatContext(chatId, 'Chat title');
 
-    expect(maxBotLinkService.resolveBotId).toHaveBeenCalledWith({ chatId });
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'default',
+      chatId,
+    });
+    expect(maxBotLinkService.resolveBotId).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         create: expect.objectContaining({

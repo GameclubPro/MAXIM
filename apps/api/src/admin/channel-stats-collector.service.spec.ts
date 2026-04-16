@@ -214,6 +214,71 @@ describe('ChannelStatsCollectorService', () => {
     await service.onModuleDestroy();
   });
 
+  it('uses the unified capability route for channel stats sync when available', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:01:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-route-1',
+        title: 'Новости MAX',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+        entityType: 'channel',
+      }),
+      listMessageSnapshots: jest.fn().mockResolvedValue([]),
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+    const maxBotLinkService = {
+      resolveBotRoute: jest.fn().mockResolvedValue({
+        purpose: 'capability',
+        chatId: 'channel-route-1',
+        primaryBotId: 'id613002203036_bot',
+        botId: 'id613002203036_4_bot',
+        candidateBotIds: ['id613002203036_4_bot'],
+        reason: 'alternate_confirmed',
+        capability: 'channel_stats',
+      }),
+      resolveBotIdForCapability: jest.fn(),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.syncChannel('channel-route-1', {
+      reason: 'manual',
+    });
+
+    expect(maxBotLinkService.resolveBotRoute).toHaveBeenCalledWith({
+      purpose: 'capability',
+      chatId: 'channel-route-1',
+      capability: 'channel_stats',
+      fallbackToPrimary: true,
+    });
+    expect(maxBotLinkService.resolveBotIdForCapability).not.toHaveBeenCalled();
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      'channel-route-1',
+      expect.objectContaining({
+        botId: 'id613002203036_4_bot',
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('skips opportunistic sync when snapshots are still fresh', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
 

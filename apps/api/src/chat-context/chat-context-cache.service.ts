@@ -3,7 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import type { ChatSummary, ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import type { ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
-import { MaxBotLinkService } from '../max/max-bot-link.service';
+import {
+  MaxBotLinkService,
+  type MaxBotRoute,
+  type MaxBotRouteRequest,
+} from '../max/max-bot-link.service';
 import type { MaxBotChat } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -946,7 +950,18 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async initializeChatContextRow(chatId: string, title?: string | null) {
+    const routeResolver = this.maxBotLinkService as unknown as {
+      resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
+    };
+    const resolvedRoute =
+      typeof routeResolver.resolveBotRoute === 'function'
+        ? await routeResolver.resolveBotRoute({
+            purpose: 'default',
+            chatId,
+          })
+        : null;
     const resolvedBotId =
+      resolvedRoute?.botId ??
       (typeof this.maxBotLinkService.resolveBotId === 'function'
         ? await this.maxBotLinkService.resolveBotId({ chatId })
         : null) ?? this.maxBotLinkService.getContextOrDefaultBotId();
