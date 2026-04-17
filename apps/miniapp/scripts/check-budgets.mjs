@@ -13,8 +13,9 @@ const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast
-// confirm flow add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 3072;
+// confirm flow, plus markdown preview normalization in compact broadcast
+// cards, add a small amount of legitimate lazy-loaded logic.
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 3584;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
