@@ -4,6 +4,11 @@ type InlineToken =
   | { type: 'code'; content: string }
   | { type: 'link'; href: string; children: InlineToken[] };
 
+type RenderMarkdownOptions = {
+  linkMode?: 'anchor' | 'underline';
+  blockMode?: 'paragraphs' | 'raw' | 'inline';
+};
+
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
 
@@ -61,6 +66,105 @@ export function formatSupportedMarkdownPreview(source: string, maxLength: number
   return normalized.length > maxLength
     ? `${normalized.slice(0, maxLength).trimEnd()}…`
     : normalized;
+}
+
+export function renderSupportedMarkdownAsHtml(
+  source: string,
+  options: RenderMarkdownOptions = {},
+): string {
+  const normalized = source.replace(/\r/g, '');
+  if (!normalized.trim()) {
+    return '';
+  }
+
+  if (options.blockMode === 'raw') {
+    return normalized
+      .split('\n')
+      .map((rawLine) => {
+        const trimmedLine = rawLine.trim();
+        if (!trimmedLine) {
+          return '';
+        }
+
+        const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+        if (headingMatch) {
+          const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+          return `<strong>${content}</strong>`;
+        }
+
+        return renderInlineTokens(parseInlineTokens(rawLine), options);
+      })
+      .join('\n');
+  }
+
+  if (options.blockMode === 'inline') {
+    const lines: string[] = [];
+    let previousWasGap = false;
+
+    for (const rawLine of normalized.split('\n')) {
+      const line = rawLine.trimEnd();
+      const trimmedLine = line.trim();
+
+      if (!trimmedLine) {
+        if (lines.length > 0 && !previousWasGap) {
+          lines.push('<br><br>');
+          previousWasGap = true;
+        }
+        continue;
+      }
+
+      const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+      const content = headingMatch
+        ? `<strong>${renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options)}</strong>`
+        : renderInlineTokens(parseInlineTokens(line), options);
+
+      if (lines.length > 0 && !previousWasGap) {
+        lines.push('<br>');
+      }
+      lines.push(content);
+      previousWasGap = false;
+    }
+
+    return lines.join('');
+  }
+
+  const blocks: string[] = [];
+  let paragraphLines: string[] = [];
+
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    const renderedLines = paragraphLines.map((line) =>
+      renderInlineTokens(parseInlineTokens(line), options),
+    );
+    blocks.push(`<p>${renderedLines.join('<br>')}</p>`);
+    paragraphLines = [];
+  };
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trimEnd();
+    const trimmedLine = line.trim();
+    if (!trimmedLine) {
+      flushParagraph();
+      continue;
+    }
+
+    const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+    if (headingMatch) {
+      flushParagraph();
+      const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+      blocks.push(`<p><strong>${content}</strong></p>`);
+      continue;
+    }
+
+    paragraphLines.push(line);
+  }
+
+  flushParagraph();
+
+  return blocks.join('');
 }
 
 function parseInlineTokens(source: string): InlineToken[] {
@@ -197,4 +301,90 @@ function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {
       }
     })
     .join('');
+}
+
+function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOptions): string {
+  return tokens
+    .map((token) => {
+      switch (token.type) {
+        case 'text':
+          return escapeHtmlPreservingWhitespace(token.content);
+        case 'code':
+          return `<code>${escapeHtmlPreservingWhitespace(token.content)}</code>`;
+        case 'bold':
+          return `<strong>${renderInlineTokens(token.children, options)}</strong>`;
+        case 'italic':
+          return `<em>${renderInlineTokens(token.children, options)}</em>`;
+        case 'underline':
+          return `<u>${renderInlineTokens(token.children, options)}</u>`;
+        case 'strike':
+          return `<s>${renderInlineTokens(token.children, options)}</s>`;
+        case 'link':
+          return renderLinkHtml(token, options);
+      }
+    })
+    .join('');
+}
+
+function renderLinkHtml(
+  token: Extract<InlineToken, { type: 'link' }>,
+  options: RenderMarkdownOptions,
+): string {
+  const labelHtml = renderLinkLabelHtml(token, options);
+  if (options.linkMode === 'underline') {
+    return `<u>${labelHtml}</u>`;
+  }
+
+  return `<a href="${escapeAttribute(token.href)}">${labelHtml}</a>`;
+}
+
+function renderLinkLabelHtml(
+  token: Extract<InlineToken, { type: 'link' }>,
+  options: RenderMarkdownOptions,
+): string {
+  const plainLabel = renderInlineTokensAsPlainText(token.children).trim();
+  if (!plainLabel) {
+    return escapeHtml(token.href);
+  }
+
+  if (looksLikeUrlLabel(plainLabel, token.href)) {
+    return escapeHtml(insertSoftBreaks(plainLabel));
+  }
+
+  return renderInlineTokens(token.children, options);
+}
+
+function looksLikeUrlLabel(label: string, href: string): boolean {
+  if (!SAFE_LINK_PATTERN.test(label)) {
+    return false;
+  }
+
+  return normalizeComparableUrl(label) === normalizeComparableUrl(href);
+}
+
+function normalizeComparableUrl(value: string): string {
+  return value.trim().replace(/\/+$/u, '').toLowerCase();
+}
+
+function insertSoftBreaks(value: string): string {
+  return value.replace(/([/.:?&=#_-])/g, '$1\u200B');
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function escapeHtmlPreservingWhitespace(value: string): string {
+  return escapeHtml(value)
+    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
+    .replace(/ {2,}/g, (match) => '&nbsp;'.repeat(match.length));
+}
+
+function escapeAttribute(value: string): string {
+  return escapeHtml(value);
 }

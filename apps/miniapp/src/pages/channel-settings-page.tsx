@@ -14,6 +14,7 @@ import {
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -52,7 +53,6 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import { maxNotify, openMaxBotLinkAndClose, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -2127,13 +2127,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   Черновик
                                 </span>
                                 <strong>Редактирование рассылки</strong>
-                                <small>
-                                  {formatSupportedMarkdownPreview(
-                                    editingManagedBroadcast.text,
-                                    140,
-                                  ) ||
-                                    (editingManagedBroadcast.imageEnabled ? 'Фото без текста' : '')}
-                                </small>
+                                <MaxMarkdownPreview
+                                  value={editingManagedBroadcast.text}
+                                  className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
+                                  normalizeWhitespace
+                                  fallback={
+                                    editingManagedBroadcast.imageEnabled ? 'Фото без текста' : null
+                                  }
+                                />
                               </span>
                               <span className="managed-broadcast-card__aside">
                                 <span className={cn('managed-broadcast-card__metric', 'is-active')}>
@@ -2232,12 +2233,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                         {resolveManagedBroadcastCardBadge(broadcast)}
                                       </span>
                                       <strong>{resolveManagedBroadcastCardTitle(broadcast)}</strong>
-                                      <small>
-                                        {formatSupportedMarkdownPreview(
-                                          broadcast.textPreview,
-                                          140,
-                                        ) || broadcast.textPreview}
-                                      </small>
+                                      <MaxMarkdownPreview
+                                        value={broadcast.textPreview}
+                                        className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
+                                        normalizeWhitespace
+                                        fallback={broadcast.hasImage ? 'Фото без текста' : null}
+                                      />
                                     </span>
                                     <span className="managed-broadcast-card__aside">
                                       <span
@@ -2394,10 +2395,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         open={managedBroadcastDeleteTarget !== null}
         title="Удалить рассылку?"
         previewTitle={
-          managedBroadcastDeleteTarget
-            ? formatSupportedMarkdownPreview(managedBroadcastDeleteTarget.textPreview, 140) ||
-              managedBroadcastDeleteTarget.textPreview
-            : undefined
+          managedBroadcastDeleteTarget ? (
+            <MaxMarkdownPreview
+              value={managedBroadcastDeleteTarget.textPreview}
+              className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
+              normalizeWhitespace
+              fallback={managedBroadcastDeleteTarget.hasImage ? 'Фото без текста' : null}
+            />
+          ) : undefined
         }
         previewMeta={
           managedBroadcastDeleteTarget

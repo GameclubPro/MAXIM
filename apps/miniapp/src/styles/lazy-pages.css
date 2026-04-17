@@ -2665,6 +2665,47 @@
   gap: 12px;
 }
 
+.max-markdown-preview {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  color: inherit;
+  overflow-wrap: anywhere;
+}
+
+.max-markdown-preview strong {
+  font-weight: 700;
+}
+
+.max-markdown-preview em {
+  font-style: italic;
+}
+
+.max-markdown-preview u,
+.max-markdown-preview a {
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.14em;
+}
+
+.max-markdown-preview code {
+  font-size: 0.92em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  padding: 0 0.28em;
+  border-radius: 0.42em;
+  background: rgba(20, 52, 82, 0.08);
+}
+
+.max-markdown-preview a {
+  color: inherit;
+}
+
+.max-markdown-preview--clamp-2 {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .managed-broadcast-card__main {
   display: grid;
   gap: 4px;
@@ -2707,22 +2748,17 @@
   color: var(--text-secondary);
 }
 
-.managed-broadcast-card__main strong {
+.managed-broadcast-card__main > strong {
   font-size: 0.92rem;
   line-height: 1.18;
   letter-spacing: -0.03em;
   color: var(--text-primary);
 }
 
-.managed-broadcast-card__main small {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+.managed-broadcast-card__preview {
   font-size: 0.74rem;
   line-height: 1.32;
   color: var(--text-secondary);
-  overflow-wrap: anywhere;
 }
 
 .managed-broadcast-card__aside {
@@ -4811,15 +4847,11 @@
   gap: 10px;
 }
 
-.broadcast-planner__day-agenda-copy strong {
+.broadcast-planner__day-agenda-preview {
   font-size: 0.89rem;
   line-height: 1.32;
   color: var(--text-primary);
   letter-spacing: -0.02em;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .broadcast-planner__day-agenda-chevron {
@@ -5071,18 +5103,14 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.86);
 }
 
-.action-confirm-sheet__preview strong {
+.action-confirm-sheet__preview-title {
   font-size: 0.85rem;
   line-height: 1.3;
   color: var(--text-primary);
   letter-spacing: -0.02em;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
-.action-confirm-sheet__preview small {
+.action-confirm-sheet__preview-meta {
   font-size: 0.72rem;
   line-height: 1.38;
   color: var(--text-secondary);

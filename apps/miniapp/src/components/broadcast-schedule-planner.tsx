@@ -1,6 +1,7 @@
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import {
   BROADCAST_SCHEDULE_MAX_DAYS,
@@ -57,6 +58,7 @@ type BroadcastScheduleAgendaEntry = {
   id: string;
   dayKey: string;
   title: string;
+  previewSource: string;
   statusLabel: string | null;
   tone: BroadcastScheduleAgendaTone;
   timeSlots: string[];
@@ -199,7 +201,10 @@ function buildAgendaEntries(
       entries.push({
         id: broadcast.id,
         dayKey,
-        title: formatSupportedMarkdownPreview(broadcast.textPreview, 120) || broadcast.textPreview,
+        title:
+          formatSupportedMarkdownPreview(broadcast.textPreview, 120) ||
+          (broadcast.hasImage ? 'Фото без текста' : broadcast.textPreview),
+        previewSource: broadcast.textPreview,
         statusLabel: resolveAgendaStatusLabel(broadcast.status),
         tone: resolveAgendaTone(broadcast.status),
         timeSlots: sortAndUniqueBroadcastSlots(timeSlots),
@@ -1011,7 +1016,12 @@ export function BroadcastSchedulePlanner({
                                 <div className="broadcast-planner__day-agenda-head">
                                   <div className="broadcast-planner__day-agenda-copy">
                                     <div className="broadcast-planner__day-agenda-title-row">
-                                      <strong>{entry.title}</strong>
+                                      <MaxMarkdownPreview
+                                        value={entry.previewSource}
+                                        className="broadcast-planner__day-agenda-preview max-markdown-preview--clamp-2"
+                                        normalizeWhitespace
+                                        fallback={entry.title}
+                                      />
                                       {entry.canEdit ? (
                                         <span
                                           className="broadcast-planner__day-agenda-chevron"

@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 
@@ -7,8 +7,8 @@ type ActionConfirmSheetProps = {
   open: boolean;
   title: string;
   summary?: string;
-  previewTitle?: string;
-  previewMeta?: string;
+  previewTitle?: ReactNode;
+  previewMeta?: ReactNode;
   confirmLabel: string;
   confirmBusyLabel?: string;
   cancelLabel?: string;
@@ -94,8 +94,12 @@ export function ActionConfirmSheet({
 
           {previewTitle || previewMeta ? (
             <div className="action-confirm-sheet__preview">
-              {previewTitle ? <strong>{previewTitle}</strong> : null}
-              {previewMeta ? <small>{previewMeta}</small> : null}
+              {previewTitle ? (
+                <div className="action-confirm-sheet__preview-title">{previewTitle}</div>
+              ) : null}
+              {previewMeta ? (
+                <div className="action-confirm-sheet__preview-meta">{previewMeta}</div>
+              ) : null}
             </div>
           ) : null}
 
