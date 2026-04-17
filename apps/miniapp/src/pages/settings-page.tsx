@@ -9828,20 +9828,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--planner">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Календарь</strong>
+                                  <strong>Расписание</strong>
                                 </div>
-                                <span
-                                  className={cn(
-                                    'broadcast-stage-card__status',
-                                    mailingHasFutureSlots ? 'is-ready' : 'is-pending',
-                                  )}
-                                >
-                                  {mailingQuickSchedule
-                                    ? mailingQuickSchedule.summary
-                                    : mailingHasFutureSlots
-                                      ? mailingSlotsLabel
-                                      : 'Нет слотов'}
-                                </span>
                               </div>
 
                               <div className="broadcast-stage-card__body">

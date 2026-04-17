@@ -273,6 +273,10 @@ function formatMinuteLabel(minutes: number): string {
   return `${String(hours).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
 }
 
+function snapMinutesToStep(minutes: number): number {
+  return Math.ceil(minutes / BROADCAST_SCHEDULE_STEP_MINUTES) * BROADCAST_SCHEDULE_STEP_MINUTES;
+}
+
 function getSelectedDaySlots(dayKey: string, slots: string[]): string[] {
   return slots.filter((slot) => getBroadcastScheduleDayKey(slot) === dayKey);
 }
@@ -288,6 +292,35 @@ function formatDaySummary(dayKeys: string[]): string {
   }
 
   return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
+}
+
+function getSuggestedMinutes(dayKey: string, minimumTimeMs: number): number[] {
+  const minimumDate = new Date(minimumTimeMs);
+  const minimumDayKey = getBroadcastScheduleDayKey(minimumDate);
+  const baseCandidates =
+    dayKey === minimumDayKey
+      ? [
+          snapMinutesToStep(minimumDate.getHours() * 60 + minimumDate.getMinutes()),
+          snapMinutesToStep(minimumDate.getHours() * 60 + minimumDate.getMinutes()) + 60,
+          18 * 60,
+          21 * 60,
+        ]
+      : [9 * 60, 13 * 60, 18 * 60, 21 * 60];
+
+  return Array.from(
+    new Set(
+      baseCandidates.filter((minutes) => {
+        if (minutes < 0 || minutes >= 24 * 60) {
+          return false;
+        }
+
+        return (
+          buildBroadcastScheduleSlotIso(dayKey, minutes).localeCompare(minimumDate.toISOString()) >=
+          0
+        );
+      }),
+    ),
+  ).slice(0, 4);
 }
 
 export function BroadcastSchedulePlanner({
@@ -373,6 +406,12 @@ export function BroadcastSchedulePlanner({
     dayKey,
     slots: getSelectedDaySlots(dayKey, normalizedValue),
   }));
+  const pickedSlotsCount = pickedDayKeys.reduce(
+    (count, dayKey) => count + getSelectedDaySlots(dayKey, normalizedValue).length,
+    0,
+  );
+  const suggestedMinutes =
+    sheetMode === 'time' ? getSuggestedMinutes(activeDayKey, minimumTime) : [];
 
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
@@ -506,6 +545,27 @@ export function BroadcastSchedulePlanner({
     if (quickPreset) {
       onClearQuickPreset?.();
     }
+  }
+
+  function getMinuteChipState(minutes: number) {
+    const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
+      isSlotSelectedForDay(dayKey, minutes),
+    ).length;
+    const busyTargetCount = targetDayKeys.filter((dayKey) => isSlotBusy(dayKey, minutes)).length;
+    const pastRestrictionCount = targetDayKeys.filter(
+      (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
+    ).length;
+    const isSelected = selectedCountForTargets === targetDayKeys.length;
+    const isMixed = selectedCountForTargets > 0 && selectedCountForTargets < targetDayKeys.length;
+    const hasBusy = busyTargetCount > 0 && !isSelected && !isMixed;
+    const hasPastRestriction = pastRestrictionCount > 0 && !isSelected && !isMixed;
+
+    return {
+      isSelected,
+      isMixed,
+      hasBusy,
+      hasPastRestriction,
+    };
   }
 
   function isSlotInPast(dayKey: string, minutes: number): boolean {
@@ -850,47 +910,28 @@ export function BroadcastSchedulePlanner({
             })}
           </div>
           {pickedDayKeys.length > 0 ? (
-            <div className="broadcast-planner__selection-tools">
-              <div className="broadcast-planner__picked-strip" aria-label="Выбранные дни">
-                {pickedDayKeys.map((dayKey) => {
-                  const slotsCount = getSelectedDaySlots(dayKey, normalizedValue).length;
-                  return (
-                    <button
-                      key={dayKey}
-                      type="button"
-                      className={cn(
-                        'broadcast-planner__picked-chip',
-                        dayKey === activeDayKey && 'is-active',
-                      )}
-                      onClick={() => {
-                        setActiveDayKey(dayKey);
-                        maxSelectionChanged();
-                      }}
-                      disabled={disabled}
-                    >
-                      <strong>{formatDayChipLabel(dayKey)}</strong>
-                      <small>
-                        {slotsCount > 0
-                          ? formatCountLabel(slotsCount, 'слот', 'слота', 'слотов')
-                          : 'без времени'}
-                      </small>
-                    </button>
-                  );
-                })}
+            <div className="broadcast-planner__dock">
+              <div className="broadcast-planner__dock-copy">
+                <strong>{pickedDaySummary}</strong>
+                <small>
+                  {pickedSlotsCount > 0
+                    ? `${formatCountLabel(pickedSlotsCount, 'слот', 'слота', 'слотов')} · ${pickedDayLabel}`
+                    : pickedDayLabel}
+                </small>
               </div>
-
-              <div className="broadcast-planner__selection-actions">
+              <div className="broadcast-planner__dock-actions">
                 <button
                   type="button"
-                  className="broadcast-planner__selection-reset"
+                  className="broadcast-planner__dock-clear"
                   onClick={clearPickedSelection}
                   disabled={disabled}
+                  aria-label="Снять выбор дней"
                 >
-                  Снять
+                  ×
                 </button>
                 <button
                   type="button"
-                  className="broadcast-planner__selection-open"
+                  className="broadcast-planner__dock-primary"
                   onClick={openTimeStep}
                   disabled={disabled || pickedDayKeys.length === 0}
                 >
@@ -899,16 +940,23 @@ export function BroadcastSchedulePlanner({
               </div>
             </div>
           ) : quickSelection ? (
-            <button
-              type="button"
-              className="broadcast-planner__quick-summary"
-              onClick={() => onClearQuickPreset?.()}
-              disabled={disabled}
-            >
-              <strong>{quickSelection.label}</strong>
-              <span>{quickSelection.summary}</span>
-              <small>×</small>
-            </button>
+            <div className={cn('broadcast-planner__dock', 'is-quick')}>
+              <div className="broadcast-planner__dock-copy">
+                <strong>{quickSelection.label}</strong>
+                <small>{quickSelection.summary}</small>
+              </div>
+              <div className="broadcast-planner__dock-actions">
+                <button
+                  type="button"
+                  className="broadcast-planner__dock-clear"
+                  onClick={() => onClearQuickPreset?.()}
+                  disabled={disabled}
+                  aria-label="Отменить быстрое время"
+                >
+                  ×
+                </button>
+              </div>
+            </div>
           ) : scheduledDayCards.length > 0 ? (
             <div className="broadcast-planner__schedule-list">
               {scheduledDayCards.map(({ dayKey, slots }) => (
@@ -1003,8 +1051,9 @@ export function BroadcastSchedulePlanner({
                         className="broadcast-planner__clear-button"
                         onClick={closeDaySheet}
                         disabled={disabled}
+                        aria-label={sheetMode === 'agenda' ? 'Закрыть день' : 'Назад к календарю'}
                       >
-                        {sheetMode === 'agenda' ? 'Закрыть' : 'Назад'}
+                        {sheetMode === 'agenda' ? '×' : '←'}
                       </button>
                     </div>
                   </div>
@@ -1144,7 +1193,7 @@ export function BroadcastSchedulePlanner({
                           onClick={openTimeStepForAgendaDay}
                           disabled={disabled || !agendaDayKey}
                         >
-                          Добавить время в этот день
+                          Добавить время
                         </button>
                       </div>
                     </>
@@ -1198,6 +1247,31 @@ export function BroadcastSchedulePlanner({
                     </>
                   ) : null}
 
+                  {sheetMode === 'time' && suggestedMinutes.length > 0 ? (
+                    <div className="broadcast-planner__suggested-row" aria-label="Быстрые времена">
+                      {suggestedMinutes.map((minutes) => {
+                        const chipState = getMinuteChipState(minutes);
+                        return (
+                          <button
+                            key={`suggested-${minutes}`}
+                            type="button"
+                            className={cn(
+                              'broadcast-planner__suggested-chip',
+                              chipState.isSelected && 'is-selected',
+                              chipState.isMixed && 'is-mixed',
+                              chipState.hasBusy && 'is-busy',
+                              chipState.hasPastRestriction && 'is-disabled',
+                            )}
+                            onClick={() => toggleSlot(minutes)}
+                            disabled={disabled || chipState.hasPastRestriction}
+                          >
+                            {formatMinuteLabel(minutes)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
                   {!applyToAllPickedDays && activeDaySlots.length > 0 ? (
                     <div
                       className="broadcast-planner__selected-strip"
@@ -1218,24 +1292,7 @@ export function BroadcastSchedulePlanner({
                       </div>
                       <div className="broadcast-planner__time-grid">
                         {getMinutesList(group).map((minutes) => {
-                          const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
-                            isSlotSelectedForDay(dayKey, minutes),
-                          ).length;
-                          const busyTargetCount = targetDayKeys.filter((dayKey) =>
-                            isSlotBusy(dayKey, minutes),
-                          ).length;
-                          const pastRestrictionCount = targetDayKeys.filter(
-                            (dayKey) =>
-                              isSlotInPast(dayKey, minutes) &&
-                              !isSlotSelectedForDay(dayKey, minutes),
-                          ).length;
-                          const isSelected = selectedCountForTargets === targetDayKeys.length;
-                          const isMixed =
-                            selectedCountForTargets > 0 &&
-                            selectedCountForTargets < targetDayKeys.length;
-                          const hasBusy = busyTargetCount > 0 && !isSelected && !isMixed;
-                          const hasPastRestriction =
-                            pastRestrictionCount > 0 && !isSelected && !isMixed;
+                          const chipState = getMinuteChipState(minutes);
 
                           return (
                             <button
@@ -1243,13 +1300,13 @@ export function BroadcastSchedulePlanner({
                               type="button"
                               className={cn(
                                 'broadcast-planner__time-chip',
-                                isSelected && 'is-selected',
-                                isMixed && 'is-mixed',
-                                hasBusy && 'is-busy',
-                                hasPastRestriction && 'is-disabled',
+                                chipState.isSelected && 'is-selected',
+                                chipState.isMixed && 'is-mixed',
+                                chipState.hasBusy && 'is-busy',
+                                chipState.hasPastRestriction && 'is-disabled',
                               )}
                               onClick={() => toggleSlot(minutes)}
-                              disabled={disabled || hasPastRestriction}
+                              disabled={disabled || chipState.hasPastRestriction}
                             >
                               <strong>{formatMinuteLabel(minutes)}</strong>
                             </button>
@@ -1266,9 +1323,7 @@ export function BroadcastSchedulePlanner({
                       onClick={clearTargetDays}
                       disabled={disabled}
                     >
-                      {applyToAllPickedDays && pickedDayKeys.length > 1
-                        ? 'Очистить выбранные'
-                        : 'Очистить день'}
+                      Очистить
                     </button>
                     <button
                       type="button"
@@ -1279,7 +1334,7 @@ export function BroadcastSchedulePlanner({
                       }}
                       disabled={disabled}
                     >
-                      Сохранить
+                      Готово
                     </button>
                   </div>
                 </div>

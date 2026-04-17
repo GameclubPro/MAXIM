@@ -2009,20 +2009,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
-                          <strong>Календарь</strong>
+                          <strong>Расписание</strong>
                         </div>
-                        <span
-                          className={cn(
-                            'broadcast-stage-card__status',
-                            broadcastHasFutureSlots ? 'is-ready' : 'is-pending',
-                          )}
-                        >
-                          {broadcastQuickSchedule
-                            ? broadcastQuickSchedule.summary
-                            : broadcastHasFutureSlots
-                              ? broadcastSlotsLabel
-                              : 'Нет слотов'}
-                        </span>
                       </div>
 
                       <div className="broadcast-stage-card__body">

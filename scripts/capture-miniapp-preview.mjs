@@ -310,7 +310,7 @@ const scenarios = [
     beforeShot: async (page) => {
       await openBroadcastPlannerTimeSheet(page);
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: /Сохранить/u }).click();
+      await page.getByRole('button', { name: /Готово/u }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -377,7 +377,7 @@ const scenarios = [
     beforeShot: async (page) => {
       await openBroadcastPlannerTimeSheet(page);
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: /Сохранить/u }).click();
+      await page.getByRole('button', { name: /Готово/u }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -513,17 +513,28 @@ async function assertCommentsComposerPinned(page) {
 async function openBroadcastPlannerTimeSheet(page) {
   await page.waitForTimeout(1000);
 
+  const dockButton = page.getByRole('button', { name: /^Время$/u }).first();
+  if ((await dockButton.count()) > 0) {
+    await dockButton.click();
+    await page.waitForTimeout(350);
+    return;
+  }
+
   const selectedDayButton = page.locator('.broadcast-planner__day.is-selected').first();
   if ((await selectedDayButton.count()) > 0) {
     await selectedDayButton.click();
-    await page.waitForTimeout(300);
-    return;
+    await page.waitForTimeout(250);
+    if ((await dockButton.count()) > 0) {
+      await dockButton.click();
+      await page.waitForTimeout(350);
+      return;
+    }
   }
 
   const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
   if ((await scheduleCard.count()) > 0) {
     await scheduleCard.click();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(350);
     return;
   }
 
