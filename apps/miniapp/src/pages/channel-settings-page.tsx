@@ -21,6 +21,7 @@ import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
+import { ResetIcon } from '../components/ui/reset-icon';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -42,7 +43,6 @@ import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/s
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
-  formatBroadcastButtonsStatus,
   hasBroadcastLinkButtonErrors,
   trimBroadcastLinkButtons,
   validateBroadcastLinkButtons,
@@ -1384,11 +1384,27 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastQuickSchedule = broadcastQuickPreset
     ? resolveBroadcastQuickScheduleSelection(broadcastQuickPreset)
     : null;
+  const broadcastMessageFacts = [
+    broadcastImageEnabled ? 'Фото' : null,
+    broadcastHasButton
+      ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
+      : null,
+  ].filter((item): item is string => Boolean(item));
   const broadcastSlotsSummary = broadcastQuickSchedule
     ? broadcastQuickSchedule.summary
     : broadcastScheduledSlots.length > 0
       ? broadcastSlotsLabel
       : 'без слотов';
+  const broadcastSelectionSummary = [
+    broadcastPlannerState.selectedDayCount > 0
+      ? formatChannelCountLabel(broadcastPlannerState.selectedDayCount, 'день', 'дня', 'дней')
+      : null,
+    broadcastPlannerState.futureSlotCount > 0
+      ? formatChannelCountLabel(broadcastPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const broadcastPlannerPending =
     broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
   const broadcastScheduleReady =
@@ -1410,9 +1426,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastImageEnabled ||
     broadcastHasButton ||
     broadcastBotHasContent;
-  const broadcastHeaderSummary = [broadcastSlotsSummary, broadcastContentReady ? 'готово' : null]
-    .filter(Boolean)
-    .join(' · ');
+  const broadcastHeaderSummary = broadcastSlotsSummary;
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение через бота выключено'
     : draft.commentsModerationEnabled
@@ -1433,27 +1447,49 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : broadcastHasButton
         ? `${broadcastButtons.length} CTA`
         : 'Бот';
+  const broadcastResetActionLabel = editingManagedBroadcast
+    ? 'Сбросить изменения'
+    : broadcastBotHasContent
+      ? 'Очистить черновик в боте'
+      : 'Очистить рассылку';
+  const broadcastFooterTitle = editingManagedBroadcast
+    ? 'Сохранить рассылку'
+    : broadcastQuickSchedule
+      ? broadcastQuickSchedule.label
+      : broadcastSelectionSummary || 'Рассылка';
+  const broadcastFooterMeta = [
+    'Текущий канал',
+    !editingManagedBroadcast && broadcastBotHasContent ? 'В боте' : null,
+    broadcastImageEnabled ? 'Фото' : null,
+    broadcastHasButton
+      ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const broadcastDrilldownFooter = (
-    <>
-      <div className="settings-drilldown__footer-actions is-single-action">
-        <button
-          type="button"
-          className="button button--accent"
-          onClick={handleSendChannelBroadcast}
-          disabled={isBroadcastBusy}
-        >
-          {isUpdatingManagedBroadcast
-            ? 'Сохраняем...'
-            : handoffBroadcastMutation.isPending
-              ? 'Передаём в бота...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : editingManagedBroadcast
-                  ? 'Сохранить рассылку'
-                  : 'Открыть бота'}
-        </button>
+    <div className="broadcast-publish-bar">
+      <div className="broadcast-publish-bar__copy">
+        <strong>{broadcastFooterTitle}</strong>
+        <small>{broadcastFooterMeta}</small>
       </div>
-    </>
+      <button
+        type="button"
+        className="button button--accent broadcast-publish-bar__button"
+        onClick={handleSendChannelBroadcast}
+        disabled={isBroadcastBusy}
+      >
+        {isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : handoffBroadcastMutation.isPending
+            ? 'Передаём...'
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : editingManagedBroadcast
+                ? 'Сохранить'
+                : 'Открыть бота'}
+      </button>
+    </div>
   );
 
   function resetBroadcastPlanner() {
@@ -1993,19 +2029,69 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
                   {showBroadcastResetAction ? (
-                    <div className="managed-broadcast-editor-note__actions">
+                    <div className="broadcast-studio-shell__topbar">
                       <button
                         type="button"
-                        className="managed-broadcast-editor-note__link"
+                        className="broadcast-shell-reset"
                         onClick={handleClearBroadcastComposer}
                         disabled={isBroadcastBusy}
+                        aria-label={
+                          clearBroadcastHandoffMutation.isPending
+                            ? 'Сбрасываем'
+                            : broadcastResetActionLabel
+                        }
+                        title={
+                          clearBroadcastHandoffMutation.isPending
+                            ? 'Сбрасываем'
+                            : broadcastResetActionLabel
+                        }
                       >
-                        {clearBroadcastHandoffMutation.isPending ? 'Сбрасываем...' : 'Сбросить'}
+                        <ResetIcon />
                       </button>
                     </div>
                   ) : null}
 
                   <div className="broadcast-compose-flow">
+                    <div className="broadcast-stage-card broadcast-stage-card--message">
+                      <div className="broadcast-stage-card__head">
+                        <div className="broadcast-stage-card__title-wrap">
+                          <strong>Сообщение</strong>
+                        </div>
+                      </div>
+
+                      <div className="broadcast-stage-card__body">
+                        <div
+                          className={cn(
+                            'broadcast-message-card',
+                            !broadcastContentReady && 'is-empty',
+                          )}
+                        >
+                          <div className="broadcast-message-card__surface">
+                            {editingManagedBroadcast ? (
+                              <MaxMarkdownPreview
+                                value={broadcastText}
+                                className="broadcast-message-card__preview max-markdown-preview--clamp-3"
+                                normalizeWhitespace
+                                fallback={broadcastImageEnabled ? 'Фото без текста' : 'Пусто'}
+                              />
+                            ) : (
+                              <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">
+                                {broadcastBotHasContent ? 'В боте' : 'Пусто'}
+                              </span>
+                            )}
+                          </div>
+
+                          {broadcastMessageFacts.length > 0 ? (
+                            <div className="broadcast-message-card__facts">
+                              {broadcastMessageFacts.map((fact) => (
+                                <span key={`broadcast-message-${fact}`}>{fact}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
@@ -2055,101 +2141,93 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       </div>
                     </div>
 
-                    <div className="broadcast-stage-card">
+                    <div className="broadcast-stage-card broadcast-stage-card--cta">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
                           <strong>Кнопка</strong>
                         </div>
-                        <span
-                          className={cn(
-                            'broadcast-stage-card__status',
-                            broadcastHasButton ? 'is-ready' : 'is-muted',
-                          )}
-                        >
-                          {formatBroadcastButtonsStatus(normalizedBroadcastButtons)}
-                        </span>
                       </div>
 
                       <div className="broadcast-stage-card__body">
-                        <div className="mailing-options-grid">
-                          <div
+                        <div className="broadcast-cta-toggle">
+                          <span
                             className={cn(
-                              'mailing-option-card',
-                              broadcastHasButton && 'is-enabled',
-                              hasBroadcastLinkButtonErrors(broadcastButtonErrors) && 'field--error',
+                              'broadcast-cta-toggle__pill',
+                              broadcastHasButton && 'is-active',
                             )}
                           >
-                            <div className="mailing-option-card__head">
-                              <span className="mailing-option-card__title">Добавить кнопку</span>
+                            {broadcastHasButton
+                              ? normalizedBroadcastButtons[0]?.text || 'CTA'
+                              : 'Без CTA'}
+                          </span>
 
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Добавить кнопку в пост канала"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={broadcastHasButton}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    if (enabled && broadcastButtons.length === 0) {
-                                      setBroadcastButtonRevealSignal((current) => current + 1);
-                                    }
-                                    setBroadcastButtons((current) =>
-                                      enabled
-                                        ? current.length > 0
-                                          ? current
-                                          : [createEmptyBroadcastLinkButton()]
-                                        : [],
-                                    );
-                                    if (!enabled) {
-                                      setBroadcastButtonErrors([]);
-                                    }
-                                  }}
-                                  disabled={isBroadcastBusy}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-
-                            {broadcastHasButton ? (
-                              <div className="mailing-option-card__body">
-                                <BroadcastLinkButtonsEditor
-                                  api={api}
-                                  contextEntityType="channel"
-                                  buttons={broadcastButtons}
-                                  errors={broadcastButtonErrors}
-                                  revealNextStepSignal={broadcastButtonRevealSignal}
-                                  onChange={(nextButtons) => {
-                                    setBroadcastButtons(nextButtons);
-                                    if (broadcastButtonErrors.length > 0) {
-                                      setBroadcastButtonErrors([]);
-                                    }
-                                  }}
-                                  disabled={isBroadcastBusy}
-                                  urlPlaceholder="https://max.ru/channel/..."
-                                  textPlaceholder="Открыть"
-                                />
-                              </div>
-                            ) : null}
-                          </div>
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Добавить кнопку в пост канала"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={broadcastHasButton}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                if (enabled && broadcastButtons.length === 0) {
+                                  setBroadcastButtonRevealSignal((current) => current + 1);
+                                }
+                                setBroadcastButtons((current) =>
+                                  enabled
+                                    ? current.length > 0
+                                      ? current
+                                      : [createEmptyBroadcastLinkButton()]
+                                    : [],
+                                );
+                                if (!enabled) {
+                                  setBroadcastButtonErrors([]);
+                                }
+                              }}
+                              disabled={isBroadcastBusy}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
                         </div>
+
+                        {broadcastHasButton ? (
+                          <BroadcastLinkButtonsEditor
+                            api={api}
+                            contextEntityType="channel"
+                            buttons={broadcastButtons}
+                            errors={broadcastButtonErrors}
+                            revealNextStepSignal={broadcastButtonRevealSignal}
+                            compact
+                            title="CTA"
+                            subtitle=""
+                            onChange={(nextButtons) => {
+                              setBroadcastButtons(nextButtons);
+                              if (broadcastButtonErrors.length > 0) {
+                                setBroadcastButtonErrors([]);
+                              }
+                            }}
+                            disabled={isBroadcastBusy}
+                            urlPlaceholder="https://max.ru/channel/..."
+                            textPlaceholder="Открыть"
+                          />
+                        ) : null}
                       </div>
                     </div>
 
-                    <div className="broadcast-stage-card broadcast-stage-card--active">
+                    <div className="broadcast-stage-card broadcast-stage-card--feed">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
                           <strong>{editingManagedBroadcast ? 'Редактирование' : 'Рассылки'}</strong>
+                          <small>
+                            {editingManagedBroadcast
+                              ? 'Черновик'
+                              : orderedManagedBroadcasts.length > 0
+                                ? `${orderedManagedBroadcasts.length} в работе`
+                                : 'Пусто'}
+                          </small>
                         </div>
-                        <span className="broadcast-stage-card__status is-ready">
-                          {editingManagedBroadcast
-                            ? 'Изменяем'
-                            : orderedManagedBroadcasts.length > 0
-                              ? `${orderedManagedBroadcasts.length} в работе`
-                              : 'Пусто'}
-                        </span>
                       </div>
 
                       <div className="broadcast-stage-card__body">
@@ -2250,12 +2328,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               const isRetryingBroadcast =
                                 retryManagedBroadcastMutation.isPending &&
                                 retryManagedBroadcastMutation.variables === broadcast.id;
-
-                              return (
-                                <div
-                                  key={broadcast.id}
-                                  className={cn('managed-broadcast-card', `is-${cardTone}`)}
-                                >
+                              const cardBadge = isOpeningBroadcastEditor
+                                ? 'Открываем'
+                                : resolveManagedBroadcastCardBadge(broadcast);
+                              const content = (
+                                <>
                                   <div className="managed-broadcast-card__top">
                                     <span className="managed-broadcast-card__main">
                                       <span
@@ -2264,7 +2341,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                           `is-${cardTone}`,
                                         )}
                                       >
-                                        {resolveManagedBroadcastCardBadge(broadcast)}
+                                        {cardBadge}
                                       </span>
                                       <strong>{resolveManagedBroadcastCardTitle(broadcast)}</strong>
                                       <MaxMarkdownPreview
@@ -2294,44 +2371,61 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                     ))}
                                   </div>
 
-                                  <div className="managed-broadcast-card__body">
-                                    {broadcast.lastError ? (
-                                      <small className="managed-broadcast-card__error">
-                                        {broadcast.lastError}
-                                      </small>
-                                    ) : null}
-                                    <div className="managed-broadcast-card__actions">
-                                      {canEditBroadcastSchedule ? (
-                                        <button
-                                          type="button"
-                                          className="button button--ghost"
-                                          onClick={() => handleEditManagedBroadcast(broadcast)}
-                                          disabled={isBroadcastBusy}
-                                        >
-                                          {isOpeningBroadcastEditor ? 'Открываем...' : 'Изменить'}
-                                        </button>
-                                      ) : null}
-                                      {broadcast.canRetry ? (
-                                        <button
-                                          type="button"
-                                          className="button button--accent"
-                                          onClick={() =>
-                                            retryManagedBroadcastMutation.mutate(broadcast.id)
-                                          }
-                                          disabled={isBroadcastBusy}
-                                        >
-                                          {isRetryingBroadcast ? 'Повторяем...' : 'Повторить'}
-                                        </button>
-                                      ) : null}
+                                  {broadcast.lastError ? (
+                                    <small className="managed-broadcast-card__error">
+                                      {broadcast.lastError}
+                                    </small>
+                                  ) : null}
+                                </>
+                              );
+
+                              return (
+                                <div
+                                  key={broadcast.id}
+                                  className={cn(
+                                    'managed-broadcast-card',
+                                    `is-${cardTone}`,
+                                    canEditBroadcastSchedule && 'is-editable',
+                                  )}
+                                >
+                                  {canEditBroadcastSchedule ? (
+                                    <button
+                                      type="button"
+                                      className="managed-broadcast-card__surface"
+                                      onClick={() => handleEditManagedBroadcast(broadcast)}
+                                      disabled={isBroadcastBusy || isDeletingBroadcast}
+                                    >
+                                      {content}
+                                    </button>
+                                  ) : (
+                                    <div
+                                      className={cn('managed-broadcast-card__surface', 'is-static')}
+                                    >
+                                      {content}
+                                    </div>
+                                  )}
+
+                                  <div className="managed-broadcast-card__actions">
+                                    {broadcast.canRetry ? (
                                       <button
                                         type="button"
-                                        className="button button--danger"
-                                        onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                        className="button button--accent"
+                                        onClick={() =>
+                                          retryManagedBroadcastMutation.mutate(broadcast.id)
+                                        }
                                         disabled={isBroadcastBusy}
                                       >
-                                        {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                        {isRetryingBroadcast ? 'Повторяем...' : 'Повторить'}
                                       </button>
-                                    </div>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      className="button button--danger"
+                                      onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                      disabled={isBroadcastBusy}
+                                    >
+                                      {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                    </button>
                                   </div>
                                 </div>
                               );

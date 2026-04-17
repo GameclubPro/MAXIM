@@ -15,9 +15,10 @@ const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // the per-day broadcast agenda sheet, and the compact managed-broadcast
 // confirm flow, visual markdown preview rendering in compact broadcast
 // cards and sheets, the calendar-first quick scheduling planner,
-// and the premium planner dock plus smart quick-time suggestions
+// the premium planner dock plus smart quick-time suggestions,
+// and the richer broadcast compose/feed shell
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 5120;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 5632;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

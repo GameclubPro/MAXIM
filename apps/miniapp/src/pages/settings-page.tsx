@@ -65,6 +65,7 @@ import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
+import { ResetIcon } from '../components/ui/reset-icon';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -4831,7 +4832,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingTargetLabel = mailingApplyToAllChats ? 'Во все чаты' : 'Текущий чат';
   const mailingHeaderTargetLabel = mailingApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
@@ -4848,10 +4848,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingQuickSchedule = mailingQuickPreset
     ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
     : null;
+  const mailingMessageFacts = [
+    mailingImageEnabled ? 'Фото' : null,
+    mailingButtonEnabled
+      ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
+      : null,
+  ].filter((item): item is string => Boolean(item));
+  const mailingSelectionSummary = [
+    mailingPlannerState.selectedDayCount > 0
+      ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
+      : null,
+    mailingPlannerState.futureSlotCount > 0
+      ? formatRussianCountLabel(mailingPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const mailingHeaderSummary = [
-    mailingHeaderTargetLabel,
     mailingQuickSchedule ? mailingQuickSchedule.summary : mailingSlotsLabel,
-    mailingContentReady ? 'готово' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -4880,27 +4894,49 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       mailingHasFutureSlots);
   const mailingSendDisabled = isMailingBusy;
   const showMailingWorkspaceTabs = !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
+  const mailingResetActionLabel = editingManagedBroadcast
+    ? 'Сбросить изменения'
+    : mailingBotHasContent
+      ? 'Очистить черновик в боте'
+      : 'Очистить рассылку';
+  const mailingFooterTitle = editingManagedBroadcast
+    ? 'Сохранить рассылку'
+    : mailingQuickSchedule
+      ? mailingQuickSchedule.label
+      : mailingSelectionSummary || 'Рассылка';
+  const mailingFooterMeta = [
+    mailingHeaderTargetLabel,
+    !editingManagedBroadcast && mailingBotHasContent ? 'В боте' : null,
+    mailingImageEnabled ? 'Фото' : null,
+    mailingButtonEnabled
+      ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
+      : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const mailingDrilldownFooter = (
-    <>
-      <div className="settings-drilldown__footer-actions is-single-action">
-        <button
-          type="button"
-          className="button button--accent"
-          onClick={handleSendBroadcast}
-          disabled={mailingSendDisabled}
-        >
-          {isUpdatingManagedBroadcast
-            ? 'Сохраняем...'
-            : handoffBroadcastMutation.isPending
-              ? 'Передаём в бота...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : editingManagedBroadcast
-                  ? 'Сохранить рассылку'
-                  : 'Открыть бота'}
-        </button>
+    <div className="broadcast-publish-bar">
+      <div className="broadcast-publish-bar__copy">
+        <strong>{mailingFooterTitle}</strong>
+        <small>{mailingFooterMeta}</small>
       </div>
-    </>
+      <button
+        type="button"
+        className="button button--accent broadcast-publish-bar__button"
+        onClick={handleSendBroadcast}
+        disabled={mailingSendDisabled}
+      >
+        {isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : handoffBroadcastMutation.isPending
+            ? 'Передаём...'
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : editingManagedBroadcast
+                ? 'Сохранить'
+                : 'Открыть бота'}
+      </button>
+    </div>
   );
 
   useEffect(() => {
@@ -9756,72 +9792,107 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell">
-                        {showMailingWorkspaceTabs ? (
-                          <SegmentedControl
-                            className="broadcast-studio-shell__tabs"
-                            value={mailingWorkspaceView}
-                            onChange={setMailingWorkspaceView}
-                            options={[
-                              { value: 'compose', label: 'Сценарий' },
-                              {
-                                value: 'active',
-                                label: 'В работе',
-                                count: orderedManagedBroadcasts.length,
-                              },
-                            ]}
-                          />
-                        ) : null}
+                        {showMailingWorkspaceTabs || showMailingResetAction ? (
+                          <div className="broadcast-studio-shell__topbar">
+                            {showMailingWorkspaceTabs ? (
+                              <SegmentedControl
+                                className="broadcast-studio-shell__tabs"
+                                value={mailingWorkspaceView}
+                                onChange={setMailingWorkspaceView}
+                                options={[
+                                  { value: 'compose', label: 'Сценарий' },
+                                  {
+                                    value: 'active',
+                                    label: 'В работе',
+                                    count: orderedManagedBroadcasts.length,
+                                  },
+                                ]}
+                              />
+                            ) : null}
 
-                        {showMailingResetAction ? (
-                          <div className="managed-broadcast-editor-note__actions">
-                            <button
-                              type="button"
-                              className="managed-broadcast-editor-note__link"
-                              onClick={handleClearMailingComposer}
-                              disabled={isMailingBusy}
-                            >
-                              {clearBroadcastHandoffMutation.isPending
-                                ? 'Сбрасываем...'
-                                : 'Сбросить'}
-                            </button>
+                            {showMailingResetAction ? (
+                              <button
+                                type="button"
+                                className="broadcast-shell-reset"
+                                onClick={handleClearMailingComposer}
+                                disabled={isMailingBusy}
+                                aria-label={
+                                  clearBroadcastHandoffMutation.isPending
+                                    ? 'Сбрасываем'
+                                    : mailingResetActionLabel
+                                }
+                                title={
+                                  clearBroadcastHandoffMutation.isPending
+                                    ? 'Сбрасываем'
+                                    : mailingResetActionLabel
+                                }
+                              >
+                                <ResetIcon />
+                              </button>
+                            ) : null}
                           </div>
                         ) : null}
 
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow">
-                            <div className="broadcast-stage-card">
+                            <div className="broadcast-stage-card broadcast-stage-card--message">
+                              <div className="broadcast-stage-card__head">
+                                <div className="broadcast-stage-card__title-wrap">
+                                  <strong>Сообщение</strong>
+                                </div>
+                              </div>
+
+                              <div className="broadcast-stage-card__body">
+                                <div
+                                  className={cn(
+                                    'broadcast-message-card',
+                                    !mailingContentReady && 'is-empty',
+                                  )}
+                                >
+                                  <div className="broadcast-message-card__surface">
+                                    {editingManagedBroadcast ? (
+                                      <MaxMarkdownPreview
+                                        value={mailingText}
+                                        className="broadcast-message-card__preview max-markdown-preview--clamp-3"
+                                        normalizeWhitespace
+                                        fallback={mailingImageEnabled ? 'Фото без текста' : 'Пусто'}
+                                      />
+                                    ) : (
+                                      <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">
+                                        {mailingBotHasContent ? 'В боте' : 'Пусто'}
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {mailingMessageFacts.length > 0 ? (
+                                    <div className="broadcast-message-card__facts">
+                                      {mailingMessageFacts.map((fact) => (
+                                        <span key={`mailing-message-${fact}`}>{fact}</span>
+                                      ))}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="broadcast-stage-card broadcast-stage-card--scope">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
                                   <strong>Охват</strong>
                                 </div>
-                                <span className="broadcast-stage-card__status is-ready">
-                                  {mailingTargetLabel}
-                                </span>
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <div className="mailing-target-card">
-                                  <div className="mailing-target-card__row">
-                                    <span className="mailing-target-card__title">Все чаты</span>
-
-                                    <label
-                                      className="settings-native-switch"
-                                      aria-label="Применить рассылку во всех чатах"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={mailingApplyToAllChats}
-                                        onChange={(event) =>
-                                          setMailingApplyToAllChats(event.target.checked)
-                                        }
-                                        disabled={isMailingBusy}
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </label>
-                                  </div>
-                                </div>
+                                <SegmentedControl
+                                  className="broadcast-scope-control"
+                                  ariaLabel="Охват рассылки"
+                                  value={mailingApplyToAllChats ? 'all' : 'current'}
+                                  onChange={(value) => setMailingApplyToAllChats(value === 'all')}
+                                  options={[
+                                    { value: 'current', label: 'Текущий чат' },
+                                    { value: 'all', label: 'Все чаты' },
+                                  ]}
+                                />
                               </div>
                             </div>
 
@@ -9874,106 +9945,93 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
                             </div>
 
-                            <div className="broadcast-stage-card">
+                            <div className="broadcast-stage-card broadcast-stage-card--cta">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
                                   <strong>Кнопка</strong>
                                 </div>
-                                <span
-                                  className={cn(
-                                    'broadcast-stage-card__status',
-                                    mailingButtonEnabled ? 'is-ready' : 'is-muted',
-                                  )}
-                                >
-                                  {formatBroadcastButtonsStatus(normalizedMailingButtons)}
-                                </span>
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <div className="mailing-options-grid">
-                                  <div
+                                <div className="broadcast-cta-toggle">
+                                  <span
                                     className={cn(
-                                      'mailing-option-card',
-                                      mailingButtonEnabled && 'is-enabled',
-                                      hasBroadcastLinkButtonErrors(mailingButtonErrors) &&
-                                        'field--error',
+                                      'broadcast-cta-toggle__pill',
+                                      mailingButtonEnabled && 'is-active',
                                     )}
                                   >
-                                    <div className="mailing-option-card__head">
-                                      <span className="mailing-option-card__title">
-                                        Добавить кнопку
-                                      </span>
+                                    {mailingButtonEnabled
+                                      ? normalizedMailingButtons[0]?.text || 'CTA'
+                                      : 'Без CTA'}
+                                  </span>
 
-                                      <label
-                                        className="settings-native-switch"
-                                        aria-label="Добавить кнопку в рассылку"
-                                      >
-                                        <input
-                                          type="checkbox"
-                                          checked={mailingButtonEnabled}
-                                          onChange={(event) => {
-                                            const enabled = event.target.checked;
-                                            if (enabled && mailingButtons.length === 0) {
-                                              setMailingButtonRevealSignal(
-                                                (current) => current + 1,
-                                              );
-                                            }
-                                            setMailingButtons((current) =>
-                                              enabled
-                                                ? current.length > 0
-                                                  ? current
-                                                  : [createEmptyBroadcastLinkButton()]
-                                                : [],
-                                            );
-                                            if (!enabled) {
-                                              setMailingButtonErrors([]);
-                                            }
-                                          }}
-                                          disabled={isMailingBusy}
-                                        />
-                                        <span className="toggle-switch" aria-hidden>
-                                          <span className="toggle-switch__thumb" />
-                                        </span>
-                                      </label>
-                                    </div>
-
-                                    {mailingButtonEnabled ? (
-                                      <div className="mailing-option-card__body">
-                                        <BroadcastLinkButtonsEditor
-                                          api={api}
-                                          buttons={mailingButtons}
-                                          errors={mailingButtonErrors}
-                                          revealNextStepSignal={mailingButtonRevealSignal}
-                                          onChange={(nextButtons) => {
-                                            setMailingButtons(nextButtons);
-                                            if (mailingButtonErrors.length > 0) {
-                                              setMailingButtonErrors([]);
-                                            }
-                                          }}
-                                          disabled={isMailingBusy}
-                                          urlPlaceholder="https://max.ru/channel/..."
-                                          textPlaceholder="Открыть"
-                                        />
-                                      </div>
-                                    ) : null}
-                                  </div>
+                                  <label
+                                    className="settings-native-switch"
+                                    aria-label="Добавить кнопку в рассылку"
+                                  >
+                                    <input
+                                      type="checkbox"
+                                      checked={mailingButtonEnabled}
+                                      onChange={(event) => {
+                                        const enabled = event.target.checked;
+                                        if (enabled && mailingButtons.length === 0) {
+                                          setMailingButtonRevealSignal((current) => current + 1);
+                                        }
+                                        setMailingButtons((current) =>
+                                          enabled
+                                            ? current.length > 0
+                                              ? current
+                                              : [createEmptyBroadcastLinkButton()]
+                                            : [],
+                                        );
+                                        if (!enabled) {
+                                          setMailingButtonErrors([]);
+                                        }
+                                      }}
+                                      disabled={isMailingBusy}
+                                    />
+                                    <span className="toggle-switch" aria-hidden>
+                                      <span className="toggle-switch__thumb" />
+                                    </span>
+                                  </label>
                                 </div>
+
+                                {mailingButtonEnabled ? (
+                                  <BroadcastLinkButtonsEditor
+                                    api={api}
+                                    buttons={mailingButtons}
+                                    errors={mailingButtonErrors}
+                                    revealNextStepSignal={mailingButtonRevealSignal}
+                                    compact
+                                    title="CTA"
+                                    subtitle=""
+                                    onChange={(nextButtons) => {
+                                      setMailingButtons(nextButtons);
+                                      if (mailingButtonErrors.length > 0) {
+                                        setMailingButtonErrors([]);
+                                      }
+                                    }}
+                                    disabled={isMailingBusy}
+                                    urlPlaceholder="https://max.ru/channel/..."
+                                    textPlaceholder="Открыть"
+                                  />
+                                ) : null}
                               </div>
                             </div>
                           </div>
                         ) : (
-                          <div className="broadcast-stage-card broadcast-stage-card--active">
+                          <div className="broadcast-stage-card broadcast-stage-card--feed">
                             <div className="broadcast-stage-card__head">
                               <div className="broadcast-stage-card__title-wrap">
                                 <strong>В работе</strong>
+                                <small>
+                                  {managedBroadcastsQuery.isLoading
+                                    ? 'Загрузка'
+                                    : orderedManagedBroadcasts.length > 0
+                                      ? `${orderedManagedBroadcasts.length} в работе`
+                                      : 'Пусто'}
+                                </small>
                               </div>
-                              <span className="broadcast-stage-card__status is-ready">
-                                {managedBroadcastsQuery.isLoading
-                                  ? 'Загрузка...'
-                                  : orderedManagedBroadcasts.length > 0
-                                    ? `${orderedManagedBroadcasts.length} в работе`
-                                    : 'Пусто'}
-                              </span>
                             </div>
 
                             <div className="broadcast-stage-card__body">
@@ -10003,12 +10061,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   const isRetryingBroadcast =
                                     retryManagedBroadcastMutation.isPending &&
                                     retryManagedBroadcastMutation.variables === broadcast.id;
-
-                                  return (
-                                    <div
-                                      key={broadcast.id}
-                                      className={cn('managed-broadcast-card', `is-${cardTone}`)}
-                                    >
+                                  const cardBadge = isOpeningBroadcastEditor
+                                    ? 'Открываем'
+                                    : resolveManagedBroadcastCardBadge(broadcast);
+                                  const content = (
+                                    <>
                                       <div className="managed-broadcast-card__top">
                                         <span className="managed-broadcast-card__main">
                                           <span
@@ -10017,7 +10074,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                               `is-${cardTone}`,
                                             )}
                                           >
-                                            {resolveManagedBroadcastCardBadge(broadcast)}
+                                            {cardBadge}
                                           </span>
                                           <strong>
                                             {resolveManagedBroadcastCardTitle(broadcast)}
@@ -10049,48 +10106,64 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ))}
                                       </div>
 
-                                      <div className="managed-broadcast-card__body">
-                                        {broadcast.lastError ? (
-                                          <small className="managed-broadcast-card__error">
-                                            {broadcast.lastError}
-                                          </small>
-                                        ) : null}
-                                        <div className="managed-broadcast-card__actions">
-                                          {canEditBroadcastSchedule ? (
-                                            <button
-                                              type="button"
-                                              className="button button--ghost"
-                                              onClick={() => handleEditManagedBroadcast(broadcast)}
-                                              disabled={isMailingBusy}
-                                            >
-                                              {isOpeningBroadcastEditor
-                                                ? 'Открываем...'
-                                                : 'Изменить'}
-                                            </button>
-                                          ) : null}
-                                          {broadcast.canRetry ? (
-                                            <button
-                                              type="button"
-                                              className="button button--accent"
-                                              onClick={() =>
-                                                retryManagedBroadcastMutation.mutate(broadcast.id)
-                                              }
-                                              disabled={isMailingBusy}
-                                            >
-                                              {isRetryingBroadcast
-                                                ? 'Повторяем...'
-                                                : 'Повторить ошибки'}
-                                            </button>
-                                          ) : null}
+                                      {broadcast.lastError ? (
+                                        <small className="managed-broadcast-card__error">
+                                          {broadcast.lastError}
+                                        </small>
+                                      ) : null}
+                                    </>
+                                  );
+
+                                  return (
+                                    <div
+                                      key={broadcast.id}
+                                      className={cn(
+                                        'managed-broadcast-card',
+                                        `is-${cardTone}`,
+                                        canEditBroadcastSchedule && 'is-editable',
+                                      )}
+                                    >
+                                      {canEditBroadcastSchedule ? (
+                                        <button
+                                          type="button"
+                                          className="managed-broadcast-card__surface"
+                                          onClick={() => handleEditManagedBroadcast(broadcast)}
+                                          disabled={isMailingBusy || isDeletingBroadcast}
+                                        >
+                                          {content}
+                                        </button>
+                                      ) : (
+                                        <div
+                                          className={cn(
+                                            'managed-broadcast-card__surface',
+                                            'is-static',
+                                          )}
+                                        >
+                                          {content}
+                                        </div>
+                                      )}
+
+                                      <div className="managed-broadcast-card__actions">
+                                        {broadcast.canRetry ? (
                                           <button
                                             type="button"
-                                            className="button button--danger"
-                                            onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                            className="button button--accent"
+                                            onClick={() =>
+                                              retryManagedBroadcastMutation.mutate(broadcast.id)
+                                            }
                                             disabled={isMailingBusy}
                                           >
-                                            {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                            {isRetryingBroadcast ? 'Повторяем...' : 'Повторить'}
                                           </button>
-                                        </div>
+                                        ) : null}
+                                        <button
+                                          type="button"
+                                          className="button button--danger"
+                                          onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                          disabled={isMailingBusy}
+                                        >
+                                          {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                        </button>
                                       </div>
                                     </div>
                                   );

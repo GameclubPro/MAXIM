@@ -294,6 +294,18 @@ function formatDaySummary(dayKeys: string[]): string {
   return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
 }
 
+function formatDayDensityLabel(slotCount: number): string {
+  if (slotCount <= 0) {
+    return '';
+  }
+
+  if (slotCount >= 4) {
+    return '4+';
+  }
+
+  return String(slotCount);
+}
+
 function getSuggestedMinutes(dayKey: string, minimumTimeMs: number): number[] {
   const minimumDate = new Date(minimumTimeMs);
   const minimumDayKey = getBroadcastScheduleDayKey(minimumDate);
@@ -360,6 +372,7 @@ export function BroadcastSchedulePlanner({
   const [agendaDayKey, setAgendaDayKey] = useState<string | null>(null);
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
+  const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
 
   const windowStart = startOfDay(anchorNow);
   const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
@@ -492,6 +505,15 @@ export function BroadcastSchedulePlanner({
       setIsConfirmed(false);
     }
   }, [normalizedValue.length]);
+
+  useEffect(() => {
+    if (sheetMode !== 'time') {
+      setShowFullTimeGrid(false);
+      return;
+    }
+
+    setShowFullTimeGrid(suggestedMinutes.length === 0);
+  }, [activeDayKey, applyToAllPickedDays, sheetMode, suggestedMinutes.length]);
 
   useEffect(() => {
     if (!quickPreset) {
@@ -732,6 +754,11 @@ export function BroadcastSchedulePlanner({
     maxImpact(shouldAdd ? 'light' : 'soft');
   }
 
+  function revealFullTimeGrid() {
+    setShowFullTimeGrid(true);
+    maxImpact('soft');
+  }
+
   const monthCells = getMonthCells(visibleMonthKey);
 
   return (
@@ -813,12 +840,6 @@ export function BroadcastSchedulePlanner({
               const isToday = dayKey === liveTodayKey;
               const isActive = dayKey === activeDayKey;
               const isPicked = pickedDaySet.has(dayKey);
-              const dayIndicatorCount =
-                daySlots.length > 0
-                  ? Math.min(daySlots.length, 3)
-                  : isPicked || busyCount > 0
-                    ? 1
-                    : 0;
               const dayAriaLabelParts = [formatDayChipLabel(dayKey)];
 
               if (isToday) {
@@ -884,7 +905,18 @@ export function BroadcastSchedulePlanner({
                     <span className="broadcast-planner__day-number">{cell.getDate()}</span>
                   </div>
                   <div className="broadcast-planner__day-foot">
-                    {daySlots.length === 0 && !isPicked && agendaCount > 0 ? (
+                    {daySlots.length > 0 ? (
+                      <span
+                        className={cn(
+                          'broadcast-planner__day-density',
+                          isPicked && 'is-picked',
+                          isActive && isPicked && 'is-active',
+                        )}
+                        aria-hidden
+                      >
+                        {formatDayDensityLabel(daySlots.length)}
+                      </span>
+                    ) : !isPicked && agendaCount > 0 ? (
                       <span className="broadcast-planner__day-count" aria-hidden>
                         {agendaCount}
                       </span>
@@ -892,16 +924,13 @@ export function BroadcastSchedulePlanner({
                       <span
                         className={cn(
                           'broadcast-planner__day-indicators',
-                          daySlots.length > 0 && 'is-selected',
                           isPicked && daySlots.length === 0 && 'is-picked',
                           busyCount > 0 && daySlots.length === 0 && !isPicked && 'is-busy',
-                          dayIndicatorCount === 0 && 'is-empty',
+                          !isPicked && busyCount === 0 && 'is-empty',
                         )}
                         aria-hidden
                       >
-                        {Array.from({ length: Math.max(dayIndicatorCount, 1) }).map((_, index) => (
-                          <span key={`${dayKey}-${index}`} className="broadcast-planner__day-dot" />
-                        ))}
+                        <span className="broadcast-planner__day-dot" />
                       </span>
                     )}
                   </div>
@@ -1285,36 +1314,49 @@ export function BroadcastSchedulePlanner({
                     </div>
                   ) : null}
 
-                  {SLOT_GROUPS.map((group) => (
-                    <div key={group.label} className="broadcast-planner__time-group">
-                      <div className="broadcast-planner__time-group-head">
-                        <strong>{group.label}</strong>
-                      </div>
-                      <div className="broadcast-planner__time-grid">
-                        {getMinutesList(group).map((minutes) => {
-                          const chipState = getMinuteChipState(minutes);
+                  {sheetMode === 'time' && suggestedMinutes.length > 0 && !showFullTimeGrid ? (
+                    <button
+                      type="button"
+                      className="broadcast-planner__expand-grid"
+                      onClick={revealFullTimeGrid}
+                      disabled={disabled}
+                    >
+                      Ещё время
+                    </button>
+                  ) : null}
 
-                          return (
-                            <button
-                              key={`${group.label}-${minutes}`}
-                              type="button"
-                              className={cn(
-                                'broadcast-planner__time-chip',
-                                chipState.isSelected && 'is-selected',
-                                chipState.isMixed && 'is-mixed',
-                                chipState.hasBusy && 'is-busy',
-                                chipState.hasPastRestriction && 'is-disabled',
-                              )}
-                              onClick={() => toggleSlot(minutes)}
-                              disabled={disabled || chipState.hasPastRestriction}
-                            >
-                              <strong>{formatMinuteLabel(minutes)}</strong>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
+                  {showFullTimeGrid || suggestedMinutes.length === 0
+                    ? SLOT_GROUPS.map((group) => (
+                        <div key={group.label} className="broadcast-planner__time-group">
+                          <div className="broadcast-planner__time-group-head">
+                            <strong>{group.label}</strong>
+                          </div>
+                          <div className="broadcast-planner__time-grid">
+                            {getMinutesList(group).map((minutes) => {
+                              const chipState = getMinuteChipState(minutes);
+
+                              return (
+                                <button
+                                  key={`${group.label}-${minutes}`}
+                                  type="button"
+                                  className={cn(
+                                    'broadcast-planner__time-chip',
+                                    chipState.isSelected && 'is-selected',
+                                    chipState.isMixed && 'is-mixed',
+                                    chipState.hasBusy && 'is-busy',
+                                    chipState.hasPastRestriction && 'is-disabled',
+                                  )}
+                                  onClick={() => toggleSlot(minutes)}
+                                  disabled={disabled || chipState.hasPastRestriction}
+                                >
+                                  <strong>{formatMinuteLabel(minutes)}</strong>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))
+                    : null}
 
                   <div className="broadcast-planner__sheet-footer">
                     <button

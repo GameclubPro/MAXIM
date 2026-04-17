@@ -21,6 +21,7 @@ type BroadcastLinkButtonsEditorProps = {
   contextEntityType?: 'chat' | 'channel';
   title?: string;
   subtitle?: string;
+  compact?: boolean;
   urlPlaceholder?: string;
   textPlaceholder?: string;
   onChange: (buttons: BroadcastLinkButton[]) => void;
@@ -35,6 +36,7 @@ export function BroadcastLinkButtonsEditor({
   contextEntityType = 'chat',
   title = 'Сетка кнопок',
   subtitle = 'До 8 ссылочных кнопок. MAX покажет их рядами по 3.',
+  compact = false,
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
   onChange,
@@ -44,16 +46,20 @@ export function BroadcastLinkButtonsEditor({
   const previewRows = chunkBroadcastLinkButtons(buttons);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
   const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
-  const nextButtonLabel =
-    buttons.length === 0
+  const nextButtonLabel = compact
+    ? buttons.length === 0
+      ? 'Добавить кнопку'
+      : 'Ещё кнопка'
+    : buttons.length === 0
       ? 'Добавить первую кнопку'
       : buttons.length === 1
         ? 'Добавить вторую кнопку'
         : buttons.length === 2
           ? 'Добавить третью кнопку'
           : 'Добавить ещё кнопку';
-  const nextButtonHint =
-    buttons.length === 0
+  const nextButtonHint = compact
+    ? ''
+    : buttons.length === 0
       ? 'Запустит каскадный редактор снизу.'
       : buttons.length === 1
         ? 'Вторая появится сразу под первой. Это следующий шаг.'
@@ -114,11 +120,11 @@ export function BroadcastLinkButtonsEditor({
   }
 
   return (
-    <div className="broadcast-link-editor">
+    <div className={cn('broadcast-link-editor', compact && 'broadcast-link-editor--compact')}>
       <div className="broadcast-link-editor__head">
         <div className="broadcast-link-editor__copy">
           <strong>{title}</strong>
-          <small>{subtitle}</small>
+          {subtitle ? <small>{subtitle}</small> : null}
         </div>
         <span className="broadcast-link-editor__count">
           {buttons.length}/{MAX_BROADCAST_LINK_BUTTONS}
@@ -150,8 +156,12 @@ export function BroadcastLinkButtonsEditor({
             ))
           ) : (
             <div className="broadcast-link-editor__empty">
-              <strong>Первая кнопка откроет ленту действий</strong>
-              <small>После этого снизу появится удобное добавление ещё кнопок.</small>
+              <strong>
+                {compact ? 'CTA появится здесь' : 'Первая кнопка откроет ленту действий'}
+              </strong>
+              {!compact ? (
+                <small>После этого снизу появится удобное добавление ещё кнопок.</small>
+              ) : null}
             </div>
           )}
         </div>
@@ -212,10 +222,7 @@ export function BroadcastLinkButtonsEditor({
         <button
           ref={addButtonRef}
           type="button"
-          className={cn(
-            'broadcast-link-editor__add',
-            shouldSpotlightNextStep && 'is-spotlighted',
-          )}
+          className={cn('broadcast-link-editor__add', shouldSpotlightNextStep && 'is-spotlighted')}
           onClick={handleAdd}
           disabled={disabled}
         >
@@ -225,7 +232,7 @@ export function BroadcastLinkButtonsEditor({
               <span className="broadcast-link-editor__add-step">Следующий шаг</span>
             ) : null}
             <strong>{nextButtonLabel}</strong>
-            <small>{nextButtonHint}</small>
+            {nextButtonHint ? <small>{nextButtonHint}</small> : null}
           </span>
         </button>
       ) : (
