@@ -1,5 +1,17 @@
 export const BROADCAST_SCHEDULE_MAX_DAYS = 31;
 export const BROADCAST_SCHEDULE_STEP_MINUTES = 30;
+const BROADCAST_QUICK_MIN_DELAY_MS = 45_000;
+
+export const BROADCAST_QUICK_PRESETS = ['now', 'plus30', 'tonight', 'tomorrow'] as const;
+
+export type BroadcastQuickPreset = (typeof BROADCAST_QUICK_PRESETS)[number];
+
+export type BroadcastQuickScheduleSelection = {
+  preset: BroadcastQuickPreset;
+  label: string;
+  summary: string;
+  sendAt: string;
+};
 
 function pad(value: number): string {
   return String(value).padStart(2, '0');
@@ -7,6 +19,89 @@ function pad(value: number): string {
 
 export function resolveBroadcastScheduleTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow';
+}
+
+function addMinutes(value: Date, minutes: number): Date {
+  return new Date(value.getTime() + minutes * 60 * 1_000);
+}
+
+function addDays(value: Date, days: number): Date {
+  return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);
+}
+
+function getMinimumQuickDate(nowMs: number): Date {
+  return new Date(nowMs + BROADCAST_QUICK_MIN_DELAY_MS);
+}
+
+function formatQuickSummary(date: Date, nowMs: number): string {
+  const now = new Date(nowMs);
+  const todayKey = getBroadcastScheduleDayKey(now);
+  const tomorrowKey = getBroadcastScheduleDayKey(addDays(now, 1));
+  const targetKey = getBroadcastScheduleDayKey(date);
+  const timeLabel = new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+
+  if (targetKey === todayKey) {
+    return timeLabel;
+  }
+
+  if (targetKey === tomorrowKey) {
+    return `Завтра ${timeLabel}`;
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date);
+}
+
+export function resolveBroadcastQuickScheduleSelection(
+  preset: BroadcastQuickPreset,
+  nowMs = Date.now(),
+): BroadcastQuickScheduleSelection {
+  const minimumDate = getMinimumQuickDate(nowMs);
+  let scheduledAt: Date;
+  let label: string;
+
+  switch (preset) {
+    case 'now':
+      label = 'Сейчас';
+      scheduledAt = minimumDate;
+      break;
+    case 'plus30':
+      label = '+30м';
+      scheduledAt = addMinutes(minimumDate, 30);
+      break;
+    case 'tonight': {
+      label = '20:00';
+      const candidate = new Date(nowMs);
+      candidate.setHours(20, 0, 0, 0);
+      if (candidate.getTime() < minimumDate.getTime()) {
+        candidate.setDate(candidate.getDate() + 1);
+      }
+      scheduledAt = candidate;
+      break;
+    }
+    case 'tomorrow': {
+      label = 'Завтра';
+      const candidate = addDays(new Date(nowMs), 1);
+      candidate.setHours(9, 0, 0, 0);
+      scheduledAt =
+        candidate.getTime() < minimumDate.getTime() ? addMinutes(minimumDate, 30) : candidate;
+      break;
+    }
+  }
+
+  return {
+    preset,
+    label,
+    summary: formatQuickSummary(scheduledAt, nowMs),
+    sendAt: scheduledAt.toISOString(),
+  };
 }
 
 export function sortAndUniqueBroadcastSlots(values: string[]): string[] {

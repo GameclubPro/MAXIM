@@ -3966,6 +3966,35 @@
   gap: 14px;
 }
 
+.broadcast-planner__quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.broadcast-planner__quick-chip {
+  min-height: 34px;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0 12px;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease;
+}
+
+.broadcast-planner__quick-chip.is-active {
+  border-color: rgba(11, 132, 255, 0.22);
+  background: rgba(11, 132, 255, 0.1);
+  color: #0b66b6;
+}
+
 .broadcast-planner__calendar-toolbar {
   display: flex;
   align-items: flex-start;
@@ -4266,6 +4295,11 @@
   color: var(--text-secondary);
 }
 
+.broadcast-planner__selection-tools {
+  display: grid;
+  gap: 8px;
+}
+
 .broadcast-planner__selection-actions {
   display: flex;
   align-items: center;
@@ -4332,6 +4366,102 @@
 .broadcast-planner__picked-chip.is-active {
   border-color: rgba(11, 132, 255, 0.28);
   background: rgba(236, 244, 255, 0.96);
+}
+
+.broadcast-planner__quick-summary,
+.broadcast-planner__schedule-card {
+  width: 100%;
+  border-radius: 20px;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(248, 251, 255, 0.94);
+  padding: 12px 13px;
+  display: grid;
+  gap: 8px;
+  text-align: left;
+  color: inherit;
+  transition:
+    transform 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.broadcast-planner__quick-summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.broadcast-planner__quick-summary strong {
+  font-size: 0.82rem;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.broadcast-planner__quick-summary span {
+  font-size: 0.74rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
+
+.broadcast-planner__quick-summary small {
+  font-size: 0.88rem;
+  line-height: 1;
+  color: #6b8093;
+}
+
+.broadcast-planner__schedule-list {
+  display: grid;
+  gap: 8px;
+}
+
+.broadcast-planner__schedule-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.broadcast-planner__schedule-card-head strong {
+  font-size: 0.82rem;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.broadcast-planner__schedule-card-head span {
+  flex: 0 0 auto;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 9px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(11, 132, 255, 0.08);
+  color: #0b66b6;
+  font-size: 0.66rem;
+  font-weight: 800;
+}
+
+.broadcast-planner__schedule-card-times {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.broadcast-planner__schedule-time {
+  min-height: 28px;
+  border-radius: 999px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(62, 96, 127, 0.1);
+  background: rgba(255, 255, 255, 0.86);
+  color: #183246;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.broadcast-planner__schedule-time.is-more {
+  color: var(--text-secondary);
 }
 
 @keyframes broadcast-planner-sheet-fade-in {
@@ -4477,6 +4607,9 @@
 }
 
 .broadcast-planner__clear-button:active,
+.broadcast-planner__quick-chip:active,
+.broadcast-planner__quick-summary:active,
+.broadcast-planner__schedule-card:active,
 .broadcast-planner__selection-open:active,
 .broadcast-planner__selection-reset:active,
 .broadcast-planner__picked-chip:active,
@@ -5173,6 +5306,10 @@
     display: grid;
   }
 
+  .broadcast-planner__selection-tools {
+    gap: 10px;
+  }
+
   .broadcast-planner__selection-actions {
     width: 100%;
     justify-content: stretch;
@@ -5186,6 +5323,10 @@
   .broadcast-planner__mode-row {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .broadcast-planner__quick-summary {
+    grid-template-columns: 1fr auto;
   }
 
   .broadcast-planner__agenda-row {
@@ -5221,6 +5362,9 @@
   }
 
   .broadcast-planner__clear-button,
+  .broadcast-planner__quick-chip,
+  .broadcast-planner__quick-summary,
+  .broadcast-planner__schedule-card,
   .broadcast-planner__selection-open,
   .broadcast-planner__selection-reset,
   .broadcast-planner__picked-chip,

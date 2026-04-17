@@ -286,11 +286,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
-      await page.waitForTimeout(300);
+      await openBroadcastPlannerTimeSheet(page);
     },
   },
   {
@@ -301,11 +297,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
-      await page.waitForTimeout(300);
+      await openBroadcastPlannerTimeSheet(page);
     },
   },
   {
@@ -316,10 +308,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
+      await openBroadcastPlannerTimeSheet(page);
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: /Сохранить/u }).click();
       await page.waitForTimeout(300);
@@ -364,11 +353,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
-      await page.waitForTimeout(300);
+      await openBroadcastPlannerTimeSheet(page);
     },
   },
   {
@@ -379,11 +364,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
-      await page.waitForTimeout(300);
+      await openBroadcastPlannerTimeSheet(page);
     },
   },
   {
@@ -394,10 +375,7 @@ const scenarios = [
       handoff: '1',
     },
     beforeShot: async (page) => {
-      await page.waitForTimeout(1000);
-      await page
-        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
-        .click();
+      await openBroadcastPlannerTimeSheet(page);
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: /Сохранить/u }).click();
       await page.waitForTimeout(300);
@@ -530,6 +508,26 @@ async function assertCommentsComposerPinned(page) {
       `Comments composer is not pinned to the viewport bottom (delta=${layout.delta.toFixed(2)}).`,
     );
   }
+}
+
+async function openBroadcastPlannerTimeSheet(page) {
+  await page.waitForTimeout(1000);
+
+  const selectedDayButton = page.locator('.broadcast-planner__day.is-selected').first();
+  if ((await selectedDayButton.count()) > 0) {
+    await selectedDayButton.click();
+    await page.waitForTimeout(300);
+    return;
+  }
+
+  const scheduleCard = page.locator('.broadcast-planner__schedule-card').first();
+  if ((await scheduleCard.count()) > 0) {
+    await scheduleCard.click();
+    await page.waitForTimeout(300);
+    return;
+  }
+
+  throw new Error('Broadcast planner time sheet trigger was not found.');
 }
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}) {
