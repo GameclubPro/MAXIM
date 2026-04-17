@@ -107,6 +107,7 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
+import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import {
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
@@ -9993,7 +9994,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           <strong>
                                             {resolveManagedBroadcastCardTitle(broadcast)}
                                           </strong>
-                                          <small>{broadcast.textPreview}</small>
+                                          <small>
+                                            {formatSupportedMarkdownPreview(
+                                              broadcast.textPreview,
+                                              140,
+                                            ) || broadcast.textPreview}
+                                          </small>
                                         </span>
                                         <span className="managed-broadcast-card__aside">
                                           <span
@@ -11116,7 +11122,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         id="managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
         title="Удалить рассылку?"
-        previewTitle={managedBroadcastDeleteTarget?.textPreview}
+        previewTitle={
+          managedBroadcastDeleteTarget
+            ? formatSupportedMarkdownPreview(managedBroadcastDeleteTarget.textPreview, 140) ||
+              managedBroadcastDeleteTarget.textPreview
+            : undefined
+        }
         previewMeta={
           managedBroadcastDeleteTarget
             ? managedBroadcastDeleteTarget.nextSendAt

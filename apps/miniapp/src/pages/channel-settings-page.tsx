@@ -52,6 +52,7 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
+import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import { maxNotify, openMaxBotLinkAndClose, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
@@ -2127,7 +2128,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                                 <strong>Редактирование рассылки</strong>
                                 <small>
-                                  {editingManagedBroadcast.text.trim().slice(0, 140) ||
+                                  {formatSupportedMarkdownPreview(
+                                    editingManagedBroadcast.text,
+                                    140,
+                                  ) ||
                                     (editingManagedBroadcast.imageEnabled ? 'Фото без текста' : '')}
                                 </small>
                               </span>
@@ -2228,7 +2232,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                         {resolveManagedBroadcastCardBadge(broadcast)}
                                       </span>
                                       <strong>{resolveManagedBroadcastCardTitle(broadcast)}</strong>
-                                      <small>{broadcast.textPreview}</small>
+                                      <small>
+                                        {formatSupportedMarkdownPreview(
+                                          broadcast.textPreview,
+                                          140,
+                                        ) || broadcast.textPreview}
+                                      </small>
                                     </span>
                                     <span className="managed-broadcast-card__aside">
                                       <span
@@ -2384,7 +2393,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         id="channel-managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
         title="Удалить рассылку?"
-        previewTitle={managedBroadcastDeleteTarget?.textPreview}
+        previewTitle={
+          managedBroadcastDeleteTarget
+            ? formatSupportedMarkdownPreview(managedBroadcastDeleteTarget.textPreview, 140) ||
+              managedBroadcastDeleteTarget.textPreview
+            : undefined
+        }
         previewMeta={
           managedBroadcastDeleteTarget
             ? managedBroadcastDeleteTarget.nextSendAt

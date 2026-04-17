@@ -12,6 +12,7 @@ import {
   getBroadcastScheduleDayKey,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
+import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
 
 type BroadcastSchedulePlannerProps = {
@@ -198,7 +199,7 @@ function buildAgendaEntries(
       entries.push({
         id: broadcast.id,
         dayKey,
-        title: broadcast.textPreview,
+        title: formatSupportedMarkdownPreview(broadcast.textPreview, 120) || broadcast.textPreview,
         statusLabel: resolveAgendaStatusLabel(broadcast.status),
         tone: resolveAgendaTone(broadcast.status),
         timeSlots: sortAndUniqueBroadcastSlots(timeSlots),
