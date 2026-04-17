@@ -19,6 +19,7 @@ import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
+import { ActionConfirmSheet } from '../components/ui/action-confirm-sheet';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
@@ -695,6 +696,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
+  const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
+    useState<ManagedBroadcastListItem | null>(null);
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
@@ -1176,6 +1179,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       cancelChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      setManagedBroadcastDeleteTarget(null);
       if (editingManagedBroadcast?.id === broadcast.id) {
         resetBroadcastComposer();
       }
@@ -1486,23 +1490,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const nextSendLabel = formatCompactManagedBroadcastDateTime(
-      broadcast.nextSendAt,
-      broadcast.scheduleTimezone,
-    );
-    const confirmationText = [
-      'Удалить рассылку?',
-      nextSendLabel ? `Следующая отправка: ${nextSendLabel}.` : null,
-      'Будущие слоты будут сняты.',
-    ]
-      .filter(Boolean)
-      .join('\n\n');
-
-    if (typeof window !== 'undefined' && !window.confirm(confirmationText)) {
-      return;
-    }
-
-    cancelManagedBroadcastMutation.mutate(broadcast.id);
+    setManagedBroadcastDeleteTarget(broadcast);
   }
 
   function handleEditManagedBroadcast(broadcast: ManagedBroadcastListItem) {
@@ -1529,6 +1517,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     handleEditManagedBroadcast(broadcast);
+  }
+
+  function confirmDeleteManagedBroadcast() {
+    if (!managedBroadcastDeleteTarget || !chatId || cancelManagedBroadcastMutation.isPending) {
+      return;
+    }
+
+    cancelManagedBroadcastMutation.mutate(managedBroadcastDeleteTarget.id);
   }
 
   async function handleSaveChannelSection(section: ChannelSettingsSectionKey) {
@@ -1996,6 +1992,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           error={broadcastScheduleError}
                           disabled={isBroadcastBusy}
                           managedBroadcasts={managedBroadcasts}
+                          managedBroadcastsLoading={
+                            settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
+                          }
                           currentTargetLabel="Текущий канал"
                           excludeBroadcastId={editingManagedBroadcast?.id ?? null}
                           onEditBroadcast={handleEditManagedBroadcastById}
@@ -2380,6 +2379,29 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </SettingsDrilldownPanel>
         </GlassCard>
       ) : null}
+
+      <ActionConfirmSheet
+        id="channel-managed-broadcast-delete"
+        open={managedBroadcastDeleteTarget !== null}
+        title="Удалить рассылку?"
+        previewTitle={managedBroadcastDeleteTarget?.textPreview}
+        previewMeta={
+          managedBroadcastDeleteTarget
+            ? managedBroadcastDeleteTarget.nextSendAt
+              ? `Следующая отправка · ${formatCompactManagedBroadcastDateTime(
+                  managedBroadcastDeleteTarget.nextSendAt,
+                  managedBroadcastDeleteTarget.scheduleTimezone,
+                )}`
+              : 'Будущие слоты будут сняты.'
+            : undefined
+        }
+        confirmLabel="Удалить"
+        confirmBusyLabel="Удаляем..."
+        tone="danger"
+        isBusy={cancelManagedBroadcastMutation.isPending}
+        onClose={() => setManagedBroadcastDeleteTarget(null)}
+        onConfirm={confirmDeleteManagedBroadcast}
+      />
     </div>
   );
 }

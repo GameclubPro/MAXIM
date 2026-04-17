@@ -12,9 +12,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
-// and the per-day broadcast agenda sheet add a small amount of legitimate
-// lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 1536;
+// the per-day broadcast agenda sheet, and the compact managed-broadcast
+// confirm flow add a small amount of legitimate lazy-loaded logic.
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 3072;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

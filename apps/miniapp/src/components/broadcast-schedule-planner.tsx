@@ -24,6 +24,7 @@ type BroadcastSchedulePlannerProps = {
   onOpenDay?: (dayKey: string) => void;
   onSelectionStateChange?: (state: BroadcastSchedulePlannerSelectionState) => void;
   managedBroadcasts?: ManagedBroadcastSummary[];
+  managedBroadcastsLoading?: boolean;
   currentTargetLabel?: string;
   excludeBroadcastId?: string | null;
   onEditBroadcast?: (broadcastId: string) => void;
@@ -287,6 +288,7 @@ export function BroadcastSchedulePlanner({
   onOpenDay,
   onSelectionStateChange,
   managedBroadcasts = [],
+  managedBroadcastsLoading = false,
   currentTargetLabel = 'Текущий чат',
   excludeBroadcastId = null,
   onEditBroadcast,
@@ -342,6 +344,8 @@ export function BroadcastSchedulePlanner({
     (count, entry) => count + entry.timeSlots.length,
     0,
   );
+  const showAgendaSkeleton =
+    sheetMode === 'agenda' && managedBroadcastsLoading && agendaDayEntries.length === 0;
   const isDaySheetOpen = sheetMode !== null;
   const pastSlotCount = normalizedValue.filter(
     (slot) => new Date(slot).getTime() < minimumTime,
@@ -407,11 +411,15 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
+    if (managedBroadcastsLoading) {
+      return;
+    }
+
     if (agendaDayEntries.length === 0) {
       setSheetMode(null);
       setAgendaDayKey(null);
     }
-  }, [agendaDayEntries.length, agendaDayKey, sheetMode]);
+  }, [agendaDayEntries.length, agendaDayKey, managedBroadcastsLoading, sheetMode]);
 
   useEffect(() => {
     setPickedDayKeys(scheduledDayKeys);
@@ -935,23 +943,25 @@ export function BroadcastSchedulePlanner({
                             : formatBroadcastScheduleDay(activeDayKey)}
                       </strong>
                       <small>
-                        {sheetMode === 'agenda'
-                          ? `${formatCountLabel(
-                              agendaDayEntries.length,
-                              'рассылка',
-                              'рассылки',
-                              'рассылок',
-                            )} · ${formatCountLabel(agendaSlotCount, 'слот', 'слота', 'слотов')}`
-                          : applyToAllPickedDays && pickedDayKeys.length > 1
-                            ? `${pickedDayLabel} · общее время`
-                            : activeDaySlots.length > 0
-                              ? `${formatCountLabel(
-                                  activeDaySlots.length,
-                                  'слот',
-                                  'слота',
-                                  'слотов',
-                                )} выбрано`
-                              : 'Выберите время'}
+                        {showAgendaSkeleton
+                          ? 'Обновляем...'
+                          : sheetMode === 'agenda'
+                            ? `${formatCountLabel(
+                                agendaDayEntries.length,
+                                'рассылка',
+                                'рассылки',
+                                'рассылок',
+                              )} · ${formatCountLabel(agendaSlotCount, 'слот', 'слота', 'слотов')}`
+                            : applyToAllPickedDays && pickedDayKeys.length > 1
+                              ? `${pickedDayLabel} · общее время`
+                              : activeDaySlots.length > 0
+                                ? `${formatCountLabel(
+                                    activeDaySlots.length,
+                                    'слот',
+                                    'слота',
+                                    'слотов',
+                                  )} выбрано`
+                                : 'Выберите время'}
                       </small>
                     </div>
 
@@ -969,78 +979,126 @@ export function BroadcastSchedulePlanner({
 
                   {sheetMode === 'agenda' ? (
                     <>
-                      <div className="broadcast-planner__day-agenda-list">
-                        {agendaDayEntries.map((entry) => {
-                          const isEditing = pendingEditBroadcastId === entry.id;
-                          const isDeleting = pendingDeleteBroadcastId === entry.id;
-
-                          return (
-                            <article
-                              key={`${entry.dayKey}-${entry.id}`}
-                              className={cn(
-                                'broadcast-planner__day-agenda-card',
-                                `is-${entry.tone}`,
-                              )}
+                      {showAgendaSkeleton ? (
+                        <div className="broadcast-planner__day-agenda-skeleton-list" aria-hidden>
+                          {Array.from({ length: 2 }).map((_, index) => (
+                            <div
+                              key={`agenda-skeleton-${index}`}
+                              className="broadcast-planner__day-agenda-skeleton-card"
+                              style={{ animationDelay: `${index * 48}ms` }}
                             >
-                              <div className="broadcast-planner__day-agenda-head">
-                                <div className="broadcast-planner__day-agenda-copy">
-                                  <strong>{entry.title}</strong>
-                                  {entry.statusLabel ? (
-                                    <span
-                                      className={cn(
-                                        'broadcast-planner__day-agenda-status',
-                                        `is-${entry.tone}`,
-                                      )}
-                                    >
-                                      {entry.statusLabel}
-                                    </span>
-                                  ) : null}
+                              <span className="broadcast-planner__day-agenda-skeleton-line is-title" />
+                              <span className="broadcast-planner__day-agenda-skeleton-line is-meta" />
+                              <div className="broadcast-planner__day-agenda-skeleton-chips">
+                                <span />
+                                <span />
+                                <span />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="broadcast-planner__day-agenda-list">
+                          {agendaDayEntries.map((entry, index) => {
+                            const isEditing = pendingEditBroadcastId === entry.id;
+                            const isDeleting = pendingDeleteBroadcastId === entry.id;
+                            const statusLabel = isEditing ? 'Открываем...' : entry.statusLabel;
+                            const statusTone = isEditing ? 'active' : entry.tone;
+
+                            const content = (
+                              <>
+                                <div className="broadcast-planner__day-agenda-head">
+                                  <div className="broadcast-planner__day-agenda-copy">
+                                    <div className="broadcast-planner__day-agenda-title-row">
+                                      <strong>{entry.title}</strong>
+                                      {entry.canEdit ? (
+                                        <span
+                                          className="broadcast-planner__day-agenda-chevron"
+                                          aria-hidden
+                                        >
+                                          →
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                    {statusLabel ? (
+                                      <span
+                                        className={cn(
+                                          'broadcast-planner__day-agenda-status',
+                                          `is-${statusTone}`,
+                                        )}
+                                      >
+                                        {statusLabel}
+                                      </span>
+                                    ) : null}
+                                  </div>
                                 </div>
-                              </div>
 
-                              <div className="broadcast-planner__day-agenda-times">
-                                {entry.timeSlots.map((slot) => (
-                                  <span
-                                    key={`${entry.id}-${slot}`}
-                                    className="broadcast-planner__day-agenda-time"
-                                  >
-                                    {formatAgendaTime(slot)}
-                                  </span>
-                                ))}
-                              </div>
-
-                              {entry.facts.length > 0 ? (
-                                <div className="broadcast-planner__day-agenda-facts">
-                                  {entry.facts.map((fact) => (
-                                    <span key={`${entry.id}-${fact}`}>{fact}</span>
+                                <div className="broadcast-planner__day-agenda-times">
+                                  {entry.timeSlots.map((slot) => (
+                                    <span
+                                      key={`${entry.id}-${slot}`}
+                                      className="broadcast-planner__day-agenda-time"
+                                    >
+                                      {formatAgendaTime(slot)}
+                                    </span>
                                   ))}
                                 </div>
-                              ) : null}
 
-                              <div className="broadcast-planner__day-agenda-actions">
+                                {entry.facts.length > 0 ? (
+                                  <div className="broadcast-planner__day-agenda-facts">
+                                    {entry.facts.map((fact) => (
+                                      <span key={`${entry.id}-${fact}`}>{fact}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </>
+                            );
+
+                            return (
+                              <article
+                                key={`${entry.dayKey}-${entry.id}`}
+                                className={cn(
+                                  'broadcast-planner__day-agenda-card',
+                                  `is-${entry.tone}`,
+                                  entry.canEdit && 'is-editable',
+                                )}
+                                style={{ animationDelay: `${Math.min(index, 5) * 36}ms` }}
+                              >
                                 {entry.canEdit ? (
                                   <button
                                     type="button"
-                                    className="broadcast-planner__day-agenda-button"
+                                    className="broadcast-planner__day-agenda-surface"
                                     onClick={() => handleAgendaEdit(entry.id)}
-                                    disabled={disabled}
+                                    disabled={disabled || isDeleting}
                                   >
-                                    {isEditing ? 'Открываем…' : 'Изменить'}
+                                    {content}
                                   </button>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  className="broadcast-planner__day-agenda-button is-danger"
-                                  onClick={() => handleAgendaDelete(entry.id)}
-                                  disabled={disabled}
-                                >
-                                  {isDeleting ? 'Удаляем…' : 'Удалить'}
-                                </button>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
+                                ) : (
+                                  <div
+                                    className={cn(
+                                      'broadcast-planner__day-agenda-surface',
+                                      'is-static',
+                                    )}
+                                  >
+                                    {content}
+                                  </div>
+                                )}
+
+                                <div className="broadcast-planner__day-agenda-actions">
+                                  <button
+                                    type="button"
+                                    className="broadcast-planner__day-agenda-delete"
+                                    onClick={() => handleAgendaDelete(entry.id)}
+                                    disabled={disabled || isDeleting || isEditing}
+                                  >
+                                    {isDeleting ? 'Удаляем...' : 'Удалить'}
+                                  </button>
+                                </div>
+                              </article>
+                            );
+                          })}
+                        </div>
+                      )}
 
                       <div className="broadcast-planner__sheet-footer">
                         <button
