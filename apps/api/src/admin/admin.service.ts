@@ -9924,8 +9924,11 @@ export class AdminService implements OnModuleDestroy {
             },
             'Managed broadcast delivery failed for target chat',
           );
-          await this.prisma.managedBroadcastDelivery.update({
-            where: { id: delivery.id },
+          await this.prisma.managedBroadcastDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+            },
             data: {
               status: PrismaManagedBroadcastDeliveryStatus.FAILED,
               lockedAt: null,
@@ -9941,19 +9944,27 @@ export class AdminService implements OnModuleDestroy {
 
         const sentAt = new Date();
         try {
-          await this.prisma.managedBroadcastDelivery.update({
-            where: { id: delivery.id },
-            data: {
+          const persistedSentMessage = await this.prisma.managedBroadcastDelivery.updateMany({
+            where: {
+              id: delivery.id,
               status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+            },
+            data: {
               sentAt,
               remoteMessageId: sentMessageId,
               lastError: null,
             },
           });
-
           sentChatIds.push(delivery.targetChatId);
-          await this.prisma.managedBroadcastDelivery.update({
-            where: { id: delivery.id },
+          if (persistedSentMessage.count === 0) {
+            continue;
+          }
+
+          await this.prisma.managedBroadcastDelivery.updateMany({
+            where: {
+              id: delivery.id,
+              status: PrismaManagedBroadcastDeliveryStatus.SENDING,
+            },
             data: {
               status: PrismaManagedBroadcastDeliveryStatus.SENT,
               lockedAt: null,
@@ -10008,17 +10019,17 @@ export class AdminService implements OnModuleDestroy {
         },
         'Managed broadcast processing failed',
       );
-      await this.prisma.managedBroadcast.update({
-        where: { id: row.id },
-        data: {
-          status: PrismaManagedBroadcastStatus.FAILED,
-          lastError:
-            error instanceof Error && error.message.trim().length > 0
-              ? error.message
-              : 'Не удалось обработать рассылку.',
-          lockedAt: null,
-        },
+      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
+        status: PrismaManagedBroadcastStatus.FAILED,
+        lastError:
+          error instanceof Error && error.message.trim().length > 0
+            ? error.message
+            : 'Не удалось обработать рассылку.',
+        lockedAt: null,
       });
+      if (!updated) {
+        return this.readManagedBroadcastOccurrenceResult(row.id, [], [], [], error);
+      }
       return {
         status: PrismaManagedBroadcastStatus.FAILED,
         currentOccurrence,
@@ -10711,6 +10722,52 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
+  private async updateManagedBroadcastIfNotCanceled(
+    broadcastId: string,
+    data: Prisma.ManagedBroadcastUpdateManyMutationInput,
+  ): Promise<boolean> {
+    const result = await this.prisma.managedBroadcast.updateMany({
+      where: {
+        id: broadcastId,
+        status: {
+          in: [
+            PrismaManagedBroadcastStatus.ACTIVE,
+            PrismaManagedBroadcastStatus.PARTIAL,
+            PrismaManagedBroadcastStatus.FAILED,
+          ],
+        },
+      },
+      data,
+    });
+
+    return result.count > 0;
+  }
+
+  private async readManagedBroadcastOccurrenceResult(
+    broadcastId: string,
+    sentChatIds: string[],
+    failedChatIds: string[],
+    pendingChatIds: string[],
+    firstSendError: unknown,
+  ): Promise<BroadcastOccurrenceResult> {
+    const current = await this.prisma.managedBroadcast.findUnique({
+      where: { id: broadcastId },
+    });
+
+    return {
+      status: current?.status ?? PrismaManagedBroadcastStatus.FAILED,
+      currentOccurrence: current ? this.getCurrentManagedBroadcastOccurrence(current) : 1,
+      sentChatIds,
+      failedChatIds,
+      pendingChatIds,
+      canRetry:
+        current?.status === PrismaManagedBroadcastStatus.PARTIAL ||
+        current?.status === PrismaManagedBroadcastStatus.FAILED,
+      firstSendError,
+      nextSendAt: current?.nextSendAt ?? null,
+    };
+  }
+
   private async finalizeManagedBroadcastOccurrence(
     row: PersistedManagedBroadcast,
     currentOccurrence: number,
@@ -10746,14 +10803,24 @@ export class AdminService implements OnModuleDestroy {
         failedChats.length,
         firstSendError,
       );
-      await this.prisma.managedBroadcast.update({
-        where: { id: row.id },
-        data: {
-          status,
-          lastError: failureMessage,
-          lockedAt: null,
-        },
+      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
+        status,
+        lastError: failureMessage,
+        lockedAt: null,
       });
+      if (!updated) {
+        return this.readManagedBroadcastOccurrenceResult(
+          row.id,
+          sentChatIds.length > 0
+            ? sentChatIds
+            : deliveredChats.map((delivery) => delivery.targetChatId),
+          failedChatIds.length > 0
+            ? failedChatIds
+            : failedChats.map((delivery) => delivery.targetChatId),
+          pendingChats.map((delivery) => delivery.targetChatId),
+          firstSendError,
+        );
+      }
       if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
         await this.prisma.managedBroadcastOccurrence.updateMany({
           where: {
@@ -10785,14 +10852,22 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (pendingChats.length > 0) {
-      await this.prisma.managedBroadcast.update({
-        where: { id: row.id },
-        data: {
-          status: PrismaManagedBroadcastStatus.ACTIVE,
-          lastError: null,
-          lockedAt: null,
-        },
+      const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        lastError: null,
+        lockedAt: null,
       });
+      if (!updated) {
+        return this.readManagedBroadcastOccurrenceResult(
+          row.id,
+          sentChatIds.length > 0
+            ? sentChatIds
+            : deliveredChats.map((delivery) => delivery.targetChatId),
+          [],
+          pendingChats.map((delivery) => delivery.targetChatId),
+          firstSendError,
+        );
+      }
       if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
         await this.prisma.managedBroadcastOccurrence.updateMany({
           where: {
@@ -10844,18 +10919,26 @@ export class AdminService implements OnModuleDestroy {
         ? null
         : new Date(row.nextSendAt!.getTime() + row.cycleEveryHours * ONE_HOUR_MS);
     }
-    await this.prisma.managedBroadcast.update({
-      where: { id: row.id },
-      data: {
-        sentCount: nextSentCount,
-        nextSendAt,
-        status: isComplete
-          ? PrismaManagedBroadcastStatus.COMPLETED
-          : PrismaManagedBroadcastStatus.ACTIVE,
-        lastError: null,
-        lockedAt: null,
-      },
+    const updated = await this.updateManagedBroadcastIfNotCanceled(row.id, {
+      sentCount: nextSentCount,
+      nextSendAt,
+      status: isComplete
+        ? PrismaManagedBroadcastStatus.COMPLETED
+        : PrismaManagedBroadcastStatus.ACTIVE,
+      lastError: null,
+      lockedAt: null,
     });
+    if (!updated) {
+      return this.readManagedBroadcastOccurrenceResult(
+        row.id,
+        sentChatIds.length > 0
+          ? sentChatIds
+          : deliveredChats.map((delivery) => delivery.targetChatId),
+        [],
+        [],
+        firstSendError,
+      );
+    }
     return {
       status: isComplete
         ? PrismaManagedBroadcastStatus.COMPLETED
