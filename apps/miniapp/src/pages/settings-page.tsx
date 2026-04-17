@@ -529,13 +529,7 @@ type BotMessageEditorKey =
   | 'night'
   | 'nightOpen';
 type WarnMessageEditorKey = 'linkWarn' | 'requiredSubscriptionWarn' | 'textFiltersWarn';
-type SettingsSectionKey =
-  | ApplySectionKey
-  | 'rules'
-  | 'poll'
-  | 'giveaway'
-  | 'comments'
-  | 'mailing';
+type SettingsSectionKey = ApplySectionKey | 'rules' | 'poll' | 'giveaway' | 'comments' | 'mailing';
 
 const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -1756,22 +1750,8 @@ function RequiredSubscriptionTimerIcon({ days }: { days: number }) {
   const minuteHandY = safeDays >= 10 ? '9.2' : '8.6';
 
   return (
-    <svg
-      viewBox="0 0 24 24"
-      fill="none"
-      aria-hidden
-      focusable="false"
-      width="22"
-      height="22"
-    >
-      <circle
-        cx="12"
-        cy="12"
-        r="8.2"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        opacity="0.95"
-      />
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false" width="22" height="22">
+      <circle cx="12" cy="12" r="8.2" stroke="currentColor" strokeWidth="1.75" opacity="0.95" />
       <path
         d={`M12 ${minuteHandY}v3.95l3 1.85`}
         stroke="currentColor"
@@ -2028,9 +2008,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [, setRulesTextError] = useState('');
   const [, setRulesImageError] = useState('');
-  const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>(
-    [],
-  );
+  const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
   const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
   const [domainInput, setDomainInput] = useState('');
@@ -2399,28 +2377,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       channelById.set(channel.id, channel);
     }
     for (const channel of selectedRequiredSubscriptionChannels) {
-      channelById.set(
-        channel.id,
-        {
-          id: channel.id,
-          title: channel.title,
-          entityType: channel.entityType,
-          link: channel.link,
-          participantsCount: null,
-        } as ManagedEntityHeader,
-      );
+      channelById.set(channel.id, {
+        id: channel.id,
+        title: channel.title,
+        entityType: channel.entityType,
+        link: channel.link,
+        participantsCount: null,
+      } as ManagedEntityHeader);
     }
     for (const channel of selectedUnavailableRequiredSubscriptionChannels) {
-      channelById.set(
-        channel.id,
-        {
-          id: channel.id,
-          title: channel.title,
-          entityType: 'channel',
-          link: null,
-          participantsCount: null,
-        } as ManagedEntityHeader,
-      );
+      channelById.set(channel.id, {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: null,
+        participantsCount: null,
+      } as ManagedEntityHeader);
     }
 
     return {
@@ -3481,8 +3453,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function reportRulesAutofillError(error: unknown) {
-    const description =
-      error instanceof Error ? error.message : 'Не удалось собрать текст правил.';
+    const description = error instanceof Error ? error.message : 'Не удалось собрать текст правил.';
     setRulesTextError(description);
     pushToast({
       tone: 'danger',
@@ -3935,7 +3906,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   async function handleHandoffRules() {
-    if (!chatId || !rulesDraft || isSavingRules || isPublishingRules || handoffRulesMutation.isPending) {
+    if (
+      !chatId ||
+      !rulesDraft ||
+      isSavingRules ||
+      isPublishingRules ||
+      handoffRulesMutation.isPending
+    ) {
       return;
     }
 
@@ -4099,6 +4076,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     openManagedBroadcastEditorMutation.mutate(broadcast.id);
+  }
+
+  function handleDeleteManagedBroadcastById(broadcastId: string) {
+    const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
+    if (!broadcast) {
+      return;
+    }
+
+    handleDeleteManagedBroadcast(broadcast);
+  }
+
+  function handleEditManagedBroadcastById(broadcastId: string) {
+    const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
+    if (!broadcast) {
+      return;
+    }
+
+    handleEditManagedBroadcast(broadcast);
   }
 
   function validateMailingButtonDraft() {
@@ -4699,7 +4694,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     JSON.stringify(draft?.requiredSubscriptionChannelIds ?? []) !==
       JSON.stringify(settingsQuery.data?.requiredSubscriptionChannelIds ?? []);
   const requiredSubscriptionTimerExpired =
-    draft?.requiredSubscriptionEnabled && isRequiredSubscriptionExpired(requiredSubscriptionExpiresAt);
+    draft?.requiredSubscriptionEnabled &&
+    isRequiredSubscriptionExpired(requiredSubscriptionExpiresAt);
   const requiredSubscriptionTimerBadge = requiredSubscriptionTimerExpired
     ? 'Срок истек'
     : !requiredSubscriptionTimerDirty && requiredSubscriptionExpiresAt
@@ -7609,14 +7605,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     type="checkbox"
                                     checked={draft.thematicFiltersBotMessageEnabled}
                                     onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('thematicFiltersBotMessageEnabled', enabled);
-                                    if (!enabled) {
-                                      setFieldValue('thematicFiltersBotButtonEnabled', false);
-                                      clearButtonGroupErrors(THEMATIC_FILTERS_BOT_BUTTON_GROUP);
-                                    }
-                                  }}
-                                />
+                                      const enabled = event.target.checked;
+                                      setFieldValue('thematicFiltersBotMessageEnabled', enabled);
+                                      if (!enabled) {
+                                        setFieldValue('thematicFiltersBotButtonEnabled', false);
+                                        clearButtonGroupErrors(THEMATIC_FILTERS_BOT_BUTTON_GROUP);
+                                      }
+                                    }}
+                                  />
                                   <span className="toggle-switch" aria-hidden>
                                     <span className="toggle-switch__thumb" />
                                   </span>
@@ -7879,20 +7875,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               className="settings-native-switch"
                               aria-label="Кнопка в сообщении о дублях"
                             >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.duplicateBotButtonEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
-                                      enabled,
-                                      ...(enabled && draft.duplicateBotButtons.length === 0
-                                        ? { buttons: [createEmptyBroadcastLinkButton()] }
-                                        : {}),
-                                    });
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
+                              <input
+                                type="checkbox"
+                                checked={draft.duplicateBotButtonEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  updateDraftButtonGroup(DUPLICATE_BOT_BUTTON_GROUP, {
+                                    enabled,
+                                    ...(enabled && draft.duplicateBotButtons.length === 0
+                                      ? { buttons: [createEmptyBroadcastLinkButton()] }
+                                      : {}),
+                                  });
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
                                 <span className="toggle-switch__thumb" />
                               </span>
                             </label>
@@ -9757,7 +9753,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               onClick={handleClearMailingComposer}
                               disabled={isMailingBusy}
                             >
-                              {clearBroadcastHandoffMutation.isPending ? 'Сбрасываем...' : 'Сбросить'}
+                              {clearBroadcastHandoffMutation.isPending
+                                ? 'Сбрасываем...'
+                                : 'Сбросить'}
                             </button>
                           </div>
                         ) : null}
@@ -9822,6 +9820,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   occupiedSlots={mailingOccupiedSlots}
                                   error={mailingScheduleError}
                                   disabled={isMailingBusy}
+                                  managedBroadcasts={managedBroadcasts}
+                                  currentTargetLabel="Текущий чат"
+                                  excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                  onEditBroadcast={handleEditManagedBroadcastById}
+                                  onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                  pendingEditBroadcastId={
+                                    openManagedBroadcastEditorMutation.isPending
+                                      ? openManagedBroadcastEditorMutation.variables
+                                      : null
+                                  }
+                                  pendingDeleteBroadcastId={
+                                    cancelManagedBroadcastMutation.isPending
+                                      ? cancelManagedBroadcastMutation.variables
+                                      : null
+                                  }
                                   onSelectionStateChange={setMailingPlannerState}
                                   onChange={(nextValue) => {
                                     setMailingScheduledSlots(nextValue);
@@ -10351,11 +10364,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <small>{requiredSubscriptionTimerBadge}</small>
                             </div>
                             <strong>
-                              {formatRequiredSubscriptionDurationDays(requiredSubscriptionDurationDays)}
+                              {formatRequiredSubscriptionDurationDays(
+                                requiredSubscriptionDurationDays,
+                              )}
                             </strong>
                           </div>
                           <span className="required-subscription__timer-icon-shell" aria-hidden>
-                            <RequiredSubscriptionTimerIcon days={requiredSubscriptionDurationDays} />
+                            <RequiredSubscriptionTimerIcon
+                              days={requiredSubscriptionDurationDays}
+                            />
                           </span>
                         </div>
 
@@ -10368,9 +10385,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             step={1}
                             value={requiredSubscriptionDurationDays}
                             onChange={(event) =>
-                              setRequiredSubscriptionDurationDaysValue(
-                                Number(event.target.value),
-                              )
+                              setRequiredSubscriptionDurationDaysValue(Number(event.target.value))
                             }
                             style={
                               {
@@ -10421,7 +10436,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="required-subscription__selection-list">
                             {selectedRequiredSubscriptionChannels.map((channel, index) => {
-                              const linkPreview = formatRequiredSubscriptionLinkPreview(channel.link);
+                              const linkPreview = formatRequiredSubscriptionLinkPreview(
+                                channel.link,
+                              );
 
                               return (
                                 <div
@@ -10553,7 +10570,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           availableRequiredSubscriptionChannelChoices.length === 0 ? (
                             <span>{requiredSubscriptionPickerEmptyState}</span>
                           ) : null}
-                          {!requiredSubscriptionEntitiesLoading && !requiredSubscriptionEntitiesError
+                          {!requiredSubscriptionEntitiesLoading &&
+                          !requiredSubscriptionEntitiesError
                             ? availableRequiredSubscriptionChannelChoices.map((channel) => (
                                 <button
                                   key={`required-subscription-choice-${channel.id}`}
@@ -10575,8 +10593,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {unavailableManagedRequiredSubscriptionChannels.length > 0 ? (
                           <>
                             <small className="field__hint">
-                              Эти каналы сейчас не удалось подготовить для выбора. Обновите
-                              список и проверьте права.
+                              Эти каналы сейчас не удалось подготовить для выбора. Обновите список и
+                              проверьте права.
                             </small>
                             <div className="managed-giveaway__prize-editor-list">
                               {unavailableManagedRequiredSubscriptionChannels.map(

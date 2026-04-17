@@ -51,11 +51,7 @@ import {
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
-import {
-  maxNotify,
-  openMaxBotLinkAndClose,
-  setMaxClosingConfirmation,
-} from '../lib/max-bridge';
+import { maxNotify, openMaxBotLinkAndClose, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -1176,7 +1172,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   });
 
   const cancelManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => cancelChannelManagedBroadcast(api, chatId ?? '', broadcastId),
+    mutationFn: (broadcastId: string) =>
+      cancelChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
       if (editingManagedBroadcast?.id === broadcast.id) {
@@ -1198,7 +1195,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   });
 
   const retryManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => retryChannelManagedBroadcast(api, chatId ?? '', broadcastId),
+    mutationFn: (broadcastId: string) =>
+      retryChannelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
       pushToast({
@@ -1515,6 +1513,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     openManagedBroadcastEditorMutation.mutate(broadcast.id);
   }
 
+  function handleDeleteManagedBroadcastById(broadcastId: string) {
+    const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
+    if (!broadcast) {
+      return;
+    }
+
+    handleDeleteManagedBroadcast(broadcast);
+  }
+
+  function handleEditManagedBroadcastById(broadcastId: string) {
+    const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
+    if (!broadcast) {
+      return;
+    }
+
+    handleEditManagedBroadcast(broadcast);
+  }
+
   async function handleSaveChannelSection(section: ChannelSettingsSectionKey) {
     if (!isDirty) {
       closeSection(section);
@@ -1563,8 +1579,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
       scheduleMode: 'calendar',
-      scheduleTimezone:
-        broadcastScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      scheduleTimezone: broadcastScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       scheduledSlots,
       sendAt: null,
       cycleEnabled: false,
@@ -1980,6 +1995,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           occupiedSlots={broadcastOccupiedSlots}
                           error={broadcastScheduleError}
                           disabled={isBroadcastBusy}
+                          managedBroadcasts={managedBroadcasts}
+                          currentTargetLabel="Текущий канал"
+                          excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                          onEditBroadcast={handleEditManagedBroadcastById}
+                          onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                          pendingEditBroadcastId={
+                            openManagedBroadcastEditorMutation.isPending
+                              ? openManagedBroadcastEditorMutation.variables
+                              : null
+                          }
+                          pendingDeleteBroadcastId={
+                            cancelManagedBroadcastMutation.isPending
+                              ? cancelManagedBroadcastMutation.variables
+                              : null
+                          }
                           onSelectionStateChange={setBroadcastPlannerState}
                           onChange={(nextValue) => {
                             setBroadcastScheduledSlots(nextValue);
@@ -2022,17 +2052,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 className="settings-native-switch"
                                 aria-label="Добавить кнопку в пост канала"
                               >
-                                  <input
-                                    type="checkbox"
-                                    checked={broadcastHasButton}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      if (enabled && broadcastButtons.length === 0) {
-                                        setBroadcastButtonRevealSignal((current) => current + 1);
-                                      }
-                                      setBroadcastButtons((current) =>
-                                        enabled
-                                          ? current.length > 0
+                                <input
+                                  type="checkbox"
+                                  checked={broadcastHasButton}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    if (enabled && broadcastButtons.length === 0) {
+                                      setBroadcastButtonRevealSignal((current) => current + 1);
+                                    }
+                                    setBroadcastButtons((current) =>
+                                      enabled
+                                        ? current.length > 0
                                           ? current
                                           : [createEmptyBroadcastLinkButton()]
                                         : [],

@@ -1,3 +1,4 @@
+import type { ManagedBroadcastSummary } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
@@ -22,6 +23,13 @@ type BroadcastSchedulePlannerProps = {
   onChange: (nextValue: string[]) => void;
   onOpenDay?: (dayKey: string) => void;
   onSelectionStateChange?: (state: BroadcastSchedulePlannerSelectionState) => void;
+  managedBroadcasts?: ManagedBroadcastSummary[];
+  currentTargetLabel?: string;
+  excludeBroadcastId?: string | null;
+  onEditBroadcast?: (broadcastId: string) => void;
+  onDeleteBroadcast?: (broadcastId: string) => void;
+  pendingEditBroadcastId?: string | null;
+  pendingDeleteBroadcastId?: string | null;
 };
 
 export type BroadcastSchedulePlannerSelectionState = {
@@ -33,12 +41,25 @@ export type BroadcastSchedulePlannerSelectionState = {
   isConfirmed: boolean;
 };
 
-type BroadcastScheduleSheetStep = 'time';
+type BroadcastScheduleSheetMode = 'time' | 'agenda';
 
 type SlotGroup = {
   label: string;
   start: number;
   end: number;
+};
+
+type BroadcastScheduleAgendaTone = 'active' | 'warning' | 'danger' | 'muted';
+
+type BroadcastScheduleAgendaEntry = {
+  id: string;
+  dayKey: string;
+  title: string;
+  statusLabel: string | null;
+  tone: BroadcastScheduleAgendaTone;
+  timeSlots: string[];
+  facts: string[];
+  canEdit: boolean;
 };
 
 const SLOT_GROUPS: SlotGroup[] = [
@@ -107,6 +128,101 @@ function formatCountLabel(count: number, singular: string, few: string, plural: 
   return `${count} ${plural}`;
 }
 
+function formatAgendaTime(slot: string): string {
+  return new Intl.DateTimeFormat('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(slot));
+}
+
+function resolveAgendaTone(status: ManagedBroadcastSummary['status']): BroadcastScheduleAgendaTone {
+  if (status === 'FAILED') {
+    return 'danger';
+  }
+  if (status === 'PARTIAL') {
+    return 'warning';
+  }
+  if (status === 'COMPLETED' || status === 'CANCELED') {
+    return 'muted';
+  }
+  return 'active';
+}
+
+function resolveAgendaStatusLabel(status: ManagedBroadcastSummary['status']): string | null {
+  if (status === 'FAILED') {
+    return 'Пауза';
+  }
+  if (status === 'PARTIAL') {
+    return 'Ошибки';
+  }
+  return null;
+}
+
+function buildAgendaFacts(
+  broadcast: ManagedBroadcastSummary,
+  currentTargetLabel: string,
+): string[] {
+  return [
+    broadcast.applyToAllChats
+      ? formatCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
+      : currentTargetLabel,
+    broadcast.hasImage ? 'Фото' : null,
+    broadcast.buttonEnabled
+      ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
+      : null,
+  ].filter((item): item is string => Boolean(item));
+}
+
+function buildAgendaEntries(
+  managedBroadcasts: ManagedBroadcastSummary[],
+  currentTargetLabel: string,
+  excludeBroadcastId: string | null | undefined,
+): BroadcastScheduleAgendaEntry[] {
+  const entries: BroadcastScheduleAgendaEntry[] = [];
+
+  for (const broadcast of managedBroadcasts) {
+    if (excludeBroadcastId && broadcast.id === excludeBroadcastId) {
+      continue;
+    }
+
+    const slotsByDay = new Map<string, string[]>();
+    for (const slot of sortAndUniqueBroadcastSlots(broadcast.scheduledSlots)) {
+      const dayKey = getBroadcastScheduleDayKey(slot);
+      const current = slotsByDay.get(dayKey) ?? [];
+      current.push(slot);
+      slotsByDay.set(dayKey, current);
+    }
+
+    for (const [dayKey, timeSlots] of slotsByDay) {
+      entries.push({
+        id: broadcast.id,
+        dayKey,
+        title: broadcast.textPreview,
+        statusLabel: resolveAgendaStatusLabel(broadcast.status),
+        tone: resolveAgendaTone(broadcast.status),
+        timeSlots: sortAndUniqueBroadcastSlots(timeSlots),
+        facts: buildAgendaFacts(broadcast, currentTargetLabel),
+        canEdit: broadcast.scheduleMode === 'calendar',
+      });
+    }
+  }
+
+  return entries.sort((left, right) => {
+    const dayDiff = left.dayKey.localeCompare(right.dayKey);
+    if (dayDiff !== 0) {
+      return dayDiff;
+    }
+
+    const leftTime = new Date(left.timeSlots[0] ?? '').getTime();
+    const rightTime = new Date(right.timeSlots[0] ?? '').getTime();
+    if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
+      return leftTime - rightTime;
+    }
+
+    return left.title.localeCompare(right.title, 'ru');
+  });
+}
+
 function getMonthKeys(windowStart: Date, windowEnd: Date): string[] {
   const keys: string[] = [];
   const cursor = startOfMonth(windowStart);
@@ -170,6 +286,13 @@ export function BroadcastSchedulePlanner({
   onChange,
   onOpenDay,
   onSelectionStateChange,
+  managedBroadcasts = [],
+  currentTargetLabel = 'Текущий чат',
+  excludeBroadcastId = null,
+  onEditBroadcast,
+  onDeleteBroadcast,
+  pendingEditBroadcastId = null,
+  pendingDeleteBroadcastId = null,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
@@ -183,7 +306,8 @@ export function BroadcastSchedulePlanner({
   const [currentMonthKey, setCurrentMonthKey] = useState(() =>
     getMonthKey(new Date(normalizedValue[0] ?? anchorNow)),
   );
-  const [sheetStep, setSheetStep] = useState<BroadcastScheduleSheetStep | null>(null);
+  const [sheetMode, setSheetMode] = useState<BroadcastScheduleSheetMode | null>(null);
+  const [agendaDayKey, setAgendaDayKey] = useState<string | null>(null);
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
 
@@ -202,7 +326,23 @@ export function BroadcastSchedulePlanner({
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
-  const isDaySheetOpen = sheetStep !== null;
+  const agendaEntries = buildAgendaEntries(
+    managedBroadcasts,
+    currentTargetLabel,
+    excludeBroadcastId,
+  );
+  const agendaEntriesByDay = new Map<string, BroadcastScheduleAgendaEntry[]>();
+  for (const entry of agendaEntries) {
+    const current = agendaEntriesByDay.get(entry.dayKey) ?? [];
+    current.push(entry);
+    agendaEntriesByDay.set(entry.dayKey, current);
+  }
+  const agendaDayEntries = agendaDayKey ? (agendaEntriesByDay.get(agendaDayKey) ?? []) : [];
+  const agendaSlotCount = agendaDayEntries.reduce(
+    (count, entry) => count + entry.timeSlots.length,
+    0,
+  );
+  const isDaySheetOpen = sheetMode !== null;
   const pastSlotCount = normalizedValue.filter(
     (slot) => new Date(slot).getTime() < minimumTime,
   ).length;
@@ -250,7 +390,9 @@ export function BroadcastSchedulePlanner({
 
   useEffect(() => {
     if (pickedDayKeys.length === 0) {
-      setSheetStep(null);
+      if (sheetMode === 'time') {
+        setSheetMode(null);
+      }
       setApplyToAllPickedDays(false);
       return;
     }
@@ -258,12 +400,24 @@ export function BroadcastSchedulePlanner({
     if (pickedDayKeys.length === 1) {
       setApplyToAllPickedDays(false);
     }
-  }, [pickedDayKeys]);
+  }, [pickedDayKeys, sheetMode]);
+
+  useEffect(() => {
+    if (sheetMode !== 'agenda' || !agendaDayKey) {
+      return;
+    }
+
+    if (agendaDayEntries.length === 0) {
+      setSheetMode(null);
+      setAgendaDayKey(null);
+    }
+  }, [agendaDayEntries.length, agendaDayKey, sheetMode]);
 
   useEffect(() => {
     setPickedDayKeys(scheduledDayKeys);
     setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
-    setSheetStep(null);
+    setSheetMode(null);
+    setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
     setIsConfirmed(false);
   }, [resetKey]);
@@ -325,6 +479,14 @@ export function BroadcastSchedulePlanner({
     return getSelectedDaySlots(dayKey, normalizedValue).includes(slotIso);
   }
 
+  function openAgendaDay(dayKey: string) {
+    setActiveDayKey(dayKey);
+    setAgendaDayKey(dayKey);
+    setSheetMode('agenda');
+    onOpenDay?.(dayKey);
+    maxImpact('medium');
+  }
+
   function togglePickedDay(dayKey: string) {
     if (disabled) {
       return;
@@ -359,20 +521,23 @@ export function BroadcastSchedulePlanner({
       setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
     }
     setApplyToAllPickedDays(pickedDayKeys.length > 1);
-    setSheetStep('time');
+    setAgendaDayKey(null);
+    setSheetMode('time');
     maxImpact('medium');
   }
 
   function finishPickedSelection() {
     setPickedDayKeys([]);
     setApplyToAllPickedDays(false);
-    setSheetStep(null);
+    setSheetMode(null);
+    setAgendaDayKey(null);
     setIsConfirmed(normalizedValue.length > 0);
   }
 
   function closeDaySheet() {
     setApplyToAllPickedDays(false);
-    setSheetStep(null);
+    setSheetMode(null);
+    setAgendaDayKey(null);
     maxImpact('soft');
   }
 
@@ -391,7 +556,8 @@ export function BroadcastSchedulePlanner({
     setIsConfirmed(false);
     setPickedDayKeys(scheduledDayKeys);
     setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
-    setSheetStep(null);
+    setSheetMode(null);
+    setAgendaDayKey(null);
     maxImpact('light');
   }
 
@@ -404,8 +570,42 @@ export function BroadcastSchedulePlanner({
     setPickedDayKeys(scheduledDayKeys);
     setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
     setApplyToAllPickedDays(scheduledDayKeys.length > 1);
-    setSheetStep('time');
+    setAgendaDayKey(null);
+    setSheetMode('time');
     maxImpact('medium');
+  }
+
+  function openTimeStepForAgendaDay() {
+    if (disabled || !agendaDayKey) {
+      return;
+    }
+
+    setIsConfirmed(false);
+    setPickedDayKeys([agendaDayKey]);
+    setActiveDayKey(agendaDayKey);
+    setApplyToAllPickedDays(false);
+    setSheetMode('time');
+    maxImpact('medium');
+  }
+
+  function handleAgendaEdit(broadcastId: string) {
+    if (disabled || !onEditBroadcast) {
+      return;
+    }
+
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    onEditBroadcast(broadcastId);
+  }
+
+  function handleAgendaDelete(broadcastId: string) {
+    if (disabled || !onDeleteBroadcast) {
+      return;
+    }
+
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    onDeleteBroadcast(broadcastId);
   }
 
   function toggleSlot(minutes: number) {
@@ -480,6 +680,7 @@ export function BroadcastSchedulePlanner({
             {monthCells.map((cell) => {
               const dayKey = getBroadcastScheduleDayKey(cell);
               const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
+              const agendaCount = (agendaEntriesByDay.get(dayKey) ?? []).length;
               const busyCount = occupiedSlots.filter(
                 (slot) => getBroadcastScheduleDayKey(slot) === dayKey && !selectedSet.has(slot),
               ).length;
@@ -508,8 +709,12 @@ export function BroadcastSchedulePlanner({
                 );
               } else if (isPicked) {
                 dayAriaLabelParts.push('выбран для настройки');
+              } else if (agendaCount > 0) {
+                dayAriaLabelParts.push(
+                  `${formatCountLabel(agendaCount, 'рассылка', 'рассылки', 'рассылок')} запланировано`,
+                );
               } else if (busyCount > 0) {
-                dayAriaLabelParts.push('день занят');
+                dayAriaLabelParts.push('есть занятое время');
               }
 
               return (
@@ -527,7 +732,21 @@ export function BroadcastSchedulePlanner({
                   )}
                   disabled={isDisabled}
                   aria-label={dayAriaLabelParts.join(', ')}
-                  onClick={() => togglePickedDay(dayKey)}
+                  onClick={() => {
+                    const hasAgendaEntries = agendaCount > 0;
+                    const hasDraftSlots = daySlots.length > 0;
+                    if (
+                      hasAgendaEntries &&
+                      pickedDayKeys.length === 0 &&
+                      !pickedDaySet.has(dayKey) &&
+                      !hasDraftSlots
+                    ) {
+                      openAgendaDay(dayKey);
+                      return;
+                    }
+
+                    togglePickedDay(dayKey);
+                  }}
                 >
                   {isPicked ? (
                     <span className="broadcast-planner__day-marker">✓</span>
@@ -538,20 +757,26 @@ export function BroadcastSchedulePlanner({
                     <span className="broadcast-planner__day-number">{cell.getDate()}</span>
                   </div>
                   <div className="broadcast-planner__day-foot">
-                    <span
-                      className={cn(
-                        'broadcast-planner__day-indicators',
-                        daySlots.length > 0 && 'is-selected',
-                        isPicked && daySlots.length === 0 && 'is-picked',
-                        busyCount > 0 && daySlots.length === 0 && !isPicked && 'is-busy',
-                        dayIndicatorCount === 0 && 'is-empty',
-                      )}
-                      aria-hidden
-                    >
-                      {Array.from({ length: Math.max(dayIndicatorCount, 1) }).map((_, index) => (
-                        <span key={`${dayKey}-${index}`} className="broadcast-planner__day-dot" />
-                      ))}
-                    </span>
+                    {daySlots.length === 0 && !isPicked && agendaCount > 0 ? (
+                      <span className="broadcast-planner__day-count" aria-hidden>
+                        {agendaCount}
+                      </span>
+                    ) : (
+                      <span
+                        className={cn(
+                          'broadcast-planner__day-indicators',
+                          daySlots.length > 0 && 'is-selected',
+                          isPicked && daySlots.length === 0 && 'is-picked',
+                          busyCount > 0 && daySlots.length === 0 && !isPicked && 'is-busy',
+                          dayIndicatorCount === 0 && 'is-empty',
+                        )}
+                        aria-hidden
+                      >
+                        {Array.from({ length: Math.max(dayIndicatorCount, 1) }).map((_, index) => (
+                          <span key={`${dayKey}-${index}`} className="broadcast-planner__day-dot" />
+                        ))}
+                      </span>
+                    )}
                   </div>
                 </button>
               );
@@ -679,7 +904,9 @@ export function BroadcastSchedulePlanner({
         {error ? <small className="broadcast-planner__error">{error}</small> : null}
       </section>
 
-      {typeof document !== 'undefined' && isDaySheetOpen && pickedDayKeys.length > 0
+      {typeof document !== 'undefined' &&
+      isDaySheetOpen &&
+      (sheetMode === 'agenda' || pickedDayKeys.length > 0)
         ? createPortal(
             <div className="broadcast-planner-sheet" aria-hidden={!isDaySheetOpen}>
               <button
@@ -700,8 +927,32 @@ export function BroadcastSchedulePlanner({
                 <div className="broadcast-planner__sheet">
                   <div className="broadcast-planner__sheet-head">
                     <div>
-                      <strong id="broadcast-planner-sheet-title">Шаг 2. Выберите время</strong>
-                      <small>Отмечайте слоты сразу. Занятые слоты перезапишутся новой рассылкой.</small>
+                      <strong id="broadcast-planner-sheet-title">
+                        {sheetMode === 'agenda'
+                          ? formatBroadcastScheduleDay(agendaDayKey ?? activeDayKey)
+                          : applyToAllPickedDays && pickedDayKeys.length > 1
+                            ? pickedDaySummary
+                            : formatBroadcastScheduleDay(activeDayKey)}
+                      </strong>
+                      <small>
+                        {sheetMode === 'agenda'
+                          ? `${formatCountLabel(
+                              agendaDayEntries.length,
+                              'рассылка',
+                              'рассылки',
+                              'рассылок',
+                            )} · ${formatCountLabel(agendaSlotCount, 'слот', 'слота', 'слотов')}`
+                          : applyToAllPickedDays && pickedDayKeys.length > 1
+                            ? `${pickedDayLabel} · общее время`
+                            : activeDaySlots.length > 0
+                              ? `${formatCountLabel(
+                                  activeDaySlots.length,
+                                  'слот',
+                                  'слота',
+                                  'слотов',
+                                )} выбрано`
+                              : 'Выберите время'}
+                      </small>
                     </div>
 
                     <div className="broadcast-planner__sheet-facts">
@@ -711,12 +962,98 @@ export function BroadcastSchedulePlanner({
                         onClick={closeDaySheet}
                         disabled={disabled}
                       >
-                        Назад
+                        {sheetMode === 'agenda' ? 'Закрыть' : 'Назад'}
                       </button>
                     </div>
                   </div>
 
-                  {pickedDayKeys.length > 1 ? (
+                  {sheetMode === 'agenda' ? (
+                    <>
+                      <div className="broadcast-planner__day-agenda-list">
+                        {agendaDayEntries.map((entry) => {
+                          const isEditing = pendingEditBroadcastId === entry.id;
+                          const isDeleting = pendingDeleteBroadcastId === entry.id;
+
+                          return (
+                            <article
+                              key={`${entry.dayKey}-${entry.id}`}
+                              className={cn(
+                                'broadcast-planner__day-agenda-card',
+                                `is-${entry.tone}`,
+                              )}
+                            >
+                              <div className="broadcast-planner__day-agenda-head">
+                                <div className="broadcast-planner__day-agenda-copy">
+                                  <strong>{entry.title}</strong>
+                                  {entry.statusLabel ? (
+                                    <span
+                                      className={cn(
+                                        'broadcast-planner__day-agenda-status',
+                                        `is-${entry.tone}`,
+                                      )}
+                                    >
+                                      {entry.statusLabel}
+                                    </span>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              <div className="broadcast-planner__day-agenda-times">
+                                {entry.timeSlots.map((slot) => (
+                                  <span
+                                    key={`${entry.id}-${slot}`}
+                                    className="broadcast-planner__day-agenda-time"
+                                  >
+                                    {formatAgendaTime(slot)}
+                                  </span>
+                                ))}
+                              </div>
+
+                              {entry.facts.length > 0 ? (
+                                <div className="broadcast-planner__day-agenda-facts">
+                                  {entry.facts.map((fact) => (
+                                    <span key={`${entry.id}-${fact}`}>{fact}</span>
+                                  ))}
+                                </div>
+                              ) : null}
+
+                              <div className="broadcast-planner__day-agenda-actions">
+                                {entry.canEdit ? (
+                                  <button
+                                    type="button"
+                                    className="broadcast-planner__day-agenda-button"
+                                    onClick={() => handleAgendaEdit(entry.id)}
+                                    disabled={disabled}
+                                  >
+                                    {isEditing ? 'Открываем…' : 'Изменить'}
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  className="broadcast-planner__day-agenda-button is-danger"
+                                  onClick={() => handleAgendaDelete(entry.id)}
+                                  disabled={disabled}
+                                >
+                                  {isDeleting ? 'Удаляем…' : 'Удалить'}
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+
+                      <div className="broadcast-planner__sheet-footer">
+                        <button
+                          type="button"
+                          className="broadcast-planner__sheet-submit"
+                          onClick={openTimeStepForAgendaDay}
+                          disabled={disabled || !agendaDayKey}
+                        >
+                          Добавить время в этот день
+                        </button>
+                      </div>
+                    </>
+                  ) : pickedDayKeys.length > 1 ? (
                     <>
                       <div className="broadcast-planner__day-tabs">
                         {pickedDayKeys.map((dayKey) => (
