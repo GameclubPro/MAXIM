@@ -2859,12 +2859,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'FRIENDLY') {
       if (action === 'WARN') {
-        return 'Это уже предупреждение.';
+        return '⚠️ Это уже предупреждение.';
       }
       if (action === 'MUTE') {
-        return `Нужен мут на ${muteDurationLabel}.`;
+        return `🔒 Включил мут на ${muteDurationLabel}.`;
       }
-      return 'Пришлось выдать бан до ручного разбана.';
+      return '⛔ Пришлось выдать бан до ручного разбана.';
     }
 
     if (style === 'IRONIC') {
@@ -2901,7 +2901,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (style === 'FRIENDLY') {
-      return 'Пока просто убрал повтор.';
+      return messageDeleted ? '🧹 Повтор убрал.' : '👀 Повтор заметил, пока без санкций.';
     }
 
     if (style === 'IRONIC') {
@@ -3202,7 +3202,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (botSpeechStyle === 'FRIENDLY') {
-      return `${userLabel}, пришлось выдать бан до ручного разбана.`;
+      return `⛔ ${userLabel}, пришлось выдать бан до ручного разбана.`;
     }
 
     if (botSpeechStyle === 'IRONIC') {

@@ -66,8 +66,8 @@ export const BOT_SPEECH_STYLE_METADATA: Record<BotSpeechStyle, BotSpeechStyleMet
   },
   FRIENDLY: {
     label: 'Дружелюбный',
-    subtitle: 'поддерживающий собеседник',
-    description: 'Спокойный поддерживающий тон с ясной причиной и следующим шагом.',
+    subtitle: 'живой и тёплый помощник',
+    description: 'Человечный тон: коротко, доброжелательно, с ясной причиной и мягкой подачей.',
     iconKey: 'friendly',
   },
   POLICE: {
@@ -137,49 +137,49 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   FRIENDLY: {
     editable: {
       greetingBotMessageText:
-        'Привет, {user} 🙂 На связи {bot_character_name}. Осваивайтесь спокойно, я помогу держать чат в порядке.',
+        'Привет, {user} 🫶 На связи {bot_character_name}. Помогу освоиться и держать чат в порядке.',
       linkBotMessageText:
-        '{user}, ссылку убрал: в этом чате они отключены. Если она нужна по делу, лучше сначала согласовать с админом.',
+        '🔗 {user}, ссылку убрал. Здесь они отключены. Если она по делу, лучше согласовать с админом.',
       linkWarnMessageText:
-        '{user}, это уже предупреждение. Ссылки здесь всё ещё нельзя, давайте дальше без них.',
+        '⚠️ {user}, это предупреждение. Ссылки здесь всё ещё нельзя.',
       requiredSubscriptionBotMessageText:
-        '{user}, чтобы писать в этом чате, нужна подписка на {channels}. Подпишитесь и отправьте сообщение ещё раз. Текущее сообщение: {message_status}.',
+        '📡 {user}, чтобы писать сюда, нужна подписка на {channels}. Подпишитесь и попробуйте снова. Сейчас оно: {message_status}.',
       requiredSubscriptionWarnMessageText:
-        '{user}, это уже предупреждение. Для сообщений в чате всё ещё нужна подписка на {channels}. Причина: {reason}.',
+        '⚠️ {user}, это предупреждение. Для сообщений всё ещё нужна подписка на {channels}. Причина: {reason}.',
       textFiltersBotMessageText:
-        '{user}, сообщение убрал. Причина: {reason}. Чуть переформулируйте и можно отправить снова.',
+        '🧹 {user}, сообщение убрал. Причина: {reason}. Поправьте и можно отправить снова ✨',
       textFiltersWarnMessageText:
-        '{user}, это предупреждение. Причина: {reason}. Давайте дальше без такого текста.',
-      duplicateBotMessageText: '{user}, такое сообщение уже отправлялось. {sanction}',
-      messageLimitsBotMessageText: '{user}, сообщение не прошло. Причина: {reason}.',
+        '⚠️ {user}, это предупреждение. Причина: {reason}. Давайте дальше без этого 🙌',
+      duplicateBotMessageText: '♻️ {user}, это уже повтор. {sanction}',
+      messageLimitsBotMessageText: '📏 {user}, сообщение не прошло. Причина: {reason}.',
       nightModeBotMessageText:
-        'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
+        '🌙 Сейчас тихий режим: {night_window} ({night_timezone}). {night_status}',
       nightModeOpenMessageText:
-        'Доброе утро ☀️ {opening_status} Можно снова возвращаться к разговору.',
+        '☀️ Доброе утро. {opening_status} Можно снова писать ✨',
     },
     system: {
-      linkMute: '{user}, ссылки повторились несколько раз, поэтому выдан мут.',
+      linkMute: '🔒 {user}, ссылки повторились, поэтому включил мут.',
       requiredSubscriptionMute:
-        '{user}, сообщения без подписки повторились, поэтому выдан мут. Сначала подпишитесь на {channels}.',
+        '🔒 {user}, сообщения без подписки повторились, поэтому включил мут. Сначала подпишитесь на {channels}.',
       requiredSubscriptionBan:
-        '{user}, выдан бан до ручного разбана. Чтобы писать дальше, сначала подпишитесь на {channels}.',
-      textFiltersMuteCommercial: '{user}, коммерческая реклама повторилась, поэтому выдан мут.',
-      textFiltersMuteProfanity: '{user}, грубая лексика повторилась, поэтому выдан мут.',
-      textFiltersMuteGeneric: '{user}, нарушения повторились, поэтому выдан мут.',
+        '⛔ {user}, пришлось выдать бан до ручного разбана. Чтобы писать дальше, сначала подпишитесь на {channels}.',
+      textFiltersMuteCommercial: '🔒 {user}, реклама повторилась, поэтому включил мут.',
+      textFiltersMuteProfanity: '🔒 {user}, грубая лексика повторилась, поэтому включил мут.',
+      textFiltersMuteGeneric: '🔒 {user}, нарушения повторились, поэтому включил мут.',
       topicExplainAnnouncement:
-        '{user}, объявление не подошло по формату: {reason}. Поправьте и можно отправить снова.',
+        '🧾 {user}, объявление не прошло: {reason}. Поправьте и отправьте ещё раз ✨',
       topicExplainMessage:
-        '{user}, сообщение не подошло по формату: {reason}. Поправьте и можно отправить снова.',
-      topicWarn: '{user}, это предупреждение. Причина: {reason}.',
-      topicMuteAnnouncement: '{user}, объявления снова были не по формату, поэтому выдан мут.',
-      topicMuteMessage: '{user}, сообщения снова были не по формату, поэтому выдан мут.',
-      topicBan: '{user}, выдан бан до ручного разбана. Причина: {reason}.',
+        '🧾 {user}, сообщение не прошло: {reason}. Поправьте и отправьте ещё раз ✨',
+      topicWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
+      topicMuteAnnouncement: '🔒 {user}, объявления снова были не по формату, поэтому включил мут.',
+      topicMuteMessage: '🔒 {user}, сообщения снова были не по формату, поэтому включил мут.',
+      topicBan: '⛔ {user}, пришлось выдать бан до ручного разбана. Причина: {reason}.',
       muteNotice:
-        '{user}, для вас мут на {mute_duration}. До конца срока новые сообщения будут скрываться.',
-      messageLimitsWarn: '{user}, это предупреждение. Причина: {reason}.',
+        '🔒 {user}, включил мут на {mute_duration}. До конца срока новые сообщения будут скрываться.',
+      messageLimitsWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
       messageLimitsMute:
-        '{user}, ограничения по сообщениям снова нарушились, поэтому выдан мут. Причина: {reason}.',
-      messageLimitsBan: '{user}, выдан бан до ручного разбана. Причина: {reason}.',
+        '🔒 {user}, ограничения по сообщениям снова нарушились, поэтому включил мут. Причина: {reason}.',
+      messageLimitsBan: '⛔ {user}, пришлось выдать бан до ручного разбана. Причина: {reason}.',
     },
   },
   POLICE: {
