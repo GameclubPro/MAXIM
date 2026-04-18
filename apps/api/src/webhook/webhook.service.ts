@@ -76,9 +76,12 @@ export class WebhookService {
   }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
-    const membershipInvalidationPromise = this.invalidateMembershipCacheFromWebhook(update);
+    this.deferBackgroundTask(
+      () => this.invalidateMembershipCacheFromWebhook(update),
+      'membership cache invalidation',
+      update,
+    );
     const executionOwnerBotId = await this.syncChatBotBindingFromWebhook(update);
-    await membershipInvalidationPromise;
     this.attachExecutionOwnerBotId(update, executionOwnerBotId);
 
     const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
@@ -177,7 +180,29 @@ export class WebhookService {
         status: WebhookStatus.RECEIVED,
       },
     });
-    await this.persistAdminReadModels(update);
+    this.deferBackgroundTask(() => this.persistAdminReadModels(update), 'admin read model refresh', update);
+  }
+
+  private deferBackgroundTask(
+    task: () => Promise<void>,
+    taskName: string,
+    update: Pick<MaxUpdate, 'updateId' | 'type'>,
+  ): void {
+    setImmediate(() => {
+      void Promise.resolve()
+        .then(task)
+        .catch((error: unknown) => {
+          this.logger.warn(
+            {
+              updateId: update.updateId,
+              type: update.type,
+              task: taskName,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Deferred webhook follow-up task failed',
+          );
+        });
+    });
   }
 
   private async syncChatBotBindingFromWebhook(update: MaxUpdate): Promise<string | null> {

@@ -1,6 +1,10 @@
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
+  const flushDeferredWebhookWork = async () => {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  };
+
   const maxBotLinkService = {
     bindChatToBot: jest.fn().mockResolvedValue(undefined),
     getStoredChatPrimaryBotId: jest.fn().mockResolvedValue(null),
@@ -149,10 +153,67 @@ describe('WebhookService', () => {
     );
   });
 
-  it('best-effort invalidates membership cache for join and leave events before persistence', async () => {
+  it('does not wait for deferred membership invalidation or admin read models before accepting webhook events', async () => {
+    const neverSettles = new Promise<never>(() => undefined);
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-3' }),
+        updateMany: jest.fn(),
+      },
+      chatMembershipActivityEvent: {
+        createMany: jest.fn().mockReturnValue(neverSettles),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const membershipLookup = {
+      invalidateMemberships: jest.fn().mockReturnValue(neverSettles),
+    };
+
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      membershipLookup as never,
+    );
+
+    await expect(
+      Promise.race([
+        service.ingest(
+          {
+            updateId: 'u-join-1',
+            type: 'user_added',
+            message: {
+              messageId: 'user_added:u-join-1',
+              chatId: 'chat-1',
+              senderId: 'user-10',
+              text: '',
+              createdAt: new Date('2026-03-29T12:00:00.000Z').toISOString(),
+            },
+            membership: {
+              action: 'added',
+              memberUserIds: ['user-10'],
+            },
+          },
+          '127.0.0.1',
+        ).then((result) => ({ kind: 'accepted', result })),
+        new Promise((resolve) => {
+          setTimeout(() => resolve({ kind: 'timeout' }), 25);
+        }),
+      ]),
+    ).resolves.toEqual({
+      kind: 'accepted',
+      result: { accepted: true, duplicate: false },
+    });
+
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('best-effort invalidates membership cache for join and leave events after webhook persistence', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-3b' }),
         updateMany: jest.fn(),
       },
     };
@@ -206,6 +267,8 @@ describe('WebhookService', () => {
         '127.0.0.1',
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    await flushDeferredWebhookWork();
 
     expect(membershipLookup.invalidateMemberships).toHaveBeenNthCalledWith(1, 'chat-1', [
       'user-10',
@@ -284,6 +347,8 @@ describe('WebhookService', () => {
       ),
     ).resolves.toEqual({ accepted: true, duplicate: false });
 
+    await flushDeferredWebhookWork();
+
     expect(prisma.chatMembershipActivityEvent.createMany).toHaveBeenCalledWith({
       data: [
         expect.objectContaining({
@@ -353,6 +418,8 @@ describe('WebhookService', () => {
       '127.0.0.1',
     );
 
+    await flushDeferredWebhookWork();
+
     await service.ingest(
       {
         updateId: 'u-membership-dedupe-2',
@@ -373,6 +440,8 @@ describe('WebhookService', () => {
       },
       '127.0.0.1',
     );
+
+    await flushDeferredWebhookWork();
 
     const firstCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[0]?.[0];
     const secondCall = prisma.chatMembershipActivityEvent.createMany.mock.calls[1]?.[0];

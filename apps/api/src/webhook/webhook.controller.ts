@@ -5,6 +5,7 @@ import {
   HttpCode,
   HttpException,
   HttpStatus,
+  Logger,
   Param,
   Post,
   Req,
@@ -23,6 +24,8 @@ type WebhookParams = {
 
 @Controller('webhook/max')
 export class WebhookController {
+  private readonly logger = new Logger(WebhookController.name);
+
   constructor(
     private readonly botRegistry: MaxBotRegistryService,
     private readonly parser: WebhookParser,
@@ -50,7 +53,17 @@ export class WebhookController {
       throw new ForbiddenException('Invalid webhook bot signature');
     }
 
-    await this.webhookSubscriptionStatusService.markIncomingWebhook(bot.id);
+    void Promise.resolve()
+      .then(() => this.webhookSubscriptionStatusService.markIncomingWebhook(bot.id))
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            botId: bot.id,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to persist incoming webhook status asynchronously',
+        );
+      });
 
     const ip = request.ip;
     const allowed = await this.webhookRateLimitService.isAllowed(ip);
