@@ -437,7 +437,16 @@ type ManagedBroadcastDeliverySnapshot = {
   deliveredChats: number;
   failedChats: number;
   pendingChats: number;
+  blockedChats: number;
+  failureBreakdown: ManagedBroadcastFailureBreakdown;
   canRetry: boolean;
+};
+
+type ManagedBroadcastFailureBreakdown = {
+  transient: number;
+  permanentTarget: number;
+  quarantined: number;
+  unknown: number;
 };
 
 type MembershipEventRow = {
@@ -462,6 +471,11 @@ const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 const MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS = 6;
+const MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES = 3;
+const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS =
+  MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
+const MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX =
+  'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки';
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
@@ -9994,6 +10008,35 @@ export class AdminService implements OnModuleDestroy {
             );
             continue;
           }
+          const currentAttemptCount = delivery.attemptCount + 1;
+          const transientQuarantineMessage =
+            await this.resolveManagedBroadcastTransientQuarantineMessage(
+              row.id,
+              currentOccurrence,
+              delivery.targetChatId,
+              currentAttemptCount,
+              deliveryFailureMessage,
+            );
+          if (transientQuarantineMessage) {
+            await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
+              targetChatId: delivery.targetChatId,
+              currentDeliveryId: delivery.id,
+              lastError: transientQuarantineMessage,
+            });
+            this.logger.warn(
+              {
+                sourceChatId: row.sourceChatId,
+                broadcastId: row.id,
+                targetChatId: delivery.targetChatId,
+                actorUserId: row.actorUserId,
+                occurrenceIndex: currentOccurrence,
+                attempts: currentAttemptCount,
+                err: deliveryFailureMessage,
+              },
+              'Managed broadcast target was quarantined after repeated transient delivery failures',
+            );
+            continue;
+          }
           if (!firstSendError) {
             firstSendError = error;
           }
@@ -10797,6 +10840,33 @@ export class AdminService implements OnModuleDestroy {
         mutated = true;
         continue;
       }
+      const transientQuarantineMessage =
+        await this.resolveManagedBroadcastTransientQuarantineMessage(
+          broadcastId,
+          occurrenceIndex,
+          delivery.targetChatId,
+          delivery.attemptCount,
+          failureMessage,
+        );
+      if (transientQuarantineMessage) {
+        await this.cancelManagedBroadcastTargetDeliveries(broadcastId, occurrenceIndex, {
+          targetChatId: delivery.targetChatId,
+          currentDeliveryId: delivery.id,
+          lastError: transientQuarantineMessage,
+        });
+        this.logger.warn(
+          {
+            broadcastId,
+            targetChatId: delivery.targetChatId,
+            occurrenceIndex,
+            attempts: delivery.attemptCount,
+            err: failureMessage,
+          },
+          'Managed broadcast target was quarantined during automatic recovery after repeated transient failures',
+        );
+        mutated = true;
+        continue;
+      }
 
       if (!this.shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
         continue;
@@ -10881,6 +10951,64 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
+  private async resolveManagedBroadcastTransientQuarantineMessage(
+    broadcastId: string,
+    occurrenceIndex: number,
+    targetChatId: string,
+    currentAttemptCount: number,
+    failureMessage: string,
+  ): Promise<string | null> {
+    if (!this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
+      return null;
+    }
+
+    if (
+      currentAttemptCount < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
+      occurrenceIndex < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
+    ) {
+      return null;
+    }
+
+    const history = await this.prisma.managedBroadcastDelivery.findMany({
+      where: {
+        broadcastId,
+        targetChatId,
+        occurrenceIndex: { lte: occurrenceIndex },
+      },
+      orderBy: [{ occurrenceIndex: 'asc' }],
+    });
+
+    let transientFailureAttempts = 0;
+    const transientFailureOccurrences = new Set<number>();
+    for (const delivery of history) {
+      const isCurrentOccurrence = delivery.occurrenceIndex === occurrenceIndex;
+      const effectiveFailureMessage = isCurrentOccurrence
+        ? failureMessage
+        : (delivery.lastError ?? '').trim();
+      if (!this.isManagedBroadcastTransientDeliveryFailureMessage(effectiveFailureMessage)) {
+        continue;
+      }
+
+      transientFailureOccurrences.add(delivery.occurrenceIndex);
+      transientFailureAttempts += isCurrentOccurrence
+        ? Math.max(1, currentAttemptCount)
+        : Math.max(1, delivery.attemptCount);
+    }
+
+    if (
+      transientFailureAttempts < MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS &&
+      transientFailureOccurrences.size < MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
+    ) {
+      return null;
+    }
+
+    return this.buildManagedBroadcastTransientQuarantineMessage(
+      transientFailureAttempts,
+      transientFailureOccurrences.size,
+      failureMessage,
+    );
+  }
+
   private shouldAutoRetryManagedBroadcastDeliveryFailure(
     delivery: PersistedManagedBroadcastDelivery,
   ): boolean {
@@ -10917,6 +11045,28 @@ export class AdminService implements OnModuleDestroy {
       normalized.includes('network error') ||
       normalized.includes('прошлая попытка была прервана после старта отправки')
     );
+  }
+
+  private isManagedBroadcastTransientQuarantineFailureMessage(value: string): boolean {
+    return value
+      .trim()
+      .toLowerCase()
+      .startsWith(MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX.toLowerCase());
+  }
+
+  private buildManagedBroadcastTransientQuarantineMessage(
+    transientFailureAttempts: number,
+    transientFailureOccurrences: number,
+    lastFailureMessage: string,
+  ): string {
+    const reason =
+      transientFailureOccurrences >= MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES
+        ? `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureOccurrences} проблемных слота подряд.`
+        : `${MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX}: ${transientFailureAttempts} неудачных попыток.`;
+    const normalizedLastFailureMessage = lastFailureMessage.trim();
+    return normalizedLastFailureMessage
+      ? `${reason} Последняя ошибка: ${normalizedLastFailureMessage}`
+      : reason;
   }
 
   private isManagedBroadcastPermanentTargetDeliveryFailure(
@@ -11297,6 +11447,31 @@ export class AdminService implements OnModuleDestroy {
     row: PersistedManagedBroadcast,
     deliveries: PersistedManagedBroadcastDelivery[],
   ): ManagedBroadcastDeliverySnapshot {
+    const failureBreakdown = this.createEmptyManagedBroadcastFailureBreakdown();
+    for (const delivery of deliveries) {
+      if (
+        delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED &&
+        delivery.status !== PrismaManagedBroadcastDeliveryStatus.CANCELED
+      ) {
+        continue;
+      }
+
+      const failureMessage = delivery.lastError ?? '';
+      if (this.isManagedBroadcastTransientQuarantineFailureMessage(failureMessage)) {
+        failureBreakdown.quarantined += 1;
+        continue;
+      }
+      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
+        failureBreakdown.permanentTarget += 1;
+        continue;
+      }
+      if (this.isManagedBroadcastTransientDeliveryFailureMessage(failureMessage)) {
+        failureBreakdown.transient += 1;
+        continue;
+      }
+      failureBreakdown.unknown += 1;
+    }
+
     return {
       currentOccurrence: this.getCurrentManagedBroadcastOccurrence(row),
       deliveredChats: deliveries.filter(
@@ -11310,9 +11485,22 @@ export class AdminService implements OnModuleDestroy {
           delivery.status === PrismaManagedBroadcastDeliveryStatus.PENDING ||
           delivery.status === PrismaManagedBroadcastDeliveryStatus.SENDING,
       ).length,
+      blockedChats: deliveries.filter(
+        (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.CANCELED,
+      ).length,
+      failureBreakdown,
       canRetry:
         row.status === PrismaManagedBroadcastStatus.PARTIAL ||
         row.status === PrismaManagedBroadcastStatus.FAILED,
+    };
+  }
+
+  private createEmptyManagedBroadcastFailureBreakdown(): ManagedBroadcastFailureBreakdown {
+    return {
+      transient: 0,
+      permanentTarget: 0,
+      quarantined: 0,
+      unknown: 0,
     };
   }
 
@@ -11356,6 +11544,8 @@ export class AdminService implements OnModuleDestroy {
       deliveredChats: resolvedSnapshot.deliveredChats,
       failedChats: resolvedSnapshot.failedChats,
       pendingChats: resolvedSnapshot.pendingChats,
+      blockedChats: resolvedSnapshot.blockedChats,
+      failureBreakdown: resolvedSnapshot.failureBreakdown,
       canRetry: resolvedSnapshot.canRetry,
       remainingCount: Math.max(0, row.cycleCount - row.sentCount),
       createdAt: row.createdAt.toISOString(),
@@ -11404,6 +11594,8 @@ export class AdminService implements OnModuleDestroy {
       deliveredChats: resolvedSnapshot.deliveredChats,
       failedChats: resolvedSnapshot.failedChats,
       pendingChats: resolvedSnapshot.pendingChats,
+      blockedChats: resolvedSnapshot.blockedChats,
+      failureBreakdown: resolvedSnapshot.failureBreakdown,
       canRetry: resolvedSnapshot.canRetry,
       remainingCount: Math.max(0, row.cycleCount - row.sentCount),
       createdAt: row.createdAt.toISOString(),

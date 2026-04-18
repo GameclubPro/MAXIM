@@ -3038,6 +3038,16 @@ export const managedBroadcastStatusSchema = z.enum([
 ]);
 export type ManagedBroadcastStatus = z.infer<typeof managedBroadcastStatusSchema>;
 
+export const managedBroadcastFailureBreakdownSchema = z.object({
+  transient: z.number().int().min(0),
+  permanentTarget: z.number().int().min(0),
+  quarantined: z.number().int().min(0),
+  unknown: z.number().int().min(0),
+});
+export type ManagedBroadcastFailureBreakdown = z.infer<
+  typeof managedBroadcastFailureBreakdownSchema
+>;
+
 export const managedBroadcastSummarySchema = z.object({
   id: z.string(),
   status: managedBroadcastStatusSchema,
@@ -3060,6 +3070,8 @@ export const managedBroadcastSummarySchema = z.object({
   deliveredChats: z.number().int().min(0),
   failedChats: z.number().int().min(0),
   pendingChats: z.number().int().min(0),
+  blockedChats: z.number().int().min(0),
+  failureBreakdown: managedBroadcastFailureBreakdownSchema,
   canRetry: z.boolean(),
   remainingCount: z.number().int().min(0),
   createdAt: z.string().datetime(),
@@ -3095,6 +3107,8 @@ export const managedBroadcastDetailsSchema = z.object({
   deliveredChats: z.number().int().min(0),
   failedChats: z.number().int().min(0),
   pendingChats: z.number().int().min(0),
+  blockedChats: z.number().int().min(0),
+  failureBreakdown: managedBroadcastFailureBreakdownSchema,
   canRetry: z.boolean(),
   remainingCount: z.number().int().min(0),
   createdAt: z.string().datetime(),

@@ -426,6 +426,14 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
     ) {
       return false;
     }
+    if (
+      where.occurrenceIndex &&
+      typeof where.occurrenceIndex === 'object' &&
+      'lte' in where.occurrenceIndex &&
+      delivery.occurrenceIndex > Number((where.occurrenceIndex as { lte: number }).lte)
+    ) {
+      return false;
+    }
     if (typeof where.id === 'string' && delivery.id !== where.id) {
       return false;
     }
@@ -15839,6 +15847,238 @@ describe('AdminService.sendBroadcast', () => {
           lastError: null,
         }),
       );
+  });
+
+  it('quarantines chronically timing out targets from current and future managed broadcast deliveries', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: true,
+        cycleEveryHours: 1,
+        cycleCount: 3,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'timeout of 5000ms exceeded',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'SENT',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'FAILED',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 3,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 3,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        },
+      ],
+    });
+    deliveries[0].status = 'SENT';
+    deliveries[0].remoteMessageId = 'mid-chat-1';
+    deliveries[0].sentAt = new Date('2026-03-03T10:00:00.000Z');
+    deliveries[1].status = 'FAILED';
+    deliveries[1].attemptCount = 6;
+    deliveries[1].lastError = 'timeout of 5000ms exceeded';
+    deliveries[1].updatedAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(result.status).toBe('ACTIVE');
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: expect.stringContaining(
+            'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки',
+          ),
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 2,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: expect.stringContaining(
+            'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки',
+          ),
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 3,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: expect.stringContaining(
+            'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки',
+          ),
+        }),
+      ]),
+    );
+    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
+      .toEqual(
+        expect.objectContaining({
+          status: 'ACTIVE',
+          sentCount: 1,
+          nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
+          lastError: null,
+        }),
+      );
+  });
+
+  it('reports blocked and quarantined deliveries in managed broadcast snapshots', () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+
+    const snapshot = (service as any).createManagedBroadcastDeliverySnapshot(
+      {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: true,
+        cycleEveryHours: 1,
+        cycleCount: 3,
+        sentCount: 0,
+        status: 'PARTIAL',
+        lastError: 'timeout of 5000ms exceeded',
+        lockedAt: null,
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-03T10:00:00.000Z'),
+      },
+      [
+        {
+          status: 'SENT',
+          lastError: null,
+        },
+        {
+          status: 'FAILED',
+          lastError: 'timeout of 5000ms exceeded',
+        },
+        {
+          status: 'FAILED',
+          lastError: 'unexpected failure',
+        },
+        {
+          status: 'CANCELED',
+          lastError: 'Chat closed',
+        },
+        {
+          status: 'CANCELED',
+          lastError:
+            'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки: 6 неудачных попыток. Последняя ошибка: timeout of 5000ms exceeded',
+        },
+        {
+          status: 'PENDING',
+          lastError: null,
+        },
+      ],
+    );
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        currentOccurrence: 1,
+        deliveredChats: 1,
+        failedChats: 2,
+        pendingChats: 1,
+        blockedChats: 2,
+        canRetry: true,
+        failureBreakdown: {
+          transient: 1,
+          permanentTarget: 1,
+          quarantined: 1,
+          unknown: 1,
+        },
+      }),
+    );
   });
 
   it('retries failed deliveries and completes the broadcast', async () => {
