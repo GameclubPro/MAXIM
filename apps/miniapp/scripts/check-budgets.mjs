@@ -16,9 +16,10 @@ const STARTUP_JS_BUDGET_GZIP = 108 * 1024;
 // confirm flow, visual markdown preview rendering in compact broadcast
 // cards and sheets, the calendar-first quick scheduling planner,
 // the premium planner dock plus smart quick-time suggestions,
-// and the richer broadcast compose/feed shell
+// the richer broadcast compose/feed shell,
+// plus bidirectional stop-word preset actions and inline +/- parsing
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 5632;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 6656;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;
@@ -28,10 +29,28 @@ const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
 function findManifestKey(suffix) {
   const key = Object.keys(manifest).find((candidate) => candidate.endsWith(suffix));
-  if (!key) {
-    throw new Error(`Manifest entry not found for ${suffix}`);
+  if (key) {
+    return key;
   }
-  return key;
+
+  const parsed = path.parse(suffix);
+  const baseName = parsed.name;
+  const dynamicEntryKey = Object.entries(manifest).find(([candidate, chunk]) => {
+    if (!chunk || typeof chunk !== 'object') {
+      return false;
+    }
+
+    return (
+      chunk.name === baseName ||
+      candidate.includes(`_${baseName}-`) ||
+      chunk.file?.includes(`/${baseName}-`)
+    );
+  })?.[0];
+  if (dynamicEntryKey) {
+    return dynamicEntryKey;
+  }
+
+  throw new Error(`Manifest entry not found for ${suffix}`);
 }
 
 function collectAssets(entryKey, visited = new Set()) {
