@@ -154,6 +154,12 @@ function createPrismaMock() {
         return false;
       }
     }
+    if (where.updatedAt && typeof where.updatedAt === 'object' && 'lte' in where.updatedAt) {
+      const updatedAt = state.updatedAt instanceof Date ? state.updatedAt : null;
+      if (!updatedAt || updatedAt > (where.updatedAt as { lte: Date }).lte) {
+        return false;
+      }
+    }
     if ('lockedAt' in where) {
       if (where.lockedAt === null && state.lockedAt !== null) {
         return false;
@@ -421,6 +427,9 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
       return false;
     }
     if (typeof where.id === 'string' && delivery.id !== where.id) {
+      return false;
+    }
+    if (typeof where.targetChatId === 'string' && delivery.targetChatId !== where.targetChatId) {
       return false;
     }
     if (where.status && typeof where.status === 'string' && delivery.status !== where.status) {
@@ -15017,10 +15026,20 @@ describe('AdminService.sendBroadcast', () => {
 
   it('keeps draining due managed broadcasts until the current backlog is exhausted', async () => {
     const prisma = createPrismaMock();
-    prisma.managedBroadcast.findMany
-      .mockResolvedValueOnce([{ id: 'broadcast-1' }])
-      .mockResolvedValueOnce([{ id: 'broadcast-1' }])
-      .mockResolvedValueOnce([]);
+    let activeCalls = 0;
+    prisma.managedBroadcast.findMany.mockImplementation(
+      async ({
+        where,
+      }: {
+        where?: { status?: string | { in?: string[] } };
+      }) => {
+        if (where?.status === 'ACTIVE') {
+          activeCalls += 1;
+          return activeCalls < 3 ? [{ id: 'broadcast-1' }] : [];
+        }
+        return [];
+      },
+    );
 
     const service = new AdminService(
       prisma as never,
@@ -15034,13 +15053,62 @@ describe('AdminService.sendBroadcast', () => {
 
     await service.processDueManagedBroadcasts('scheduled');
 
-    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(3);
+    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(4);
     expect(processSpy).toHaveBeenCalledTimes(2);
     expect(processSpy).toHaveBeenNthCalledWith(1, 'broadcast-1', 'scheduled', expect.any(Date), [
       'ACTIVE',
+      'PARTIAL',
+      'FAILED',
     ]);
     expect(processSpy).toHaveBeenNthCalledWith(2, 'broadcast-1', 'scheduled', expect.any(Date), [
       'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+  });
+
+  it('picks failed and partial managed broadcasts after the automatic retry backoff', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    let retryableCalls = 0;
+    prisma.managedBroadcast.findMany.mockImplementation(
+      async ({
+        where,
+      }: {
+        where?: { status?: string | { in?: string[] } };
+      }) => {
+        if (where?.status === 'ACTIVE') {
+          return [];
+        }
+
+        const statusFilter = where?.status as { in?: string[] } | undefined;
+        if (Array.isArray(statusFilter?.in) && statusFilter.in.includes('FAILED')) {
+          retryableCalls += 1;
+          return retryableCalls === 1 ? [{ id: 'broadcast-1' }] : [];
+        }
+
+        return [];
+      },
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedBroadcasts('scheduled');
+
+    expect(processSpy).toHaveBeenCalledTimes(1);
+    expect(processSpy).toHaveBeenCalledWith('broadcast-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
     ]);
   });
 
@@ -15479,6 +15547,239 @@ describe('AdminService.sendBroadcast', () => {
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(3);
     expect(result.sentChats).toBe(2);
     expect(result.failedChats).toBe(0);
+  });
+
+  it('automatically retries timed out managed broadcast deliveries on scheduled runs', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'timeout of 5000ms exceeded',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'FAILED',
+        },
+      ],
+    });
+    deliveries[0].status = 'FAILED';
+    deliveries[0].attemptCount = 1;
+    deliveries[0].lastError = 'timeout of 5000ms exceeded';
+    deliveries[0].updatedAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'mid-chat-1-retry',
+        url: null,
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(deliveries[0]).toEqual(
+      expect.objectContaining({
+        status: 'SENT',
+        remoteMessageId: 'mid-chat-1-retry',
+      }),
+    );
+    expect(result.status).toBe('COMPLETED');
+    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
+      .toEqual(
+        expect.objectContaining({
+          status: 'COMPLETED',
+          sentCount: 1,
+          nextSendAt: null,
+        }),
+      );
+  });
+
+  it('drops permanently unavailable targets from future managed broadcast deliveries', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        targetChatIds: ['chat-1', 'chat-2'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: true,
+        cycleEveryHours: 1,
+        cycleCount: 3,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'Chat closed',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'SENT',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'FAILED',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 3,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 3,
+          targetChatId: 'chat-2',
+          status: 'PENDING',
+        },
+      ],
+    });
+    deliveries[0].status = 'SENT';
+    deliveries[0].remoteMessageId = 'mid-chat-1';
+    deliveries[0].sentAt = new Date('2026-03-03T10:00:00.000Z');
+    deliveries[1].status = 'FAILED';
+    deliveries[1].attemptCount = 1;
+    deliveries[1].lastError = 'Chat closed';
+    deliveries[1].updatedAt = new Date('2026-03-03T10:00:00.000Z');
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(result.status).toBe('ACTIVE');
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          occurrenceIndex: 1,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: 'Chat closed',
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 2,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: 'Chat closed',
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 3,
+          targetChatId: 'chat-2',
+          status: 'CANCELED',
+          lastError: 'Chat closed',
+        }),
+      ]),
+    );
+    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
+      .toEqual(
+        expect.objectContaining({
+          status: 'ACTIVE',
+          sentCount: 1,
+          nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
+          lastError: null,
+        }),
+      );
   });
 
   it('retries failed deliveries and completes the broadcast', async () => {

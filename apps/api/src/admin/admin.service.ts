@@ -454,10 +454,13 @@ const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
+const BROADCAST_TIMEOUT_RETRY_DELAYS_MS = [1_500, 4_000, 10_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
+const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+const MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS = 6;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
@@ -8816,7 +8819,8 @@ export class AdminService implements OnModuleDestroy {
     for (let pass = 0; pass < MANAGED_BROADCAST_DUE_MAX_PASSES; pass += 1) {
       const now = new Date();
       const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
-      const dueRows = await this.prisma.managedBroadcast.findMany({
+      const autoRetryBefore = new Date(now.getTime() - MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS);
+      const activeDueRows = await this.prisma.managedBroadcast.findMany({
         where: {
           status: PrismaManagedBroadcastStatus.ACTIVE,
           nextSendAt: { lte: now },
@@ -8826,6 +8830,26 @@ export class AdminService implements OnModuleDestroy {
         take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
         select: { id: true },
       });
+      const retryableDueRows =
+        activeDueRows.length === 0
+          ? await this.prisma.managedBroadcast.findMany({
+              where: {
+                status: {
+                  in: [
+                    PrismaManagedBroadcastStatus.PARTIAL,
+                    PrismaManagedBroadcastStatus.FAILED,
+                  ],
+                },
+                nextSendAt: { lte: now },
+                updatedAt: { lte: autoRetryBefore },
+                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+              },
+              orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+              take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+              select: { id: true },
+            })
+          : [];
+      const dueRows = activeDueRows.length > 0 ? activeDueRows : retryableDueRows;
 
       if (dueRows.length === 0) {
         return;
@@ -8834,6 +8858,8 @@ export class AdminService implements OnModuleDestroy {
       for (const row of dueRows) {
         await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
           PrismaManagedBroadcastStatus.ACTIVE,
+          PrismaManagedBroadcastStatus.PARTIAL,
+          PrismaManagedBroadcastStatus.FAILED,
         ]);
       }
     }
@@ -9823,13 +9849,21 @@ export class AdminService implements OnModuleDestroy {
       const sentChatIds: string[] = [];
       const failedChatIds: string[] = [];
       let firstSendError: unknown = null;
-      const initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
+      let initialDeliveries = await this.prisma.managedBroadcastDelivery.findMany({
         where: {
           broadcastId: row.id,
           occurrenceIndex: currentOccurrence,
         },
         orderBy: [{ targetChatId: 'asc' }],
       });
+
+      if (reason === 'startup' || reason === 'scheduled') {
+        initialDeliveries = await this.recoverManagedBroadcastDeliveriesForAutomaticRun(
+          row.id,
+          currentOccurrence,
+          initialDeliveries,
+        );
+      }
 
       if (
         initialDeliveries.some(
@@ -9909,6 +9943,32 @@ export class AdminService implements OnModuleDestroy {
             resolvedBotId,
           );
         } catch (error: unknown) {
+          const deliveryFailureMessage =
+            this.extractMaxApiErrorMessage(error) ||
+            (error instanceof Error && error.message.trim()
+              ? error.message
+              : 'Не удалось отправить сообщение.');
+          if (
+            this.isManagedBroadcastPermanentTargetDeliveryFailure(error, deliveryFailureMessage)
+          ) {
+            await this.cancelManagedBroadcastTargetDeliveries(row.id, currentOccurrence, {
+              targetChatId: delivery.targetChatId,
+              currentDeliveryId: delivery.id,
+              lastError: deliveryFailureMessage,
+            });
+            this.logger.warn(
+              {
+                sourceChatId: row.sourceChatId,
+                broadcastId: row.id,
+                targetChatId: delivery.targetChatId,
+                actorUserId: row.actorUserId,
+                occurrenceIndex: currentOccurrence,
+                err: deliveryFailureMessage,
+              },
+              'Managed broadcast target became unavailable and was removed from remaining deliveries',
+            );
+            continue;
+          }
           if (!firstSendError) {
             firstSendError = error;
           }
@@ -9932,11 +9992,7 @@ export class AdminService implements OnModuleDestroy {
             data: {
               status: PrismaManagedBroadcastDeliveryStatus.FAILED,
               lockedAt: null,
-              lastError:
-                this.extractMaxApiErrorMessage(error) ||
-                (error instanceof Error && error.message.trim()
-                  ? error.message
-                  : 'Не удалось отправить сообщение.'),
+              lastError: deliveryFailureMessage,
             },
           });
           continue;
@@ -10106,19 +10162,45 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
     }
 
+    let lastError: unknown = null;
+    const attempts =
+      Math.max(BROADCAST_THROTTLE_RETRY_DELAYS_MS.length, BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length) +
+      1;
+
     try {
-      return botId
-        ? await this.maxClient.uploadImage(
-            imageBuffer,
-            this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
-            imageMimeType,
-            { botId },
-          )
-        : await this.maxClient.uploadImage(
-            imageBuffer,
-            this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
-            imageMimeType,
+      for (let attempt = 1; attempt <= attempts; attempt += 1) {
+        try {
+          return botId
+            ? await this.maxClient.uploadImage(
+                imageBuffer,
+                this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+                imageMimeType,
+                { botId },
+              )
+            : await this.maxClient.uploadImage(
+                imageBuffer,
+                this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+                imageMimeType,
+              );
+        } catch (error: unknown) {
+          lastError = error;
+          const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
+            error,
+            attempt,
+            undefined,
           );
+          if (retryDelayMs === null) {
+            throw error;
+          }
+          await this.sleep(retryDelayMs);
+        }
+      }
+
+      if (lastError) {
+        throw lastError;
+      }
+
+      throw new Error('Managed broadcast image upload did not return a result.');
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -10667,6 +10749,177 @@ export class AdminService implements OnModuleDestroy {
     return rows;
   }
 
+  private async recoverManagedBroadcastDeliveriesForAutomaticRun(
+    broadcastId: string,
+    occurrenceIndex: number,
+    deliveries: PersistedManagedBroadcastDelivery[],
+  ): Promise<PersistedManagedBroadcastDelivery[]> {
+    let mutated = false;
+
+    for (const delivery of deliveries) {
+      if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
+        continue;
+      }
+
+      const failureMessage = delivery.lastError?.trim() ?? '';
+      if (this.isManagedBroadcastPermanentTargetDeliveryFailure(null, failureMessage)) {
+        await this.cancelManagedBroadcastTargetDeliveries(broadcastId, occurrenceIndex, {
+          targetChatId: delivery.targetChatId,
+          currentDeliveryId: delivery.id,
+          lastError:
+            failureMessage || 'Чат больше недоступен для бота, дальнейшие доставки пропущены.',
+        });
+        mutated = true;
+        continue;
+      }
+
+      if (!this.shouldAutoRetryManagedBroadcastDeliveryFailure(delivery)) {
+        continue;
+      }
+
+      const resetResult = await this.prisma.managedBroadcastDelivery.updateMany({
+        where: {
+          id: delivery.id,
+          status: PrismaManagedBroadcastDeliveryStatus.FAILED,
+        },
+        data: {
+          status: PrismaManagedBroadcastDeliveryStatus.PENDING,
+          lockedAt: null,
+          lastError: null,
+        },
+      });
+      mutated ||= resetResult.count > 0;
+    }
+
+    if (!mutated) {
+      return deliveries;
+    }
+
+    return this.prisma.managedBroadcastDelivery.findMany({
+      where: {
+        broadcastId,
+        occurrenceIndex,
+      },
+      orderBy: [{ targetChatId: 'asc' }],
+    });
+  }
+
+  private async cancelManagedBroadcastTargetDeliveries(
+    broadcastId: string,
+    occurrenceIndex: number,
+    options: {
+      targetChatId: string;
+      currentDeliveryId?: string;
+      lastError: string;
+    },
+  ): Promise<void> {
+    const normalizedLastError =
+      options.lastError.trim() || 'Чат больше недоступен для бота, дальнейшие доставки пропущены.';
+
+    if (options.currentDeliveryId) {
+      await this.prisma.managedBroadcastDelivery.updateMany({
+        where: {
+          id: options.currentDeliveryId,
+          status: {
+            in: [
+              PrismaManagedBroadcastDeliveryStatus.PENDING,
+              PrismaManagedBroadcastDeliveryStatus.SENDING,
+              PrismaManagedBroadcastDeliveryStatus.FAILED,
+            ],
+          },
+        },
+        data: {
+          status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
+          lockedAt: null,
+          lastError: normalizedLastError,
+        },
+      });
+    }
+
+    await this.prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        broadcastId,
+        targetChatId: options.targetChatId,
+        occurrenceIndex: { gte: occurrenceIndex + 1 },
+        status: {
+          in: [
+            PrismaManagedBroadcastDeliveryStatus.PENDING,
+            PrismaManagedBroadcastDeliveryStatus.FAILED,
+          ],
+        },
+      },
+      data: {
+        status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
+        lockedAt: null,
+        lastError: normalizedLastError,
+      },
+    });
+  }
+
+  private shouldAutoRetryManagedBroadcastDeliveryFailure(
+    delivery: PersistedManagedBroadcastDelivery,
+  ): boolean {
+    if (delivery.attemptCount >= MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS) {
+      return false;
+    }
+
+    const retryAllowedAtMs =
+      delivery.updatedAt.getTime() + MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS;
+    if (retryAllowedAtMs > Date.now()) {
+      return false;
+    }
+
+    return this.isManagedBroadcastTransientDeliveryFailureMessage(delivery.lastError ?? '');
+  }
+
+  private isManagedBroadcastTransientDeliveryFailureMessage(value: string): boolean {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return true;
+    }
+
+    return (
+      normalized.includes('timeout') ||
+      normalized.includes('rate limit exceeded') ||
+      normalized.includes('circuit breaker') ||
+      normalized.includes('attachment.not.ready') ||
+      normalized.includes('not ready') ||
+      normalized.includes('temporarily unavailable') ||
+      normalized.includes('service unavailable') ||
+      normalized.includes('socket hang up') ||
+      normalized.includes('econnaborted') ||
+      normalized.includes('econnreset') ||
+      normalized.includes('network error') ||
+      normalized.includes('прошлая попытка была прервана после старта отправки')
+    );
+  }
+
+  private isManagedBroadcastPermanentTargetDeliveryFailure(
+    error: unknown,
+    failureMessage: string,
+  ): boolean {
+    if (error && this.isPrivateDialogChatUnavailableError(error)) {
+      return true;
+    }
+
+    const normalized = failureMessage.trim().toLowerCase();
+    if (!normalized) {
+      return false;
+    }
+
+    return (
+      normalized.includes('chat closed') ||
+      normalized.includes('chat not found') ||
+      normalized.includes('not active chat member') ||
+      normalized.includes('not a chat member') ||
+      normalized.includes('bot is not a chat member') ||
+      normalized.includes('not accessible') ||
+      normalized.includes('forbidden') ||
+      normalized.includes('chat.denied') ||
+      normalized.includes('chat.not.found')
+    );
+  }
+
   private async reconcileStaleManagedBroadcastDeliveries(
     broadcastId: string,
     occurrenceIndex: number,
@@ -11150,6 +11403,7 @@ export class AdminService implements OnModuleDestroy {
       Math.max(
         this.hasRetriableMaxAttachment(options) ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
         BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
+        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
       ) + 1;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -11228,6 +11482,10 @@ export class AdminService implements OnModuleDestroy {
 
     if (this.isMaxApiThrottleError(error)) {
       return BROADCAST_THROTTLE_RETRY_DELAYS_MS[attempt - 1] ?? null;
+    }
+
+    if (this.isMaxApiTimeoutError(error)) {
+      return BROADCAST_TIMEOUT_RETRY_DELAYS_MS[attempt - 1] ?? null;
     }
 
     return null;
