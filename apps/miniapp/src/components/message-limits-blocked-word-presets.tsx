@@ -1,6 +1,10 @@
-import { normalizeMessageLimitsBlockedWordCandidate } from '@maxim/contracts';
 import { useState } from 'react';
 import { cn } from '../lib/cn';
+import {
+  mergeMessageLimitsBlockedWords,
+  normalizeMessageLimitsBlockedWords,
+  subtractMessageLimitsBlockedWords,
+} from '../lib/message-limits-blocked-words';
 import {
   MESSAGE_LIMITS_BLOCKED_WORD_PRESETS,
   type MessageLimitsBlockedWordPreset,
@@ -29,42 +33,38 @@ function PlusIcon() {
   );
 }
 
-function normalizeMessageLimitsBlockedWords(values: readonly string[]): string[] {
-  return Array.from(
-    new Set(
-      values
-        .map((item) => normalizeMessageLimitsBlockedWordCandidate(item))
-        .filter((item): item is string => Boolean(item)),
-    ),
+function MinusIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" aria-hidden focusable="false">
+      <path
+        d="M3.25 8H12.75"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
   );
 }
 
-function mergeMessageLimitsBlockedWords(
-  currentWords: readonly string[],
-  candidates: readonly string[],
-  maxWords: number,
-): {
-  addedWords: string[];
-  nextWords: string[];
-} {
-  const existingWords = new Set(normalizeMessageLimitsBlockedWords(currentWords));
-  const nextWords = [...currentWords];
-  const addedWords: string[] = [];
-
-  for (const candidate of normalizeMessageLimitsBlockedWords(candidates)) {
-    if (nextWords.length >= maxWords || existingWords.has(candidate)) {
-      continue;
-    }
-
-    existingWords.add(candidate);
-    nextWords.push(candidate);
-    addedWords.push(candidate);
+function formatPresetDelta(
+  addableCount: number,
+  removableCount: number,
+  remainingSlots: number,
+): string {
+  if (addableCount > 0 && removableCount > 0) {
+    return `+${addableCount} · -${removableCount}`;
   }
 
-  return {
-    addedWords,
-    nextWords,
-  };
+  if (addableCount > 0) {
+    return `+${addableCount}`;
+  }
+
+  if (removableCount > 0) {
+    return `-${removableCount}`;
+  }
+
+  return remainingSlots === 0 ? 'лимит' : 'без изменений';
 }
 
 export default function MessageLimitsBlockedWordPresets({
@@ -73,13 +73,19 @@ export default function MessageLimitsBlockedWordPresets({
   onApplyWords,
 }: MessageLimitsBlockedWordPresetsProps) {
   const { pushToast } = useToast();
-  const [activePresetId, setActivePresetId] = useState<MessageLimitsBlockedWordPresetId | null>(null);
+  const [activePresetId, setActivePresetId] = useState<MessageLimitsBlockedWordPresetId | null>(
+    null,
+  );
   const selectedWordsSet = new Set(normalizeMessageLimitsBlockedWords(selectedWords));
   const activePreset =
     MESSAGE_LIMITS_BLOCKED_WORD_PRESETS.find((preset) => preset.id === activePresetId) ?? null;
-  const activePresetWords = activePreset ? normalizeMessageLimitsBlockedWords(activePreset.words) : [];
+  const activePresetWords = activePreset
+    ? normalizeMessageLimitsBlockedWords(activePreset.words)
+    : [];
+  const activePresetSelectedWords = activePresetWords.filter((word) => selectedWordsSet.has(word));
   const activePresetMissingWords = activePresetWords.filter((word) => !selectedWordsSet.has(word));
   const activePresetAddableCount = Math.min(remainingSlots, activePresetMissingWords.length);
+  const activePresetRemovableCount = activePresetSelectedWords.length;
 
   function applyPreset(preset: MessageLimitsBlockedWordPreset) {
     const { addedWords, nextWords } = mergeMessageLimitsBlockedWords(
@@ -103,13 +109,36 @@ export default function MessageLimitsBlockedWordPresets({
     });
   }
 
+  function removePreset(preset: MessageLimitsBlockedWordPreset) {
+    const { nextWords, removedWords } = subtractMessageLimitsBlockedWords(
+      selectedWords,
+      preset.words,
+    );
+
+    if (removedWords.length === 0) {
+      pushToast({
+        tone: 'info',
+        title: 'Из пакета нечего убирать',
+      });
+      return;
+    }
+
+    onApplyWords(nextWords);
+    pushToast({
+      tone: 'success',
+      title: `-${removedWords.length} слов`,
+    });
+  }
+
   return (
     <>
       <div className="settings-word-banlist__preset-grid">
         {MESSAGE_LIMITS_BLOCKED_WORD_PRESETS.map((preset) => {
           const presetWords = normalizeMessageLimitsBlockedWords(preset.words);
+          const selectedPresetWords = presetWords.filter((word) => selectedWordsSet.has(word));
           const missingWords = presetWords.filter((word) => !selectedWordsSet.has(word));
           const addableCount = Math.min(remainingSlots, missingWords.length);
+          const removableCount = selectedPresetWords.length;
           const compactTitle =
             preset.id === 'gambling'
               ? 'Казино'
@@ -130,16 +159,13 @@ export default function MessageLimitsBlockedWordPresets({
               <div className="settings-word-banlist__preset-head">
                 <div className="settings-word-banlist__preset-badge-copy">
                   <span className="settings-word-banlist__preset-badge-mark" aria-hidden>
-                    +
+                    ±
                   </span>
                   <div className="settings-word-banlist__preset-badge-text">
                     <strong>{compactTitle}</strong>
                     <small>
-                      {addableCount > 0
-                        ? `+${addableCount} из ${presetWords.length}`
-                        : remainingSlots === 0
-                          ? 'лимит'
-                          : 'добавлено'}
+                      {formatPresetDelta(addableCount, removableCount, remainingSlots)} из{' '}
+                      {presetWords.length}
                     </small>
                   </div>
                 </div>
@@ -147,7 +173,10 @@ export default function MessageLimitsBlockedWordPresets({
                 <div className="settings-word-banlist__preset-actions">
                   <button
                     type="button"
-                    className={cn('settings-info-button', activePresetId === preset.id && 'is-open')}
+                    className={cn(
+                      'settings-info-button',
+                      activePresetId === preset.id && 'is-open',
+                    )}
                     aria-label={`Открыть полный список слов пакета ${preset.title}`}
                     onClick={() =>
                       setActivePresetId((current) => (current === preset.id ? null : preset.id))
@@ -158,7 +187,21 @@ export default function MessageLimitsBlockedWordPresets({
 
                   <button
                     type="button"
-                    className="settings-word-banlist__preset-plus"
+                    className="settings-word-banlist__preset-action settings-word-banlist__preset-action--remove"
+                    onClick={() => removePreset(preset)}
+                    disabled={removableCount === 0}
+                    aria-label={
+                      removableCount > 0
+                        ? `Убрать слова пакета ${preset.title}`
+                        : `Из пакета ${preset.title} нечего убирать`
+                    }
+                  >
+                    <MinusIcon />
+                  </button>
+
+                  <button
+                    type="button"
+                    className="settings-word-banlist__preset-action settings-word-banlist__preset-action--add"
                     onClick={() => applyPreset(preset)}
                     disabled={addableCount === 0}
                     aria-label={
@@ -187,7 +230,20 @@ export default function MessageLimitsBlockedWordPresets({
           onClose={() => setActivePresetId(null)}
           className="settings-drilldown__panel--blocked-word-preset"
           footer={
-            <div className="settings-drilldown__footer-actions is-single-action">
+            <div className="settings-drilldown__footer-actions">
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => {
+                  removePreset(activePreset);
+                  setActivePresetId(null);
+                }}
+                disabled={activePresetRemovableCount === 0}
+              >
+                {activePresetRemovableCount > 0
+                  ? `Убрать ${activePresetRemovableCount} слов`
+                  : 'Убирать нечего'}
+              </button>
               <button
                 type="button"
                 className="button button--accent"
@@ -210,11 +266,12 @@ export default function MessageLimitsBlockedWordPresets({
             <div className="settings-word-banlist__preset-sheet-facts">
               <span className="chip">{activePresetWords.length} слов</span>
               <span className="chip">Новых: {activePresetAddableCount}</span>
+              <span className="chip">В списке: {activePresetRemovableCount}</span>
             </div>
 
             <p className="settings-word-banlist__preset-sheet-note">
-              Пакет добавляется поверх текущего списка. Перед применением можно просмотреть все
-              слова ниже.
+              Пакет можно добавить поверх текущего списка или целиком убрать из него. Перед
+              применением можно просмотреть все слова ниже.
             </p>
 
             <div

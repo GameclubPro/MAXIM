@@ -19,7 +19,6 @@ import {
   normalizeAllowlistDomain,
   normalizeAllowlistLink,
   normalizeStoredAllowlistEntry,
-  normalizeMessageLimitsBlockedWordCandidate,
   stepDeleteBotMessagesDelayMinutes,
   type AllowlistMatchType,
   type BotSpeechEditableFieldKey,
@@ -116,6 +115,10 @@ import {
   type BroadcastQuickPreset,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
+import {
+  applyMessageLimitsBlockedWordsInput,
+  splitMessageLimitsBlockedWordsInput,
+} from '../lib/message-limits-blocked-words';
 import {
   maxNotify,
   openMaxBotLink,
@@ -447,13 +450,6 @@ function PublishedRulesButtonToggleSlot(props: PublishedRulesButtonToggleProps) 
       <LazyPublishedRulesButtonToggle {...props} />
     </Suspense>
   );
-}
-
-function splitMessageLimitsBlockedWordsInput(value: string): string[] {
-  return value
-    .split(/[\s,;\n]+/u)
-    .map((item) => normalizeMessageLimitsBlockedWordCandidate(item))
-    .filter((item): item is string => Boolean(item));
 }
 
 type AutoMuteDurationKey =
@@ -3683,31 +3679,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const nextCandidates = splitMessageLimitsBlockedWordsInput(messageLimitsBlockedWordsInput);
-    if (nextCandidates.length === 0) {
+    const { actions, addedWords, nextWords, removedWords } = applyMessageLimitsBlockedWordsInput(
+      draft.messageLimitsBlockedWords,
+      messageLimitsBlockedWordsInput,
+      MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
+    );
+
+    if (actions.length === 0) {
       if (messageLimitsBlockedWordsInput.trim()) {
         setFieldErrors((current) => ({
           ...current,
-          messageLimitsBlockedWords: 'Нужно одно слово без пробелов, от 2 до 32 символов.',
+          messageLimitsBlockedWords: 'Нужно одно слово без пробелов, можно с префиксом + или -.',
         }));
       }
       return;
     }
 
-    const existingWords = new Set(
-      draft.messageLimitsBlockedWords
-        .map((item) => normalizeMessageLimitsBlockedWordCandidate(item))
-        .filter((item): item is string => Boolean(item)),
-    );
-    const nextWords = [...draft.messageLimitsBlockedWords];
-
-    for (const candidate of nextCandidates) {
-      if (nextWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX || existingWords.has(candidate)) {
-        continue;
+    if (addedWords.length === 0 && removedWords.length === 0) {
+      const hasAddActions = actions.some((action) => action.operation === 'add');
+      if (
+        hasAddActions &&
+        draft.messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
+      ) {
+        setFieldErrors((current) => ({
+          ...current,
+          messageLimitsBlockedWords:
+            'Лимит стоп-слов достигнут. Уберите лишнее или используйте -слово.',
+        }));
+      } else {
+        clearFieldError('messageLimitsBlockedWords');
       }
-
-      existingWords.add(candidate);
-      nextWords.push(candidate);
+      return;
     }
 
     clearFieldError('messageLimitsBlockedWords');
@@ -3731,7 +3733,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? {
             ...current,
             messageLimitsBlockedWords: nextWords,
-            messageLimitsBotMessageEnabled: true,
+            messageLimitsBotMessageEnabled:
+              nextWords.length > 0 ? true : current.messageLimitsBotMessageEnabled,
           }
         : current,
     );
@@ -4490,10 +4493,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const messageLimitsBlockedWords = draft?.messageLimitsBlockedWords ?? [];
   const messageLimitsBlockedWordsError = fieldErrors.messageLimitsBlockedWords;
+  const messageLimitsBlockedWordsInputActions = splitMessageLimitsBlockedWordsInput(
+    messageLimitsBlockedWordsInput,
+  );
+  const hasMessageLimitsBlockedWordsRemoveInputActions = messageLimitsBlockedWordsInputActions.some(
+    (action) => action.operation === 'remove',
+  );
   const messageLimitsBlockedWordsRemaining = Math.max(
     0,
     MESSAGE_LIMITS_BLOCKED_WORDS_MAX - messageLimitsBlockedWords.length,
   );
+  const isMessageLimitsBlockedWordsApplyDisabled =
+    !messageLimitsBlockedWordsInput.trim() ||
+    (messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX &&
+      messageLimitsBlockedWordsInputActions.length > 0 &&
+      !hasMessageLimitsBlockedWordsRemoveInputActions);
   const hasMessageLimitsBlockedWordsOverflow =
     messageLimitsBlockedWords.length > MESSAGE_LIMITS_BLOCKED_WORDS_PREVIEW_COUNT;
   const visibleMessageLimitsBlockedWords =
@@ -8785,23 +8799,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 addMessageLimitsBlockedWords();
                               }
                             }}
-                            placeholder="Введите слово"
+                            placeholder="Слово, +слово или -слово"
                             maxLength={240}
-                            disabled={
-                              messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
-                            }
-                            aria-label="Добавить стоп-слово"
+                            aria-label="Изменить стоп-слова"
                           />
                           <button
                             type="button"
                             className="button button--accent settings-word-banlist__add-button"
                             onClick={addMessageLimitsBlockedWords}
-                            disabled={
-                              !messageLimitsBlockedWordsInput.trim() ||
-                              messageLimitsBlockedWords.length >= MESSAGE_LIMITS_BLOCKED_WORDS_MAX
-                            }
+                            disabled={isMessageLimitsBlockedWordsApplyDisabled}
                           >
-                            Добавить
+                            Применить
                           </button>
                         </div>
 
@@ -8852,9 +8860,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </>
                         ) : null}
 
-                        {messageLimitsBlockedWordsError ? (
-                          <small className="field__hint">{messageLimitsBlockedWordsError}</small>
-                        ) : null}
+                        <small className="field__hint">
+                          {messageLimitsBlockedWordsError ??
+                            'Можно вводить обычное слово, +слово для добавления и -слово для удаления.'}
+                        </small>
                       </div>
 
                       <div

@@ -135,7 +135,73 @@ type BlockedWordDetection = {
   blockedWord: string;
 };
 
+type ResolvedBlockedWord = {
+  blockedWord: string;
+  inflectionRoot: string | null;
+  prefilterToken: string;
+};
+
 const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
+const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
+  'иями',
+  'ями',
+  'ами',
+  'иях',
+  'ях',
+  'ах',
+  'ого',
+  'ему',
+  'ому',
+  'ыми',
+  'ими',
+  'его',
+  'ией',
+  'ою',
+  'ею',
+  'ую',
+  'юю',
+  'ая',
+  'яя',
+  'ое',
+  'ее',
+  'ые',
+  'ие',
+  'ий',
+  'ый',
+  'ой',
+  'ов',
+  'ев',
+  'ей',
+  'ам',
+  'ям',
+  'ом',
+  'ем',
+  'ым',
+  'им',
+  'ию',
+  'ью',
+  'ия',
+  'ья',
+  'а',
+  'я',
+  'у',
+  'ю',
+  'ы',
+  'и',
+  'ь',
+  'й',
+] as const;
+const BLOCKED_WORD_LATIN_INFLECTION_SUFFIXES = [
+  'ings',
+  'ing',
+  'ies',
+  'ied',
+  'ed',
+  'es',
+  's',
+] as const;
+const BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH = 3;
+const BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH = 4;
 
 // Keep regexes only for highly productive mat roots. Closed-form insults and slurs
 // should come from the exact lexicon so names/surnames with the same prefix do not match.
@@ -168,14 +234,7 @@ const PROFANITY_LATIN_TOKEN_PATTERNS = [
   /^tvar(?:in)?[a-z0-9]*$/i,
   /^urod[a-z0-9]*$/i,
 ];
-const PROFANITY_CANINE_FEMALE_FORMS = new Set([
-  'сука',
-  'суки',
-  'суке',
-  'суку',
-  'сукой',
-  'сукою',
-]);
+const PROFANITY_CANINE_FEMALE_FORMS = new Set(['сука', 'суки', 'суке', 'суку', 'сукой', 'сукою']);
 const PROFANITY_CANINE_CONTEXT_MARKERS = [
   'собак',
   'щен',
@@ -365,18 +424,15 @@ const ADS_BUSINESS_MARKERS = [
 const ADS_BUSINESS_PATTERNS: LabeledPattern[] = [
   {
     label: 'магазин',
-    pattern:
-      /(?:^|[^\p{L}\p{N}_-])интернет[\s-]*магазин(?=$|[^\p{L}\p{N}_-])/u,
+    pattern: /(?:^|[^\p{L}\p{N}_-])интернет[\s-]*магазин(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'магазин',
-    pattern:
-      /(?:^|[^\p{L}\p{N}_-])магазин(?:[\s"«][\p{L}\p{N}]|-[\p{L}\p{N}])/u,
+    pattern: /(?:^|[^\p{L}\p{N}_-])магазин(?:[\s"«][\p{L}\p{N}]|-[\p{L}\p{N}])/u,
   },
   {
     label: 'магазин',
-    pattern:
-      /(?:^|[^\p{L}\p{N}_-])в\s+магазин[\p{L}\p{N}\s"«»_-]{0,40}привез/u,
+    pattern: /(?:^|[^\p{L}\p{N}_-])в\s+магазин[\p{L}\p{N}\s"«»_-]{0,40}привез/u,
   },
 ];
 const ADS_SERVICE_SPECIALTY_MARKERS = [
@@ -715,7 +771,7 @@ const MIXED_CHAR_MAP: Record<string, string> = {
 @Injectable()
 export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
-  private readonly blockedWordListCache = new Map<string, readonly string[]>();
+  private readonly blockedWordListCache = new Map<string, readonly ResolvedBlockedWord[]>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
   constructor(
@@ -1121,10 +1177,8 @@ export class RuleEngineService {
       ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_BUSINESS_MARKERS.some(
         (marker) =>
-          !(
-            hasPropertyPrivateContext &&
-            PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)
-          ) && hasMarker(marker),
+          !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
+          hasMarker(marker),
       ) ||
       ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
       ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -1132,10 +1186,9 @@ export class RuleEngineService {
       ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
       ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
     const hasIntentContext = ADS_INTENT_MARKERS.some((marker) => hasMarker(marker));
-    const hasServiceOfferContext = [...ADS_SERVICE_INTENT_MARKERS].some((marker) =>
-      hasMarker(marker),
-    )
-      || ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasServiceOfferContext =
+      [...ADS_SERVICE_INTENT_MARKERS].some((marker) => hasMarker(marker)) ||
+      ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasServiceSpecialtyContext = ADS_SERVICE_SPECIALTY_MARKERS.some(
       (marker) =>
         !(
@@ -1236,7 +1289,9 @@ export class RuleEngineService {
     }
 
     if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
-      return context.normalizedTokensWithoutUrls.some((token) => token.startsWith(normalizedMarker));
+      return context.normalizedTokensWithoutUrls.some((token) =>
+        token.startsWith(normalizedMarker),
+      );
     }
 
     return (
@@ -1903,10 +1958,8 @@ export class RuleEngineService {
     const businessHits = [
       ...ADS_BUSINESS_MARKERS.filter(
         (marker) =>
-          !(
-            hasPropertyPrivateContext &&
-            PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)
-          ) && hasMarker(marker),
+          !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
+          hasMarker(marker),
       ),
       ...ADS_BUSINESS_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
         ({ label }) => label,
@@ -2409,17 +2462,31 @@ export class RuleEngineService {
     }
 
     const compactText = normalizedText.replace(/[^\p{L}\p{N}]+/gu, '');
-    const candidateBlockedWords = blockedWordList.filter((blockedWord) =>
-      compactText.includes(blockedWord),
+    const normalizedTokens = normalizedText.match(/[a-zа-яё0-9]+/giu) ?? [];
+    const tokenInflectionRootCache = new Map<string, string | null>();
+    const candidateBlockedWords = blockedWordList.filter(({ prefilterToken }) =>
+      compactText.includes(prefilterToken),
     );
     if (candidateBlockedWords.length === 0) {
       return null;
     }
 
     for (const blockedWord of candidateBlockedWords) {
-      if (this.getMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
+      if (this.getMessageLimitsBlockedWordPattern(blockedWord.blockedWord).test(normalizedText)) {
         return {
+          blockedWord: blockedWord.blockedWord,
+        };
+      }
+
+      if (
+        this.matchesMessageLimitsBlockedWordInflection(
           blockedWord,
+          normalizedTokens,
+          tokenInflectionRootCache,
+        )
+      ) {
+        return {
+          blockedWord: blockedWord.blockedWord,
         };
       }
     }
@@ -2437,7 +2504,33 @@ export class RuleEngineService {
     return normalized;
   }
 
-  private resolveMessageLimitsBlockedWordList(blockedWords: readonly string[]): readonly string[] {
+  private matchesMessageLimitsBlockedWordInflection(
+    blockedWord: ResolvedBlockedWord,
+    normalizedTokens: readonly string[],
+    tokenInflectionRootCache: Map<string, string | null>,
+  ): boolean {
+    if (!blockedWord.inflectionRoot || normalizedTokens.length === 0) {
+      return false;
+    }
+
+    for (const token of normalizedTokens) {
+      let tokenInflectionRoot = tokenInflectionRootCache.get(token);
+      if (tokenInflectionRoot === undefined) {
+        tokenInflectionRoot = this.resolveMessageLimitsBlockedWordInflectionRoot(token);
+        tokenInflectionRootCache.set(token, tokenInflectionRoot);
+      }
+
+      if (tokenInflectionRoot === blockedWord.inflectionRoot) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private resolveMessageLimitsBlockedWordList(
+    blockedWords: readonly string[],
+  ): readonly ResolvedBlockedWord[] {
     const cacheKey = this.buildBlockedWordListCacheKey(blockedWords);
     const cached = this.blockedWordListCache.get(cacheKey);
     if (cached) {
@@ -2450,7 +2543,14 @@ export class RuleEngineService {
           .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
           .filter((item): item is string => Boolean(item)),
       ),
-    ];
+    ].map((blockedWord) => {
+      const inflectionRoot = this.resolveMessageLimitsBlockedWordInflectionRoot(blockedWord);
+      return {
+        blockedWord,
+        inflectionRoot,
+        prefilterToken: inflectionRoot ?? blockedWord,
+      };
+    });
     this.blockedWordListCache.set(cacheKey, resolved);
     if (this.blockedWordListCache.size > BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES) {
       const oldestKey = this.blockedWordListCache.keys().next().value;
@@ -2480,6 +2580,60 @@ export class RuleEngineService {
     const joinerPattern = String.raw`[^\p{L}\p{N}]*`;
     const tokenPattern = [...value].map((char) => this.escapeRegExp(char)).join(joinerPattern);
     return new RegExp(String.raw`(?<![\p{L}\p{N}])${tokenPattern}(?![\p{L}\p{N}])`, 'iu');
+  }
+
+  private resolveMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
+    if (!value) {
+      return null;
+    }
+
+    if (/^[а-яё]+$/iu.test(value)) {
+      return this.resolveCyrillicMessageLimitsBlockedWordInflectionRoot(value);
+    }
+
+    if (/^[a-z]+$/iu.test(value)) {
+      return this.resolveLatinMessageLimitsBlockedWordInflectionRoot(value);
+    }
+
+    return null;
+  }
+
+  private resolveCyrillicMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
+    for (const suffix of BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES) {
+      if (!value.endsWith(suffix)) {
+        continue;
+      }
+
+      const root = value.slice(0, -suffix.length);
+      if (root.length >= BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH) {
+        return root;
+      }
+    }
+
+    if (/[аеёиоуыэюя]$/iu.test(value)) {
+      return null;
+    }
+
+    return value.length >= BLOCKED_WORD_CYRILLIC_MIN_ROOT_LENGTH ? value : null;
+  }
+
+  private resolveLatinMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
+    for (const suffix of BLOCKED_WORD_LATIN_INFLECTION_SUFFIXES) {
+      if (!value.endsWith(suffix)) {
+        continue;
+      }
+
+      const root = value.slice(0, -suffix.length);
+      if (root.length >= BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH) {
+        return root;
+      }
+    }
+
+    if (/[aeiouy]$/iu.test(value)) {
+      return null;
+    }
+
+    return value.length >= BLOCKED_WORD_LATIN_MIN_ROOT_LENGTH ? value : null;
   }
 
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {

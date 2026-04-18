@@ -1219,9 +1219,9 @@ describe('RuleEngineService', () => {
     );
 
     expect(violation).toBeUndefined();
-    expect(service.hasCommercialSpamMarkers('БОБРОВАЯ СТРУЯ 🦫 БАРСУЧИЙ ЖИР 🦡 Тел.89179343764')).toBe(
-      false,
-    );
+    expect(
+      service.hasCommercialSpamMarkers('БОБРОВАЯ СТРУЯ 🦫 БАРСУЧИЙ ЖИР 🦡 Тел.89179343764'),
+    ).toBe(false);
   });
 
   it('does not detect private property listing from real logs when store mention is just area context', async () => {
@@ -1817,6 +1817,26 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects MESSAGE_BLOCKED_WORD for common word endings of a configured stop word', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сегодня обсуждаем ставки и букмекеров.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['ставка', 'букмекер'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'ставка' }),
+        }),
+      ]),
+    );
+  });
+
   it('does not detect MESSAGE_BLOCKED_WORD inside larger word', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -1824,6 +1844,19 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'Тут только казиношка без совпадения по целому слову.',
       settings: buildSettings({ messageLimitsBlockedWords: ['казино'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
+  });
+
+  it('keeps vowel-final blocked words on exact matching to avoid unrelated false positives', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Для склада нужна тара и паллеты.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['таро'] }),
       domainAllowlist: [],
     });
 
@@ -2142,18 +2175,18 @@ describe('RuleEngineService', () => {
       hasPhotoAttachment: true,
     });
 
-    expect(
-      blockedAttempt.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD'),
-    ).toBe(true);
-    expect(
-      blockedAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
-    ).toBe(false);
-    expect(
-      firstCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
-    ).toBe(false);
-    expect(
-      secondCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT'),
-    ).toBe(true);
+    expect(blockedAttempt.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(
+      true,
+    );
+    expect(blockedAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(
+      false,
+    );
+    expect(firstCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(
+      false,
+    );
+    expect(secondCleanAttempt.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(
+      true,
+    );
   });
 
   it('resets sticker cooldown state when sticker cooldown settings change', async () => {
