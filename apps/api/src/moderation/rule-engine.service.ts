@@ -141,6 +141,19 @@ type ResolvedBlockedWord = {
   prefilterToken: string;
 };
 
+type ResolvedBlockedWordTrieNode = {
+  children: Map<string, ResolvedBlockedWordTrieNode>;
+  terminalTokens?: string[];
+};
+
+type ResolvedBlockedWordIndex = {
+  maxPrefilterTokenLength: number;
+  prefilterRoot: ResolvedBlockedWordTrieNode;
+  words: readonly ResolvedBlockedWord[];
+  wordsByInflectionRoot: ReadonlyMap<string, readonly ResolvedBlockedWord[]>;
+  wordsByPrefilterToken: ReadonlyMap<string, readonly ResolvedBlockedWord[]>;
+};
+
 const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
 const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
   'иями',
@@ -771,7 +784,7 @@ const MIXED_CHAR_MAP: Record<string, string> = {
 @Injectable()
 export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
-  private readonly blockedWordListCache = new Map<string, readonly ResolvedBlockedWord[]>();
+  private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
 
   constructor(
@@ -2451,8 +2464,8 @@ export class RuleEngineService {
       return null;
     }
 
-    const blockedWordList = this.resolveMessageLimitsBlockedWordList(blockedWords);
-    if (blockedWordList.length === 0) {
+    const blockedWordIndex = this.resolveMessageLimitsBlockedWordList(blockedWords);
+    if (blockedWordIndex.words.length === 0) {
       return null;
     }
 
@@ -2463,28 +2476,77 @@ export class RuleEngineService {
 
     const compactText = normalizedText.replace(/[^\p{L}\p{N}]+/gu, '');
     const normalizedTokens = normalizedText.match(/[a-zа-яё0-9]+/giu) ?? [];
-    const tokenInflectionRootCache = new Map<string, string | null>();
-    const candidateBlockedWords = blockedWordList.filter(({ prefilterToken }) =>
-      compactText.includes(prefilterToken),
+    const matchedPrefilterTokens = this.findMessageLimitsBlockedWordPrefilterTokens(
+      compactText,
+      blockedWordIndex.prefilterRoot,
+      blockedWordIndex.maxPrefilterTokenLength,
     );
-    if (candidateBlockedWords.length === 0) {
+    const tokenInflectionRoots =
+      this.resolveMessageLimitsBlockedWordInflectionRoots(normalizedTokens);
+    if (matchedPrefilterTokens.size === 0 && tokenInflectionRoots.size === 0) {
       return null;
     }
 
-    for (const blockedWord of candidateBlockedWords) {
-      if (this.getMessageLimitsBlockedWordPattern(blockedWord.blockedWord).test(normalizedText)) {
+    const candidateFlagsByBlockedWord = new Map<
+      string,
+      {
+        inflection: boolean;
+        prefilter: boolean;
+      }
+    >();
+
+    for (const inflectionRoot of tokenInflectionRoots) {
+      const words = blockedWordIndex.wordsByInflectionRoot.get(inflectionRoot);
+      if (!words) {
+        continue;
+      }
+
+      for (const word of words) {
+        const candidate = candidateFlagsByBlockedWord.get(word.blockedWord) ?? {
+          inflection: false,
+          prefilter: false,
+        };
+        candidate.inflection = true;
+        candidateFlagsByBlockedWord.set(word.blockedWord, candidate);
+      }
+    }
+
+    for (const prefilterToken of matchedPrefilterTokens) {
+      const words = blockedWordIndex.wordsByPrefilterToken.get(prefilterToken);
+      if (!words) {
+        continue;
+      }
+
+      for (const word of words) {
+        const candidate = candidateFlagsByBlockedWord.get(word.blockedWord) ?? {
+          inflection: false,
+          prefilter: false,
+        };
+        candidate.prefilter = true;
+        candidateFlagsByBlockedWord.set(word.blockedWord, candidate);
+      }
+    }
+
+    if (candidateFlagsByBlockedWord.size === 0) {
+      return null;
+    }
+
+    for (const blockedWord of blockedWordIndex.words) {
+      const candidate = candidateFlagsByBlockedWord.get(blockedWord.blockedWord);
+      if (!candidate) {
+        continue;
+      }
+
+      if (
+        candidate.prefilter &&
+        this.getMessageLimitsBlockedWordPattern(blockedWord.blockedWord).test(normalizedText)
+      ) {
         return {
           blockedWord: blockedWord.blockedWord,
         };
       }
 
-      if (
-        this.matchesMessageLimitsBlockedWordInflection(
-          blockedWord,
-          normalizedTokens,
-          tokenInflectionRootCache,
-        )
-      ) {
+      if (candidate.inflection) {
         return {
           blockedWord: blockedWord.blockedWord,
         };
@@ -2504,40 +2566,16 @@ export class RuleEngineService {
     return normalized;
   }
 
-  private matchesMessageLimitsBlockedWordInflection(
-    blockedWord: ResolvedBlockedWord,
-    normalizedTokens: readonly string[],
-    tokenInflectionRootCache: Map<string, string | null>,
-  ): boolean {
-    if (!blockedWord.inflectionRoot || normalizedTokens.length === 0) {
-      return false;
-    }
-
-    for (const token of normalizedTokens) {
-      let tokenInflectionRoot = tokenInflectionRootCache.get(token);
-      if (tokenInflectionRoot === undefined) {
-        tokenInflectionRoot = this.resolveMessageLimitsBlockedWordInflectionRoot(token);
-        tokenInflectionRootCache.set(token, tokenInflectionRoot);
-      }
-
-      if (tokenInflectionRoot === blockedWord.inflectionRoot) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
   private resolveMessageLimitsBlockedWordList(
     blockedWords: readonly string[],
-  ): readonly ResolvedBlockedWord[] {
+  ): ResolvedBlockedWordIndex {
     const cacheKey = this.buildBlockedWordListCacheKey(blockedWords);
     const cached = this.blockedWordListCache.get(cacheKey);
     if (cached) {
       return cached;
     }
 
-    const resolved = [
+    const words = [
       ...new Set(
         blockedWords
           .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
@@ -2551,6 +2589,35 @@ export class RuleEngineService {
         prefilterToken: inflectionRoot ?? blockedWord,
       };
     });
+    const prefilterRoot: ResolvedBlockedWordTrieNode = {
+      children: new Map(),
+    };
+    const wordsByInflectionRoot = new Map<string, ResolvedBlockedWord[]>();
+    const wordsByPrefilterToken = new Map<string, ResolvedBlockedWord[]>();
+    let maxPrefilterTokenLength = 0;
+
+    for (const word of words) {
+      if (word.inflectionRoot) {
+        const existingByRoot = wordsByInflectionRoot.get(word.inflectionRoot) ?? [];
+        existingByRoot.push(word);
+        wordsByInflectionRoot.set(word.inflectionRoot, existingByRoot);
+      }
+
+      const existingByPrefilterToken = wordsByPrefilterToken.get(word.prefilterToken) ?? [];
+      existingByPrefilterToken.push(word);
+      wordsByPrefilterToken.set(word.prefilterToken, existingByPrefilterToken);
+      maxPrefilterTokenLength = Math.max(maxPrefilterTokenLength, word.prefilterToken.length);
+      this.insertMessageLimitsBlockedWordPrefilterToken(prefilterRoot, word.prefilterToken);
+    }
+
+    const resolved = {
+      maxPrefilterTokenLength,
+      prefilterRoot,
+      words,
+      wordsByInflectionRoot,
+      wordsByPrefilterToken,
+    };
+
     this.blockedWordListCache.set(cacheKey, resolved);
     if (this.blockedWordListCache.size > BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES) {
       const oldestKey = this.blockedWordListCache.keys().next().value;
@@ -2580,6 +2647,74 @@ export class RuleEngineService {
     const joinerPattern = String.raw`[^\p{L}\p{N}]*`;
     const tokenPattern = [...value].map((char) => this.escapeRegExp(char)).join(joinerPattern);
     return new RegExp(String.raw`(?<![\p{L}\p{N}])${tokenPattern}(?![\p{L}\p{N}])`, 'iu');
+  }
+
+  private insertMessageLimitsBlockedWordPrefilterToken(
+    root: ResolvedBlockedWordTrieNode,
+    token: string,
+  ): void {
+    let node = root;
+    for (const char of token) {
+      let nextNode = node.children.get(char);
+      if (!nextNode) {
+        nextNode = {
+          children: new Map(),
+        };
+        node.children.set(char, nextNode);
+      }
+
+      node = nextNode;
+    }
+
+    if (!node.terminalTokens) {
+      node.terminalTokens = [token];
+      return;
+    }
+
+    if (!node.terminalTokens.includes(token)) {
+      node.terminalTokens.push(token);
+    }
+  }
+
+  private findMessageLimitsBlockedWordPrefilterTokens(
+    compactText: string,
+    root: ResolvedBlockedWordTrieNode,
+    maxPrefilterTokenLength: number,
+  ): Set<string> {
+    const matches = new Set<string>();
+    if (!compactText || maxPrefilterTokenLength <= 0) {
+      return matches;
+    }
+
+    for (let start = 0; start < compactText.length; start += 1) {
+      let node = root;
+      const endLimit = Math.min(compactText.length, start + maxPrefilterTokenLength);
+      for (let end = start; end < endLimit; end += 1) {
+        const nextNode = node.children.get(compactText[end]);
+        if (!nextNode) {
+          break;
+        }
+
+        node = nextNode;
+        for (const token of node.terminalTokens ?? []) {
+          matches.add(token);
+        }
+      }
+    }
+
+    return matches;
+  }
+
+  private resolveMessageLimitsBlockedWordInflectionRoots(values: readonly string[]): Set<string> {
+    const roots = new Set<string>();
+    for (const value of values) {
+      const root = this.resolveMessageLimitsBlockedWordInflectionRoot(value);
+      if (root) {
+        roots.add(root);
+      }
+    }
+
+    return roots;
   }
 
   private resolveMessageLimitsBlockedWordInflectionRoot(value: string): string | null {
