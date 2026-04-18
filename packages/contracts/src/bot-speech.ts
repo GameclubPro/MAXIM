@@ -60,8 +60,8 @@ type BotSpeechPreset = {
 export const BOT_SPEECH_STYLE_METADATA: Record<BotSpeechStyle, BotSpeechStyleMetadata> = {
   ROBOT: {
     label: 'Робот',
-    subtitle: 'безличная система',
-    description: 'Короткий процедурный тон с понятным основанием и результатом.',
+    subtitle: 'цифровой модератор',
+    description: 'Техно-подача: коротко, ясно, с причиной, статусом и без лишних слов.',
     iconKey: 'robot',
   },
   FRIENDLY: {
@@ -93,45 +93,45 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   ROBOT: {
     editable: {
       greetingBotMessageText:
-        'Система: {user}. Доступ подтвержден. Активный модератор: {bot_character_name}.',
-      linkBotMessageText: 'Система: {user}. Ссылка удалена. Основание: {reason}.',
+        '🤖 {user}, доступ открыт. На линии {bot_character_name}. Работаем чисто и по правилам.',
+      linkBotMessageText: '🔗 {user}, сообщение {message_status}. Причина: {reason}.',
       linkWarnMessageText:
-        'Система: {user}. Предупреждение зарегистрировано. Повторная отправка ссылок запрещена.',
+        '⚠️ {user}, это предупреждение. Причина: {reason}.',
       requiredSubscriptionBotMessageText:
-        'Система: {user}. Для отправки сообщений требуется подписка на {channels}. Выполните подписку и повторите отправку. Текущий статус: {message_status}.',
+        '📡 {user}, для сообщений нужна подписка на {channels}. Подпишитесь и отправьте еще раз. Статус: {message_status}.',
       requiredSubscriptionWarnMessageText:
-        'Система: {user}. Предупреждение зарегистрировано. Для отправки сообщений по-прежнему требуется подписка на {channels}. Причина: {reason}.',
-      textFiltersBotMessageText: 'Система: {user}. Сообщение удалено. Основание: {reason}.',
+        '⚠️ {user}, это предупреждение. Для сообщений нужна подписка на {channels}. Причина: {reason}.',
+      textFiltersBotMessageText: '🛡️ {user}, сообщение {message_status}. Причина: {reason}.',
       textFiltersWarnMessageText:
-        'Система: {user}. Предупреждение зарегистрировано. Основание: {reason}.',
-      duplicateBotMessageText: 'Система: {user}. Повтор сообщения подтвержден. {sanction}',
-      messageLimitsBotMessageText: 'Система: {user}. Сообщение отклонено. Основание: {reason}.',
+        '⚠️ {user}, это предупреждение. Причина: {reason}.',
+      duplicateBotMessageText: '♻️ {user}, дубль найден. {sanction}',
+      messageLimitsBotMessageText: '📏 {user}, сообщение {message_status}. Причина: {reason}.',
       nightModeBotMessageText:
-        'Система: активен ночной режим. Период: {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText: 'Система: ночной режим завершен. {opening_status}',
+        '🌙 Ночной режим активен: {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText: '☀️ Ночной режим завершен. {opening_status}',
     },
     system: {
-      linkMute: 'Система: {user}. Выдан мут за повторную отправку ссылок.',
+      linkMute: '🔒 {user}, за повторные ссылки включен мут.',
       requiredSubscriptionMute:
-        'Система: {user}. Выдан мут за повторные сообщения без подписки на {channels}.',
+        '🔒 {user}, за повторные сообщения без подписки на {channels} включен мут.',
       requiredSubscriptionBan:
-        'Система: {user}. Выдан бан до ручного снятия. Для отправки сообщений требуется подписка на {channels}.',
-      textFiltersMuteCommercial: 'Система: {user}. Выдан мут за повторную коммерческую рекламу.',
-      textFiltersMuteProfanity: 'Система: {user}. Выдан мут за повторную грубую лексику.',
-      textFiltersMuteGeneric: 'Система: {user}. Выдан мут за повторные текстовые нарушения.',
-      topicExplainAnnouncement: 'Система: {user}. Объявление отклонено. Основание: {reason}.',
-      topicExplainMessage: 'Система: {user}. Сообщение отклонено. Основание: {reason}.',
-      topicWarn: 'Система: {user}. Предупреждение зарегистрировано. Основание: {reason}.',
+        '⛔ {user}, включен бан до ручного снятия. Для сообщений нужна подписка на {channels}.',
+      textFiltersMuteCommercial: '🔒 {user}, за повторную рекламу включен мут.',
+      textFiltersMuteProfanity: '🔒 {user}, за повторную грубую лексику включен мут.',
+      textFiltersMuteGeneric: '🔒 {user}, за повторные нарушения текста включен мут.',
+      topicExplainAnnouncement: '🧾 {user}, объявление не прошло. Причина: {reason}.',
+      topicExplainMessage: '🧾 {user}, сообщение не прошло. Причина: {reason}.',
+      topicWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
       topicMuteAnnouncement:
-        'Система: {user}. Выдан мут за повторные объявления с неверным форматом.',
-      topicMuteMessage: 'Система: {user}. Выдан мут за повторные сообщения с неверным форматом.',
-      topicBan: 'Система: {user}. Выдан бан до ручного снятия. Основание: {reason}.',
+        '🔒 {user}, за повторные объявления не по формату включен мут.',
+      topicMuteMessage: '🔒 {user}, за повторные сообщения не по формату включен мут.',
+      topicBan: '⛔ {user}, включен бан до ручного снятия. Причина: {reason}.',
       muteNotice:
-        'Система: {user}. Выдан мут на {mute_duration}. Новые сообщения будут скрываться до конца ограничения.',
-      messageLimitsWarn: 'Система: {user}. Предупреждение зарегистрировано. Основание: {reason}.',
+        '🔒 {user}, включен мут на {mute_duration}. Новые сообщения будут скрываться до конца ограничения.',
+      messageLimitsWarn: '⚠️ {user}, это предупреждение. Причина: {reason}.',
       messageLimitsMute:
-        'Система: {user}. Выдан мут за повторное нарушение ограничений. Основание: {reason}.',
-      messageLimitsBan: 'Система: {user}. Выдан бан до ручного снятия. Основание: {reason}.',
+        '🔒 {user}, за повторное нарушение ограничений включен мут. Причина: {reason}.',
+      messageLimitsBan: '⛔ {user}, включен бан до ручного снятия. Причина: {reason}.',
     },
   },
   FRIENDLY: {

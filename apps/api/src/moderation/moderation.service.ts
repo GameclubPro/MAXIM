@@ -2708,7 +2708,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         message_status: messageStatus,
         reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: duplicateContext,
-        sanction: this.buildDuplicatePassiveSanctionLabel(botSpeechStyle),
+        sanction: this.buildDuplicatePassiveSanctionLabel(botSpeechStyle, messageDeleted),
       },
     });
   }
@@ -2849,12 +2849,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'ROBOT') {
       if (action === 'WARN') {
-        return 'Предупреждение зарегистрировано.';
+        return '⚠️ Предупреждение записано.';
       }
       if (action === 'MUTE') {
-        return `Установлен мут на ${muteDurationLabel}.`;
+        return `🔒 Включен мут на ${muteDurationLabel}.`;
       }
-      return 'Установлен бан до ручного снятия.';
+      return '⛔ Включен бан до ручного снятия.';
     }
 
     if (style === 'FRIENDLY') {
@@ -2886,7 +2886,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return 'Оформляю бан до ручного снятия.';
   }
 
-  private buildDuplicatePassiveSanctionLabel(style: BotSpeechStyle | null): string {
+  private buildDuplicatePassiveSanctionLabel(
+    style: BotSpeechStyle | null,
+    messageDeleted: boolean,
+  ): string {
     if (style === 'POLICE' || style === null) {
       return this.resolveActiveBotSpeechProfile().persona === 'female'
         ? 'Повтор изъяла, пока без протокола.'
@@ -2894,7 +2897,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (style === 'ROBOT') {
-      return 'Сообщение удалено.';
+      return messageDeleted ? '🧹 Дубль убран.' : '🧾 Дубль отмечен без санкции.';
     }
 
     if (style === 'FRIENDLY') {
@@ -3195,7 +3198,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     if (botSpeechStyle === 'ROBOT') {
-      return `Система: ${userLabel}. Выдан бан до ручного снятия.`;
+      return `⛔ ${userLabel}, включен бан до ручного снятия.`;
     }
 
     if (botSpeechStyle === 'FRIENDLY') {
