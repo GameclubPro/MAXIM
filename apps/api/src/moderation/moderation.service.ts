@@ -2803,7 +2803,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const activeBotSpeechProfile = this.resolveActiveBotSpeechProfile();
     const badge = activeBotSpeechProfile.persona === 'female' ? '👮‍♀️' : '👮‍♂️';
-    return `Товарищ ${userLabel}, ${activeBotSpeechProfile.characterName} на связи ${badge} ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
+    return `Товарищ ${userLabel}, ${activeBotSpeechProfile.characterName} на линии ${badge} ${subject} ${messageStatus}: ${reason}. Подправьте по форме и снова в эфир.`;
   }
 
   private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
@@ -2838,13 +2838,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const activeBotPersona = this.resolveActiveBotSpeechProfile().persona;
       if (action === 'WARN') {
         return activeBotPersona === 'female'
-          ? 'Предупреждение оформила.'
-          : 'Предупреждение оформил.';
+          ? 'Взяла на карандаш 📝.'
+          : 'Взял на карандаш 📝.';
       }
       if (action === 'MUTE') {
-        return `Оформляю мут на ${muteDurationLabel}.`;
+        return `Включаю тихий режим на ${muteDurationLabel} 🔒.`;
       }
-      return 'Оформляю бан до ручного разбана.';
+      return 'Тут уже шлагбаум ⛔ До ручного разбана.';
     }
 
     if (style === 'ROBOT') {
@@ -2891,9 +2891,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageDeleted: boolean,
   ): string {
     if (style === 'POLICE' || style === null) {
+      if (!messageDeleted) {
+        return this.resolveActiveBotSpeechProfile().persona === 'female'
+          ? 'Повтор взяла на карандаш, пока без санкций.'
+          : 'Повтор взял на карандаш, пока без санкций.';
+      }
+
       return this.resolveActiveBotSpeechProfile().persona === 'female'
-        ? 'Повтор изъяла, пока без протокола.'
-        : 'Повтор изъял, пока без протокола.';
+        ? 'Этот экземпляр прикрыла.'
+        : 'Этот экземпляр прикрыл.';
     }
 
     if (style === 'ROBOT') {
@@ -3209,7 +3215,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return `${userLabel}, на этот раз дошло до бана без таймера. Настойчивость была впечатляющей, но лишней.`;
     }
 
-    return `Товарищ ${userLabel}, оформляю бан до ручного разбана.`;
+    return `Товарищ ${userLabel}, тут уже шлагбаум ⛔ До ручного разбана.`;
   }
 
   private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {

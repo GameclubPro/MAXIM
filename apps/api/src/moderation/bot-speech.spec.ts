@@ -53,10 +53,10 @@ describe('bot speech styles', () => {
     );
 
     expect(legacyLinkText).toBe(
-      'Товарищ **Алексей**, ссылку изъял 👮‍♂️ В этом чате с ними строго. Если вопрос по делу, согласуйте с админом.',
+      'Товарищ **Алексей**, ссылку снял с линии 🚨 Тут со ссылками без самодеятельности.',
     );
     expect(legacyWarnText).toBe(
-      'Товарищ **Алексей**, предупреждение оформил 👮‍♂️ Причина: слишком длинное сообщение.',
+      'Товарищ **Алексей**, взял на карандаш 📝 Причина: слишком длинное сообщение.',
     );
     expect(policeLinkText).toBe(legacyLinkText);
     expect(policeWarnText).toBe(legacyWarnText);
@@ -144,11 +144,11 @@ describe('bot speech styles', () => {
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
-      'Здравия желаю, **Алексей** 🤝 На смене Майор Максимов. Осваивайтесь, но порядок не нарушаем.',
+      'Здравия, **Алексей** 👮‍♂️ На линии Майор Максимов. Осваивайтесь спокойно, тут порядок без лишней драмы.',
     );
 
     expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'POLICE')).toBe(
-      'Товарищ **Алексей**, повтор сообщения зафиксировал 👮‍♂️ Повтор изъял, пока без протокола.',
+      'Товарищ **Алексей**, вижу повтор 👀 Этот экземпляр прикрыл.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
@@ -282,16 +282,16 @@ describe('bot speech styles', () => {
 
   it('renders feminine police templates for female bot persona', () => {
     expect(getBotSpeechEditableTemplate('POLICE', 'greetingBotMessageText', 'female')).toContain(
-      'На смене {bot_character_name}',
+      'На линии {bot_character_name}',
     );
     expect(getBotSpeechEditableTemplate('POLICE', 'linkBotMessageText', 'female')).toBe(
-      'Товарищ {user}, ссылку изъяла 👮‍♀️ В этом чате с ними строго. Если вопрос по делу, согласуйте с админом.',
+      'Товарищ {user}, ссылку сняла с линии 🚨 Тут со ссылками без самодеятельности.',
     );
     expect(getBotSpeechEditableTemplate('POLICE', 'duplicateBotMessageText', 'female')).toBe(
-      'Товарищ {user}, повтор сообщения зафиксировала 👮‍♀️ {sanction}',
+      'Товарищ {user}, вижу повтор 👀 {sanction}',
     );
     expect(getBotSpeechSystemTemplate('POLICE', 'messageLimitsWarn', 'female')).toBe(
-      'Товарищ {user}, предупреждение оформила 👮‍♀️ Причина: {reason}.',
+      'Товарищ {user}, взяла на карандаш 📝 Причина: {reason}.',
     );
   });
 
