@@ -270,6 +270,7 @@ export const MAX_API_SOURCE_TAGS = {
   SETTINGS_BOT_PROFILE: 'settings_bot_profile',
   GIVEAWAY_DRAW_BACKGROUND: 'giveaway_draw_background',
   CHANNEL_AUTO_POST: 'channel_auto_post',
+  MANUAL_GROUP_CLOSE_SCAN: 'manual_group_close_scan',
   CHANNEL_STATS_SYNC: 'channel_stats_sync',
   WEBHOOK_SUBSCRIPTION_RECONCILE: 'webhook_subscription_reconcile',
   REQUIRED_SUBSCRIPTION_MEMBERSHIP: 'required_subscription_membership',
@@ -691,7 +692,10 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const markdown = this.renderMessageMarkupAsMarkdown(sourceText, this.extractMessageMarkup(message));
+    const markdown = this.renderMessageMarkupAsMarkdown(
+      sourceText,
+      this.extractMessageMarkup(message),
+    );
     return markdown || sourceText;
   }
 
@@ -739,7 +743,9 @@ export class MaxClientService implements OnModuleDestroy {
     const sourceBody = this.asRecord(message?.body);
     const sourceText = typeof sourceBody?.text === 'string' ? sourceBody.text : null;
     const shouldForceReplacementText =
-      typeof text === 'string' && text !== sourceText && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
+      typeof text === 'string' &&
+      text !== sourceText &&
+      !this.shouldSkipTextUpdateForInlineKeyboardEdit(message);
     const messageTextPayload =
       typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
         ? shouldForceReplacementText
@@ -973,12 +979,11 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((item): item is MaxWebhookSubscription => item !== null);
   }
 
-  getConfiguredWebhookSubscriptionTarget(
-    botId?: string | null,
-  ): { url: string | null; maskedUrl: string | null } {
-    return this.botRegistry.getConfiguredWebhookSubscriptionTarget(
-      this.resolveBot(botId).id,
-    );
+  getConfiguredWebhookSubscriptionTarget(botId?: string | null): {
+    url: string | null;
+    maskedUrl: string | null;
+  } {
+    return this.botRegistry.getConfiguredWebhookSubscriptionTarget(this.resolveBot(botId).id);
   }
 
   matchesConfiguredWebhookUrl(url: string, botId?: string | null): boolean {
@@ -1759,9 +1764,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return {
       userId:
-        this.readTrimmedString(data.user_id ?? data.userId ?? data.id) ??
-        bot.contactId ??
-        bot.id,
+        this.readTrimmedString(data.user_id ?? data.userId ?? data.id) ?? bot.contactId ?? bot.id,
       displayName: this.readTrimmedString(
         data.first_name ?? data.firstName ?? data.display_name ?? data.displayName ?? data.name,
       ),
@@ -4462,7 +4465,10 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const sanitized = normalized.replace(/[^a-z0-9_-]+/g, '_').replace(/_+/g, '_').slice(0, 64);
+    const sanitized = normalized
+      .replace(/[^a-z0-9_-]+/g, '_')
+      .replace(/_+/g, '_')
+      .slice(0, 64);
     return sanitized.length > 0 ? sanitized : null;
   }
 }

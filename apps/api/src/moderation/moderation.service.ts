@@ -369,6 +369,7 @@ const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
 const MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC = Math.ceil(
   MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS / 1_000,
 );
+const MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS = 60_000;
 const DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS = 150;
 const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const DEFAULT_CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS = 5 * 60 * 1_000;
@@ -487,7 +488,9 @@ function hasRequiredSubscriptionExpired(
 function isRequiredSubscriptionCurrentlyActive(
   settings: Pick<
     ChatSettings,
-    'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds' | 'requiredSubscriptionExpiresAt'
+    | 'requiredSubscriptionEnabled'
+    | 'requiredSubscriptionChannelIds'
+    | 'requiredSubscriptionExpiresAt'
   >,
 ): boolean {
   const channelIds = Array.isArray(settings.requiredSubscriptionChannelIds)
@@ -581,8 +584,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostInFlight = false;
   private manualGroupCloseScanInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
+  private manualGroupCloseBackoffUntilMs = 0;
   private channelAutoPostThrottleStreak = 0;
+  private manualGroupCloseThrottleStreak = 0;
   private channelAutoPostPausedLogAtMs = 0;
+  private manualGroupClosePausedLogAtMs = 0;
   private channelAutoPostCursor = 0;
   private manualGroupCloseCursor = 0;
   private readonly appBaseUrl: string | null;
@@ -7915,11 +7921,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       const botId =
         memberAccessRoute?.botId ??
-        ((typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function'
+        (typeof this.maxBotLinkService?.resolveBotIdForMemberAccess === 'function'
           ? await this.maxBotLinkService.resolveBotIdForMemberAccess({
               chatId: normalizedChannelId,
             })
-          : await this.resolveChatReadBotId(normalizedChannelId)) ?? null);
+          : await this.resolveChatReadBotId(normalizedChannelId)) ??
+        null;
       const lookupOptions = {
         trafficClass: 'critical' as const,
         timeoutMs: 2_000,
@@ -8022,7 +8029,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const persistedChatLooksLikeChat = persistedChat?.entityType === ChatEntityType.CHAT;
         const cachedLooksLikeChat = cachedEntityType === 'chat';
         const cachedLooksLikeChannel = cachedEntityType === 'channel';
-        const fallbackLooksLikeChat = cachedLooksLikeChat || (!cachedLooksLikeChannel && persistedChatLooksLikeChat);
+        const fallbackLooksLikeChat =
+          cachedLooksLikeChat || (!cachedLooksLikeChannel && persistedChatLooksLikeChat);
         const fallbackTitle =
           cachedTitle ||
           persistedChat?.title?.trim() ||
@@ -9494,9 +9502,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${MINIAPP_ROUTE_START_PARAM_PREFIX}${encoded}`;
   }
 
-  private async resolveUnifiedBotRoute(
-    request: MaxBotRouteRequest,
-  ): Promise<MaxBotRoute | null> {
+  private async resolveUnifiedBotRoute(request: MaxBotRouteRequest): Promise<MaxBotRoute | null> {
     const routeResolver = this.maxBotLinkService as unknown as {
       resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
       resolveBotRoutes?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
@@ -9549,10 +9555,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       const scanBotId =
         scanBotRoute?.botId ??
-        ((await this.maxBotLinkService?.resolveBotIdForCapability?.({
+        (await this.maxBotLinkService?.resolveBotIdForCapability?.({
           chatId,
           capability: 'background_scans',
-        })) ?? null);
+        })) ??
+        null;
       if (typeof scanBotId === 'string' && scanBotId.trim().length > 0) {
         return scanBotId.trim();
       }
@@ -11355,15 +11362,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       let closedNoticeDeleted = false;
       if (closedNoticeMessageId) {
         try {
-          await this.maxClient.deleteMessage(
-            params.chatId,
-            closedNoticeMessageId,
-            {
-              immediate: true,
-              ...(closedNoticeBotId ? { botId: closedNoticeBotId } : {}),
-              ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
-            },
-          );
+          await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId, {
+            immediate: true,
+            ...(closedNoticeBotId ? { botId: closedNoticeBotId } : {}),
+            ignoreFailureMetricStatuses: NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES,
+          });
           closedNoticeDeleted = true;
         } catch (error: unknown) {
           if (
@@ -12355,10 +12358,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           fallbackToPrimary: true,
         })
       )?.botId ??
-      ((await this.maxBotLinkService?.resolveBotIdForCapability({
+      (await this.maxBotLinkService?.resolveBotIdForCapability({
         chatId,
         capability: 'background_scans',
-      })) ?? undefined);
+      })) ??
+      undefined;
     const messages = await this.maxClient.listMessages(chatId, {
       count: 10,
       trafficClass: 'background',
@@ -12539,12 +12543,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.manualGroupCloseScanMaxChats === 0) {
       return;
     }
+    if (this.manualGroupCloseBackoffUntilMs > Date.now()) {
+      return;
+    }
     if (await this.shouldPauseBackgroundWork('manual-group-close-scan')) {
       return;
     }
 
     this.manualGroupCloseScanInFlight = true;
     try {
+      let encounteredTransientThrottle = false;
       const chats = await this.prisma.chatSettings.findMany({
         where: {
           nightModeForceCloseEnabled: true,
@@ -12578,6 +12586,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         activeChats,
         this.manualGroupCloseScanMaxChats,
       );
+      if (scanBatch.length === 0) {
+        this.manualGroupCloseThrottleStreak = 0;
+        return;
+      }
 
       for (const [index, settings] of scanBatch.entries()) {
         if (index > 0) {
@@ -12593,6 +12605,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             adminUserIds: settings.chat.admins.map((item) => item.userId),
           });
         } catch (error: unknown) {
+          if (this.isTransientMaxApiLookupError(error)) {
+            encounteredTransientThrottle = true;
+            this.manualGroupCloseThrottleStreak += 1;
+            const backoffMs = this.resolveManualGroupCloseThrottleBackoffMs();
+            const now = Date.now();
+            this.manualGroupCloseBackoffUntilMs = Math.max(
+              this.manualGroupCloseBackoffUntilMs,
+              now + backoffMs,
+            );
+            this.deferManualGroupCloseScan(settings.chatId, backoffMs);
+            if (now - this.manualGroupClosePausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+              this.manualGroupClosePausedLogAtMs = now;
+              this.logger.log(
+                {
+                  task: 'manual-group-close-scan',
+                  action: 'pause',
+                  chatId: settings.chatId,
+                  reason: this.extractMaxErrorMessage(error),
+                  retryAfterMs: backoffMs,
+                },
+                'Paused manual group close chat scan after transient MAX API pressure',
+              );
+            }
+            break;
+          }
           this.logger.warn(
             {
               chatId: settings.chatId,
@@ -12601,6 +12638,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             'Failed manual group close chat scan',
           );
         }
+      }
+      if (!encounteredTransientThrottle) {
+        this.manualGroupCloseThrottleStreak = 0;
       }
     } finally {
       this.manualGroupCloseScanInFlight = false;
@@ -12644,15 +12684,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           fallbackToPrimary: true,
         })
       )?.botId ??
-      ((await this.maxBotLinkService?.resolveBotIdForCapability({
+      (await this.maxBotLinkService?.resolveBotIdForCapability({
         chatId,
         capability: 'background_scans',
-      })) ?? undefined);
+      })) ??
+      undefined;
     let messages: Record<string, unknown>[];
     try {
       messages = await this.maxClient.listMessages(chatId, {
         count: 20,
         trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN,
         ...(scanBotId ? { botId: scanBotId } : {}),
       });
     } catch (error: unknown) {
@@ -13468,13 +13510,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
-        buttons,
-        debugContext: {
-          screen: 'chat-auto-comments',
-          action: 'attach-comments',
+      await this.maxClient.editMessageInlineKeyboard(
+        chatId,
+        messageId,
+        text,
+        {
+          buttons,
+          debugContext: {
+            screen: 'chat-auto-comments',
+            action: 'attach-comments',
+          },
         },
-      }, mutationRequestOptions);
+        mutationRequestOptions,
+      );
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
       if (status && status < 500 && status !== 429) {
@@ -15007,6 +15055,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private resolveManualGroupCloseThrottleBackoffMs(): number {
+    return Math.min(
+      this.manualGroupCloseIdleBackoffMaxMs,
+      MANUAL_GROUP_CLOSE_RATE_LIMIT_BACKOFF_MS *
+        2 ** Math.min(Math.max(0, this.manualGroupCloseThrottleStreak - 1), 2),
+    );
+  }
+
+  private deferManualGroupCloseScan(chatId: string, backoffMs: number): void {
+    const current =
+      this.manualGroupCloseScanState.get(chatId) ?? this.createManualGroupCloseScanState();
+    this.manualGroupCloseScanState.set(chatId, {
+      ...current,
+      idleStreak: Math.min(current.idleStreak + 1, 8),
+      nextScanAtMs: Math.max(current.nextScanAtMs, Date.now() + backoffMs),
+      terminalFailureClosedAtMs: null,
+      terminalFailureReason: null,
+    });
+  }
+
   private scheduleChannelAutoPostStartupScan() {
     const startupDelayMs =
       this.channelAutoPostStartupDelayMs +
@@ -15601,22 +15669,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async shouldPauseBackgroundWork(
     task: 'night-mode-announcements' | 'channel-auto-post-buttons' | 'manual-group-close-scan',
   ): Promise<boolean> {
-    if (task === 'night-mode-announcements' || task === 'manual-group-close-scan') {
+    if (task === 'night-mode-announcements') {
       return false;
     }
+
+    const sourceTag =
+      task === 'manual-group-close-scan'
+        ? MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN
+        : MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST;
 
     if (this.backgroundRuntimeGovernorService) {
       const decision = await this.backgroundRuntimeGovernorService.decide({
         component: 'moderation',
-        sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_AUTO_POST,
+        sourceTag,
+        ...(task === 'channel-auto-post-buttons'
+          ? { allowQueueLagSlowPathBelowSec: this.backgroundWorkSoftPauseQueueLagSec }
+          : {}),
       });
       if (decision.action === 'run') {
         return false;
       }
 
       const now = Date.now();
-      if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
-        this.channelAutoPostPausedLogAtMs = now;
+      if (
+        now - this.getBackgroundTaskPausedLogAtMs(task) >=
+        BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS
+      ) {
+        this.setBackgroundTaskPausedLogAtMs(task, now);
         this.logger.log(
           {
             task,
@@ -15642,8 +15721,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const now = Date.now();
-    if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
-      this.channelAutoPostPausedLogAtMs = now;
+    if (now - this.getBackgroundTaskPausedLogAtMs(task) >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+      this.setBackgroundTaskPausedLogAtMs(task, now);
       this.logger.log(
         {
           task,
@@ -15655,6 +15734,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
     return true;
+  }
+
+  private getBackgroundTaskPausedLogAtMs(
+    task: 'night-mode-announcements' | 'channel-auto-post-buttons' | 'manual-group-close-scan',
+  ): number {
+    return task === 'manual-group-close-scan'
+      ? this.manualGroupClosePausedLogAtMs
+      : this.channelAutoPostPausedLogAtMs;
+  }
+
+  private setBackgroundTaskPausedLogAtMs(
+    task: 'night-mode-announcements' | 'channel-auto-post-buttons' | 'manual-group-close-scan',
+    value: number,
+  ): void {
+    if (task === 'manual-group-close-scan') {
+      this.manualGroupClosePausedLogAtMs = value;
+      return;
+    }
+
+    this.channelAutoPostPausedLogAtMs = value;
   }
 
   private async resolveBackgroundPressurePauseReason(): Promise<string | null> {

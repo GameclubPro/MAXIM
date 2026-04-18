@@ -302,6 +302,126 @@ describe('ModerationService manual group close polling', () => {
     dateNowSpy.mockRestore();
   });
 
+  it('pauses manual group close scans when the background runtime governor requests it', async () => {
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn(),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const backgroundRuntimeGovernorService = {
+      decide: jest.fn().mockResolvedValue({
+        action: 'pause',
+        reason: 'background share 81.0%',
+        retryAfterMs: 60_000,
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      backgroundRuntimeGovernorService as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+
+    expect(backgroundRuntimeGovernorService.decide).toHaveBeenCalledWith({
+      component: 'moderation',
+      sourceTag: 'manual_group_close_scan',
+    });
+    expect(prisma.chatSettings.findMany).not.toHaveBeenCalled();
+    expect(maxClient.listMessages).not.toHaveBeenCalled();
+  });
+
+  it('backs off transient manual group close scans after MAX API rate limit errors', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest
+        .fn()
+        .mockRejectedValue(
+          new Error('MAX API background rate limit exceeded for bot id613002203036_bot'),
+        ),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+    await (service as any).processManualGroupCloseChats();
+
+    expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
+    expect(maxClient.listMessages).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({
+        count: 20,
+        trafficClass: 'background',
+        sourceTag: 'manual_group_close_scan',
+      }),
+    );
+    expect((service as any).manualGroupCloseBackoffUntilMs).toBeGreaterThan(Date.now());
+    expect((service as any).manualGroupCloseScanState.get('chat-1')).toEqual(
+      expect.objectContaining({
+        nextScanAtMs: expect.any(Number),
+      }),
+    );
+    dateNowSpy.mockRestore();
+  });
+
   it('shares manual group close terminal suppression across worker instances', async () => {
     const dateNowSpy = jest
       .spyOn(Date, 'now')
