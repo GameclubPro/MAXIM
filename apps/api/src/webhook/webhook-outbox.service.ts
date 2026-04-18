@@ -2,7 +2,7 @@ import { InjectQueue, getQueueToken } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
-import { WebhookStatus } from '@prisma/client';
+import { Prisma, WebhookStatus } from '@prisma/client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
@@ -173,27 +173,81 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private async enqueueBatch() {
     const now = new Date();
-    const staleQueuedBefore = new Date(now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS);
-    const candidates: WebhookEnqueueCandidate[] = await this.prisma.webhookEvent.findMany({
-      where: {
-        OR: [
+    const candidates = await this.selectEnqueueCandidates(now);
+
+    const prioritizedCandidates = await this.prioritizeCandidates(candidates, now);
+
+    await this.enqueueCandidates(prioritizedCandidates);
+  }
+
+  private async selectEnqueueCandidates(now: Date): Promise<WebhookEnqueueCandidate[]> {
+    const selectionWindowSize = this.resolvePrioritySelectionWindowSize();
+    const staleUserFacingQueuedBefore = new Date(now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS);
+    const staleBackgroundQueuedBefore = new Date(now.getTime() - BACKGROUND_STALE_QUEUED_REPAIR_MS);
+    const staleUserFacingQueuedWhere: Prisma.WebhookEventWhereInput = {
+      status: WebhookStatus.QUEUED,
+      processedAt: null,
+      AND: [
+        {
+          OR: [{ queueName: null }, { queueName: { not: WEBHOOK_QUEUE_BACKGROUND } }],
+        },
+        {
+          OR: [
+            { queuedAt: { lte: staleUserFacingQueuedBefore } },
+            { createdAt: { lte: staleUserFacingQueuedBefore } },
+          ],
+        },
+      ],
+    };
+    const staleBackgroundQueuedWhere: Prisma.WebhookEventWhereInput = {
+      status: WebhookStatus.QUEUED,
+      processedAt: null,
+      queueName: WEBHOOK_QUEUE_BACKGROUND,
+      OR: [
+        { queuedAt: { lte: staleBackgroundQueuedBefore } },
+        { createdAt: { lte: staleBackgroundQueuedBefore } },
+      ],
+    };
+
+    const [receivedCandidates, failedCandidates, staleUserFacingQueuedCandidates, staleBackgroundQueuedCandidates] =
+      await Promise.all([
+        this.findEnqueueCandidates(
           {
             status: WebhookStatus.RECEIVED,
             OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
           },
+          selectionWindowSize,
+        ),
+        this.findEnqueueCandidates(
           {
             status: WebhookStatus.FAILED,
             nextEnqueueAt: { lte: now },
           },
-          {
-            status: WebhookStatus.QUEUED,
-            OR: [{ queuedAt: { lte: staleQueuedBefore } }, { createdAt: { lte: staleQueuedBefore } }],
-            processedAt: null,
-          },
-        ],
-      },
+          selectionWindowSize,
+        ),
+        this.findEnqueueCandidates(staleUserFacingQueuedWhere, selectionWindowSize),
+        this.findEnqueueCandidates(staleBackgroundQueuedWhere, selectionWindowSize),
+      ]);
+
+    return this.mergeEnqueueCandidates(
+      [
+        ...receivedCandidates,
+        ...failedCandidates,
+        ...staleUserFacingQueuedCandidates,
+        ...staleBackgroundQueuedCandidates,
+      ],
+      selectionWindowSize,
+    );
+  }
+
+  private async findEnqueueCandidates(
+    where: Prisma.WebhookEventWhereInput,
+    take: number,
+  ): Promise<WebhookEnqueueCandidate[]> {
+    return this.prisma.webhookEvent.findMany({
+      where,
       orderBy: { createdAt: 'asc' },
-      take: this.resolvePrioritySelectionWindowSize(),
+      take,
       select: {
         id: true,
         status: true,
@@ -205,10 +259,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         normalizedPayload: true,
       },
     });
+  }
 
-    const prioritizedCandidates = await this.prioritizeCandidates(candidates, now);
+  private mergeEnqueueCandidates(
+    candidates: readonly WebhookEnqueueCandidate[],
+    take: number,
+  ): WebhookEnqueueCandidate[] {
+    const uniqueById = new Map<string, WebhookEnqueueCandidate>();
+    for (const candidate of candidates) {
+      if (!uniqueById.has(candidate.id)) {
+        uniqueById.set(candidate.id, candidate);
+      }
+    }
 
-    await this.enqueueCandidates(prioritizedCandidates);
+    return Array.from(uniqueById.values())
+      .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+      .slice(0, take);
   }
 
   private resolvePrioritySelectionWindowSize(): number {

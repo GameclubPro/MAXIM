@@ -29,6 +29,106 @@ type QueueSet = {
 } & DefaultShardQueueMocks &
   JoinShardQueueMocks;
 
+type MockWebhookEventRow = {
+  id: string;
+  status: WebhookStatus;
+  botId: string | null;
+  queueName: string | null;
+  enqueueAttempts: number;
+  createdAt: Date;
+  queuedAt: Date | null;
+  nextEnqueueAt: Date | null;
+  processedAt: Date | null;
+  normalizedPayload: unknown;
+};
+
+function matchesDateFilter(value: Date | null, filter: unknown): boolean {
+  if (!(filter && typeof filter === 'object')) {
+    return true;
+  }
+
+  const rowMs = value?.getTime() ?? null;
+  if (rowMs === null) {
+    return false;
+  }
+
+  const lte = (filter as { lte?: Date }).lte;
+  if (lte instanceof Date && rowMs > lte.getTime()) {
+    return false;
+  }
+
+  return true;
+}
+
+function matchesScalarFilter<T>(value: T | null, filter: unknown): boolean {
+  if (filter === undefined) {
+    return true;
+  }
+
+  if (filter === null) {
+    return value === null;
+  }
+
+  if (filter && typeof filter === 'object' && 'not' in (filter as Record<string, unknown>)) {
+    return value !== ((filter as { not?: T | null }).not ?? null);
+  }
+
+  return value === filter;
+}
+
+function matchesWebhookEventWhere(
+  row: MockWebhookEventRow,
+  where: Record<string, unknown> | undefined,
+): boolean {
+  if (!where) {
+    return true;
+  }
+
+  if (Array.isArray(where.AND)) {
+    const andMatched = where.AND.every((entry) =>
+      matchesWebhookEventWhere(row, entry as Record<string, unknown> | undefined),
+    );
+    if (!andMatched) {
+      return false;
+    }
+  }
+
+  if (Array.isArray(where.OR)) {
+    const orMatched = where.OR.some((entry) =>
+      matchesWebhookEventWhere(row, entry as Record<string, unknown> | undefined),
+    );
+    if (!orMatched) {
+      return false;
+    }
+  }
+
+  if (!matchesScalarFilter(row.status, where.status)) {
+    return false;
+  }
+
+  if (!matchesScalarFilter(row.queueName, where.queueName)) {
+    return false;
+  }
+
+  if (!matchesScalarFilter(row.processedAt, where.processedAt)) {
+    return false;
+  }
+
+  if (!matchesDateFilter(row.createdAt, where.createdAt)) {
+    return false;
+  }
+
+  if (!matchesDateFilter(row.queuedAt, where.queuedAt)) {
+    return false;
+  }
+
+  if (!matchesDateFilter(row.nextEnqueueAt, where.nextEnqueueAt)) {
+    return false;
+  }
+
+  return true;
+}
+
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
@@ -38,6 +138,8 @@ function createService(params?: {
     enqueueAttempts: number;
     createdAt?: Date;
     queuedAt?: Date | null;
+    nextEnqueueAt?: Date | null;
+    processedAt?: Date | null;
     normalizedPayload?: unknown;
   }>;
   manualCloseChatIds?: string[];
@@ -50,17 +152,25 @@ function createService(params?: {
   configOverrides?: Partial<Record<string, number>>;
   resolvedQueueName?: string;
 }) {
+  const webhookRows: MockWebhookEventRow[] = (params?.findManyResult ?? []).map((item) => ({
+    ...item,
+    status: item.status ?? WebhookStatus.RECEIVED,
+    botId: item.botId ?? null,
+    queueName: item.queueName ?? null,
+    createdAt: item.createdAt ?? new Date('2026-03-24T00:00:00.000Z'),
+    queuedAt: item.queuedAt ?? null,
+    nextEnqueueAt: item.nextEnqueueAt ?? null,
+    processedAt: item.processedAt ?? null,
+    normalizedPayload: item.normalizedPayload ?? null,
+  }));
+
   const prisma = {
     webhookEvent: {
-      findMany: jest.fn().mockResolvedValue(
-        (params?.findManyResult ?? []).map((item) => ({
-          ...item,
-          status: item.status ?? WebhookStatus.RECEIVED,
-          botId: item.botId ?? null,
-          queueName: item.queueName ?? null,
-          createdAt: item.createdAt ?? new Date('2026-03-24T00:00:00.000Z'),
-          queuedAt: item.queuedAt ?? null,
-        })),
+      findMany: jest.fn().mockImplementation(async (args?: { where?: Record<string, unknown>; take?: number }) =>
+        webhookRows
+          .filter((row) => matchesWebhookEventWhere(row, args?.where))
+          .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+          .slice(0, args?.take ?? Number.POSITIVE_INFINITY),
       ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
@@ -165,17 +275,17 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: expect.arrayContaining([
-            expect.objectContaining({
+    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            where: expect.objectContaining({
               status: WebhookStatus.FAILED,
               nextEnqueueAt: { lte: expect.any(Date) },
             }),
-          ]),
-        }),
-      }),
+          }),
+        ],
+      ]),
     );
   });
 
@@ -184,21 +294,25 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          OR: expect.arrayContaining([
-            expect.objectContaining({
+    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
+      expect.arrayContaining([
+        [
+          expect.objectContaining({
+            where: expect.objectContaining({
               status: WebhookStatus.QUEUED,
-              OR: expect.arrayContaining([
-                expect.objectContaining({ queuedAt: { lte: expect.any(Date) } }),
-                expect.objectContaining({ createdAt: { lte: expect.any(Date) } }),
-              ]),
               processedAt: null,
+              AND: expect.arrayContaining([
+                expect.objectContaining({
+                  OR: expect.arrayContaining([
+                    expect.objectContaining({ queuedAt: { lte: expect.any(Date) } }),
+                    expect.objectContaining({ createdAt: { lte: expect.any(Date) } }),
+                  ]),
+                }),
+              ]),
             }),
-          ]),
-        }),
-      }),
+          }),
+        ],
+      ]),
     );
   });
 
@@ -439,10 +553,10 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(prisma.webhookEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        take: 6,
-      }),
+    expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
+      expect.arrayContaining([
+        [expect.objectContaining({ take: 6 })],
+      ]),
     );
   });
 
