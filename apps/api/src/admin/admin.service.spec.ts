@@ -1313,9 +1313,15 @@ describe('AdminService dialog admin fallback reads', () => {
       resolveBotId: jest.fn().mockResolvedValue('id613002203036_bot'),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
       buildEntryBotStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
@@ -1360,9 +1366,15 @@ describe('AdminService night mode settings normalization', () => {
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_bot'),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
       buildEntryBotStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
@@ -1421,9 +1433,15 @@ describe('AdminService night mode settings normalization', () => {
       bindDiscoveredChatBots: jest.fn().mockResolvedValue('id613002203036_4_bot'),
       getBotTokenSync: jest.fn().mockReturnValue(null),
       getValidationTokens: jest.fn().mockReturnValue([]),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
       buildEntryBotStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?start=payload'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockReturnValue('https://max.ru/id613002203036_bot?startapp=payload'),
@@ -18559,7 +18577,10 @@ describe('AdminService chat rules', () => {
       '152517912',
       '✅ Правила опубликованы.\nhttps://max.ru/chats/chat-1/message/456',
       undefined,
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        botId: '777000_bot',
+      }),
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -18723,7 +18744,10 @@ describe('AdminService chat rules', () => {
       '152517912',
       '✅ Правила опубликованы.',
       undefined,
-      { immediate: true },
+      expect.objectContaining({
+        immediate: true,
+        botId: '777000_bot',
+      }),
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
@@ -20632,6 +20656,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.webp',
       'image/png',
+      { botId: '777000_bot' },
     );
     expect(result).toMatchObject({
       ok: true,
@@ -20939,6 +20964,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'suggestion.png',
       'image/png',
+      { botId: '777000_bot' },
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
@@ -20953,7 +20979,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
-      { trafficClass: 'background' },
+      expect.objectContaining({
+        trafficClass: 'background',
+        botId: '777000_bot',
+      }),
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -21063,7 +21092,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
-      { trafficClass: 'background' },
+      expect.objectContaining({
+        trafficClass: 'background',
+        botId: '777000_bot',
+      }),
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -21179,7 +21211,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           ],
         ],
       }),
-      { trafficClass: 'background' },
+      expect.objectContaining({
+        trafficClass: 'background',
+        botId: '777000_bot',
+      }),
     );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
@@ -21318,7 +21353,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         textFormat: 'markdown',
       }),
-      { trafficClass: 'background' },
+      expect.objectContaining({
+        trafficClass: 'background',
+        botId: 'id613002203036_bot',
+      }),
     );
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -21419,6 +21457,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       getBotById: jest.fn((botId?: string | null) =>
         typeof botId === 'string' && botId.trim().length > 0 ? { id: botId.trim() } : null,
       ),
+      getDefaultBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
       getEntryBot: jest.fn().mockReturnValue({ id: 'id613002203036_bot' }),
     };
 
@@ -21617,7 +21656,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
-  it('routes admin private suggestion delivery through the canonical entry bot even when assist bot differs', async () => {
+  it('routes admin private suggestion delivery through the resolved delivery bot when assist bot differs', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -21729,7 +21768,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.any(Buffer),
       'entry-bot-suggestion.png',
       'image/png',
-      { botId: '777000_bot' },
+      { botId: '888000_bot' },
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '777001',
@@ -21739,7 +21778,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         textFormat: 'markdown',
       }),
       expect.objectContaining({
-        botId: '777000_bot',
+        botId: '888000_bot',
         trafficClass: 'background',
       }),
     );
@@ -22336,6 +22375,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-admin-review-video-1',
       expect.stringContaining('**Контент публикации**'),
       { buttons: [], textFormat: 'markdown' },
+      { botId: '777000_bot' },
     );
   });
 

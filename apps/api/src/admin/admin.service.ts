@@ -20170,11 +20170,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync?.(
-        startParam,
-        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
-      ) ??
-      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
@@ -20187,11 +20183,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync?.(
-        startPayload,
-        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
-      ) ??
-      this.maxBotLinkService?.buildEntryBotStartUrlSync?.(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)
@@ -20520,13 +20512,17 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private resolvePrivateDeliveryBotId(botId?: string | null): string | undefined {
-    const entryBotId =
-      this.maxBotLinkService?.getEntryBotId() ?? this.maxBotRegistry?.getEntryBot().id;
-    if (entryBotId) {
-      return entryBotId;
+    const explicitBotId = this.maxBotRegistry?.getBotById(botId)?.id ?? botId?.trim() ?? undefined;
+    if (explicitBotId) {
+      return explicitBotId;
     }
 
-    return this.maxBotRegistry?.getBotById(botId)?.id ?? botId?.trim() ?? undefined;
+    return (
+      this.maxBotLinkService?.getContextOrDefaultBotId?.() ??
+      this.maxBotRegistry?.getDefaultBot?.().id ??
+      this.ownBotUserId ??
+      undefined
+    );
   }
 
   private isOwnBotUserId(userId: string): boolean {

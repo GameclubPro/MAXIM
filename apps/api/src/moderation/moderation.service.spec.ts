@@ -15957,6 +15957,11 @@ describe('ModerationService', () => {
     const maxBotLinkService = {
       resolveBotIdForCapability: jest.fn().mockResolvedValue('scan-bot-2'),
       getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || 'scan-bot-2')}?startapp=${startParam}`,
+        ),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockImplementation((startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`),

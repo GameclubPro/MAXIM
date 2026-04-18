@@ -1170,6 +1170,12 @@ describe('PrivateControlService', () => {
           label: 'Майор Максимова',
           speechPersona: 'female',
         }),
+        buildMiniappStartUrlSync: jest
+          .fn()
+          .mockImplementation(
+            (startParam: string) =>
+              `https://max.ru/888000_bot?startapp=${encodeURIComponent(startParam)}`,
+          ),
         buildEntryMiniappStartUrlSync: jest
           .fn()
           .mockImplementation(
