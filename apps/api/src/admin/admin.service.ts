@@ -9987,6 +9987,25 @@ export class AdminService implements OnModuleDestroy {
             (error instanceof Error && error.message.trim()
               ? error.message
               : 'Не удалось отправить сообщение.');
+          const fatalProcessingErrorMessage =
+            this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
+          if (fatalProcessingErrorMessage) {
+            await this.failManagedBroadcastAfterFatalProcessingError(
+              row,
+              currentOccurrence,
+              fatalProcessingErrorMessage,
+            );
+            return {
+              status: PrismaManagedBroadcastStatus.FAILED,
+              currentOccurrence,
+              sentChatIds,
+              failedChatIds: [...failedChatIds, delivery.targetChatId],
+              pendingChatIds: [],
+              canRetry: true,
+              firstSendError: error,
+              nextSendAt: null,
+            };
+          }
           if (
             this.isManagedBroadcastPermanentTargetDeliveryFailure(error, deliveryFailureMessage)
           ) {
@@ -10134,6 +10153,25 @@ export class AdminService implements OnModuleDestroy {
         firstSendError,
       );
     } catch (error: unknown) {
+      const fatalProcessingErrorMessage =
+        this.resolveManagedBroadcastFatalProcessingErrorMessage(error);
+      if (fatalProcessingErrorMessage) {
+        await this.failManagedBroadcastAfterFatalProcessingError(
+          row,
+          currentOccurrence,
+          fatalProcessingErrorMessage,
+        );
+        return {
+          status: PrismaManagedBroadcastStatus.FAILED,
+          currentOccurrence,
+          sentChatIds: [],
+          failedChatIds: [],
+          pendingChatIds: [],
+          canRetry: true,
+          firstSendError: error,
+          nextSendAt: null,
+        };
+      }
       this.logger.warn(
         {
           broadcastId: row.id,
@@ -11149,6 +11187,114 @@ export class AdminService implements OnModuleDestroy {
           'Прошлая попытка была прервана после старта отправки. Проверьте чат и повторите только ошибочные доставки.',
       },
     });
+  }
+
+  private resolveManagedBroadcastFatalProcessingErrorMessage(error: unknown): string | null {
+    if (!(error instanceof BadRequestException)) {
+      return null;
+    }
+
+    const response = error.getResponse();
+    if (typeof response === 'string' && response.trim().length > 0) {
+      return response.trim();
+    }
+
+    const message = (response as { message?: unknown } | null)?.message;
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message.trim();
+    }
+    if (Array.isArray(message)) {
+      const normalized = message.find(
+        (item): item is string => typeof item === 'string' && item.trim().length > 0,
+      );
+      if (normalized) {
+        return normalized.trim();
+      }
+    }
+
+    return error.message.trim().length > 0 ? error.message.trim() : null;
+  }
+
+  private async failManagedBroadcastAfterFatalProcessingError(
+    row: PersistedManagedBroadcast,
+    currentOccurrence: number,
+    failureMessage: string,
+  ): Promise<void> {
+    await this.prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: currentOccurrence,
+        status: {
+          in: [
+            PrismaManagedBroadcastDeliveryStatus.PENDING,
+            PrismaManagedBroadcastDeliveryStatus.SENDING,
+            PrismaManagedBroadcastDeliveryStatus.FAILED,
+          ],
+        },
+      },
+      data: {
+        status: PrismaManagedBroadcastDeliveryStatus.FAILED,
+        lockedAt: null,
+        lastError: failureMessage,
+      },
+    });
+    await this.prisma.managedBroadcastDelivery.updateMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: { gt: currentOccurrence },
+        status: {
+          in: [
+            PrismaManagedBroadcastDeliveryStatus.PENDING,
+            PrismaManagedBroadcastDeliveryStatus.SENDING,
+            PrismaManagedBroadcastDeliveryStatus.FAILED,
+          ],
+        },
+      },
+      data: {
+        status: PrismaManagedBroadcastDeliveryStatus.CANCELED,
+        lockedAt: null,
+        lastError: failureMessage,
+      },
+    });
+
+    if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+      await this.prisma.managedBroadcastOccurrence.updateMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex: currentOccurrence,
+        },
+        data: {
+          status: PrismaManagedBroadcastStatus.FAILED,
+        },
+      });
+      await this.prisma.managedBroadcastOccurrence.updateMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex: { gt: currentOccurrence },
+        },
+        data: {
+          status: PrismaManagedBroadcastStatus.CANCELED,
+        },
+      });
+    }
+
+    await this.updateManagedBroadcastIfNotCanceled(row.id, {
+      status: PrismaManagedBroadcastStatus.FAILED,
+      lastError: failureMessage,
+      nextSendAt: null,
+      lockedAt: null,
+    });
+
+    this.logger.warn(
+      {
+        broadcastId: row.id,
+        sourceChatId: row.sourceChatId,
+        actorUserId: row.actorUserId,
+        occurrenceIndex: currentOccurrence,
+        err: failureMessage,
+      },
+      'Managed broadcast was stopped after a fatal processing error',
+    );
   }
 
   private async updateManagedBroadcastIfNotCanceled(
