@@ -20170,7 +20170,11 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(
+        startParam,
+        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
+      ) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
@@ -20183,7 +20187,11 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return (
-      this.maxBotLinkService?.buildEntryBotStartUrlSync(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(
+        startPayload,
+        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
+      ) ??
+      this.maxBotLinkService?.buildEntryBotStartUrlSync?.(startPayload) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)

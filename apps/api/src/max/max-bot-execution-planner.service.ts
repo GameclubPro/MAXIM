@@ -276,15 +276,9 @@ export class MaxBotExecutionPlannerService {
       this.maxBotRegistry.getBotById(state.primaryBotId)?.id ??
       assignedBots.find((bot) => bot.role === 'primary' && bot.membershipStatus === 'active')?.botId ??
       null;
-    const linkBotId = this.maxBotLinkService.getEntryBotId();
     const reasons = [
-      'User-facing updates, moderation notices and deep links всегда идут через owner-бота.',
+      'Пользовательские deep link-сценарии стараются оставаться на том боте, из которого пользователь открыл поток.',
     ];
-    if (linkBotId && linkBotId !== primaryBotId) {
-      reasons.push(
-        `Mini App и start/startapp ссылки закреплены за единым entry-ботом ${linkBotId}, чтобы продукт выглядел как один сервис.`,
-      );
-    }
     if (assistPartner) {
       reasons.push(
         `Assist-бот ${assistPartner.label} обслуживает только фоновые lane’ы: ${assistPartner.capabilities.join(', ')}.`,
@@ -320,7 +314,7 @@ export class MaxBotExecutionPlannerService {
       primaryBotId,
       speakerBotId: primaryBotId,
       workerBotId: primaryBotId,
-      linkBotId,
+      linkBotId: primaryBotId,
       partnerBotId,
       sharedMode,
       userFacingPolicy: 'owner-only',

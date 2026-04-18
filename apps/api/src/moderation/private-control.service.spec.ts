@@ -1235,18 +1235,30 @@ describe('PrivateControlService', () => {
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
-  it('redirects private dialog traffic on a non-entry bot to the canonical entry bot', async () => {
+  it('keeps private dialog traffic on the active bot instead of redirecting to the entry bot', async () => {
     const maxBotLinkService = {
       getBotTokenSync: jest.fn().mockReturnValue('test-token'),
       getValidationTokens: jest.fn().mockReturnValue(['test-token']),
       getEntryBotId: jest.fn().mockReturnValue('777000_bot'),
       getContextOrDefaultBotId: jest.fn().mockReturnValue('888000_bot'),
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '888000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockImplementation(
           (startParam: string) =>
             `https://max.ru/777000_bot?startapp=${encodeURIComponent(startParam)}`,
         ),
+      getResolvedBotSync: jest.fn().mockReturnValue({
+        id: '888000_bot',
+        characterName: 'Майор Максимов',
+        label: 'Майор Максимов',
+        speechPersona: 'male',
+      }),
       isKnownBotUserId: jest.fn().mockReturnValue(false),
       resolveContactIdSync: jest.fn().mockReturnValue(null),
     };
@@ -1256,16 +1268,14 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastUiText(maxClient)).toContain(
-      'Личный кабинет и команды работают через основной бот.',
-    );
+    expect(getLastUiText(maxClient)).toContain('**Майор Максимов**');
     const buttons = getLastButtons(maxClient).flat();
-    expect(buttons).toHaveLength(1);
+    expect(buttons).toHaveLength(2);
     expect(buttons[0]).toEqual(
       expect.objectContaining({
-        text: '📱 Открыть панель',
+        text: '📱 Приложение',
         type: 'link',
-        url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+        url: expect.stringContaining('https://max.ru/888000_bot?startapp='),
       }),
     );
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();

@@ -13000,6 +13000,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       managedChannel.channelSettings,
       includeCommentsButton,
       includeSuggestButton,
+      autoAttachBotId,
     );
     if (buttons.length === 0) {
       return;
@@ -13348,6 +13349,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: PersistedChannelSettings,
     includeCommentsButton: boolean,
     includeSuggestButton: boolean,
+    botId?: string | null,
   ): MaxMessageButton[][] {
     const rows: MaxMessageButton[][] = [];
 
@@ -13358,6 +13360,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
+          botId,
         ),
       ]);
     }
@@ -13369,6 +13372,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'suggest',
           threadId,
           settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+          botId,
         ),
       ]);
     }
@@ -13428,6 +13432,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
+          autoAttachBotId,
         ),
       ],
     ];
@@ -13614,6 +13619,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     type: ChannelDialogType,
     threadId: string,
     text: string,
+    botId?: string | null,
   ): MaxMessageButton {
     if (type === 'suggest') {
       const adminSuggestionPayloadBuilder = this.adminService as
@@ -13624,7 +13630,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const startPayload =
         adminSuggestionPayloadBuilder?.buildChannelSuggestionStartPayload?.(chatId, threadId) ??
         this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
-      const botStartUrl = this.buildBotStartUrl(startPayload);
+      const botStartUrl = this.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {
         return {
           type: 'link',
@@ -13634,7 +13640,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
+    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
 
@@ -13667,8 +13673,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     type: ChannelDialogType,
     threadId: string,
     text: string,
+    botId?: string | null,
   ): MaxMessageButton {
-    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId);
+    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
 
@@ -13700,18 +13707,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
+    botId?: string | null,
   ): string | null {
     const startParam = this.buildChannelDialogStartParam(chatId, type, threadId);
-    return this.buildMiniappStartUrl(startParam);
+    return this.buildMiniappStartUrl(startParam, botId);
   }
 
   private buildChatDialogLaunchUrl(
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
+    botId?: string | null,
   ): string | null {
     const startParam = this.buildChatDialogStartParam(chatId, type, threadId);
-    return this.buildMiniappStartUrl(startParam);
+    return this.buildMiniappStartUrl(startParam, botId);
   }
 
   private buildChannelDialogDirectWebAppUrl(
@@ -13774,26 +13783,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
   }
 
-  private buildMiniappStartUrl(startParam: string): string | null {
+  private buildMiniappStartUrl(startParam: string, botId?: string | null): string | null {
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam, botId) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
     );
   }
 
-  private buildBotStartUrl(startPayload: string): string | null {
+  private buildBotStartUrl(startPayload: string, botId?: string | null): string | null {
     if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildEntryBotStartUrlSync(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload, botId) ??
+      this.maxBotLinkService?.buildEntryBotStartUrlSync?.(startPayload) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)

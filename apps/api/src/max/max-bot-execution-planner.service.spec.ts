@@ -215,7 +215,7 @@ describe('MaxBotExecutionPlannerService', () => {
 
     expect(plan.primaryBotId).toBe('id613002203036_4_bot');
     expect(plan.speakerBotId).toBe('id613002203036_4_bot');
-    expect(plan.linkBotId).toBe('id613002203036_bot');
+    expect(plan.linkBotId).toBe('id613002203036_4_bot');
     expect(fixture.chat.primaryBotId).toBe('id613002203036_4_bot');
     expect(fixture.maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-1',

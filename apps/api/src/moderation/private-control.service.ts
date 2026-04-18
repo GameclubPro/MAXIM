@@ -1228,10 +1228,6 @@ export class PrivateControlService {
       return;
     }
 
-    if (await this.redirectSecondaryPrivateDialogToEntryBot(context)) {
-      return;
-    }
-
     const callback = context.callbackPayload
       ? this.parseCallbackAction(context.callbackPayload)
       : null;
@@ -1309,10 +1305,6 @@ export class PrivateControlService {
   async handleBotStarted(update: MaxUpdate): Promise<void> {
     const context = this.resolveContext(update);
     if (!context) {
-      return;
-    }
-
-    if (await this.redirectSecondaryPrivateDialogToEntryBot(context)) {
       return;
     }
 
@@ -9725,37 +9717,6 @@ export class PrivateControlService {
     }
   }
 
-  private async redirectSecondaryPrivateDialogToEntryBot(
-    context: PrivateContext,
-  ): Promise<boolean> {
-    const entryBotId = this.maxBotLinkService?.getEntryBotId() ?? null;
-    const activeBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? this.ownBotUserId;
-    if (!entryBotId || !activeBotId || entryBotId === activeBotId) {
-      return false;
-    }
-
-    const session = await this.loadSession(context.actor.userId);
-    this.rememberPrivateChatId(session, context.chatId);
-
-    const redirectUrl = this.buildMiniappRouteLaunchUrl('/chats');
-    const buttons = redirectUrl
-      ? [[this.buildMiniappLaunchButton('📱 Открыть панель', '/chats', redirectUrl)]]
-      : [];
-    const view: PrivateView = {
-      text: [
-        'Личный кабинет и команды работают через основной бот.',
-        'Откройте панель по кнопке ниже.',
-      ].join('\n'),
-      ...(buttons.length > 0 ? { options: { buttons } } : {}),
-    };
-
-    await this.respond(context, session, view, {
-      callbackId: context.callbackId,
-      notification: context.callbackPayload ? 'Откройте основной бот' : null,
-    });
-    return true;
-  }
-
   private extractStatusCode(error: unknown): number | null {
     const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
     return typeof maybeStatus === 'number' ? maybeStatus : null;
@@ -11014,7 +10975,11 @@ export class PrivateControlService {
     }
 
     return (
-      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(
+        startParam,
+        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
+      ) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
       (this.botDeepLinkId
         ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
@@ -11027,7 +10992,11 @@ export class PrivateControlService {
     }
 
     return (
-      this.maxBotLinkService?.buildEntryBotStartUrlSync(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(
+        startPayload,
+        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
+      ) ??
+      this.maxBotLinkService?.buildEntryBotStartUrlSync?.(startPayload) ??
       (this.botDeepLinkId
         ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`
         : null)

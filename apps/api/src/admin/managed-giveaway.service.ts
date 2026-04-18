@@ -2799,7 +2799,11 @@ export class ManagedGiveawayService {
     }
 
     return (
-      this.maxBotLinkService?.buildEntryMiniappStartUrlSync(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(
+        startParam,
+        this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null,
+      ) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(
             this.ownBotUserId ?? '',
