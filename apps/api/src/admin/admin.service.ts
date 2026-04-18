@@ -9904,6 +9904,36 @@ export class AdminService implements OnModuleDestroy {
         );
       }
 
+      const fatalRecoveredDelivery = initialDeliveries.find((delivery) => {
+        if (delivery.status !== PrismaManagedBroadcastDeliveryStatus.FAILED) {
+          return false;
+        }
+        return (
+          this.resolveManagedBroadcastFatalProcessingFailureMessage(delivery.lastError) !== null
+        );
+      });
+      if (fatalRecoveredDelivery) {
+        const fatalProcessingErrorMessage =
+          this.resolveManagedBroadcastFatalProcessingFailureMessage(
+            fatalRecoveredDelivery.lastError,
+          ) ?? 'Не удалось обработать рассылку.';
+        await this.failManagedBroadcastAfterFatalProcessingError(
+          row,
+          currentOccurrence,
+          fatalProcessingErrorMessage,
+        );
+        return {
+          status: PrismaManagedBroadcastStatus.FAILED,
+          currentOccurrence,
+          sentChatIds: [],
+          failedChatIds: [fatalRecoveredDelivery.targetChatId],
+          pendingChatIds: [],
+          canRetry: true,
+          firstSendError: new BadRequestException(fatalProcessingErrorMessage),
+          nextSendAt: null,
+        };
+      }
+
       if (
         initialDeliveries.some(
           (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
@@ -11213,6 +11243,24 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return error.message.trim().length > 0 ? error.message.trim() : null;
+  }
+
+  private resolveManagedBroadcastFatalProcessingFailureMessage(
+    failureMessage: string | null | undefined,
+  ): string | null {
+    const normalized = failureMessage?.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    switch (normalized) {
+      case 'Поддерживаются только изображения.':
+      case 'Фото слишком большое. Попробуйте другое изображение.':
+      case 'Не удалось загрузить фото. Попробуйте другое изображение.':
+        return normalized;
+      default:
+        return null;
+    }
   }
 
   private async failManagedBroadcastAfterFatalProcessingError(

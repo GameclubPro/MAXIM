@@ -16212,6 +16212,127 @@ describe('AdminService.sendBroadcast', () => {
       );
   });
 
+  it('stops future managed broadcast deliveries when automatic recovery sees a fatal image failure', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const deliveries = wireManagedBroadcastDeliveryStore(prisma);
+    await prisma.managedBroadcast.create({
+      data: {
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttons: [],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: true,
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5lmN4AAAAASUVORK5CYII=',
+        imageMimeType: 'image/png',
+        imageFileName: 'bad.png',
+        scheduleMode: 'legacy',
+        scheduleTimezone: 'Europe/Moscow',
+        nextSendAt: new Date('2026-03-03T10:00:00.000Z'),
+        cycleEnabled: true,
+        cycleEveryHours: 1,
+        cycleCount: 3,
+        sentCount: 0,
+        status: 'FAILED',
+        lastError: 'Не удалось отправить в 1 чат(ов).',
+        lockedAt: null,
+      },
+    });
+    await prisma.managedBroadcastDelivery.createMany({
+      data: [
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 1,
+          targetChatId: 'chat-1',
+          status: 'FAILED',
+          attemptCount: 1,
+          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 2,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+        {
+          broadcastId: 'broadcast-1',
+          occurrenceIndex: 3,
+          targetChatId: 'chat-1',
+          status: 'PENDING',
+        },
+      ],
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await (service as any).processManagedBroadcastOccurrence(
+      'broadcast-1',
+      'scheduled',
+      new Date('2026-03-03T09:59:00.000Z'),
+      ['ACTIVE', 'PARTIAL', 'FAILED'],
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(result).toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        canRetry: true,
+        nextSendAt: null,
+        failedChatIds: ['chat-1'],
+      }),
+    );
+    expect(deliveries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          occurrenceIndex: 1,
+          status: 'FAILED',
+          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 2,
+          status: 'CANCELED',
+          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        }),
+        expect.objectContaining({
+          occurrenceIndex: 3,
+          status: 'CANCELED',
+          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        }),
+      ]),
+    );
+    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
+      .toEqual(
+        expect.objectContaining({
+          status: 'FAILED',
+          nextSendAt: null,
+          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+        }),
+      );
+  });
+
   it('retries failed deliveries and completes the broadcast', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
