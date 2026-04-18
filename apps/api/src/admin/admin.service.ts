@@ -11085,6 +11085,7 @@ export class AdminService implements OnModuleDestroy {
     return (
       normalized.includes('chat closed') ||
       normalized.includes('chat not found') ||
+      /^chat\s+.+\s+not found$/i.test(failureMessage.trim()) ||
       normalized.includes('not active chat member') ||
       normalized.includes('not a chat member') ||
       normalized.includes('bot is not a chat member') ||

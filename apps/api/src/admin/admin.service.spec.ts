@@ -15789,7 +15789,7 @@ describe('AdminService.sendBroadcast', () => {
     deliveries[0].sentAt = new Date('2026-03-03T10:00:00.000Z');
     deliveries[1].status = 'FAILED';
     deliveries[1].attemptCount = 1;
-    deliveries[1].lastError = 'Chat closed';
+    deliveries[1].lastError = 'Chat -72491481331058 not found';
     deliveries[1].updatedAt = new Date('2026-03-03T10:00:00.000Z');
 
     const maxClient = {
@@ -15822,19 +15822,19 @@ describe('AdminService.sendBroadcast', () => {
           occurrenceIndex: 1,
           targetChatId: 'chat-2',
           status: 'CANCELED',
-          lastError: 'Chat closed',
+          lastError: 'Chat -72491481331058 not found',
         }),
         expect.objectContaining({
           occurrenceIndex: 2,
           targetChatId: 'chat-2',
           status: 'CANCELED',
-          lastError: 'Chat closed',
+          lastError: 'Chat -72491481331058 not found',
         }),
         expect.objectContaining({
           occurrenceIndex: 3,
           targetChatId: 'chat-2',
           status: 'CANCELED',
-          lastError: 'Chat closed',
+          lastError: 'Chat -72491481331058 not found',
         }),
       ]),
     );
