@@ -15053,7 +15053,7 @@ describe('AdminService.sendBroadcast', () => {
 
     await service.processDueManagedBroadcasts('scheduled');
 
-    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(4);
+    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(6);
     expect(processSpy).toHaveBeenCalledTimes(2);
     expect(processSpy).toHaveBeenNthCalledWith(1, 'broadcast-1', 'scheduled', expect.any(Date), [
       'ACTIVE',
@@ -15061,6 +15061,65 @@ describe('AdminService.sendBroadcast', () => {
       'FAILED',
     ]);
     expect(processSpy).toHaveBeenNthCalledWith(2, 'broadcast-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+  });
+
+  it('keeps retryable managed broadcasts moving even when active backlog is present', async () => {
+    const prisma = createPrismaMock();
+    let activeCalls = 0;
+    let retryableCalls = 0;
+    prisma.managedBroadcast.findMany.mockImplementation(
+      async ({
+        where,
+      }: {
+        where?: { status?: string | { in?: string[] } };
+      }) => {
+        if (where?.status === 'ACTIVE') {
+          activeCalls += 1;
+          return activeCalls === 1
+            ? Array.from({ length: 10 }, (_, index) => ({
+                id: `active-${index + 1}`,
+              }))
+            : [];
+        }
+
+        const statusFilter = where?.status as { in?: string[] } | undefined;
+        if (Array.isArray(statusFilter?.in) && statusFilter.in.includes('FAILED')) {
+          retryableCalls += 1;
+          return retryableCalls === 1 ? [{ id: 'recovery-1' }] : [];
+        }
+
+        return [];
+      },
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedBroadcasts('scheduled');
+
+    expect(processSpy).toHaveBeenCalledTimes(10);
+    expect(processSpy).toHaveBeenNthCalledWith(1, 'active-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+    expect(processSpy).toHaveBeenNthCalledWith(9, 'active-9', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+      'PARTIAL',
+      'FAILED',
+    ]);
+    expect(processSpy).toHaveBeenNthCalledWith(10, 'recovery-1', 'scheduled', expect.any(Date), [
       'ACTIVE',
       'PARTIAL',
       'FAILED',

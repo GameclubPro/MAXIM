@@ -457,6 +457,7 @@ const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 const BROADCAST_TIMEOUT_RETRY_DELAYS_MS = [1_500, 4_000, 10_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
+const MANAGED_BROADCAST_RECOVERY_BATCH_SIZE = 2;
 const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
@@ -8830,26 +8831,50 @@ export class AdminService implements OnModuleDestroy {
         take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
         select: { id: true },
       });
-      const retryableDueRows =
-        activeDueRows.length === 0
-          ? await this.prisma.managedBroadcast.findMany({
-              where: {
-                status: {
-                  in: [
-                    PrismaManagedBroadcastStatus.PARTIAL,
-                    PrismaManagedBroadcastStatus.FAILED,
-                  ],
-                },
-                nextSendAt: { lte: now },
-                updatedAt: { lte: autoRetryBefore },
-                OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-              },
-              orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-              take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
-              select: { id: true },
-            })
-          : [];
-      const dueRows = activeDueRows.length > 0 ? activeDueRows : retryableDueRows;
+      const retryableDueRows = await this.prisma.managedBroadcast.findMany({
+        where: {
+          status: {
+            in: [
+              PrismaManagedBroadcastStatus.PARTIAL,
+              PrismaManagedBroadcastStatus.FAILED,
+            ],
+          },
+          nextSendAt: { lte: now },
+          updatedAt: { lte: autoRetryBefore },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+        },
+        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+        take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+        select: { id: true },
+      });
+      const reservedRecoveryCount = Math.min(
+        retryableDueRows.length,
+        Math.min(MANAGED_BROADCAST_RECOVERY_BATCH_SIZE, MANAGED_BROADCAST_DUE_BATCH_SIZE),
+      );
+      const dueRows = [
+        ...activeDueRows.slice(0, MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount),
+        ...retryableDueRows.slice(0, reservedRecoveryCount),
+      ];
+      if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
+        const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
+        const activeOverflowOffset =
+          MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount;
+        dueRows.push(
+          ...activeDueRows.slice(
+            activeOverflowOffset,
+            activeOverflowOffset + remainingSlots,
+          ),
+        );
+      }
+      if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
+        const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
+        dueRows.push(
+          ...retryableDueRows.slice(
+            reservedRecoveryCount,
+            reservedRecoveryCount + remainingSlots,
+          ),
+        );
+      }
 
       if (dueRows.length === 0) {
         return;
