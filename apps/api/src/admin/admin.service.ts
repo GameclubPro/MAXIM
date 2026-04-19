@@ -1652,8 +1652,16 @@ export class AdminService implements OnModuleDestroy {
         return null;
       }
 
+      const filteredItems = this.filterManagedEntitiesToRuntimeScope(
+        snapshot.items.map((item) => this.cloneManagedEntitySummary(item)),
+        { requireKnownBot: true },
+      );
+      if (filteredItems.length !== snapshot.items.length) {
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+      }
+
       return {
-        items: snapshot.items.map((item) => this.cloneManagedEntitySummary(item)),
+        items: filteredItems,
         version: snapshot.version,
         builtAt: snapshot.builtAt,
         lastSyncedAt: snapshot.lastSyncedAt,
@@ -1748,6 +1756,8 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
+    const nextRuntimeIds = new Set(publishedSnapshot.items.map((item) => item.id));
+
     return {
       items: [],
       refresh,
@@ -1756,10 +1766,10 @@ export class AdminService implements OnModuleDestroy {
         mode: 'patch',
         baseVersion: publishedDiff.baseVersion,
         nextVersion: publishedDiff.nextVersion,
-        added: publishedDiff.added,
-        updated: publishedDiff.updated,
+        added: publishedDiff.added.filter((item) => nextRuntimeIds.has(item.id)),
+        updated: publishedDiff.updated.filter((item) => nextRuntimeIds.has(item.id)),
         removedIds: publishedDiff.removedIds,
-        orderedIds: publishedDiff.orderedIds,
+        orderedIds: publishedDiff.orderedIds.filter((item) => nextRuntimeIds.has(item)),
       },
     };
   }
@@ -1790,8 +1800,14 @@ export class AdminService implements OnModuleDestroy {
       return {
         baseVersion: diff.baseVersion,
         nextVersion: diff.nextVersion,
-        added: diff.added.map((item) => this.cloneManagedEntitySummary(item)),
-        updated: diff.updated.map((item) => this.cloneManagedEntitySummary(item)),
+        added: this.filterManagedEntitiesToRuntimeScope(
+          diff.added.map((item) => this.cloneManagedEntitySummary(item)),
+          { requireKnownBot: true },
+        ),
+        updated: this.filterManagedEntitiesToRuntimeScope(
+          diff.updated.map((item) => this.cloneManagedEntitySummary(item)),
+          { requireKnownBot: true },
+        ),
         removedIds: [...diff.removedIds],
         orderedIds: [...diff.orderedIds],
       };
@@ -2822,16 +2838,24 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private filterManagedEntitiesToRuntimeScope(chats: readonly ChatSummary[]): ChatSummary[] {
+  private filterManagedEntitiesToRuntimeScope(
+    chats: readonly ChatSummary[],
+    options: {
+      requireKnownBot?: boolean;
+    } = {},
+  ): ChatSummary[] {
     if (this.managedEntitiesRuntimeBotIds.size === 0) {
       return [...chats];
     }
 
-    return chats.filter((chat) => this.isManagedEntityInRuntimeScope(chat));
+    return chats.filter((chat) => this.isManagedEntityInRuntimeScope(chat, options));
   }
 
   private isManagedEntityInRuntimeScope(
     chat: Pick<ChatSummary, 'primaryBotId' | 'assignedBots'>,
+    options: {
+      requireKnownBot?: boolean;
+    } = {},
   ): boolean {
     if (this.managedEntitiesRuntimeBotIds.size === 0) {
       return true;
@@ -2849,7 +2873,7 @@ export class AdminService implements OnModuleDestroy {
       return assignedBotIds.some((botId) => this.managedEntitiesRuntimeBotIds.has(botId));
     }
 
-    return true;
+    return options.requireKnownBot === true ? false : true;
   }
 
   private normalizeRuntimeManagedEntityBotId(botId: string | null | undefined): string | null {

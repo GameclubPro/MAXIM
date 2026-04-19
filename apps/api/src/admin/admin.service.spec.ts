@@ -7948,6 +7948,7 @@ describe('AdminService.listChats', () => {
             title: 'Из snapshot',
             createdAt: '2026-04-03T10:00:00.000Z',
             entityType: 'chat',
+            primaryBotId: '777000_bot',
           }),
         ],
       }),
@@ -7990,8 +7991,76 @@ describe('AdminService.listChats', () => {
         title: 'Из snapshot',
         createdAt: '2026-04-03T10:00:00.000Z',
         entityType: 'chat',
+        primaryBotId: '777000_bot',
       }),
     ]);
+    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
+  });
+
+  it('filters published snapshot chats to the current runtime bot scope', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 3,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-owned',
+            title: 'Чат Решение',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-foreign',
+            title: 'Чужой чат',
+            createdAt: '2026-04-02T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: 'foreign_bot',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-legacy',
+            title: 'Старый чат без bot scope',
+            createdAt: '2026-04-01T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    const rebuildSpy = jest
+      .spyOn(service as any, 'scheduleManagedEntitiesPublishedSnapshotRebuild')
+      .mockImplementation(() => undefined);
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual([
+      createChatSummaryFixture({
+        id: 'chat-owned',
+        title: 'Чат Решение',
+        createdAt: '2026-04-03T10:00:00.000Z',
+        entityType: 'chat',
+        primaryBotId: '777000_bot',
+      }),
+    ]);
+    expect(rebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
@@ -8010,6 +8079,7 @@ describe('AdminService.listChats', () => {
             title: 'Из snapshot',
             createdAt: '2026-04-03T10:00:00.000Z',
             entityType: 'chat',
+            primaryBotId: '777000_bot',
           }),
         ],
       }),
@@ -8057,6 +8127,7 @@ describe('AdminService.listChats', () => {
           title: 'Из snapshot',
           createdAt: '2026-04-03T10:00:00.000Z',
           entityType: 'chat',
+          primaryBotId: '777000_bot',
         }),
       ],
       refresh: refreshState,
@@ -8161,6 +8232,7 @@ describe('AdminService.listChats', () => {
             title: 'Новый чат',
             createdAt: '2026-04-04T10:04:00.000Z',
             entityType: 'chat',
+            primaryBotId: '777000_bot',
           }),
         ],
       }),
@@ -8173,6 +8245,7 @@ describe('AdminService.listChats', () => {
             title: 'Новый чат',
             createdAt: '2026-04-04T10:04:00.000Z',
             entityType: 'chat',
+            primaryBotId: '777000_bot',
           }),
         ],
         updated: [],
@@ -8238,6 +8311,7 @@ describe('AdminService.listChats', () => {
             title: 'Новый чат',
             createdAt: '2026-04-04T10:04:00.000Z',
             entityType: 'chat',
+            primaryBotId: '777000_bot',
           }),
         ],
         updated: [],
