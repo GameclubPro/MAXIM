@@ -8513,6 +8513,118 @@ describe('AdminService.listChats', () => {
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
+  it('isolates cached allowlist chats to bots configured in the current runtime', async () => {
+    const prisma = createPrismaMock();
+    const allowlistRows = [
+      {
+        chat: {
+          id: 'chat-owned',
+          title: 'Чат Решение',
+          createdAt: new Date('2026-03-04T10:00:00.000Z'),
+          entityType: 'CHAT' as const,
+          primaryBotId: '777000_bot',
+          botId: '777000_bot',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-foreign',
+          title: 'Чужой чат',
+          createdAt: new Date('2026-03-03T10:00:00.000Z'),
+          entityType: 'CHAT' as const,
+          primaryBotId: 'foreign_bot',
+          botId: 'foreign_bot',
+        },
+      },
+    ];
+    prisma.chatAdminAllowlist.findMany.mockImplementation(
+      async (args?: {
+        where?: {
+          chat?: {
+            entityType?: 'CHAT' | 'CHANNEL';
+            OR?: Array<
+              | { primaryBotId?: { in?: string[] } }
+              | { botId?: { in?: string[] } }
+              | { botMemberships?: { some?: { botId?: { in?: string[] } } } }
+            >;
+          };
+        };
+      }) => {
+        const where = args?.where;
+        const runtimeBotIds = new Set(
+          (where?.chat?.OR ?? []).flatMap((item) => {
+            if ('primaryBotId' in item && Array.isArray(item.primaryBotId?.in)) {
+              return item.primaryBotId.in;
+            }
+            if ('botId' in item && Array.isArray(item.botId?.in)) {
+              return item.botId.in;
+            }
+            if ('botMemberships' in item && Array.isArray(item.botMemberships?.some?.botId?.in)) {
+              return item.botMemberships.some.botId.in;
+            }
+            return [];
+          }),
+        );
+
+        return allowlistRows.filter((row) => {
+          if (where?.chat?.entityType && row.chat.entityType !== where.chat.entityType) {
+            return false;
+          }
+          if (runtimeBotIds.size === 0) {
+            return true;
+          }
+
+          return [row.chat.primaryBotId, row.chat.botId].some(
+            (botId) => typeof botId === 'string' && runtimeBotIds.has(botId),
+          );
+        });
+      },
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-owned',
+        title: 'Чат Решение',
+        createdAt: '2026-03-04T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    expect(prisma.chatAdminAllowlist.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chat: expect.objectContaining({
+            OR: expect.arrayContaining([
+              expect.objectContaining({
+                primaryBotId: { in: ['777000_bot'] },
+              }),
+            ]),
+          }),
+        }),
+      }),
+    );
+  });
+
   it('bootstraps recent bot_added chats into the default chats list without remote discovery', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

@@ -842,6 +842,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
+  private readonly managedEntitiesRuntimeBotIds: ReadonlySet<string>;
   private readonly maxBotToken: string;
   private readonly maxBotTokenValidationSecrets: readonly string[];
   private readonly systemAccessConfig: SystemAccessConfig;
@@ -946,6 +947,15 @@ export class AdminService implements OnModuleDestroy {
       configService.get<string>('MAX_BOT_CONTACT_ID'),
     );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
+    const registryBotIds =
+      typeof this.maxBotRegistry?.getAllBots === 'function'
+        ? this.maxBotRegistry.getAllBots().map((bot) => bot.id)
+        : [];
+    this.managedEntitiesRuntimeBotIds = new Set(
+      [...registryBotIds, this.readTrimmedString(configService.get<string>('MAX_BOT_ID'))].filter(
+        (botId): botId is string => Boolean(botId),
+      ),
+    );
     this.systemAccessConfig = readSystemAccessConfig(configService);
     this.manualFanoutLookupSpacingMs = this.readNonNegativeConfigInt(
       configService.get<number>('MANUAL_FANOUT_LOOKUP_SPACING_MS'),
@@ -2788,6 +2798,64 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:last-success`;
   }
 
+  private buildManagedEntitiesRuntimeChatScopeFilter():
+    | {
+        OR: Array<{
+          primaryBotId?: { in: string[] };
+          botId?: { in: string[] };
+          botMemberships?: { some: { botId: { in: string[] } } };
+        }>;
+      }
+    | null {
+    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
+    if (runtimeBotIds.length === 0) {
+      return null;
+    }
+
+    const inRuntimeScope = { in: runtimeBotIds };
+    return {
+      OR: [
+        { primaryBotId: inRuntimeScope },
+        { botId: inRuntimeScope },
+        { botMemberships: { some: { botId: inRuntimeScope } } },
+      ],
+    };
+  }
+
+  private filterManagedEntitiesToRuntimeScope(chats: readonly ChatSummary[]): ChatSummary[] {
+    if (this.managedEntitiesRuntimeBotIds.size === 0) {
+      return [...chats];
+    }
+
+    return chats.filter((chat) => this.isManagedEntityInRuntimeScope(chat));
+  }
+
+  private isManagedEntityInRuntimeScope(
+    chat: Pick<ChatSummary, 'primaryBotId' | 'assignedBots'>,
+  ): boolean {
+    if (this.managedEntitiesRuntimeBotIds.size === 0) {
+      return true;
+    }
+
+    const primaryBotId = this.normalizeRuntimeManagedEntityBotId(chat.primaryBotId);
+    if (primaryBotId) {
+      return this.managedEntitiesRuntimeBotIds.has(primaryBotId);
+    }
+
+    const assignedBotIds = (chat.assignedBots ?? [])
+      .map((bot) => this.normalizeRuntimeManagedEntityBotId(bot.botId))
+      .filter((botId): botId is string => Boolean(botId));
+    if (assignedBotIds.length > 0) {
+      return assignedBotIds.some((botId) => this.managedEntitiesRuntimeBotIds.has(botId));
+    }
+
+    return true;
+  }
+
+  private normalizeRuntimeManagedEntityBotId(botId: string | null | undefined): string | null {
+    return this.maxBotRegistry?.getBotById(botId)?.id ?? this.readTrimmedString(botId) ?? null;
+  }
+
   private cloneManagedEntitySummary(chat: ChatSummary): ChatSummary {
     return {
       ...chat,
@@ -2819,14 +2887,16 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityTypeFilter,
   ): ChatSummary[] {
-    const direct = this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType);
+    const direct = this.filterManagedEntitiesToRuntimeScope(
+      this.readManagedEntitiesLastSuccessSnapshotExact(userId, entityType),
+    );
     if (direct.length > 0 || entityType === 'all') {
       return direct;
     }
 
-    return this.readManagedEntitiesLastSuccessSnapshotExact(userId, 'all').filter(
-      (chat) => chat.entityType === entityType,
-    );
+    return this.filterManagedEntitiesToRuntimeScope(
+      this.readManagedEntitiesLastSuccessSnapshotExact(userId, 'all'),
+    ).filter((chat) => chat.entityType === entityType);
   }
 
   private rememberManagedEntitiesLastSuccessSnapshot(
@@ -22155,17 +22225,29 @@ export class AdminService implements OnModuleDestroy {
       allowLastSuccessFallback?: boolean;
     } = {},
   ): Promise<ChatSummary[]> {
+    const runtimeChatScopeFilter = this.buildManagedEntitiesRuntimeChatScopeFilter();
     const whereClause =
       entityType === 'all'
-        ? { userId }
+        ? {
+            userId,
+            ...(runtimeChatScopeFilter ? { chat: runtimeChatScopeFilter } : {}),
+          }
         : {
             userId,
             chat: {
               entityType: this.toPrismaEntityType(entityType),
+              ...(runtimeChatScopeFilter ?? {}),
             },
           };
     let rows: Array<{
-      chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
+      chat: {
+        id: string;
+        title: string;
+        createdAt: Date;
+        entityType: ChatEntityType;
+        primaryBotId?: string | null;
+        botId?: string | null;
+      };
     }> = [];
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
     try {
@@ -22203,12 +22285,27 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const chats = rows.map(
-      (row: { chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType } }) =>
+      (row: {
+        chat: {
+          id: string;
+          title: string;
+          createdAt: Date;
+          entityType: ChatEntityType;
+          primaryBotId?: string | null;
+          botId?: string | null;
+        };
+      }) =>
         this.createManagedEntitySummary({
           id: row.chat.id,
           title: row.chat.title,
           createdAt: row.chat.createdAt.toISOString(),
           entityType: this.fromPrismaEntityType(row.chat.entityType),
+          primaryBotId:
+            this.normalizeRuntimeManagedEntityBotId(
+              this.readTrimmedString(row.chat.primaryBotId) ??
+                this.readTrimmedString(row.chat.botId) ??
+                null,
+            ) ?? null,
         }),
     );
 

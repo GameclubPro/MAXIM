@@ -128,6 +128,7 @@ import {
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { canUserAccessThematicFilters } from '../lib/thematic-filters-access';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -241,7 +242,6 @@ const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINU
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
-const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const LINK_BOT_BUTTON_GROUP = {
   buttonsKey: 'linkBotButtons',
   enabledKey: 'linkBotButtonEnabled',
@@ -2720,7 +2720,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
   const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
-  const canSeeThematicFilters = meQuery.data?.userId === THEMATIC_FILTERS_OWNER_USER_ID;
+  const canSeeThematicFilters = canUserAccessThematicFilters(meQuery.data?.userId);
   const activeSpeechStyle = useMemo(() => {
     if (!draft?.botSpeechStyle || hasBotSpeechEditableOverrides(draft)) {
       return null;
