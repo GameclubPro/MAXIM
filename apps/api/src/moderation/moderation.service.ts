@@ -86,6 +86,17 @@ import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
 import {
+  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+  buildCommercialCampaignFingerprint,
+  buildCommercialCampaignLinkChatsKey,
+  buildCommercialCampaignPhoneChatsKey,
+  buildCommercialCampaignSenderChatsKey,
+  buildCommercialCampaignSenderTextChatsKey,
+  hasCommercialCampaignEvidence,
+  normalizeCommercialCampaignSenderId,
+  type CommercialCampaignContext,
+} from './commercial-campaign.util';
+import {
   buildManagedPollButtons,
   buildManagedPollMessageText,
   buildManagedPollOptionSummaries,
@@ -1330,6 +1341,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           reason: duplicateStateSkipReason,
         });
       }
+      const commercialCampaignSkipReason = settings.commercialAdsFilterEnabled
+        ? this.resolveOptionalWebhookStageSkipReason({
+            stage: 'rule-engine.commercial-campaign',
+            hotPathProfile,
+            systemMode: mode,
+            hotChatBackoffActive,
+          })
+        : null;
+      if (commercialCampaignSkipReason) {
+        this.recordOptionalWebhookStageSkip({
+          stage: 'rule-engine.commercial-campaign',
+          reason: commercialCampaignSkipReason,
+          failOpen: true,
+        });
+      }
+      const commercialCampaignContext =
+        settings.commercialAdsFilterEnabled && !commercialCampaignSkipReason
+          ? await this.collectCommercialCampaignContext({
+              chatId,
+              senderId,
+              text,
+            })
+          : null;
+      if (settings.commercialAdsFilterEnabled) {
+        this.markWebhookHotPathStage(hotPathProfile, 'rule-engine.commercial-campaign');
+      }
       const detection = await this.ruleEngine.detect({
         chatId,
         userId: senderId,
@@ -1343,6 +1380,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         hasFileAttachment: mediaFlags.hasFileAttachment,
         hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
         skipDuplicateState: Boolean(duplicateStateSkipReason),
+        commercialCampaignContext,
       });
       this.markWebhookHotPathStage(hotPathProfile, 'rule-engine');
 
@@ -14743,6 +14781,90 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return variants;
+  }
+
+  private async collectCommercialCampaignContext(params: {
+    chatId: string;
+    senderId: string;
+    text: string;
+  }): Promise<CommercialCampaignContext | null> {
+    const redisCounter = this.redisCounter;
+    if (!redisCounter) {
+      return null;
+    }
+
+    const normalizedSenderId = normalizeCommercialCampaignSenderId(params.senderId);
+    if (!normalizedSenderId) {
+      return null;
+    }
+
+    const fingerprint = buildCommercialCampaignFingerprint(params.text);
+
+    try {
+      const [senderDistinctChatCount, sameTextDistinctChatCount, phoneChatCounts, linkChatCounts] =
+        await Promise.all([
+          redisCounter
+            .addToSetWithTtl(
+              buildCommercialCampaignSenderChatsKey(normalizedSenderId),
+              params.chatId,
+              COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+            )
+            .then((result) => result.size),
+          fingerprint.textHash
+            ? redisCounter
+                .addToSetWithTtl(
+                  buildCommercialCampaignSenderTextChatsKey(
+                    normalizedSenderId,
+                    fingerprint.textHash,
+                  ),
+                  params.chatId,
+                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+                )
+                .then((result) => result.size)
+            : Promise.resolve(0),
+          Promise.all(
+            fingerprint.phones.map((phone) =>
+              redisCounter
+                .addToSetWithTtl(
+                  buildCommercialCampaignPhoneChatsKey(phone),
+                  params.chatId,
+                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+                )
+                .then((result) => result.size),
+            ),
+          ),
+          Promise.all(
+            fingerprint.links.map((link) =>
+              redisCounter
+                .addToSetWithTtl(
+                  buildCommercialCampaignLinkChatsKey(link),
+                  params.chatId,
+                  COMMERCIAL_CAMPAIGN_WINDOW_SEC,
+                )
+                .then((result) => result.size),
+            ),
+          ),
+        ]);
+
+      const context: CommercialCampaignContext = {
+        senderDistinctChatCount,
+        sameTextDistinctChatCount,
+        repeatedPhoneDistinctChatCount: Math.max(0, ...phoneChatCounts),
+        repeatedLinkDistinctChatCount: Math.max(0, ...linkChatCounts),
+      };
+
+      return hasCommercialCampaignEvidence(context) ? context : null;
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.senderId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Commercial campaign lookup failed; continuing without cross-chat signals',
+      );
+      return null;
+    }
   }
 
   private isNightModeNoticeMessage(params: {

@@ -9,6 +9,7 @@ import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
 import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
+import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { buildDuplicateStageKey } from './duplicate-state';
 import { isExactProfanityVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
@@ -63,6 +64,7 @@ type CommercialDetection = {
   decisionBand: CommercialDecisionBand;
   matchedSignals: string[];
   negativeSignals: string[];
+  campaignContext: CommercialCampaignContext | null;
   appliedThresholds: {
     warnThreshold: number;
     deleteThreshold: number;
@@ -109,6 +111,7 @@ type CommercialSignalState = {
   hasServiceContext: boolean;
   hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
+  hasCampaignContext: boolean;
   hasPrivateSaleContext: boolean;
   hasPropertyAgentContext: boolean;
   hasStrongNegativeContext: boolean;
@@ -917,6 +920,7 @@ export class RuleEngineService {
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
     skipDuplicateState?: boolean;
+    commercialCampaignContext?: CommercialCampaignContext | null;
   }): Promise<DetectionResult> {
     const {
       chatId,
@@ -931,6 +935,7 @@ export class RuleEngineService {
       hasFileAttachment,
       hasVoiceAttachment,
       skipDuplicateState,
+      commercialCampaignContext,
     } = params;
     const profile = this.createDetectProfile();
     const violations: RuleViolation[] = [];
@@ -957,6 +962,7 @@ export class RuleEngineService {
         normalizedText: normalized,
         rawLoweredText: lowered,
         settings,
+        commercialCampaignContext,
       });
       if (commercial) {
         violations.push({
@@ -968,6 +974,7 @@ export class RuleEngineService {
             decisionBand: commercial.decisionBand,
             matchedSignals: commercial.matchedSignals,
             negativeSignals: commercial.negativeSignals,
+            ...(commercial.campaignContext ? { campaignContext: commercial.campaignContext } : {}),
             appliedThresholds: commercial.appliedThresholds,
           },
         });
@@ -1821,23 +1828,39 @@ export class RuleEngineService {
     normalizedText: string;
     rawLoweredText: string;
     settings: ChatSettings;
+    commercialCampaignContext?: CommercialCampaignContext | null;
   }): CommercialDetection | null {
-    const { normalizedText, rawLoweredText, settings } = params;
+    const { normalizedText, rawLoweredText, settings, commercialCampaignContext } = params;
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;
     }
 
     const appliedThresholds = this.resolveCommercialThresholds(settings);
-    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, appliedThresholds);
+    const state = this.collectCommercialSignals(
+      normalizedText,
+      rawLoweredText,
+      appliedThresholds,
+      commercialCampaignContext,
+    );
     if (state.matchedSignals.length === 0 || !state.hasCommercialContext || !state.hasDealSignal) {
       return null;
     }
 
     const hasStandardCommercialEvidence =
       state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
+    const hasCampaignStrongEvidence = Boolean(
+      commercialCampaignContext &&
+        ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
+          (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
+          (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
+            (state.hasContact || state.hasDealChannel || state.hasTransactional))),
+    );
     const hasStrongCommercialEvidence =
-      state.hasPrice || state.hasDealChannel || (state.hasContact && state.hasTransactional);
+      state.hasPrice ||
+      state.hasDealChannel ||
+      (state.hasContact && state.hasTransactional) ||
+      hasCampaignStrongEvidence;
     const hasStructuredCommercialContext =
       state.hasPromoContext ||
       state.hasBusinessContext ||
@@ -1845,7 +1868,8 @@ export class RuleEngineService {
       state.hasRecruitmentContext ||
       state.hasInfoProductContext ||
       state.hasGroupPromoContext ||
-      state.hasServiceContext;
+      state.hasServiceContext ||
+      state.hasCampaignContext;
     const hasSelfPromotionalCommercialContext =
       this.hasExplicitSelfPromotionalCommercialContext(state);
     const hasPrivateSaleCommercialOverride =
@@ -1922,6 +1946,7 @@ export class RuleEngineService {
       decisionBand,
       matchedSignals: state.matchedSignals,
       negativeSignals: state.negativeSignals,
+      campaignContext: state.hasCampaignContext ? commercialCampaignContext ?? null : null,
       appliedThresholds,
     };
   }
@@ -2034,6 +2059,7 @@ export class RuleEngineService {
     normalizedText: string,
     rawLoweredText: string,
     profile: CommercialThresholdProfile,
+    commercialCampaignContext?: CommercialCampaignContext | null,
   ): CommercialSignalState {
     const positiveFactor = 0.92 + profile.strictness * 0.28;
     const negativeFactor = 1.05 - profile.strictness * 0.2;
@@ -2075,6 +2101,7 @@ export class RuleEngineService {
     let hasServiceContext = false;
     let hasCallToActionContext = false;
     let hasCommercialContext = false;
+    let hasCampaignContext = false;
     let hasPrivateSaleContext = false;
     let hasPropertyAgentContext = false;
     let hasStrongNegativeContext = false;
@@ -2295,6 +2322,40 @@ export class RuleEngineService {
       hasDealSignal = true;
     }
 
+    if (commercialCampaignContext) {
+      if (commercialCampaignContext.sameTextDistinctChatCount >= 2) {
+        addPositive(
+          'campaign:cross-chat-text',
+          commercialCampaignContext.sameTextDistinctChatCount >= 3 ? 22 : 18,
+        );
+        hasCampaignContext = true;
+      }
+
+      if (commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2) {
+        addPositive(
+          'campaign:cross-chat-phone',
+          commercialCampaignContext.repeatedPhoneDistinctChatCount >= 3 ? 22 : 18,
+        );
+        hasCampaignContext = true;
+      }
+
+      if (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2) {
+        addPositive(
+          'campaign:cross-chat-link',
+          commercialCampaignContext.repeatedLinkDistinctChatCount >= 3 ? 20 : 16,
+        );
+        hasCampaignContext = true;
+      }
+
+      if (commercialCampaignContext.senderDistinctChatCount >= 3) {
+        addPositive(
+          'campaign:sender-multi-chat',
+          commercialCampaignContext.senderDistinctChatCount >= 5 ? 10 : 6,
+        );
+        hasCampaignContext = true;
+      }
+    }
+
     if (ADS_MARKETPLACE_LINK_PATTERN.test(rawLoweredText)) {
       addNegative('private:marketplace-link', 10);
       hasPrivateSaleContext = true;
@@ -2447,6 +2508,26 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
+    if (hasCampaignContext && (hasContact || hasDealChannel || hasPrice || hasTransactional)) {
+      addPositive('combo:campaign+deal', 14);
+    }
+
+    if (
+      hasCampaignContext &&
+      (hasPromoContext ||
+        hasBusinessContext ||
+        hasBuyoutContext ||
+        hasRecruitmentContext ||
+        hasInfoProductContext ||
+        hasServiceContext ||
+        hasServiceOfferContext ||
+        hasCommercialAudienceContext ||
+        hasGroupPromotionIntent)
+    ) {
+      addPositive('combo:campaign+self-promo', 10);
+      hasCommercialContext = true;
+    }
+
     if (hasPromoContext && (hasPrice || hasContact || hasDealChannel || hasTransactional)) {
       addPositive('combo:promo+deal', 18);
     }
@@ -2500,6 +2581,7 @@ export class RuleEngineService {
       hasServiceContext,
       hasCallToActionContext,
       hasCommercialContext,
+      hasCampaignContext,
       hasPrivateSaleContext,
       hasPropertyAgentContext,
       hasStrongNegativeContext,

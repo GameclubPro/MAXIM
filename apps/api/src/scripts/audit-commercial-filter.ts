@@ -3,6 +3,7 @@ import { Prisma, PrismaClient, type ChatSettings } from '@prisma/client';
 import { config as loadEnv } from 'dotenv';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
+import { InMemoryCommercialCampaignTracker } from '../moderation/commercial-campaign.util';
 import { RuleEngineService, type RuleViolation } from '../moderation/rule-engine.service';
 
 const DEFAULT_LOOKBACK_DAYS = 7;
@@ -622,10 +623,14 @@ async function main() {
   try {
     await prisma.$connect();
     const candidates = await loadCandidates(prisma, options);
+    const orderedCandidates = [...candidates].sort(
+      (left, right) => left.createdAt.getTime() - right.createdAt.getTime(),
+    );
     const chatContexts = await loadChatContexts(
       prisma,
       Array.from(new Set(candidates.map((item) => item.chatId))),
     );
+    const campaignTracker = new InMemoryCommercialCampaignTracker();
 
     const skipCounts = new Map<AuditSkipReason, number>();
     const categoryCounts = new Map<AuditCategory, number>();
@@ -644,7 +649,7 @@ async function main() {
       ].join(' '),
     );
 
-    for (const [index, row] of candidates.entries()) {
+    for (const [index, row] of orderedCandidates.entries()) {
       const update = row.normalizedPayload as MaxUpdate;
       const chatContext = chatContexts.get(row.chatId);
       const skipReason = resolveSkipReason(row, update, chatContext);
@@ -659,6 +664,12 @@ async function main() {
 
       const senderId = (update.message?.senderId ?? row.senderId ?? '').trim();
       const text = typeof update.message?.text === 'string' ? update.message.text : row.text;
+      const commercialCampaignContext = campaignTracker.track({
+        createdAt: row.createdAt,
+        chatId: row.chatId,
+        senderId,
+        text,
+      });
       const detection = await ruleEngine.detect({
         chatId: row.chatId,
         userId: senderId,
@@ -667,6 +678,7 @@ async function main() {
         domainAllowlist: chatContext.domainAllowlist,
         effectiveLength: text.length,
         skipDuplicateState: true,
+        commercialCampaignContext,
       });
 
       const current = snapshotFromViolation(extractCommercialViolation(detection.violations));
@@ -704,9 +716,11 @@ async function main() {
       });
 
       if ((index + 1) % PROGRESS_EVERY === 0) {
-        console.log(`processed=${index + 1}/${candidates.length}`);
+        console.log(`processed=${index + 1}/${orderedCandidates.length}`);
       }
     }
+
+    auditedRecords.sort((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
 
     const mismatches = auditedRecords.filter(
       (record) => record.category === 'historical_only' || record.category === 'current_only',

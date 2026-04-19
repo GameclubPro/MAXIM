@@ -1,4 +1,5 @@
 import { LinkPolicy, type ChatSettings } from '@prisma/client';
+import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { PROFANITY_EXACT_VARIANT_COUNT } from './profanity-lexicon';
 import { RuleEngineService } from './rule-engine.service';
 
@@ -197,6 +198,9 @@ async function detectCommercialViolation(
   service: RuleEngineService,
   text: string,
   overrides: Partial<ChatSettings> = {},
+  options: {
+    commercialCampaignContext?: CommercialCampaignContext | null;
+  } = {},
 ) {
   const result = await service.detect({
     chatId: 'chat-1',
@@ -207,6 +211,7 @@ async function detectCommercialViolation(
       ...overrides,
     }),
     domainAllowlist: [],
+    commercialCampaignContext: options.commercialCampaignContext,
   });
 
   return result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
@@ -1613,6 +1618,60 @@ describe('RuleEngineService', () => {
     expect(violation?.metadata?.matchedSignals).not.toEqual(
       expect.arrayContaining(['group:клуб']),
     );
+  });
+
+  it('boosts a borderline service ad when the same sender repeats it across chats', async () => {
+    const service = createRuleEngine();
+    const text = 'Электрик, звоните 8 999 123 45 67';
+    const withoutCampaign = await detectCommercialViolation(service, text, {
+      ...COMMERCIAL_SENSITIVITY_PROFILES.soft,
+    });
+    const withCampaign = await detectCommercialViolation(
+      service,
+      text,
+      {
+        ...COMMERCIAL_SENSITIVITY_PROFILES.soft,
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 4,
+          sameTextDistinctChatCount: 3,
+          repeatedPhoneDistinctChatCount: 3,
+          repeatedLinkDistinctChatCount: 0,
+        },
+      },
+    );
+
+    expect(withoutCampaign).toBeUndefined();
+    expect(withCampaign).toBeDefined();
+    expect(withCampaign?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'campaign:cross-chat-text',
+        'campaign:sender-multi-chat',
+        'combo:campaign+self-promo',
+      ]),
+    );
+  });
+
+  it('does not let campaign repetition override a private owner rental listing', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Сдаётся уютная 2х комнатная квартира в районе Мкк г. Ялуторовска. В квартире хороший ремонт. Имеется застекленный балкон. Вся мебель и техника в наличии. Сдаётся на длительный срок, ответственным арендаторам. +7 900 000 00 00.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+      {
+        commercialCampaignContext: {
+          senderDistinctChatCount: 5,
+          sameTextDistinctChatCount: 4,
+          repeatedPhoneDistinctChatCount: 4,
+          repeatedLinkDistinctChatCount: 0,
+        },
+      },
+    );
+
+    expect(violation).toBeUndefined();
   });
 
   it('detects self-promotional craft offer from real logs when contact is in personal messages and phone', async () => {
