@@ -9121,6 +9121,64 @@ describe('AdminService.listChats', () => {
     ]);
   });
 
+  it('shows a fresh user-scoped bot_added chat provisionally while bot admin rights are still propagating', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-2',
+          chat_title: '',
+          is_channel: 'false',
+          last_event_at: new Date().toISOString(),
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: 'Перепел',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-04-19T21:07:43.203Z'),
+      primaryBotId: '777000_4_bot',
+      botId: '777000_4_bot',
+    }));
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'denied',
+      source: 'remote',
+      reason: 'bot_not_admin',
+    });
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Перепел',
+        createdAt: '2026-04-19T21:07:43.203Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
   it('schedules a published snapshot rebuild when recent bot_added bootstrap finds a chat missing from the snapshot', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw

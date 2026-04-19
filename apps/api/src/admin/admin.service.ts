@@ -1977,6 +1977,7 @@ export class AdminService implements OnModuleDestroy {
       chat_title: string | null;
       is_channel: string | null;
       user_scoped: boolean;
+      last_event_at: Date | string | null;
     }>
   > {
     const normalizedUserId = userId.trim();
@@ -1991,6 +1992,7 @@ export class AdminService implements OnModuleDestroy {
         chat_id: string | null;
         chat_title: string | null;
         is_channel: string | null;
+        last_event_at: Date | string | null;
       }>
     >`
       SELECT
@@ -1999,7 +2001,8 @@ export class AdminService implements OnModuleDestroy {
         CASE entity_type
           WHEN 'CHANNEL' THEN 'true'
           ELSE 'false'
-        END AS is_channel
+        END AS is_channel,
+        last_event_at
       FROM managed_entity_local_activities
       WHERE user_id = ${normalizedUserId}
         AND source_event_type = 'bot_added'
@@ -2012,12 +2015,14 @@ export class AdminService implements OnModuleDestroy {
         chat_id: string | null;
         chat_title: string | null;
         is_channel: string | null;
+        last_event_at: Date | string | null;
       }>
     >`
       SELECT
         recent_rows.chat_id,
         recent_rows.chat_title,
-        recent_rows.is_channel
+        recent_rows.is_channel,
+        recent_rows.last_event_at
       FROM (
         SELECT DISTINCT ON (chat_id)
           chat_id,
@@ -2040,6 +2045,7 @@ export class AdminService implements OnModuleDestroy {
       chat_title: string | null;
       is_channel: string | null;
       user_scoped: boolean;
+      last_event_at: Date | string | null;
     }> = [];
     const seen = new Set<string>();
 
@@ -4197,6 +4203,16 @@ export class AdminService implements OnModuleDestroy {
         timeoutMs: RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS,
       });
       if (access.status === 'unknown' || access.status === 'throttled') {
+        const provisional = await this.buildRecentBotAddedProvisionalChat({
+          row,
+          userId: normalizedUserId,
+          entityType,
+          hintedEntityType,
+          prisma: managedEntitiesReadPrisma,
+        });
+        if (provisional) {
+          bootstrapped.push(provisional);
+        }
         if (row.user_scoped) {
           this.scheduleUserScopedRecentBotAddedFastLane({
             chatId,
@@ -4219,6 +4235,19 @@ export class AdminService implements OnModuleDestroy {
         break;
       }
       if (access.status !== 'granted') {
+        const provisional =
+          row.user_scoped && access.reason === 'bot_not_admin'
+            ? await this.buildRecentBotAddedProvisionalChat({
+                row,
+                userId: normalizedUserId,
+                entityType,
+                hintedEntityType,
+                prisma: managedEntitiesReadPrisma,
+              })
+            : null;
+        if (provisional) {
+          bootstrapped.push(provisional);
+        }
         if (row.user_scoped && access.reason === 'bot_not_admin') {
           this.scheduleUserScopedRecentBotAddedFastLane({
             chatId,
@@ -4291,6 +4320,7 @@ export class AdminService implements OnModuleDestroy {
       chat_title: string | null;
       is_channel: string | null;
       user_scoped: boolean;
+      last_event_at: Date | string | null;
     }>
   > {
     if (typeof this.chatContextCache.getManagedEntitiesRecentBootstrap !== 'function') {
@@ -4317,7 +4347,97 @@ export class AdminService implements OnModuleDestroy {
       chat_title: chat.title,
       is_channel: chat.entityType === 'channel' ? 'true' : 'false',
       user_scoped: false,
+      last_event_at: null,
     }));
+  }
+
+  private async buildRecentBotAddedProvisionalChat(params: {
+    row: {
+      chat_id: string | null;
+      chat_title: string | null;
+      is_channel: string | null;
+      user_scoped: boolean;
+      last_event_at: Date | string | null;
+    };
+    userId: string;
+    entityType: ManagedEntityTypeFilter;
+    hintedEntityType: ManagedEntityType;
+    prisma: ReturnType<AdminService['getManagedEntitiesReadPrisma']>;
+  }): Promise<ChatSummary | null> {
+    if (!params.row.user_scoped) {
+      return null;
+    }
+
+    const chatId = this.readTrimmedString(params.row.chat_id);
+    if (!chatId) {
+      return null;
+    }
+
+    const eventAtMs = this.readRecentBotAddedEventTimestampMs(params.row.last_event_at);
+    if (eventAtMs === null || Date.now() - eventAtMs > RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS) {
+      return null;
+    }
+
+    const [existing, cachedHeader] = await Promise.all([
+      params.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: {
+          title: true,
+          createdAt: true,
+          primaryBotId: true,
+          botId: true,
+        },
+      }),
+      this.chatContextCache.getManagedEntityHeader?.(chatId, params.hintedEntityType) ?? null,
+    ]);
+
+    const resolvedTitle =
+      this.resolvePresentableManagedEntityTitle(
+        chatId,
+        this.readTrimmedString(params.row.chat_title),
+        this.readTrimmedString(cachedHeader?.title),
+        this.readTrimmedString(existing?.title),
+      ) ??
+      (params.hintedEntityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
+
+    const createdAtIso =
+      existing?.createdAt instanceof Date
+        ? existing.createdAt.toISOString()
+        : new Date(eventAtMs).toISOString();
+    const provisional = this.createManagedEntitySummary({
+      id: chatId,
+      title: resolvedTitle,
+      createdAt: createdAtIso,
+      entityType: params.hintedEntityType,
+      primaryBotId:
+        this.normalizeRuntimeManagedEntityBotId(
+          this.readTrimmedString(existing?.primaryBotId) ??
+            this.readTrimmedString(existing?.botId) ??
+            null,
+        ) ?? null,
+    });
+    const hydrated = await this.maybeHydrateRecentBotAddedBootstrapChat(
+      params.userId,
+      params.entityType,
+      provisional,
+    );
+    this.rememberManagedEntitiesLastSuccessChats(params.userId, [hydrated]);
+    return hydrated;
+  }
+
+  private readRecentBotAddedEventTimestampMs(value: Date | string | null): number | null {
+    if (value instanceof Date) {
+      const timestampMs = value.getTime();
+      return Number.isFinite(timestampMs) ? timestampMs : null;
+    }
+
+    const normalized = this.readTrimmedString(value);
+    if (!normalized) {
+      return null;
+    }
+
+    const timestampMs = Date.parse(normalized);
+    return Number.isFinite(timestampMs) ? timestampMs : null;
   }
 
   private scheduleUserScopedRecentBotAddedFastLane(params: {
