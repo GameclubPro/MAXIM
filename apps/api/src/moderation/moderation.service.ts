@@ -2869,12 +2869,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'IRONIC') {
       if (action === 'WARN') {
-        return '⚠️ Это уже предупреждение. На бис тут выходят не до бесконечности.';
+        return '⚠️ Это уже предупреждение. Повтор не сделал мысль сильнее.';
       }
       if (action === 'MUTE') {
-        return `🔒 Мут на ${muteDurationLabel}. На бис тут выходят не все.`;
+        return `🔒 Мут на ${muteDurationLabel}. Со второго дубля лучше не стало.`;
       }
-      return '⛔ Занавес. Бан до ручного разбана.';
+      return '⛔ Дальше уже только ручной разбан.';
     }
 
     if (action === 'WARN') {
@@ -2912,8 +2912,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'IRONIC') {
       return messageDeleted
-        ? '♻️ Повтор убрал. На бис тут не вызывают.'
-        : '👀 Повтор заметил. На бис пока без санкций.';
+        ? '♻️ Повтор убрал. Второй дубль тут был лишним.'
+        : '👀 Повтор заметил. Пока без санкций, но мысль уже учтена.';
     }
 
     return 'Пока без взыскания.';
@@ -3214,7 +3214,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (botSpeechStyle === 'IRONIC') {
-      return `${userLabel}, на этом занавес ⛔ Бан до ручного разбана.`;
+      return `${userLabel}, дальше уже только ручной разбан ⛔.`;
     }
 
     return `Товарищ ${userLabel}, тут уже шлагбаум ⛔ До ручного разбана.`;
