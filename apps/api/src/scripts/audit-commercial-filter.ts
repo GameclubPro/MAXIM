@@ -64,6 +64,7 @@ type AuditSegment =
   | 'PROPERTY'
   | 'RECRUITMENT'
   | 'INFO_PRODUCT'
+  | 'GOODS'
   | 'SERVICES'
   | 'OTHER';
 
@@ -72,6 +73,11 @@ type CommercialSnapshot = {
   score: number | null;
   confidenceScore: number | null;
   decisionBand: string | null;
+  primarySubtype: string | null;
+  supportingSubtypes: string[];
+  evidenceStrength: string | null;
+  reviewRecommended: boolean;
+  reviewReasons: string[];
   matchedSignals: string[];
   negativeSignals: string[];
 };
@@ -459,6 +465,10 @@ function readOptionalString(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
+function readOptionalBoolean(value: unknown): boolean {
+  return value === true;
+}
+
 function snapshotFromViolation(violation: RuleViolation | null): CommercialSnapshot {
   if (!violation) {
     return {
@@ -466,6 +476,11 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       score: null,
       confidenceScore: null,
       decisionBand: null,
+      primarySubtype: null,
+      supportingSubtypes: [],
+      evidenceStrength: null,
+      reviewRecommended: false,
+      reviewReasons: [],
       matchedSignals: [],
       negativeSignals: [],
     };
@@ -477,6 +492,11 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     score: Number.isFinite(violation.score) ? violation.score : null,
     confidenceScore: readOptionalNumber(metadata?.confidenceScore),
     decisionBand: readOptionalString(metadata?.decisionBand),
+    primarySubtype: readOptionalString(metadata?.primarySubtype),
+    supportingSubtypes: readStringArray(metadata?.supportingSubtypes),
+    evidenceStrength: readOptionalString(metadata?.evidenceStrength),
+    reviewRecommended: readOptionalBoolean(metadata?.reviewRecommended),
+    reviewReasons: readStringArray(metadata?.reviewReasons),
     matchedSignals: readStringArray(metadata?.matchedSignals),
     negativeSignals: readStringArray(metadata?.negativeSignals),
   };
@@ -493,6 +513,11 @@ function snapshotFromHistorical(
     score: typeof score === 'number' && Number.isFinite(score) ? score : null,
     confidenceScore: readOptionalNumber(normalizedMetadata?.confidenceScore),
     decisionBand: readOptionalString(normalizedMetadata?.decisionBand),
+    primarySubtype: readOptionalString(normalizedMetadata?.primarySubtype),
+    supportingSubtypes: readStringArray(normalizedMetadata?.supportingSubtypes),
+    evidenceStrength: readOptionalString(normalizedMetadata?.evidenceStrength),
+    reviewRecommended: readOptionalBoolean(normalizedMetadata?.reviewRecommended),
+    reviewReasons: readStringArray(normalizedMetadata?.reviewReasons),
     matchedSignals: readStringArray(normalizedMetadata?.matchedSignals),
     negativeSignals: readStringArray(normalizedMetadata?.negativeSignals),
   };
@@ -511,11 +536,39 @@ function deriveCategory(historicalHit: boolean, currentHit: boolean): AuditCateg
   return 'stable_clear';
 }
 
+function mapSubtypeToSegment(subtype: string | null): AuditSegment | null {
+  switch (subtype) {
+    case 'CHANNEL_PLACEMENT':
+    case 'GROUP_PROMOTION':
+      return 'CHANNEL_PLACEMENT';
+    case 'PROPERTY_AGENT':
+      return 'PROPERTY';
+    case 'RECRUITMENT':
+      return 'RECRUITMENT';
+    case 'INFO_PRODUCT':
+      return 'INFO_PRODUCT';
+    case 'GOODS':
+      return 'GOODS';
+    case 'BUYOUT':
+    case 'SERVICES':
+      return 'SERVICES';
+    default:
+      return null;
+  }
+}
+
 function deriveSegment(record: {
   text: string;
+  currentSubtype: string | null;
+  historicalSubtype: string | null;
   currentSignals: readonly string[];
   historicalSignals: readonly string[];
 }): AuditSegment {
+  const subtypeSegment = mapSubtypeToSegment(record.currentSubtype ?? record.historicalSubtype);
+  if (subtypeSegment) {
+    return subtypeSegment;
+  }
+
   const signalText = [...record.currentSignals, ...record.historicalSignals]
     .join(' ')
     .toLowerCase();
@@ -559,6 +612,15 @@ function deriveSegment(record: {
     combined.includes('promo')
   ) {
     return 'SERVICES';
+  }
+
+  if (
+    combined.includes('intent:') ||
+    combined.includes('transaction:') ||
+    combined.includes('contact:') ||
+    combined.includes('group-trade:')
+  ) {
+    return 'GOODS';
   }
 
   return 'OTHER';
@@ -636,6 +698,9 @@ async function main() {
     const categoryCounts = new Map<AuditCategory, number>();
     const segmentCounts = new Map<`${AuditCategory}:${AuditSegment}`, number>();
     const currentSignalCounts = new Map<string, number>();
+    const currentSubtypeCounts = new Map<string, number>();
+    const currentReviewReasonCounts = new Map<string, number>();
+    let currentReviewRecommendedCount = 0;
     const auditedRecords: AuditRecord[] = [];
 
     console.log(
@@ -690,6 +755,8 @@ async function main() {
       const category = deriveCategory(historical.hit, current.hit);
       const segment = deriveSegment({
         text,
+        currentSubtype: current.primarySubtype,
+        historicalSubtype: historical.primarySubtype,
         currentSignals: current.matchedSignals,
         historicalSignals: historical.matchedSignals,
       });
@@ -698,6 +765,15 @@ async function main() {
       pushCount(segmentCounts, `${category}:${segment}`);
       for (const signal of current.matchedSignals) {
         pushCount(currentSignalCounts, signal);
+      }
+      if (current.primarySubtype) {
+        pushCount(currentSubtypeCounts, current.primarySubtype);
+      }
+      if (current.reviewRecommended) {
+        currentReviewRecommendedCount += 1;
+      }
+      for (const reason of current.reviewReasons) {
+        pushCount(currentReviewReasonCounts, reason);
       }
 
       auditedRecords.push({
@@ -764,6 +840,23 @@ async function main() {
         ) || 'none'
       }`,
     );
+    console.log(
+      `current_primary_subtypes=${
+        formatCounts(
+          new Map([...currentSubtypeCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10)),
+        ) || 'none'
+      }`,
+    );
+    console.log(`current_review_recommended=${currentReviewRecommendedCount}`);
+    console.log(
+      `current_review_reasons=${
+        formatCounts(
+          new Map(
+            [...currentReviewReasonCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10),
+          ),
+        ) || 'none'
+      }`,
+    );
 
     const categoriesToPrint: AuditCategory[] = ['historical_only', 'current_only', 'stable_hit'];
     for (const category of categoriesToPrint) {
@@ -793,11 +886,14 @@ async function main() {
         );
         console.log(`  text=${makeExcerpt(record.text)}`);
         console.log(
-          `  historical score=${record.historical.score ?? 'n/a'} signals=${formatSignals(record.historical.matchedSignals)}`,
+          `  historical score=${record.historical.score ?? 'n/a'} subtype=${record.historical.primarySubtype ?? 'n/a'} review=${record.historical.reviewRecommended ? 'yes' : 'no'} signals=${formatSignals(record.historical.matchedSignals)}`,
         );
         console.log(
-          `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
+          `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
         );
+        if (record.current.reviewReasons.length > 0) {
+          console.log(`  current_review_reasons=${formatSignals(record.current.reviewReasons)}`);
+        }
       }
     }
 

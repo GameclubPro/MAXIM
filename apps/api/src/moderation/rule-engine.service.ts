@@ -15,6 +15,16 @@ import { isExactProfanityVariant } from './profanity-lexicon';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
+export type CommercialSubtype =
+  | 'CHANNEL_PLACEMENT'
+  | 'PROPERTY_AGENT'
+  | 'RECRUITMENT'
+  | 'INFO_PRODUCT'
+  | 'BUYOUT'
+  | 'SERVICES'
+  | 'GOODS'
+  | 'GROUP_PROMOTION'
+  | 'GENERIC';
 
 export type RuleViolation = {
   ruleCode: string;
@@ -64,6 +74,11 @@ type CommercialDetection = {
   decisionBand: CommercialDecisionBand;
   matchedSignals: string[];
   negativeSignals: string[];
+  primarySubtype: CommercialSubtype;
+  supportingSubtypes: CommercialSubtype[];
+  evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
+  reviewRecommended: boolean;
+  reviewReasons: string[];
   campaignContext: CommercialCampaignContext | null;
   appliedThresholds: {
     warnThreshold: number;
@@ -78,6 +93,14 @@ type CommercialThresholdProfile = {
   deleteThreshold: number;
   sensitivity: 'BALANCED' | 'STRICT';
   strictness: number;
+};
+
+type CommercialClassification = {
+  primarySubtype: CommercialSubtype;
+  supportingSubtypes: CommercialSubtype[];
+  evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
+  reviewRecommended: boolean;
+  reviewReasons: string[];
 };
 
 type LabeledPattern = {
@@ -974,6 +997,11 @@ export class RuleEngineService {
             decisionBand: commercial.decisionBand,
             matchedSignals: commercial.matchedSignals,
             negativeSignals: commercial.negativeSignals,
+            primarySubtype: commercial.primarySubtype,
+            supportingSubtypes: commercial.supportingSubtypes,
+            evidenceStrength: commercial.evidenceStrength,
+            reviewRecommended: commercial.reviewRecommended,
+            reviewReasons: commercial.reviewReasons,
             ...(commercial.campaignContext ? { campaignContext: commercial.campaignContext } : {}),
             appliedThresholds: commercial.appliedThresholds,
           },
@@ -1940,12 +1968,24 @@ export class RuleEngineService {
         : confidenceScore >= appliedThresholds.warnThreshold
           ? 'MEDIUM'
           : 'LOW';
+    const classification = this.classifyCommercialDetection({
+      state,
+      confidenceScore,
+      decisionBand,
+      appliedThresholds,
+      commercialCampaignContext,
+    });
 
     return {
       confidenceScore,
       decisionBand,
       matchedSignals: state.matchedSignals,
       negativeSignals: state.negativeSignals,
+      primarySubtype: classification.primarySubtype,
+      supportingSubtypes: classification.supportingSubtypes,
+      evidenceStrength: classification.evidenceStrength,
+      reviewRecommended: classification.reviewRecommended,
+      reviewReasons: classification.reviewReasons,
       campaignContext: state.hasCampaignContext ? commercialCampaignContext ?? null : null,
       appliedThresholds,
     };
@@ -1974,6 +2014,152 @@ export class RuleEngineService {
       deleteThreshold,
       sensitivity: strict ? 'STRICT' : 'BALANCED',
       strictness,
+    };
+  }
+
+  private classifyCommercialDetection(params: {
+    state: CommercialSignalState;
+    confidenceScore: number;
+    decisionBand: CommercialDecisionBand;
+    appliedThresholds: CommercialThresholdProfile;
+    commercialCampaignContext?: CommercialCampaignContext | null;
+  }): CommercialClassification {
+    const { state, confidenceScore, decisionBand, appliedThresholds, commercialCampaignContext } =
+      params;
+    const subtypeScores = new Map<CommercialSubtype, number>();
+    const addSubtype = (subtype: CommercialSubtype, score: number) => {
+      subtypeScores.set(subtype, Math.max(score, subtypeScores.get(subtype) ?? 0));
+    };
+
+    if (state.hasGroupPromoContext) {
+      addSubtype('CHANNEL_PLACEMENT', 100);
+    } else if (state.hasCommercialAudienceContext && state.hasGroupPromotionIntent) {
+      addSubtype('CHANNEL_PLACEMENT', 90);
+    }
+
+    if (state.hasPropertyAgentContext) {
+      addSubtype('PROPERTY_AGENT', 100);
+    }
+
+    if (state.hasRecruitmentContext) {
+      addSubtype('RECRUITMENT', 95);
+    }
+
+    if (state.hasInfoProductContext) {
+      addSubtype('INFO_PRODUCT', 88);
+    }
+
+    if (state.hasBuyoutContext) {
+      addSubtype('BUYOUT', 92);
+    }
+
+    if (state.hasServiceContext) {
+      addSubtype('SERVICES', 84);
+    } else if (state.hasServiceOfferContext || state.hasServiceSpecialtyContext) {
+      addSubtype('SERVICES', 74);
+    }
+
+    if (state.hasGroupPromotionIntent && state.hasDealChannel) {
+      addSubtype('GROUP_PROMOTION', state.hasGroupPromoContext ? 82 : 72);
+    }
+
+    if (
+      !state.hasServiceContext &&
+      !state.hasPropertyAgentContext &&
+      !state.hasRecruitmentContext &&
+      !state.hasInfoProductContext &&
+      (state.hasIntent || state.hasPromoContext || state.hasBusinessContext) &&
+      (state.hasPrice || state.hasTransactional || state.hasContact || state.hasDealChannel)
+    ) {
+      addSubtype('GOODS', 68);
+    }
+
+    if (subtypeScores.size === 0) {
+      addSubtype('GENERIC', 30);
+    }
+
+    const rankedSubtypes = [...subtypeScores.entries()]
+      .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+      .map(([subtype, score]) => ({ subtype, score }));
+    const primarySubtype = rankedSubtypes[0]?.subtype ?? 'GENERIC';
+    const supportingSubtypes = rankedSubtypes
+      .filter((entry, index) => index > 0 && entry.score >= rankedSubtypes[0].score - 24)
+      .slice(0, 3)
+      .map((entry) => entry.subtype);
+
+    const hasDirectEvidence =
+      (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
+      (state.hasDealChannel && state.hasContact);
+    const hasCampaignDependentEvidence = Boolean(
+      commercialCampaignContext &&
+        state.hasCampaignContext &&
+        ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
+          (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
+          (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
+            (state.hasContact || state.hasDealChannel || state.hasTransactional))),
+    );
+    const hasStructuredEvidence =
+      (state.hasPropertyAgentContext ||
+        state.hasRecruitmentContext ||
+        state.hasInfoProductContext ||
+        state.hasBuyoutContext ||
+        state.hasServiceContext ||
+        state.hasGroupPromoContext ||
+        state.hasBusinessContext ||
+        state.hasPromoContext) &&
+      (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
+    const evidenceStrength: CommercialClassification['evidenceStrength'] = hasDirectEvidence
+      ? 'DIRECT'
+      : hasCampaignDependentEvidence
+        ? 'CAMPAIGN'
+        : hasStructuredEvidence
+          ? 'STRUCTURED'
+          : 'BORDERLINE';
+    const suppressPropertyAgentReviewNoise =
+      primarySubtype === 'PROPERTY_AGENT' &&
+      confidenceScore >= appliedThresholds.deleteThreshold &&
+      (state.hasPrice || state.hasContact || state.hasTransactional);
+
+    const reviewReasons: string[] = [];
+    if (decisionBand !== 'HIGH') {
+      reviewReasons.push('medium-band');
+    }
+    if (confidenceScore <= appliedThresholds.warnThreshold + 6) {
+      reviewReasons.push('near-threshold');
+    }
+    if (
+      (state.hasStrongNegativeContext || state.negativeSignals.length > 0) &&
+      !suppressPropertyAgentReviewNoise
+    ) {
+      reviewReasons.push('conflicting-negative-signals');
+    }
+    if (hasCampaignDependentEvidence && evidenceStrength === 'CAMPAIGN') {
+      reviewReasons.push('campaign-dependent');
+    }
+    if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
+      reviewReasons.push('generic-subtype');
+    }
+    if (
+      state.hasPrivateSaleContext &&
+      (state.hasServiceContext || state.hasPropertyAgentContext) &&
+      !suppressPropertyAgentReviewNoise
+    ) {
+      reviewReasons.push('private-sale-override');
+    }
+
+    const reviewRecommended =
+      reviewReasons.length > 0 &&
+      (decisionBand !== 'HIGH' ||
+        reviewReasons.includes('campaign-dependent') ||
+        reviewReasons.includes('generic-subtype') ||
+        reviewReasons.includes('conflicting-negative-signals'));
+
+    return {
+      primarySubtype,
+      supportingSubtypes: [...new Set(supportingSubtypes)],
+      evidenceStrength,
+      reviewRecommended,
+      reviewReasons: [...new Set(reviewReasons)],
     };
   }
 

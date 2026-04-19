@@ -1500,6 +1500,8 @@ describe('RuleEngineService', () => {
         'transaction:price',
       ]),
     );
+    expect(violation?.metadata?.primarySubtype).toBe('CHANNEL_PLACEMENT');
+    expect(violation?.metadata?.reviewRecommended).toBe(false);
   });
 
   it('detects broker real-estate ad with commission and showing signals from enabled logs', async () => {
@@ -1520,6 +1522,8 @@ describe('RuleEngineService', () => {
         'property-agent:комиссия-сверху',
       ]),
     );
+    expect(violation?.metadata?.primarySubtype).toBe('PROPERTY_AGENT');
+    expect(violation?.metadata?.reviewRecommended).toBe(false);
   });
 
   it('does not detect owner rental listing from real logs even with repair and phone', async () => {
@@ -1650,6 +1654,11 @@ describe('RuleEngineService', () => {
         'campaign:sender-multi-chat',
         'combo:campaign+self-promo',
       ]),
+    );
+    expect(withCampaign?.metadata?.primarySubtype).toBe('SERVICES');
+    expect(withCampaign?.metadata?.reviewRecommended).toBe(true);
+    expect(withCampaign?.metadata?.reviewReasons).toEqual(
+      expect.arrayContaining(['campaign-dependent']),
     );
   });
 
