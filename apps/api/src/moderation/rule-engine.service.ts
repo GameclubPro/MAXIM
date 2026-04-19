@@ -110,6 +110,7 @@ type CommercialSignalState = {
   hasCallToActionContext: boolean;
   hasCommercialContext: boolean;
   hasPrivateSaleContext: boolean;
+  hasPropertyAgentContext: boolean;
   hasStrongNegativeContext: boolean;
 };
 
@@ -429,10 +430,6 @@ const ADS_BUSINESS_MARKERS = [
   'подписывайтесь',
   'поставщик',
   'производитель',
-  'вайлдберриз',
-  'wildberries',
-  'озон',
-  'ozon',
 ];
 const ADS_BUSINESS_PATTERNS: LabeledPattern[] = [
   {
@@ -561,6 +558,42 @@ const ADS_COMMERCIAL_AUDIENCE_MARKERS = [
   'заказчик',
   'заказчиков',
   'для ваших проектов',
+];
+const ADS_CHANNEL_PLACEMENT_MARKERS = [
+  'каналы на трафике',
+  'перелива нет',
+  'мца',
+  'жца',
+  'сца',
+  'места на завтра',
+  'места на ближайшие дни',
+  'свободные места',
+  'продаю места',
+  'цена за пост',
+  'активная аудитория',
+  'свежая активная аудитория',
+  'рассмотрю вп',
+  'max-tracker',
+] as const;
+const ADS_CHANNEL_PLACEMENT_PATTERNS: LabeledPattern[] = [
+  {
+    label: '1/48',
+    pattern: /(?:^|[^\d])1\s*\/\s*(?:24|48|72)(?=$|[^\d])/u,
+  },
+  {
+    label: 'er24',
+    pattern: /(?:^|[^\p{L}\p{N}_-])er(?:24|48|72)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'просмотры',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])просмотр(?:ы|ов)?(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'цена-за-пост',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:цена\s+за\s+пост|продаю\s+места|места\s+на\s+(?:завтра|ближайшие\s+дни)|отдам\s+по\s+\d+)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_CONTACT_MARKERS = [
   'пишите в лс',
@@ -714,6 +747,54 @@ const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,100})(?:этаж|балкон|лоджи|сануз|ипотек|собственник|жк|дкп|обремен|ремонт)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
+const ADS_PROPERTY_CONTEXT_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'property-jk',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])жк(?:[\p{L}\p{N}\s.,:;()/-]{0,100})(?:квартир[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|к\.?\s*кв\.?|евро\s*\d+\s*к|этаж|м2|м²|цена|ремонт|дкп|обремен|ключ)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'property-apartment-type',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:однушк[\p{L}\p{N}_-]*|двушк[\p{L}\p{N}_-]*|тр[её]шк[\p{L}\p{N}_-]*|евро\s*\d+\s*к|\d+\s*к\.?\s*кв\.?|студи(?:я|и))(?:(?:[\p{L}\p{N}\s.,:;()/-]{0,90})(?:этаж|м2|м²|балкон|жк|ремонт|мебел[\p{L}\p{N}_-]*|техник[\p{L}\p{N}_-]*|дкп|обремен|ипотек|цена|ключ))(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'property-land',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:ижс|днт|снт|з\/у|участок|земельный\s+участок)(?:[\p{L}\p{N}\s.,:;()/-]{0,80})(?:сот|дом|цена|продам|продаю|комисси|тел\.?|телефон|ремонт)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
+const ADS_PROPERTY_AGENT_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'комиссия-сверху',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:ваша|ваши)\s+комисси[\p{L}\p{N}\s.,:;/-]{0,10}сверх(?:у|ом)?(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'комиссия-обсуждается',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])комисси[\p{L}\p{N}\s.,:;/-]{0,14}обсуждаем(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'на-ключах',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:на\s+ключах|квартира\s+на\s+ключах|объект\s+на\s+ключах)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'показ-247',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])показ(?:[\p{L}\p{N}\s.,:;/-]{0,14})(?:24\s*\/\s*7|в\s+любое\s+время)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'прайс-по-запросу',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:прайс|фото|видео|планировк[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;/-]{0,18})по\s+запрос(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'эксклюзив',
+    pattern: /(?:^|[^\p{L}\p{N}_-])эксклюзив(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
 const PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS = new Set([
   'ремонт',
   'сантехник',
@@ -721,6 +802,15 @@ const PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS = new Set([
   'установк',
 ]);
 const PROPERTY_LISTING_NOISE_BUSINESS_MARKERS = new Set(['магазин', 'студия']);
+const ADS_SPECIAL_TOKEN_MATCHERS = new Map<string, RegExp>([
+  ['чат', /^чат(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
+  ['канал', /^канал(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
+  ['клуб', /^клуб(?:ы|а|у|е|ом|ов|ам|ами|ах)?$/u],
+  ['вп', /^вп$/u],
+  ['озон', /^озон$/u],
+  ['ozon', /^ozon$/u],
+  ['wb', /^wb$/u],
+]);
 const ADS_LINK_PATTERN =
   /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|wildberries|wb\.ru|ozon\.ru|market\.yandex)/iu;
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
@@ -1182,7 +1272,10 @@ export class RuleEngineService {
     const hasMarker = (marker: string): boolean => this.hasCommercialMarker(marker, markerContext);
     const matchesPattern = (pattern: RegExp): boolean =>
       this.matchesCommercialPattern(pattern, markerContext);
-    const hasPropertyPrivateContext = ADS_PROPERTY_PRIVATE_PATTERNS.some(({ pattern }) =>
+    const hasPropertyPrivateContext =
+      ADS_PROPERTY_PRIVATE_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      ADS_PROPERTY_CONTEXT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasPropertyAgentContext = ADS_PROPERTY_AGENT_PATTERNS.some(({ pattern }) =>
       matchesPattern(pattern),
     );
 
@@ -1197,7 +1290,8 @@ export class RuleEngineService {
       ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
-      ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
+      ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker)) ||
+      hasPropertyAgentContext;
     const hasIntentContext = ADS_INTENT_MARKERS.some((marker) => hasMarker(marker));
     const hasServiceOfferContext =
       [...ADS_SERVICE_INTENT_MARKERS].some((marker) => hasMarker(marker)) ||
@@ -1220,6 +1314,9 @@ export class RuleEngineService {
     const hasCommercialAudienceContext = ADS_COMMERCIAL_AUDIENCE_MARKERS.some((marker) =>
       hasMarker(marker),
     );
+    const hasChannelPlacementContext =
+      ADS_CHANNEL_PLACEMENT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_CHANNEL_PLACEMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasCallToActionContext = ADS_CALL_TO_ACTION_MARKERS.some((marker) => hasMarker(marker));
     const hasSearchRequestContext =
       ADS_QUESTION_CONTEXT_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -1249,7 +1346,9 @@ export class RuleEngineService {
       hasServiceOfferContext ||
       hasCallToActionContext ||
       hasGroupPromotionIntent ||
-      hasCommercialAudienceContext;
+      hasCommercialAudienceContext ||
+      hasChannelPlacementContext ||
+      hasPropertyAgentContext;
 
     if (hasSearchRequestContext && !hasSelfPromotionalContext) {
       return false;
@@ -1257,9 +1356,16 @@ export class RuleEngineService {
 
     return (
       (hasCommercialContext ||
+        hasChannelPlacementContext ||
         hasServiceCommercialContext ||
         (hasGroupContext && hasDealSignal && hasGroupTradeContext && hasGroupPromotionIntent)) &&
       hasDealSignal &&
+      !(
+        hasPropertyPrivateContext &&
+        !hasPropertyAgentContext &&
+        !hasCommercialAudienceContext &&
+        !hasChannelPlacementContext
+      ) &&
       !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker))
     );
   }
@@ -1274,7 +1380,8 @@ export class RuleEngineService {
       state.hasServiceOfferContext ||
       state.hasCallToActionContext ||
       state.hasGroupPromotionIntent ||
-      state.hasCommercialAudienceContext
+      state.hasCommercialAudienceContext ||
+      state.hasPropertyAgentContext
     );
   }
 
@@ -1299,6 +1406,11 @@ export class RuleEngineService {
     const normalizedMarker = this.normalizeForDetection(marker);
     if (!normalizedMarker) {
       return false;
+    }
+
+    const specialTokenMatcher = ADS_SPECIAL_TOKEN_MATCHERS.get(normalizedMarker);
+    if (specialTokenMatcher) {
+      return context.normalizedTokensWithoutUrls.some((token) => specialTokenMatcher.test(token));
     }
 
     if (/^[\p{L}\p{N}]+$/u.test(normalizedMarker)) {
@@ -1703,7 +1815,15 @@ export class RuleEngineService {
     const hasSelfPromotionalCommercialContext =
       this.hasExplicitSelfPromotionalCommercialContext(state);
 
-    if (state.hasPrivateSaleContext && !hasStructuredCommercialContext) {
+    if (
+      state.hasPrivateSaleContext &&
+      !state.hasPropertyAgentContext &&
+      !state.hasGroupPromoContext &&
+      !state.hasCommercialAudienceContext &&
+      !state.hasRecruitmentContext &&
+      !state.hasBuyoutContext &&
+      !state.hasInfoProductContext
+    ) {
       return null;
     }
 
@@ -1921,6 +2041,7 @@ export class RuleEngineService {
     let hasCallToActionContext = false;
     let hasCommercialContext = false;
     let hasPrivateSaleContext = false;
+    let hasPropertyAgentContext = false;
     let hasStrongNegativeContext = false;
     let hasGroupContext = false;
     let hasGroupTradeContext = false;
@@ -1959,13 +2080,28 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const propertyPrivateHits = ADS_PROPERTY_PRIVATE_PATTERNS.filter(({ pattern }) =>
-      matchesPattern(pattern),
-    );
+    const propertyPrivateHits = [
+      ...ADS_PROPERTY_PRIVATE_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+      ...ADS_PROPERTY_CONTEXT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
     if (propertyPrivateHits.length > 0) {
       addNegative('private:property-sale', 26, true);
       hasPrivateSaleContext = true;
       hasPropertyPrivateContext = true;
+    }
+
+    const propertyAgentHits = ADS_PROPERTY_AGENT_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of propertyAgentHits.slice(0, 3)) {
+      addPositive(`property-agent:${label}`, 18);
+      hasPropertyAgentContext = true;
+      hasBusinessContext = true;
+      hasCommercialContext = true;
     }
 
     const businessHits = [
@@ -2060,6 +2196,23 @@ export class RuleEngineService {
       addPositive(`audience:${marker}`, 12);
       hasCommercialAudienceContext = true;
       hasBusinessContext = true;
+      hasCommercialContext = true;
+    }
+
+    const channelPlacementHits = [
+      ...ADS_CHANNEL_PLACEMENT_MARKERS.filter((marker) => hasMarker(marker)),
+      ...ADS_CHANNEL_PLACEMENT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
+    for (const marker of [...new Set(channelPlacementHits)].slice(0, 4)) {
+      addPositive(`channel-placement:${marker}`, 12);
+      hasGroupContext = true;
+      hasGroupTradeContext = true;
+      hasGroupPromotionIntent = true;
+      hasCommercialAudienceContext = true;
+      hasBusinessContext = true;
+      hasCallToActionContext = true;
       hasCommercialContext = true;
     }
 
@@ -2308,6 +2461,7 @@ export class RuleEngineService {
       hasCallToActionContext,
       hasCommercialContext,
       hasPrivateSaleContext,
+      hasPropertyAgentContext,
       hasStrongNegativeContext,
     };
   }

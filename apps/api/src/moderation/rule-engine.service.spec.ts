@@ -1480,6 +1480,85 @@ describe('RuleEngineService', () => {
     );
   });
 
+  it('detects channel placement ad from enabled 2026 logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      '💥💥💥 Каналы на трафике. Перелива нет. Взрослая МЦА аудитория. 2500р 1/48. При покупке во всех каналах скидка 7700р. Пишите в MAX.',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'channel-placement:каналы на трафике',
+        'channel-placement:1/48',
+        'transaction:price',
+      ]),
+    );
+  });
+
+  it('detects broker real-estate ad with commission and showing signals from enabled logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'ЖК Отражение. Тип квартиры: Евро 2к. Площадь 36 м². Отделка: ремонт мебель техника. Квартира на ключах. Показ 24/7. Ваша комиссия сверху. Цена 6 300 000 ₽. Звоните прямо сейчас: +7-952-523-48-42.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'property-agent:на-ключах',
+        'property-agent:показ-247',
+        'property-agent:комиссия-сверху',
+      ]),
+    );
+  });
+
+  it('does not detect owner rental listing from real logs even with repair and phone', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Сдаётся уютная 2х комнатная квартира в районе Мкк г. Ялуторовска. В квартире хороший ремонт. Имеется застекленный балкон. Вся мебель и техника в наличии. Сдаётся на длительный срок, ответственным арендаторам. +7 900 000 00 00.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeUndefined();
+  });
+
+  it('does not add marketplace ozon signal for ozonation service ads', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Мытье окон, балконов, уборка любых помещений, химчистка ковролина, мягкой мебели, озонирование помещений для избавления от запахов. 89649606739.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).not.toEqual(
+      expect.arrayContaining(['business:озон', 'business:ozon']),
+    );
+  });
+
+  it('does not add club group signal for strawberry promotions from real logs', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Распродажа. Рассада клубники Клери 20 руб за штуку, Азия 20 руб за штуку. В наличии много сортов. Отправка по всей России. Сдек, Яндекс, пятерочка 89002600000.',
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).not.toEqual(
+      expect.arrayContaining(['group:клуб']),
+    );
+  });
+
   it('detects self-promotional craft offer from real logs when contact is in personal messages and phone', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(
