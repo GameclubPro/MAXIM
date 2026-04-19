@@ -1359,14 +1359,15 @@ export class RuleEngineService {
       ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
       ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasInfoProductContext = ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
-    const hasCommercialContext =
-      hasPromoContext ||
+    const hasBusinessContext =
       ADS_BUSINESS_MARKERS.some(
         (marker) =>
           !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
           hasMarker(marker),
-      ) ||
-      ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      ) || ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasCommercialContext =
+      hasPromoContext ||
+      hasBusinessContext ||
       hasBuyoutContext ||
       hasRecruitmentContext ||
       hasInfoProductContext ||
@@ -1435,6 +1436,7 @@ export class RuleEngineService {
       hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
       hasPropertyAgentContext ||
+      hasBusinessContext ||
       hasCommercialAudienceContext ||
       hasChannelPlacementContext ||
       hasBuyoutContext ||
@@ -1935,6 +1937,7 @@ export class RuleEngineService {
       this.hasExplicitSelfPromotionalCommercialContext(state);
     const hasPrivateSaleCommercialOverride =
       state.hasPropertyAgentContext ||
+      state.hasBusinessContext ||
       state.hasGroupPromoContext ||
       state.hasCommercialAudienceContext ||
       state.hasRecruitmentContext ||
