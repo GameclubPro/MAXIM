@@ -1408,9 +1408,7 @@ export class AdminService implements OnModuleDestroy {
       currentChat: ChatSummary | null;
       recentBotAdded: ChatSummary[];
     }> | null = null;
-    const mergeWithLightweightBootstrap = async (
-      items: readonly ChatSummary[],
-    ): Promise<ChatSummary[]> => {
+    const loadLightweightBootstrap = async () => {
       if (lightweightBootstrapPromise === null) {
         lightweightBootstrapPromise = this.loadManagedEntitiesLightweightBootstrap(
           user,
@@ -1418,24 +1416,19 @@ export class AdminService implements OnModuleDestroy {
         );
       }
 
-      return this.mergeManagedEntitiesWithLightweightBootstrap(
-        items,
-        await lightweightBootstrapPromise,
-      );
+      return lightweightBootstrapPromise;
+    };
+    const mergeWithLightweightBootstrap = async (
+      items: readonly ChatSummary[],
+    ): Promise<ChatSummary[]> => {
+      return this.mergeManagedEntitiesWithLightweightBootstrap(items, await loadLightweightBootstrap());
     };
     const mergePublishedSnapshotWithLightweightBootstrap = async (
       items: readonly ChatSummary[],
     ): Promise<ChatSummary[]> => {
-      if (lightweightBootstrapPromise === null) {
-        lightweightBootstrapPromise = this.loadManagedEntitiesLightweightBootstrap(
-          user,
-          entityType,
-        );
-      }
-
       return this.mergeManagedEntitiesPublishedSnapshotWithLightweightBootstrap(
         items,
-        await lightweightBootstrapPromise,
+        await loadLightweightBootstrap(),
       );
     };
 
@@ -1566,23 +1559,35 @@ export class AdminService implements OnModuleDestroy {
       entityType,
     );
     if (publishedSnapshot) {
-      const diffResponse = await this.readManagedEntitiesPublishedDiffResponseForRefresh(
-        user.userId,
-        entityType,
-        options.sinceVersion,
-        publishedSnapshot,
-        refresh,
-        {
-          bypassRemoteCache: options.bypassRemoteCache === true,
-          resetRefreshCursor: options.resetRefreshCursor === true,
-        },
-      );
-      if (diffResponse) {
-        return diffResponse;
+      const bootstrap =
+        options.sinceVersion !== undefined ? await loadLightweightBootstrap() : null;
+      const snapshotIds =
+        bootstrap !== null ? new Set(publishedSnapshot.items.map((item) => item.id)) : null;
+      const hasBootstrapOutsideSnapshot =
+        bootstrap !== null &&
+        ((bootstrap.currentChat !== null && !snapshotIds?.has(bootstrap.currentChat.id)) ||
+          bootstrap.recentBotAdded.some((item) => !snapshotIds?.has(item.id)));
+      if (!hasBootstrapOutsideSnapshot) {
+        const diffResponse = await this.readManagedEntitiesPublishedDiffResponseForRefresh(
+          user.userId,
+          entityType,
+          options.sinceVersion,
+          publishedSnapshot,
+          refresh,
+          {
+            bypassRemoteCache: options.bypassRemoteCache === true,
+            resetRefreshCursor: options.resetRefreshCursor === true,
+          },
+        );
+        if (diffResponse) {
+          return diffResponse;
+        }
       }
 
       const snapshotItems =
-        options.bypassRemoteCache === true || options.resetRefreshCursor === true
+        options.bypassRemoteCache === true ||
+        options.resetRefreshCursor === true ||
+        hasBootstrapOutsideSnapshot
           ? await mergePublishedSnapshotWithLightweightBootstrap(publishedSnapshot.items)
           : publishedSnapshot.items;
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, snapshotItems);
@@ -4125,8 +4130,11 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
-    const rows = await this.loadRecentBotAddedBootstrapRows(normalizedUserId);
-    const safeRows = Array.isArray(rows) ? rows : [];
+    const [rows, cachedRows] = await Promise.all([
+      this.loadRecentBotAddedBootstrapRows(normalizedUserId),
+      this.loadRecentBotAddedBootstrapCacheRows(entityType),
+    ]);
+    const safeRows = [...cachedRows, ...(Array.isArray(rows) ? rows : [])];
 
     const bootstrapped: ChatSummary[] = [];
     const seen = new Set<string>();
@@ -4273,6 +4281,43 @@ export class AdminService implements OnModuleDestroy {
     );
 
     return bootstrapped;
+  }
+
+  private async loadRecentBotAddedBootstrapCacheRows(
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<
+    Array<{
+      chat_id: string | null;
+      chat_title: string | null;
+      is_channel: string | null;
+      user_scoped: boolean;
+    }>
+  > {
+    if (typeof this.chatContextCache.getManagedEntitiesRecentBootstrap !== 'function') {
+      return [];
+    }
+
+    const entityTypes: ManagedEntityType[] =
+      entityType === 'all' ? ['chat', 'channel'] : [entityType];
+    const groups = await Promise.all(
+      entityTypes.map((currentEntityType) =>
+        this.chatContextCache.getManagedEntitiesRecentBootstrap?.(currentEntityType) ??
+        Promise.resolve([]),
+      ),
+    );
+
+    return this.mergeManagedEntityGroups(
+      ...groups.map((group) =>
+        group
+          .filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType))
+          .map((chat) => this.cloneManagedEntitySummary(chat)),
+      ),
+    ).map((chat) => ({
+      chat_id: chat.id,
+      chat_title: chat.title,
+      is_channel: chat.entityType === 'channel' ? 'true' : 'false',
+      user_scoped: false,
+    }));
   }
 
   private scheduleUserScopedRecentBotAddedFastLane(params: {

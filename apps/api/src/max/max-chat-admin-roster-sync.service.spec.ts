@@ -34,6 +34,7 @@ describe('MaxChatAdminRosterSyncService', () => {
       getManagedEntityHeader: jest.fn().mockResolvedValue(null),
       getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(null),
       setManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue(undefined),
+      clearManagedEntitiesRecentBootstrapForChat: jest.fn().mockResolvedValue(undefined),
     };
     const queue = {
       getJob: jest.fn().mockResolvedValue(null),
@@ -171,6 +172,10 @@ describe('MaxChatAdminRosterSyncService', () => {
       'user-3',
       'user_denied',
     );
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
+      '-100123',
+      'chat',
+    );
   });
 
   it('clears stale allowlist rows when no bot keeps admin access', async () => {
@@ -203,6 +208,10 @@ describe('MaxChatAdminRosterSyncService', () => {
     expect(chatContextCache.replaceChatAdminUsers).toHaveBeenCalledWith('-100124', []);
     expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-7', 'bot_denied');
     expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('-100124', 'user-8', 'bot_denied');
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
+      '-100124',
+      null,
+    );
   });
 
   it('retries a fresh webhook bot_added sync while bot admin rights are still propagating', async () => {

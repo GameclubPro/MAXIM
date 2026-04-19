@@ -24,6 +24,7 @@ export type ChatContext = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+type ManagedEntitiesRecentBootstrapSnapshot = ChatSummary[];
 export type ManagedEntitiesPublishedSnapshot = {
   version: string;
   builtAt: string;
@@ -64,6 +65,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly ADMIN_ACCESS_REDIS_READ_TIMEOUT_MS = 100;
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
+  private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS = 20;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly subscriber: Redis;
@@ -186,6 +188,17 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     baseVersion: string,
   ): string {
     return `chat:managed-view-diff:v1:${entityType}:${userId}:${baseVersion}`;
+  }
+
+  static managedEntitiesRecentBootstrapKey(entityType: ManagedEntityType): string {
+    return `chat:managed-recent-bootstrap:v1:${entityType}`;
+  }
+
+  static managedEntitiesRecentBootstrapChatIndexKey(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string {
+    return `chat:managed-recent-bootstrap-index:v1:${entityType}:${chatId}`;
   }
 
   static managedGiveawayRunnerBackoffKey(giveawayId: string): string {
@@ -783,6 +796,112 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  async getManagedEntitiesRecentBootstrap(
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntitiesRecentBootstrapSnapshot> {
+    const raw = await this.redis.get(ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType));
+    if (!raw) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return this.isManagedEntitiesRecentBootstrapSnapshot(parsed) ? parsed : [];
+    } catch (error: unknown) {
+      this.logger.warn(
+        { entityType, err: error instanceof Error ? error.message : String(error) },
+        'Failed to parse managed entities recent bootstrap cache',
+      );
+      return [];
+    }
+  }
+
+  async upsertManagedEntitiesRecentBootstrap(item: ChatSummary, ttlSec: number): Promise<void> {
+    const normalizedChatId = item.id.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const entityType = item.entityType;
+    const current = await this.getManagedEntitiesRecentBootstrap(entityType);
+    const next = [
+      item,
+      ...current.filter((entry) => entry.id.trim() !== normalizedChatId),
+    ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS);
+
+    const indexKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(
+      normalizedChatId,
+      entityType,
+    );
+    await this.redis
+      .multi()
+      .set(
+        ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType),
+        JSON.stringify(next),
+        'EX',
+        ttlSec,
+      )
+      .set(indexKey, '1', 'EX', ttlSec)
+      .exec();
+  }
+
+  async removeManagedEntitiesRecentBootstrap(
+    entityType: ManagedEntityType,
+    chatId: string,
+  ): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const current = await this.getManagedEntitiesRecentBootstrap(entityType);
+    if (current.length === 0 || current.every((entry) => entry.id.trim() !== normalizedChatId)) {
+      return;
+    }
+
+    const next = current.filter((entry) => entry.id.trim() !== normalizedChatId);
+    const key = ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType);
+    const indexKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(
+      normalizedChatId,
+      entityType,
+    );
+
+    const pipeline = this.redis.multi().del(indexKey);
+    if (next.length > 0) {
+      const ttlSec = await this.redis.ttl(key);
+      pipeline.set(key, JSON.stringify(next), 'EX', ttlSec > 0 ? ttlSec : 1);
+    } else {
+      pipeline.del(key);
+    }
+    await pipeline.exec();
+  }
+
+  async clearManagedEntitiesRecentBootstrapForChat(
+    chatId: string,
+    entityType: ManagedEntityType | null,
+  ): Promise<void> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const entityTypes: ManagedEntityType[] =
+      entityType === 'chat' || entityType === 'channel' ? [entityType] : ['chat', 'channel'];
+
+    for (const currentEntityType of entityTypes) {
+      const indexKey = ChatContextCacheService.managedEntitiesRecentBootstrapChatIndexKey(
+        normalizedChatId,
+        currentEntityType,
+      );
+      const exists = await this.redis.exists(indexKey);
+      if (exists === 0) {
+        continue;
+      }
+
+      await this.removeManagedEntitiesRecentBootstrap(currentEntityType, normalizedChatId);
+    }
+  }
+
   async getManagedGiveawayRunnerBackoffRemainingMs(giveawayId: string): Promise<number> {
     const ttlMs = await this.redis.pttl(
       ChatContextCacheService.managedGiveawayRunnerBackoffKey(giveawayId),
@@ -1070,6 +1189,12 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
         );
       })
     );
+  }
+
+  private isManagedEntitiesRecentBootstrapSnapshot(
+    value: unknown,
+  ): value is ManagedEntitiesRecentBootstrapSnapshot {
+    return Array.isArray(value) && value.every((item) => this.isChatSummary(item));
   }
 
   private isManagedEntitiesPublishedSnapshot(

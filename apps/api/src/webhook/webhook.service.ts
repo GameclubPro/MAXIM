@@ -1,7 +1,9 @@
 import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { type ChatSummary } from '@maxim/contracts';
 import { ChatEntityType, Prisma, WebhookStatus } from '@prisma/client';
 import type { MaxUpdate } from '@maxim/contracts';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { MaxClientService, type MaxChatMemberAccess } from '../max/max-client.service';
 import { MaxBotLinkService } from '../max/max-bot-link.service';
 import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
@@ -30,6 +32,7 @@ const BOT_SELF_ACCESS_TIMEOUT_MS = 900;
 const BOT_SELF_ACCESS_SNAPSHOT_MAX_AGE_MS = 15 * 60 * 1_000;
 const EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS = 30 * 1_000;
 const BOT_SELF_ACCESS_FAILURE_METRIC_STATUSES = [403, 404] as const;
+const MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC = 60;
 const MANAGED_ENTITY_ACTIVITY_UPDATE_TYPES = new Set([
   'message_created',
   'message_callback',
@@ -71,6 +74,7 @@ export class WebhookService {
     @Optional() private readonly maxClient?: MaxClientService,
     @Optional()
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
+    @Optional() private readonly chatContextCache?: ChatContextCacheService,
   ) {
     this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
   }
@@ -89,6 +93,7 @@ export class WebhookService {
 
     try {
       await this.persistEvent(update, sourceIp, rawPayload);
+      await this.stageManagedEntityPendingBootstrap(update);
 
       return { accepted: true, duplicate: false };
     } catch (error: unknown) {
@@ -103,6 +108,7 @@ export class WebhookService {
 
         try {
           await this.persistEvent(sanitizedUpdate, sourceIp, sanitizedRawPayload);
+          await this.stageManagedEntityPendingBootstrap(sanitizedUpdate);
           this.logger.warn(
             {
               dedupKey: update.updateId,
@@ -181,6 +187,55 @@ export class WebhookService {
       },
     });
     this.deferBackgroundTask(() => this.persistAdminReadModels(update), 'admin read model refresh', update);
+  }
+
+  private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {
+    if (!this.chatContextCache) {
+      return;
+    }
+
+    const normalizedType = update.type.trim().toLowerCase();
+    if (normalizedType !== 'bot_added') {
+      return;
+    }
+
+    const chatId = update.message?.chatId?.trim() ?? '';
+    const entityType = this.readWebhookChatEntityType(update);
+    if (!chatId || !entityType) {
+      return;
+    }
+
+    const title =
+      update.message?.chatTitle?.trim() ||
+      (entityType === ChatEntityType.CHANNEL ? `Channel ${chatId}` : `Chat ${chatId}`);
+    const createdAtIso = update.message?.createdAt?.trim() || new Date().toISOString();
+    const summary: ChatSummary = {
+      id: chatId,
+      title,
+      createdAt: createdAtIso,
+      entityType: entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
+      link: null,
+      primaryBotId: update.botId?.trim() || null,
+      assignedBots: [],
+      sharedMode: 'owned',
+      channelOverview: null,
+    };
+
+    try {
+      await this.chatContextCache.upsertManagedEntitiesRecentBootstrap(
+        summary,
+        MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          updateId: update.updateId,
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to stage managed entity pending bootstrap from bot_added webhook',
+      );
+    }
   }
 
   private deferBackgroundTask(

@@ -825,6 +825,7 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
   const lastSyncedAtByScope = new Map<string, string | null>();
   const publishedSnapshotByScope = new Map<string, unknown | null>();
   const publishedDiffByScope = new Map<string, unknown | null>();
+  const recentBootstrapByEntityType = new Map<string, unknown[] | null>();
   const buildScopeKey = (userId: string, entityType: string) => `${userId}:${entityType}`;
   const buildDiffScopeKey = (userId: string, entityType: string, baseVersion: string) =>
     `${userId}:${entityType}:${baseVersion}`;
@@ -914,6 +915,33 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
           publishedDiffByScope.set(buildDiffScopeKey(userId, entityType, baseVersion), diff);
         },
       ),
+    getManagedEntitiesRecentBootstrap: jest
+      .fn()
+      .mockImplementation(
+        async (entityType: string) => recentBootstrapByEntityType.get(entityType) ?? [],
+      ),
+    upsertManagedEntitiesRecentBootstrap: jest
+      .fn()
+      .mockImplementation(async (item: ChatSummary) => {
+        const entityType = item.entityType;
+        const current = (recentBootstrapByEntityType.get(entityType) ?? []) as ChatSummary[];
+        recentBootstrapByEntityType.set(
+          entityType,
+          [item, ...current.filter((entry) => entry.id !== item.id)].slice(0, 20),
+        );
+      }),
+    clearManagedEntitiesRecentBootstrapForChat: jest
+      .fn()
+      .mockImplementation(async (chatId: string, entityType: string | null) => {
+        const entityTypes = entityType ? [entityType] : ['chat', 'channel'];
+        for (const currentEntityType of entityTypes) {
+          const current = (recentBootstrapByEntityType.get(currentEntityType) ?? []) as ChatSummary[];
+          recentBootstrapByEntityType.set(
+            currentEntityType,
+            current.filter((entry) => entry.id !== chatId),
+          );
+        }
+      }),
     ...overrides,
   };
 }
@@ -8325,6 +8353,120 @@ describe('AdminService.listChats', () => {
     });
   });
 
+  it('returns a full merged refresh response when lightweight bootstrap finds a chat outside the published snapshot', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v2',
+        builtAt: '2026-04-04T10:05:00.000Z',
+        lastSyncedAt: '2026-04-04T10:04:30.000Z',
+        itemCount: 1,
+        itemsHash: 'hash-v2',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Старый чат',
+            createdAt: '2026-04-04T10:00:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+      getManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue([
+        createChatSummaryFixture({
+          id: 'chat-2',
+          title: 'Новый чат',
+          createdAt: '2026-04-04T10:04:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+      ]),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+    const refreshState = {
+      complete: false,
+      cursor: 8,
+      backoffActive: false,
+      userVisibleComplete: true,
+      nextPollAfterMs: 1500,
+      processedCandidates: 8,
+      totalCandidates: 20,
+      progressPercent: 40,
+      lastSyncedAt: null,
+      manualRefreshBlockedReason: null,
+      manualRefreshRetryAfterMs: null,
+    };
+    jest
+      .spyOn(service as any, 'scheduleManagedEntitiesRemoteFullRefresh')
+      .mockResolvedValue(refreshState);
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: where.id === 'chat-2' ? 'Новый чат' : 'Старый чат',
+      entityType: 'CHAT',
+    }));
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt:
+          where.id === 'chat-2'
+            ? new Date('2026-04-04T10:04:00.000Z')
+            : new Date('2026-04-04T10:00:00.000Z'),
+      }),
+    );
+
+    const result = await service.listChatsWithRefreshState(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        refresh: true,
+        sinceVersion: 'snapshot-v1',
+      },
+    );
+
+    expect(result).toEqual({
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-2',
+          title: 'Новый чат',
+          createdAt: '2026-04-04T10:04:00.000Z',
+          entityType: 'chat',
+        }),
+      ],
+      refresh: refreshState,
+      snapshot: {
+        version: 'snapshot-v2',
+        builtAt: '2026-04-04T10:05:00.000Z',
+        lastSyncedAt: '2026-04-04T10:04:30.000Z',
+        source: 'published_snapshot',
+        stale: true,
+      },
+    });
+    expect(chatContextCache.getManagedEntitiesPublishedDiff).not.toHaveBeenCalled();
+  });
+
   it('rebuilds the published snapshot from allowlist data when no full refresh is in progress', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -8811,6 +8953,71 @@ describe('AdminService.listChats', () => {
         },
       }),
     );
+  });
+
+  it('bootstraps recent bot_added chats from the inline recent bootstrap cache before webhook read models persist', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: 'Новый чат',
+      entityType: 'CHAT',
+    }));
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt: new Date('2026-04-03T10:00:00.000Z'),
+      }),
+    );
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock({
+        getManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue([
+          createChatSummaryFixture({
+            id: 'chat-2',
+            title: 'Новый чат',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ]),
+      }) as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Новый чат',
+        createdAt: '2026-04-03T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
   });
 
   it('scans recent bot_added chats globally in addition to user-scoped candidates', async () => {

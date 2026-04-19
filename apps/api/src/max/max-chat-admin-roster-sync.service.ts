@@ -508,6 +508,10 @@ export class MaxChatAdminRosterSyncService {
       userIdsToUpsert: normalizedAdminUserIds,
       userIdsToRemove: usersToRemove,
     });
+    await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(
+      chatId,
+      job.entityType ?? null,
+    );
   }
 
   private async clearAllowlist(
@@ -555,6 +559,7 @@ export class MaxChatAdminRosterSyncService {
       userIdsToUpsert: [],
       userIdsToRemove: existingUserIds,
     });
+    await this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null);
   }
 
   private shouldRetryPendingAdminGrant(job: MaxChatAdminRosterSyncJob): boolean {

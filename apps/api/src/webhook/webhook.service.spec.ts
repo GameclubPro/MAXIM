@@ -973,6 +973,65 @@ describe('WebhookService', () => {
     });
   });
 
+  it('stages bot_added chats in the inline recent bootstrap cache before deferred read-model writes finish', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest.fn().mockResolvedValue({ id: 'evt-7-cache' }),
+        updateMany: jest.fn(),
+      },
+    };
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+    const chatContextCache = {
+      upsertManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new WebhookService(
+      prisma as never,
+      config as never,
+      maxBotLinkService as never,
+      undefined,
+      undefined,
+      undefined,
+      chatContextCache as never,
+    );
+
+    await expect(
+      service.ingest(
+        {
+          updateId: 'u-bot-added-cache-1',
+          type: 'bot_added',
+          botId: 'id613002203036_bot',
+          message: {
+            messageId: 'bot_added:u-bot-added-cache-1',
+            chatId: '-100128',
+            chatTitle: 'Кэшируемый чат',
+            entityType: 'channel',
+            senderId: 'id613002203036_bot',
+            text: '',
+            createdAt: new Date('2026-04-03T12:02:00.000Z').toISOString(),
+          },
+        },
+        '127.0.0.1',
+      ),
+    ).resolves.toEqual({ accepted: true, duplicate: false });
+
+    expect(chatContextCache.upsertManagedEntitiesRecentBootstrap).toHaveBeenCalledWith(
+      {
+        id: '-100128',
+        title: 'Кэшируемый чат',
+        createdAt: new Date('2026-04-03T12:02:00.000Z').toISOString(),
+        entityType: 'channel',
+        link: null,
+        primaryBotId: 'id613002203036_bot',
+        assignedBots: [],
+        sharedMode: 'owned',
+        channelOverview: null,
+      },
+      60,
+    );
+  });
+
   it('enqueues chat admin roster sync for bot membership churn updates', async () => {
     const prisma = {
       webhookEvent: {

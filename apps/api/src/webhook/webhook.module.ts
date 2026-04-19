@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { SystemModule } from '../system/system.module';
 import { WebhookController } from './webhook.controller';
@@ -13,6 +14,7 @@ import { WebhookService } from './webhook.service';
 @Module({
   imports: [
     BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
+    ChatContextModule,
     MaxModule,
     SystemModule,
   ],
