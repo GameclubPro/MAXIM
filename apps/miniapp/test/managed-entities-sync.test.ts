@@ -3,8 +3,10 @@ import test from 'node:test';
 import type { ChatSummary, ManagedEntitiesRefreshState } from '@maxim/contracts';
 import {
   applyManagedEntitiesResponseDiff,
+  isManagedEntitiesUserVisibleComplete,
   mergeManagedEntitiesRefreshItems,
   readManagedEntitiesLocalCacheUserScopeFromInitData,
+  resolveManagedEntitiesSettledPhase,
   resolveManagedEntitiesRefreshRequestOptions,
   resolveManagedEntitiesScopeTransitionState,
   shouldStartManagedEntitiesBackgroundRefresh,
@@ -237,6 +239,42 @@ test('switches the visible list when refresh returns a new snapshot version', ()
       nextSnapshotVersion: 'snapshot-v2',
     }).map((item) => item.id),
     ['2', '3'],
+  );
+});
+
+test('treats a user-visible refresh state as settled for home screens', () => {
+  const refreshState = createRefreshState({
+    userVisibleComplete: true,
+  });
+
+  assert.equal(isManagedEntitiesUserVisibleComplete(refreshState), true);
+  assert.equal(
+    resolveManagedEntitiesSettledPhase(refreshState, {
+      treatUserVisibleCompleteAsSettled: true,
+    }),
+    'complete',
+  );
+  assert.equal(
+    resolveManagedEntitiesSettledPhase(refreshState, {
+      treatUserVisibleCompleteAsSettled: false,
+    }),
+    'idle',
+  );
+});
+
+test('still treats a fully completed refresh as settled everywhere', () => {
+  const refreshState = createRefreshState({
+    complete: true,
+    cursor: -1,
+    nextPollAfterMs: 0,
+  });
+
+  assert.equal(isManagedEntitiesUserVisibleComplete(refreshState), true);
+  assert.equal(
+    resolveManagedEntitiesSettledPhase(refreshState, {
+      treatUserVisibleCompleteAsSettled: false,
+    }),
+    'complete',
   );
 });
 

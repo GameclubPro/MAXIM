@@ -1139,9 +1139,16 @@ export class AdminService implements OnModuleDestroy {
       ...options,
       includeRefreshState: true,
     });
+    const refresh = this.attachManagedEntitiesUserVisibleRefreshState(
+      result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+      {
+        items: result.items,
+        diff: result.diff,
+      },
+    );
     const response: ManagedEntitiesListResponse = {
       items: result.items,
-      refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+      refresh,
     };
     if (result.snapshot) {
       response.snapshot = result.snapshot;
@@ -1160,9 +1167,16 @@ export class AdminService implements OnModuleDestroy {
       ...options,
       includeRefreshState: true,
     });
+    const refresh = this.attachManagedEntitiesUserVisibleRefreshState(
+      result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+      {
+        items: result.items,
+        diff: result.diff,
+      },
+    );
     const response: ManagedEntitiesListResponse = {
       items: result.items,
-      refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+      refresh,
     };
     if (result.snapshot) {
       response.snapshot = result.snapshot;
@@ -1180,6 +1194,25 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, entityType, options);
     return result.items;
+  }
+
+  private attachManagedEntitiesUserVisibleRefreshState(
+    refresh: ManagedEntitiesRefreshState,
+    options: {
+      items: readonly ChatSummary[];
+      diff?: ManagedEntitiesResponseDiff | null;
+    },
+  ): ManagedEntitiesRefreshState {
+    const userVisibleComplete =
+      refresh.complete === true || options.items.length > 0 || options.diff != null;
+    if (refresh.userVisibleComplete === userVisibleComplete) {
+      return refresh;
+    }
+
+    return {
+      ...refresh,
+      userVisibleComplete,
+    };
   }
 
   async getChatHeader(

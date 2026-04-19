@@ -142,7 +142,7 @@ export function LaunchContextSection({
       launchContextEntitiesState &&
       (!launchContextEntitiesState.hasLoadedFromServer ||
         launchContextEntitiesState.isRefreshing ||
-        (!launchContextEntitiesState.isSyncComplete &&
+        (!launchContextEntitiesState.isUserVisibleComplete &&
           !launchContextEntitiesState.isBackoffActive)),
     );
   const launchContextNoun =

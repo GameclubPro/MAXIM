@@ -815,6 +815,7 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
       complete: true,
       cursor: -1,
       backoffActive: false,
+      userVisibleComplete: true,
       nextPollAfterMs: 0,
       processedCandidates: items.length,
       totalCandidates: items.length,

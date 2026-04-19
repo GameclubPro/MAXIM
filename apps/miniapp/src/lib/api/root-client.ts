@@ -320,6 +320,7 @@ function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListRe
       complete: refresh.complete,
       cursor: refresh.cursor,
       backoffActive: refresh.backoffActive,
+      userVisibleComplete: refresh.userVisibleComplete === true,
       nextPollAfterMs: refresh.nextPollAfterMs ?? 1500,
       processedCandidates:
         typeof refresh.processedCandidates === 'number' &&

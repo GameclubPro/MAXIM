@@ -108,8 +108,9 @@ function buildRefreshStatusLabel(options: {
   refreshState: ManagedEntitiesRefreshState | null;
   isRefreshing: boolean;
   hasLoadedFromServer: boolean;
+  isUserVisibleComplete: boolean;
 }): string | null {
-  const { refreshState, isRefreshing, hasLoadedFromServer } = options;
+  const { refreshState, isRefreshing, hasLoadedFromServer, isUserVisibleComplete } = options;
   const progress = formatRefreshProgress(refreshState);
 
   if (!hasLoadedFromServer) {
@@ -128,6 +129,10 @@ function buildRefreshStatusLabel(options: {
   if (refreshState?.complete) {
     const syncedAt = formatRefreshTime(refreshState.lastSyncedAt);
     return syncedAt ? `Обновлено в ${syncedAt}.` : 'Список синхронизирован.';
+  }
+  if (isUserVisibleComplete) {
+    const syncedAt = formatRefreshTime(refreshState?.lastSyncedAt);
+    return syncedAt ? `Список готов. Последний полный синк в ${syncedAt}.` : 'Список готов.';
   }
 
   return progress ? `Синк: ${progress}.` : null;
@@ -183,6 +188,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
+    treatUserVisibleCompleteAsSettled: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -196,6 +202,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
+    treatUserVisibleCompleteAsSettled: true,
   });
 
   const activeEntities = useMemo(() => {
@@ -213,20 +220,24 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     refreshState.manualRefreshRetryAfterMs > 0
       ? Math.max(1, Math.ceil(refreshState.manualRefreshRetryAfterMs / 1_000))
       : null;
-  const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
+  const isSyncSettled =
+    activeEntitiesState.isUserVisibleComplete || activeEntitiesState.isBackoffActive;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
   const isRefreshTemporarilyBlocked =
     manualRefreshBlockedReason === 'backoff' && (manualRefreshRetryAfterSec ?? 0) > 0;
   const isManualRefreshCoolingDown =
     manualRefreshBlockedReason === 'recent_sync' && (manualRefreshRetryAfterSec ?? 0) > 0;
   const isManualRefreshInProgressByState =
-    manualRefreshBlockedReason === 'in_progress' && !activeEntitiesState.isRefreshing;
+    manualRefreshBlockedReason === 'in_progress' &&
+    !activeEntitiesState.isRefreshing &&
+    !activeEntitiesState.isUserVisibleComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
   const refreshStatusLabel = buildRefreshStatusLabel({
     refreshState,
     isRefreshing: isFetching,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+    isUserVisibleComplete: activeEntitiesState.isUserVisibleComplete,
   });
 
   const isNoEntitiesForTab =
@@ -271,7 +282,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const settledRefreshMarker = useMemo(() => buildManagedEntitiesSettledMarker({
     scopeKey: activeTab,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-    isSyncComplete: activeEntitiesState.isSyncComplete,
+    isSyncComplete: activeEntitiesState.isUserVisibleComplete,
     isBackoffActive: activeEntitiesState.isBackoffActive,
     snapshotVersion: activeEntitiesState.snapshot?.version,
     snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
@@ -279,7 +290,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }), [
     activeEntitiesState.hasLoadedFromServer,
     activeEntitiesState.isBackoffActive,
-    activeEntitiesState.isSyncComplete,
+    activeEntitiesState.isUserVisibleComplete,
     activeEntitiesState.refreshState?.lastSyncedAt,
     activeEntitiesState.snapshot?.builtAt,
     activeEntitiesState.snapshot?.version,
@@ -290,7 +301,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     isLoading: activeEntitiesState.isLoading,
     isRefreshing: activeEntitiesState.isRefreshing,
-    isSyncComplete: activeEntitiesState.isSyncComplete,
+    isSyncComplete: activeEntitiesState.isUserVisibleComplete,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     settledMarker: settledRefreshMarker,
     minIntervalMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,

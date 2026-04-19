@@ -18,6 +18,7 @@ const MANAGED_ENTITIES_LOCAL_COMPLETE_STATE: ManagedEntitiesRefreshState = {
   complete: true,
   cursor: -1,
   backoffActive: false,
+  userVisibleComplete: true,
   nextPollAfterMs: 0,
   processedCandidates: null,
   totalCandidates: null,
@@ -109,6 +110,7 @@ export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
   isLoading: boolean;
   isRefreshing: boolean;
   isSyncComplete: boolean;
+  isUserVisibleComplete: boolean;
   isBackoffActive: boolean;
 };
 
@@ -116,6 +118,29 @@ function delay(ms: number) {
   return new Promise<void>((resolve) => {
     window.setTimeout(resolve, ms);
   });
+}
+
+export function isManagedEntitiesUserVisibleComplete(
+  refreshState: ManagedEntitiesRefreshState | null | undefined,
+): boolean {
+  return refreshState?.complete === true || refreshState?.userVisibleComplete === true;
+}
+
+export function resolveManagedEntitiesSettledPhase(
+  refreshState: ManagedEntitiesRefreshState | null | undefined,
+  options: {
+    treatUserVisibleCompleteAsSettled: boolean;
+  },
+): ManagedEntitiesSyncPhase {
+  const settled =
+    refreshState?.complete === true ||
+    (options.treatUserVisibleCompleteAsSettled &&
+      isManagedEntitiesUserVisibleComplete(refreshState));
+  if (settled) {
+    return 'complete';
+  }
+
+  return refreshState?.backoffActive ? 'backoff' : 'idle';
 }
 
 function normalizeError(error: unknown): Error {
@@ -590,6 +615,7 @@ export function useManagedEntitiesSync({
   localCacheScope = 'default',
   preserveVisibleDataOnEmptyComplete = false,
   keepVisibleOnSameSnapshotVersion = false,
+  treatUserVisibleCompleteAsSettled = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
@@ -607,6 +633,7 @@ export function useManagedEntitiesSync({
   localCacheScope?: string;
   preserveVisibleDataOnEmptyComplete?: boolean;
   keepVisibleOnSameSnapshotVersion?: boolean;
+  treatUserVisibleCompleteAsSettled?: boolean;
 }): ManagedEntitiesSyncResult {
   const queryClient = useQueryClient();
   const [ephemeralCacheScope] = useState(() => `s:${Math.random().toString(36).slice(2, 10)}`);
@@ -706,7 +733,10 @@ export function useManagedEntitiesSync({
       state.error === null &&
       dataToPersist !== null &&
       state.hasLoadedFromServer &&
-      (state.refreshState === null || state.refreshState.complete === true);
+      (state.refreshState === null ||
+        state.refreshState.complete === true ||
+        (treatUserVisibleCompleteAsSettled &&
+          isManagedEntitiesUserVisibleComplete(state.refreshState)));
     if (!persistLocalCache || effectiveLocalCacheScope === null || !shouldPersistServerState) {
       return;
     }
@@ -726,6 +756,7 @@ export function useManagedEntitiesSync({
     state.hasLoadedFromServer,
     state.refreshState,
     state.snapshot,
+    treatUserVisibleCompleteAsSettled,
   ]);
 
   useEffect(() => {
@@ -751,7 +782,11 @@ export function useManagedEntitiesSync({
       if ((state.phase !== 'idle' && state.phase !== 'backoff') || state.data === null) {
         return;
       }
-      if (state.refreshState?.complete) {
+      if (
+        state.refreshState?.complete ||
+        (treatUserVisibleCompleteAsSettled &&
+          isManagedEntitiesUserVisibleComplete(state.refreshState))
+      ) {
         return;
       }
       if (
@@ -776,7 +811,9 @@ export function useManagedEntitiesSync({
     state.phase,
     state.refreshState?.backoffActive,
     state.refreshState?.complete,
+    state.refreshState?.userVisibleComplete,
     state.refreshState?.nextPollAfterMs,
+    treatUserVisibleCompleteAsSettled,
   ]);
 
   useEffect(() => {
@@ -818,11 +855,9 @@ export function useManagedEntitiesSync({
       setState((current) => ({
         ...current,
         error: null,
-        phase: current.refreshState?.complete
-          ? 'complete'
-          : current.refreshState?.backoffActive
-            ? 'backoff'
-            : 'idle',
+        phase: resolveManagedEntitiesSettledPhase(current.refreshState, {
+          treatUserVisibleCompleteAsSettled,
+        }),
       }));
       return;
     }
@@ -925,11 +960,9 @@ export function useManagedEntitiesSync({
           ) {
             setState((current) => ({
               ...current,
-              phase: current.refreshState?.complete
-                ? 'complete'
-                : current.refreshState?.backoffActive
-                  ? 'backoff'
-                  : 'idle',
+              phase: resolveManagedEntitiesSettledPhase(current.refreshState, {
+                treatUserVisibleCompleteAsSettled,
+              }),
             }));
             return;
           }
@@ -979,7 +1012,10 @@ export function useManagedEntitiesSync({
           );
           latestDataRef.current = nextData;
           latestSnapshotRef.current = resolvedSnapshot;
-          const phase = next.refresh.complete
+          const userVisibleSettled =
+            treatUserVisibleCompleteAsSettled &&
+            isManagedEntitiesUserVisibleComplete(next.refresh);
+          const phase = next.refresh.complete || userVisibleSettled
             ? 'complete'
             : next.refresh.backoffActive
               ? 'backoff'
@@ -993,7 +1029,7 @@ export function useManagedEntitiesSync({
             hasLoadedFromServer: true,
           });
 
-          if (next.refresh.complete || next.refresh.backoffActive) {
+          if (next.refresh.complete || userVisibleSettled || next.refresh.backoffActive) {
             return;
           }
 
@@ -1010,11 +1046,9 @@ export function useManagedEntitiesSync({
           ...current,
           error: hasData ? null : normalizedError,
           phase: hasData
-            ? current.refreshState?.complete
-              ? 'complete'
-              : current.refreshState?.backoffActive
-                ? 'backoff'
-                : 'idle'
+            ? resolveManagedEntitiesSettledPhase(current.refreshState, {
+                treatUserVisibleCompleteAsSettled,
+              })
             : 'error',
         }));
       }
@@ -1038,6 +1072,7 @@ export function useManagedEntitiesSync({
     skipInitialSyncIfCached,
     syncOnFirstLoad,
     keepVisibleOnSameSnapshotVersion,
+    treatUserVisibleCompleteAsSettled,
     visibilityResumeNonce,
     effectiveStateCacheScope,
   ]);
@@ -1047,6 +1082,7 @@ export function useManagedEntitiesSync({
     isLoading: state.phase === 'loading' && state.data === null,
     isRefreshing: state.phase === 'syncing',
     isSyncComplete: state.refreshState?.complete === true,
+    isUserVisibleComplete: isManagedEntitiesUserVisibleComplete(state.refreshState),
     isBackoffActive: state.refreshState?.backoffActive === true,
     hasLoadedFromServer: state.hasLoadedFromServer,
   };
