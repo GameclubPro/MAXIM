@@ -76,6 +76,10 @@ type CommercialSnapshot = {
   primarySubtype: string | null;
   supportingSubtypes: string[];
   evidenceStrength: string | null;
+  classifierVersion: string | null;
+  commercialProbability: number | null;
+  reviewProbability: number | null;
+  classifierReasons: string[];
   reviewRecommended: boolean;
   reviewReasons: string[];
   matchedSignals: string[];
@@ -479,6 +483,10 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
       primarySubtype: null,
       supportingSubtypes: [],
       evidenceStrength: null,
+      classifierVersion: null,
+      commercialProbability: null,
+      reviewProbability: null,
+      classifierReasons: [],
       reviewRecommended: false,
       reviewReasons: [],
       matchedSignals: [],
@@ -495,6 +503,10 @@ function snapshotFromViolation(violation: RuleViolation | null): CommercialSnaps
     primarySubtype: readOptionalString(metadata?.primarySubtype),
     supportingSubtypes: readStringArray(metadata?.supportingSubtypes),
     evidenceStrength: readOptionalString(metadata?.evidenceStrength),
+    classifierVersion: readOptionalString(metadata?.classifierVersion),
+    commercialProbability: readOptionalNumber(metadata?.commercialProbability),
+    reviewProbability: readOptionalNumber(metadata?.reviewProbability),
+    classifierReasons: readStringArray(metadata?.classifierReasons),
     reviewRecommended: readOptionalBoolean(metadata?.reviewRecommended),
     reviewReasons: readStringArray(metadata?.reviewReasons),
     matchedSignals: readStringArray(metadata?.matchedSignals),
@@ -516,6 +528,10 @@ function snapshotFromHistorical(
     primarySubtype: readOptionalString(normalizedMetadata?.primarySubtype),
     supportingSubtypes: readStringArray(normalizedMetadata?.supportingSubtypes),
     evidenceStrength: readOptionalString(normalizedMetadata?.evidenceStrength),
+    classifierVersion: readOptionalString(normalizedMetadata?.classifierVersion),
+    commercialProbability: readOptionalNumber(normalizedMetadata?.commercialProbability),
+    reviewProbability: readOptionalNumber(normalizedMetadata?.reviewProbability),
+    classifierReasons: readStringArray(normalizedMetadata?.classifierReasons),
     reviewRecommended: readOptionalBoolean(normalizedMetadata?.reviewRecommended),
     reviewReasons: readStringArray(normalizedMetadata?.reviewReasons),
     matchedSignals: readStringArray(normalizedMetadata?.matchedSignals),
@@ -702,6 +718,8 @@ async function main() {
     const currentSignalCounts = new Map<string, number>();
     const currentSubtypeCounts = new Map<string, number>();
     const currentReviewReasonCounts = new Map<string, number>();
+    const currentClassifierReasonCounts = new Map<string, number>();
+    const currentClassifierVersionCounts = new Map<string, number>();
     let currentReviewRecommendedCount = 0;
     const auditedRecords: AuditRecord[] = [];
 
@@ -771,11 +789,17 @@ async function main() {
       if (current.primarySubtype) {
         pushCount(currentSubtypeCounts, current.primarySubtype);
       }
+      if (current.classifierVersion) {
+        pushCount(currentClassifierVersionCounts, current.classifierVersion);
+      }
       if (current.reviewRecommended) {
         currentReviewRecommendedCount += 1;
       }
       for (const reason of current.reviewReasons) {
         pushCount(currentReviewReasonCounts, reason);
+      }
+      for (const reason of current.classifierReasons) {
+        pushCount(currentClassifierReasonCounts, reason);
       }
 
       auditedRecords.push({
@@ -849,12 +873,30 @@ async function main() {
         ) || 'none'
       }`,
     );
+    console.log(
+      `current_classifier_versions=${
+        formatCounts(
+          new Map(
+            [...currentClassifierVersionCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5),
+          ),
+        ) || 'none'
+      }`,
+    );
     console.log(`current_review_recommended=${currentReviewRecommendedCount}`);
     console.log(
       `current_review_reasons=${
         formatCounts(
           new Map(
             [...currentReviewReasonCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10),
+          ),
+        ) || 'none'
+      }`,
+    );
+    console.log(
+      `current_classifier_reasons=${
+        formatCounts(
+          new Map(
+            [...currentClassifierReasonCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10),
           ),
         ) || 'none'
       }`,
@@ -893,6 +935,11 @@ async function main() {
         console.log(
           `  current confidence=${record.current.confidenceScore ?? 'n/a'} band=${record.current.decisionBand ?? 'n/a'} subtype=${record.current.primarySubtype ?? 'n/a'} review=${record.current.reviewRecommended ? 'yes' : 'no'} evidence=${record.current.evidenceStrength ?? 'n/a'} signals=${formatSignals(record.current.matchedSignals)}`,
         );
+        if (record.current.classifierVersion) {
+          console.log(
+            `  classifier version=${record.current.classifierVersion} commercial=${record.current.commercialProbability ?? 'n/a'} review=${record.current.reviewProbability ?? 'n/a'} reasons=${formatSignals(record.current.classifierReasons)}`,
+          );
+        }
         if (record.current.reviewReasons.length > 0) {
           console.log(`  current_review_reasons=${formatSignals(record.current.reviewReasons)}`);
         }

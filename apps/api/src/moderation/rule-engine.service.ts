@@ -954,6 +954,15 @@ const ADS_LINK_PATTERN =
 const ADS_MARKETPLACE_LINK_PATTERN = /(avito|youla)/iu;
 const ADS_PRICE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PRICE_CAPTURE_GLOBAL_PATTERN = /\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
+const ADS_MULTI_SKU_PRICE_LINE_PATTERN =
+  /(?:^|[,.;\n])\s*(?:[^\s][\p{L}\p{N}\s()/"'#+-]{0,36})?(?:на\s+\d{1,2}(?:[.,]\d)?)?\s*[-:–]\s*\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu;
+const ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:на\s+\d{1,2}(?:[.,]\d)?|размер(?:ы)?\s*\d{1,2}(?:\s*[/,-]\s*\d{1,2})*|\d{1,2}\s*дюйм(?:а|ов)?|цвет(?:а)?\s+на\s+выбор)(?=$|[^\p{L}\p{N}_-])/giu;
+const ADS_GOODS_FRESH_STOCK_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:в\s+продаже|нов(?:ый|ые|ая|ое)|поступлени[\p{L}\p{N}_-]*|остатк[\p{L}\p{N}_-]*|по\s+наличию)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PERSONAL_RESALE_STRONG_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])(?:б\/у|бу|в\s+отличном\s+состоянии|в\s+хорошем\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|после\s+одного\s+(?:ребенка|ребёнка|сезона)|носил[аи]?|одевал[аи]?|надевал[аи]?|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_TRANSACTIONAL_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_PROPERTY_UTILITY_PAYMENT_PATTERN =
@@ -2286,10 +2295,23 @@ export class RuleEngineService {
         state.hasBusinessContext ||
         state.hasPromoContext) &&
       (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
-    const priceMatchCount =
-      rawLoweredText.match(/\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu)?.length ?? 0;
+    const priceMatchCount = this.countPatternMatches(
+      rawLoweredText,
+      ADS_PRICE_CAPTURE_GLOBAL_PATTERN,
+    );
     const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
+    const multiSkuPriceLineCount = this.countPatternMatches(
+      rawLoweredText,
+      ADS_MULTI_SKU_PRICE_LINE_PATTERN,
+      6,
+    );
+    const goodsVariantMarkerCount = this.countPatternMatches(
+      rawLoweredText,
+      ADS_GOODS_VARIANT_MARKER_GLOBAL_PATTERN,
+      6,
+    );
     const hasPriceRange = /(?:^|[^\p{L}\p{N}_-])от\s+\d{2,}/iu.test(rawLoweredText);
+    const hasFreshStockContext = ADS_GOODS_FRESH_STOCK_PATTERN.test(rawLoweredText);
     const hasRetailOrderFlow =
       /(?:^|[^\p{L}\p{N}_-])(?:под\s+заказ|по\s+заказу|оформить\s+заказ|оформляйте\s+заказ|оптом\s+и\s+в\s+розницу|доставка\s+по\s+(?:городу|региону|россии)|со\s+склада)(?=$|[^\p{L}\p{N}_-])/iu.test(
         rawLoweredText,
@@ -2297,8 +2319,11 @@ export class RuleEngineService {
       /(?:^|[^\p{L}\p{N}_-])(?:каталог|ассортимент|в\s+наличии)(?=$|[^\p{L}\p{N}_-])/iu.test(
         rawLoweredText,
       );
+    const hasMultiSkuGoodsStructure =
+      multiSkuPriceLineCount >= 2 || (priceMatchCount >= 2 && goodsVariantMarkerCount >= 1);
     const hasPersonalResalePattern =
-      /(?:^|[^\p{L}\p{N}_-])(?:в\s+отличном\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|носил[аи]?|одевал[аи]?|надевал[аи]?|после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu.test(
+      ADS_PERSONAL_RESALE_STRONG_PATTERN.test(rawLoweredText) ||
+      /(?:^|[^\p{L}\p{N}_-])(?:после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu.test(
         rawLoweredText,
       );
     const hasStrongDealCombo =
@@ -2365,6 +2390,12 @@ export class RuleEngineService {
     if (phoneMatchCount >= 2) {
       commercialLogit += 0.35;
     }
+    if (hasMultiSkuGoodsStructure) {
+      commercialLogit += 0.8;
+    }
+    if (hasFreshStockContext) {
+      commercialLogit += 0.35;
+    }
     if (hasRetailOrderFlow) {
       commercialLogit += 0.65;
     }
@@ -2402,6 +2433,14 @@ export class RuleEngineService {
     }
     if (hasPersonalResalePattern) {
       commercialLogit -= 1.4;
+    }
+    if (
+      hasMultiSkuGoodsStructure &&
+      hasPersonalResalePattern &&
+      !state.hasBusinessContext &&
+      !state.hasCampaignContext
+    ) {
+      commercialLogit -= 0.7;
     }
 
     const commercialProbability = this.sigmoid(commercialLogit);
@@ -2475,6 +2514,17 @@ export class RuleEngineService {
       pushSupportingSubtype(primarySubtype);
       primarySubtype = 'GOODS_RETAIL';
       classifierReasons.push('subtype:goods-retail');
+    } else if (
+      hasMultiSkuGoodsStructure &&
+      !hasPersonalResalePattern &&
+      commercialProbability >= 0.8 &&
+      state.hasContact &&
+      state.hasPrice &&
+      (primarySubtype === 'GOODS' || primarySubtype === 'GENERIC')
+    ) {
+      pushSupportingSubtype(primarySubtype);
+      primarySubtype = 'GOODS_RETAIL';
+      classifierReasons.push('subtype:goods-multi-sku');
     }
 
     const adjustedDecisionBand: CommercialDecisionBand =
@@ -2509,6 +2559,12 @@ export class RuleEngineService {
       (state.hasServiceContext || state.hasGoodsRetailContext || state.hasCommercialPropertyContext)
     ) {
       reviewLogit += 0.7;
+    }
+    if (hasMultiSkuGoodsStructure && !hasPersonalResalePattern) {
+      reviewLogit -= 0.55;
+    }
+    if (hasFreshStockContext || hasRetailOrderFlow) {
+      reviewLogit -= 0.25;
     }
     if (directDealEvidence) {
       reviewLogit -= 0.9;
@@ -2547,6 +2603,16 @@ export class RuleEngineService {
           reason !== 'conflicting-negative-signals' &&
           reason !== 'near-threshold' &&
           reason !== 'medium-band',
+      );
+    }
+    if (
+      primarySubtype === 'GOODS_RETAIL' &&
+      hasMultiSkuGoodsStructure &&
+      adjustedConfidenceScore >= appliedThresholds.deleteThreshold &&
+      directDealEvidence
+    ) {
+      reviewReasons = reviewReasons.filter(
+        (reason) => reason !== 'generic-subtype' && reason !== 'near-threshold',
       );
     }
 
@@ -2675,6 +2741,22 @@ export class RuleEngineService {
 
     const exponent = Math.exp(value);
     return exponent / (1 + exponent);
+  }
+
+  private countPatternMatches(value: string, pattern: RegExp, limit = 12): number {
+    if (!value || limit <= 0) {
+      return 0;
+    }
+
+    const flags = pattern.flags.includes('g') ? pattern.flags : `${pattern.flags}g`;
+    const matcher = new RegExp(pattern.source, flags);
+    let count = 0;
+
+    while (count < limit && matcher.exec(value)) {
+      count += 1;
+    }
+
+    return count;
   }
 
   private classifyCommercialDetection(params: {
