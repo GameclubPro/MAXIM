@@ -1,3 +1,4 @@
+import type { CommercialCampaignContext } from './commercial-campaign.util';
 import type { CommercialSubtype } from './rule-engine.service';
 
 type CommercialFixtureOverrides = {
@@ -12,6 +13,8 @@ export type CommercialRealWorldPositiveCase = {
   expectedSubtype: CommercialSubtype;
   expectedSignals: string[];
   reviewRecommended?: boolean;
+  requireClassifier?: boolean;
+  campaignContext?: CommercialCampaignContext;
   overrides?: CommercialFixtureOverrides;
 };
 
@@ -27,7 +30,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `🙋‍♀️ Ищу девушку или женщину для работы с парфюмом. В парфюмерную компанию ESSENS на удалённую работу, подработку. Прямой доход от 1000 ₽ с одного флакона духов сразу на руки плюс бонусы. Работа онлайн по всей России. Всегда актуальные вакансии. Пишите на номер +7 900 000 00 01, пришлю ссылку на группу.`,
     expectedSubtype: 'RECRUITMENT',
     reviewRecommended: false,
-    expectedSignals: ['recruitment:ваканси', 'recruitment:подработк', 'transaction:price', 'contact:phone'],
+    expectedSignals: [
+      'recruitment:ваканси',
+      'recruitment:подработк',
+      'transaction:price',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -39,7 +47,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `Открыты вакансии в новое кафе быстрого питания «Тут Поесть». Повар-шаурмист, опыт от 1 года. График индивидуальный, смена 24 часа или 12 часов, ставка 20% от продажи, минимум 8000 за смену. Помощник повара и кассир тоже требуются. Подробности по телефону +7 900 000 00 02.`,
     expectedSubtype: 'RECRUITMENT',
     reviewRecommended: false,
-    expectedSignals: ['recruitment:ваканси', 'recruitment:смена', 'contact:по телефону', 'contact:phone'],
+    expectedSignals: [
+      'recruitment:ваканси',
+      'recruitment:смена',
+      'contact:по телефону',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -51,7 +64,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `Вибропрессованная тротуарная плитка от завода. Продажа тротуарной плитки, укладка брусчатки, установка садовых и дорожных бордюров, системы водоотведения, благоустройство дворовых территорий. Выезд на замер и составление сметы бесплатно. Работаем по договору. Телефон +7 900 000 00 03.`,
     expectedSubtype: 'SERVICES',
     reviewRecommended: false,
-    expectedSignals: ['intent:продажа', 'service-specialty:установк', 'group-trade:продажа', 'contact:phone'],
+    expectedSignals: [
+      'intent:продажа',
+      'service-specialty:установк',
+      'group-trade:продажа',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -73,7 +91,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     label: 'cleaning service with max chat invite from production logs',
     text: `Ростов-на-Дону. Уборка квартир, домов и офисов. Предлагаю вам свои услуги: поддерживающая уборка, генеральная уборка, уборка после сдачи в аренду, уборка для продажи, мытьё окон, уборка после ремонта. Пишите, звоните, буду рада помочь. +7 900 000 00 05. Присоединяйся к чату по ссылке: https://max.ru/join/example-cleaning-chat`,
     expectedSubtype: 'SERVICES',
-    expectedSignals: ['intent:услуги', 'service-specialty:уборк', 'contact:phone', 'deal-channel:link'],
+    expectedSignals: [
+      'intent:услуги',
+      'service-specialty:уборк',
+      'contact:phone',
+      'deal-channel:link',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -96,7 +119,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `ЖК Архитектор. Тип квартиры: Евро 3к. Площадь 65 м². Отделка: ремонт, мебель, техника. Квартира на ключах. Показ 24/7. Комиссия: ваша комиссия сверху. Цена 13 500 000 ₽. Звоните прямо сейчас: +7 900 000 00 06.`,
     expectedSubtype: 'PROPERTY_AGENT',
     reviewRecommended: false,
-    expectedSignals: ['property-agent:комиссия-сверху', 'property-agent:на-ключах', 'property-agent:показ-247', 'transaction:price'],
+    expectedSignals: [
+      'property-agent:комиссия-сверху',
+      'property-agent:на-ключах',
+      'property-agent:показ-247',
+      'transaction:price',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -108,7 +136,12 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `Срочная продажа. Дом в Центральном районе города. 3 комнаты, 2 этажа, площадь 62,7 кв м. Требуется ремонт, мебель, техника. Цена 5 100 000 ₽. Ваша комиссия сверху. Связь: +7 900 000 00 07.`,
     expectedSubtype: 'PROPERTY_AGENT',
     reviewRecommended: false,
-    expectedSignals: ['intent:продажа', 'property-agent:комиссия-сверху', 'transaction:price', 'contact:phone'],
+    expectedSignals: [
+      'intent:продажа',
+      'property-agent:комиссия-сверху',
+      'transaction:price',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -137,7 +170,13 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     text: `В продаже новые велосипеды. Цены от 15 000 р. Возможна доставка. В наличии разные размеры и цвета. Пишите или звоните, отвечу на все вопросы, скину подробные фото и видео. Телефон +7 900 000 00 08.`,
     expectedSubtype: 'GOODS_RETAIL',
     reviewRecommended: false,
-    expectedSignals: ['promo:доставк', 'goods-retail:sizes-and-colors', 'contact:phone', 'combo:contact+price'],
+    requireClassifier: true,
+    expectedSignals: [
+      'promo:доставк',
+      'goods-retail:sizes-and-colors',
+      'contact:phone',
+      'combo:contact+price',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -154,6 +193,24 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
       'transaction:price',
       'contact:phone',
       'combo:business+deal',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'furniture retail ad with order flow from production logs',
+    text: `Кровати и матрасы от производителя. Цены от 18 000 ₽. В наличии разные размеры и цвета, доставка по региону, работаем со склада. Пишите, скину каталог моделей. +7 900 000 00 15.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    requireClassifier: true,
+    expectedSignals: [
+      'goods-retail:manufacturer',
+      'goods-retail:catalog-media',
+      'goods-retail:sizes-and-colors',
+      'contact:phone',
     ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
@@ -224,6 +281,15 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'single apparel item with measurements from production logs',
     text: `Новый, размер указан 52, маломерит. 1300р, подробные замеры могу отправить по запросу. Возможна доставка до подъезда.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'single stroller resale with phone from production logs',
+    text: `Продам детскую коляску, после одного ребенка, в отличном состоянии, без дефектов. Цена 12 000 ₽, торг уместен. +7 900 000 00 16.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

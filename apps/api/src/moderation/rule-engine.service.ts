@@ -88,6 +88,10 @@ type CommercialDetection = {
     sensitivity: 'BALANCED' | 'STRICT';
     strictness: number;
   };
+  classifierVersion: string | null;
+  commercialProbability: number | null;
+  reviewProbability: number | null;
+  classifierReasons: string[];
 };
 
 type CommercialThresholdProfile = {
@@ -103,6 +107,18 @@ type CommercialClassification = {
   evidenceStrength: 'BORDERLINE' | 'STRUCTURED' | 'CAMPAIGN' | 'DIRECT';
   reviewRecommended: boolean;
   reviewReasons: string[];
+};
+
+type CommercialSecondStageDecision = {
+  adjustedConfidenceScore: number;
+  primarySubtype: CommercialSubtype;
+  supportingSubtypes: CommercialSubtype[];
+  reviewRecommended: boolean;
+  reviewReasons: string[];
+  classifierVersion: string;
+  commercialProbability: number;
+  reviewProbability: number;
+  classifierReasons: string[];
 };
 
 type LabeledPattern = {
@@ -188,6 +204,8 @@ type ResolvedBlockedWordIndex = {
 };
 
 const BLOCKED_WORD_LIST_CACHE_MAX_ENTRIES = 512;
+const COMMERCIAL_SECOND_STAGE_VERSION = '2026-goods-hybrid-v1';
+const COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES = 4096;
 const BLOCKED_WORD_CYRILLIC_INFLECTION_SUFFIXES = [
   'иями',
   'ями',
@@ -619,8 +637,7 @@ const ADS_CHANNEL_PLACEMENT_PATTERNS: LabeledPattern[] = [
   },
   {
     label: 'просмотры',
-    pattern:
-      /(?:^|[^\p{L}\p{N}_-])просмотр(?:ы|ов)?(?=$|[^\p{L}\p{N}_-])/u,
+    pattern: /(?:^|[^\p{L}\p{N}_-])просмотр(?:ы|ов)?(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'цена-за-пост',
@@ -738,8 +755,7 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
   },
   {
     label: 'request:who-repairs',
-    pattern:
-      /(?:^|[^\p{L}\p{N}_-])кто\s+(?:ремонтиру(?:ет|ют)|чинит)(?=$|[^\p{L}\p{N}_-])/u,
+    pattern: /(?:^|[^\p{L}\p{N}_-])кто\s+(?:ремонтиру(?:ет|ют)|чинит)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'request:contact',
@@ -816,6 +832,11 @@ const ADS_GOODS_RETAIL_PATTERNS: LabeledPattern[] = [
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:для\s+улицы\s+и\s+помещений|до\s+вашего\s+офиса|для\s+офиса)(?=$|[^\p{L}\p{N}_-])/iu,
   },
+  {
+    label: 'order-flow',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:под\s+заказ|по\s+заказу|оформить\s+заказ|оформляйте\s+заказ|оптом\s+и\s+в\s+розницу|доставка\s+по\s+(?:городу|региону|россии)|со\s+склада)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
 ];
 const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
   {
@@ -827,6 +848,11 @@ const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
     label: 'measurements',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:подробн(?:ые|ых)?\s+замер[\p{L}\p{N}_-]*|замеры\s+могу\s+отправить|доставка\s+до\s+подъезда)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'resale-condition',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:в\s+отличном\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|носил[аи]?|одевал[аи]?|надевал[аи]?|после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*|не\s+подошл[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
@@ -990,6 +1016,7 @@ export class RuleEngineService {
   private duplicateTimeoutWarnAtMs = 0;
   private readonly blockedWordListCache = new Map<string, ResolvedBlockedWordIndex>();
   private readonly blockedWordPatternCache = new Map<string, RegExp>();
+  private readonly commercialSecondStageCache = new Map<string, CommercialSecondStageDecision>();
 
   constructor(
     private readonly redisCounter: RedisCounterService,
@@ -1068,6 +1095,10 @@ export class RuleEngineService {
             evidenceStrength: commercial.evidenceStrength,
             reviewRecommended: commercial.reviewRecommended,
             reviewReasons: commercial.reviewReasons,
+            classifierVersion: commercial.classifierVersion,
+            commercialProbability: commercial.commercialProbability,
+            reviewProbability: commercial.reviewProbability,
+            classifierReasons: commercial.classifierReasons,
             ...(commercial.campaignContext ? { campaignContext: commercial.campaignContext } : {}),
             appliedThresholds: commercial.appliedThresholds,
           },
@@ -1443,8 +1474,7 @@ export class RuleEngineService {
             hasUtilityPaymentContext &&
             ADS_SERVICE_INTENT_MARKERS.has(marker)
           ) && hasMarker(marker),
-      ) ||
-      ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+      ) || ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasServiceSpecialtyContext =
       ADS_SERVICE_SPECIALTY_MARKERS.some(
         (marker) =>
@@ -1539,7 +1569,8 @@ export class RuleEngineService {
       hasPrivateGoodsItemContext &&
       !hasGoodsRetailContext &&
       !hasBusinessContext &&
-      !hasContactContext &&
+      !hasChannelPlacementContext &&
+      !hasServiceCommercialContext &&
       !ADS_LINK_PATTERN.test(rawLoweredText)
     ) {
       return false;
@@ -2001,10 +2032,10 @@ export class RuleEngineService {
       state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional;
     const hasCampaignStrongEvidence = Boolean(
       commercialCampaignContext &&
-        ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
-          (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
-          (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
-            (state.hasContact || state.hasDealChannel || state.hasTransactional))),
+      ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
+        (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
+        (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
+          (state.hasContact || state.hasDealChannel || state.hasTransactional))),
     );
     const hasStrongCommercialEvidence =
       state.hasPrice ||
@@ -2054,7 +2085,6 @@ export class RuleEngineService {
       state.hasPrivateGoodsItemContext &&
       !state.hasGoodsRetailContext &&
       !state.hasBusinessContext &&
-      !state.hasContact &&
       !state.hasDealChannel &&
       !state.hasCampaignContext
     ) {
@@ -2097,23 +2127,49 @@ export class RuleEngineService {
       }
     }
 
-    if (confidenceScore < appliedThresholds.warnThreshold) {
-      return null;
-    }
-
-    const decisionBand: CommercialDecisionBand =
+    let decisionBand: CommercialDecisionBand =
       confidenceScore >= appliedThresholds.deleteThreshold
         ? 'HIGH'
         : confidenceScore >= appliedThresholds.warnThreshold
           ? 'MEDIUM'
           : 'LOW';
-    const classification = this.classifyCommercialDetection({
+    let classification = this.classifyCommercialDetection({
       state,
       confidenceScore,
       decisionBand,
       appliedThresholds,
       commercialCampaignContext,
     });
+    const secondStage = this.evaluateCommercialSecondStage({
+      normalizedText,
+      rawLoweredText,
+      state,
+      confidenceScore,
+      decisionBand,
+      appliedThresholds,
+      classification,
+      commercialCampaignContext,
+    });
+    if (secondStage) {
+      confidenceScore = secondStage.adjustedConfidenceScore;
+      decisionBand =
+        confidenceScore >= appliedThresholds.deleteThreshold
+          ? 'HIGH'
+          : confidenceScore >= appliedThresholds.warnThreshold
+            ? 'MEDIUM'
+            : 'LOW';
+      classification = {
+        ...classification,
+        primarySubtype: secondStage.primarySubtype,
+        supportingSubtypes: secondStage.supportingSubtypes,
+        reviewRecommended: secondStage.reviewRecommended,
+        reviewReasons: secondStage.reviewReasons,
+      };
+    }
+
+    if (confidenceScore < appliedThresholds.warnThreshold) {
+      return null;
+    }
 
     return {
       confidenceScore,
@@ -2125,8 +2181,12 @@ export class RuleEngineService {
       evidenceStrength: classification.evidenceStrength,
       reviewRecommended: classification.reviewRecommended,
       reviewReasons: classification.reviewReasons,
-      campaignContext: state.hasCampaignContext ? commercialCampaignContext ?? null : null,
+      campaignContext: state.hasCampaignContext ? (commercialCampaignContext ?? null) : null,
       appliedThresholds,
+      classifierVersion: secondStage?.classifierVersion ?? null,
+      commercialProbability: secondStage?.commercialProbability ?? null,
+      reviewProbability: secondStage?.reviewProbability ?? null,
+      classifierReasons: secondStage?.classifierReasons ?? [],
     };
   }
 
@@ -2154,6 +2214,467 @@ export class RuleEngineService {
       sensitivity: strict ? 'STRICT' : 'BALANCED',
       strictness,
     };
+  }
+
+  private evaluateCommercialSecondStage(params: {
+    normalizedText: string;
+    rawLoweredText: string;
+    state: CommercialSignalState;
+    confidenceScore: number;
+    decisionBand: CommercialDecisionBand;
+    appliedThresholds: CommercialThresholdProfile;
+    classification: CommercialClassification;
+    commercialCampaignContext?: CommercialCampaignContext | null;
+  }): CommercialSecondStageDecision | null {
+    const {
+      normalizedText,
+      rawLoweredText,
+      state,
+      confidenceScore,
+      decisionBand,
+      appliedThresholds,
+      classification,
+      commercialCampaignContext,
+    } = params;
+
+    if (
+      !this.shouldRunCommercialSecondStage({
+        state,
+        confidenceScore,
+        decisionBand,
+        appliedThresholds,
+        classification,
+      })
+    ) {
+      return null;
+    }
+
+    const cacheKey = this.buildCommercialSecondStageCacheKey({
+      normalizedText,
+      confidenceScore,
+      decisionBand,
+      appliedThresholds,
+      classification,
+      commercialCampaignContext,
+    });
+    const cached = this.commercialSecondStageCache.get(cacheKey);
+    if (cached) {
+      this.commercialSecondStageCache.delete(cacheKey);
+      this.commercialSecondStageCache.set(cacheKey, cached);
+      return cached;
+    }
+
+    const directDealEvidence =
+      (state.hasPrice && (state.hasContact || state.hasDealChannel || state.hasTransactional)) ||
+      (state.hasDealChannel && state.hasContact);
+    const strongCampaignEvidence = Boolean(
+      commercialCampaignContext &&
+      ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
+        (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
+        (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
+          (state.hasContact || state.hasDealChannel || state.hasTransactional))),
+    );
+    const structuredEvidence =
+      (state.hasPropertyAgentContext ||
+        state.hasCommercialPropertyContext ||
+        state.hasRecruitmentContext ||
+        state.hasInfoProductContext ||
+        state.hasBuyoutContext ||
+        state.hasServiceContext ||
+        state.hasGoodsRetailContext ||
+        state.hasGroupPromoContext ||
+        state.hasBusinessContext ||
+        state.hasPromoContext) &&
+      (state.hasContact || state.hasDealChannel || state.hasPrice || state.hasTransactional);
+    const priceMatchCount =
+      rawLoweredText.match(/\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)/giu)?.length ?? 0;
+    const phoneMatchCount = rawLoweredText.match(/(?:\+?\d[\d\s()/-]{8,}\d)/g)?.length ?? 0;
+    const hasPriceRange = /(?:^|[^\p{L}\p{N}_-])от\s+\d{2,}/iu.test(rawLoweredText);
+    const hasRetailOrderFlow =
+      /(?:^|[^\p{L}\p{N}_-])(?:под\s+заказ|по\s+заказу|оформить\s+заказ|оформляйте\s+заказ|оптом\s+и\s+в\s+розницу|доставка\s+по\s+(?:городу|региону|россии)|со\s+склада)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        rawLoweredText,
+      ) ||
+      /(?:^|[^\p{L}\p{N}_-])(?:каталог|ассортимент|в\s+наличии)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        rawLoweredText,
+      );
+    const hasPersonalResalePattern =
+      /(?:^|[^\p{L}\p{N}_-])(?:в\s+отличном\s+состоянии|без\s+дефект[\p{L}\p{N}_-]*|носил[аи]?|одевал[аи]?|надевал[аи]?|после\s+одного\s+раза|почти\s+нов[\p{L}\p{N}_-]*|не\s+подошл[\p{L}\p{N}_-]*|торг\s+уместен)(?=$|[^\p{L}\p{N}_-])/iu.test(
+        rawLoweredText,
+      );
+    const hasStrongDealCombo =
+      state.matchedSignals.includes('combo:contact+price') ||
+      state.matchedSignals.includes('combo:business+deal') ||
+      state.matchedSignals.includes('combo:promo+deal') ||
+      state.matchedSignals.includes('combo:service+deal') ||
+      state.matchedSignals.includes('combo:service-offer+deal') ||
+      state.matchedSignals.includes('combo:group-promo+deal') ||
+      state.matchedSignals.includes('combo:campaign+deal');
+    const scoreMargin = confidenceScore - appliedThresholds.warnThreshold;
+
+    let commercialLogit = -2.2 + scoreMargin / 8;
+    if (state.hasPrice) {
+      commercialLogit += 1.15;
+    }
+    if (state.hasContact) {
+      commercialLogit += 1.05;
+    }
+    if (state.hasDealChannel) {
+      commercialLogit += 0.9;
+    }
+    if (state.hasTransactional) {
+      commercialLogit += 0.7;
+    }
+    if (state.hasBusinessContext) {
+      commercialLogit += 1.5;
+    }
+    if (state.hasPromoContext) {
+      commercialLogit += 0.9;
+    }
+    if (state.hasGoodsRetailContext) {
+      commercialLogit += 1.8;
+    }
+    if (state.hasCommercialPropertyContext) {
+      commercialLogit += 2;
+    }
+    if (state.hasPropertyAgentContext) {
+      commercialLogit += 2.1;
+    }
+    if (state.hasServiceContext) {
+      commercialLogit += 1.1;
+    }
+    if (state.hasRecruitmentContext) {
+      commercialLogit += 1.2;
+    }
+    if (state.hasInfoProductContext) {
+      commercialLogit += 1.05;
+    }
+    if (state.hasGroupPromoContext) {
+      commercialLogit += 1.25;
+    }
+    if (structuredEvidence) {
+      commercialLogit += 0.7;
+    }
+    if (strongCampaignEvidence) {
+      commercialLogit += 0.95;
+    } else if (state.hasCampaignContext) {
+      commercialLogit += 0.45;
+    }
+    if (priceMatchCount >= 2 || hasPriceRange) {
+      commercialLogit += 0.45;
+    }
+    if (phoneMatchCount >= 2) {
+      commercialLogit += 0.35;
+    }
+    if (hasRetailOrderFlow) {
+      commercialLogit += 0.65;
+    }
+    if (hasStrongDealCombo) {
+      commercialLogit += 0.8;
+    }
+    if (state.hasPrivateGoodsItemContext) {
+      commercialLogit -= 1.8;
+    }
+    if (
+      state.hasPrivateSaleContext &&
+      !state.hasBusinessContext &&
+      !state.hasCampaignContext &&
+      !state.hasGoodsRetailContext &&
+      !state.hasCommercialPropertyContext &&
+      !state.hasPropertyAgentContext
+    ) {
+      commercialLogit -= 1.6;
+    }
+    if (
+      state.hasPropertyPrivateContext &&
+      !state.hasCommercialPropertyContext &&
+      !state.hasPropertyAgentContext
+    ) {
+      commercialLogit -= 2.35;
+    }
+    if (state.hasSearchRequestContext || state.hasJobSeekingContext) {
+      commercialLogit -= 2.5;
+    }
+    if (state.hasStrongNegativeContext) {
+      commercialLogit -= 1;
+    }
+    if (state.negativeSignals.length >= 2) {
+      commercialLogit -= 0.45;
+    }
+    if (hasPersonalResalePattern) {
+      commercialLogit -= 1.4;
+    }
+
+    const commercialProbability = this.sigmoid(commercialLogit);
+    const classifierReasons: string[] = [];
+    let adjustedConfidenceScore = confidenceScore;
+
+    if (
+      decisionBand === 'LOW' &&
+      confidenceScore >= appliedThresholds.warnThreshold - 10 &&
+      commercialProbability >= 0.78 &&
+      structuredEvidence &&
+      (state.hasPrice || state.hasContact || state.hasDealChannel || state.hasTransactional)
+    ) {
+      adjustedConfidenceScore = Math.max(
+        adjustedConfidenceScore,
+        appliedThresholds.warnThreshold + Math.round((commercialProbability - 0.78) * 18) + 1,
+      );
+      classifierReasons.push('rescued-borderline');
+    }
+
+    if (
+      adjustedConfidenceScore >= appliedThresholds.warnThreshold &&
+      commercialProbability <= 0.3 &&
+      (classification.primarySubtype === 'GOODS' || classification.primarySubtype === 'GENERIC') &&
+      (state.hasPrivateSaleContext ||
+        state.hasPrivateGoodsItemContext ||
+        state.hasStrongNegativeContext)
+    ) {
+      adjustedConfidenceScore = Math.min(
+        adjustedConfidenceScore,
+        appliedThresholds.warnThreshold - 1,
+      );
+      classifierReasons.push('suppressed-private-like');
+    }
+
+    if (
+      adjustedConfidenceScore >= appliedThresholds.warnThreshold &&
+      commercialProbability >= 0.9 &&
+      adjustedConfidenceScore < appliedThresholds.deleteThreshold &&
+      structuredEvidence &&
+      directDealEvidence
+    ) {
+      adjustedConfidenceScore = Math.min(100, adjustedConfidenceScore + 4);
+      classifierReasons.push('boosted-structured');
+    }
+
+    let primarySubtype = classification.primarySubtype;
+    const supportingSubtypes = [...classification.supportingSubtypes];
+    const pushSupportingSubtype = (subtype: CommercialSubtype) => {
+      if (subtype === primarySubtype || supportingSubtypes.includes(subtype)) {
+        return;
+      }
+      supportingSubtypes.unshift(subtype);
+      supportingSubtypes.splice(3);
+    };
+
+    if (
+      state.hasCommercialPropertyContext &&
+      commercialProbability >= 0.84 &&
+      primarySubtype !== 'PROPERTY_AGENT' &&
+      primarySubtype !== 'PROPERTY_COMMERCIAL'
+    ) {
+      pushSupportingSubtype(primarySubtype);
+      primarySubtype = 'PROPERTY_COMMERCIAL';
+      classifierReasons.push('subtype:property-commercial');
+    } else if (
+      state.hasGoodsRetailContext &&
+      commercialProbability >= 0.74 &&
+      (primarySubtype === 'GOODS' || primarySubtype === 'GENERIC')
+    ) {
+      pushSupportingSubtype(primarySubtype);
+      primarySubtype = 'GOODS_RETAIL';
+      classifierReasons.push('subtype:goods-retail');
+    }
+
+    const adjustedDecisionBand: CommercialDecisionBand =
+      adjustedConfidenceScore >= appliedThresholds.deleteThreshold
+        ? 'HIGH'
+        : adjustedConfidenceScore >= appliedThresholds.warnThreshold
+          ? 'MEDIUM'
+          : 'LOW';
+
+    let reviewLogit = -1.35;
+    if (adjustedDecisionBand !== 'HIGH') {
+      reviewLogit += 1.1;
+    } else {
+      reviewLogit -= 0.25;
+    }
+    if (adjustedConfidenceScore <= appliedThresholds.warnThreshold + 6) {
+      reviewLogit += 0.85;
+    }
+    if (primarySubtype === 'GENERIC' || primarySubtype === 'GOODS') {
+      reviewLogit += 1.25;
+    }
+    if (state.hasCampaignContext && !strongCampaignEvidence) {
+      reviewLogit += 1.15;
+    } else if (state.hasCampaignContext && strongCampaignEvidence && !directDealEvidence) {
+      reviewLogit += 0.5;
+    }
+    if (state.hasStrongNegativeContext || state.negativeSignals.length > 0) {
+      reviewLogit += 0.95;
+    }
+    if (
+      state.hasPrivateSaleContext &&
+      (state.hasServiceContext || state.hasGoodsRetailContext || state.hasCommercialPropertyContext)
+    ) {
+      reviewLogit += 0.7;
+    }
+    if (directDealEvidence) {
+      reviewLogit -= 0.9;
+    }
+    if (structuredEvidence) {
+      reviewLogit -= 0.65;
+    }
+    if (
+      (primarySubtype === 'GOODS_RETAIL' ||
+        primarySubtype === 'PROPERTY_COMMERCIAL' ||
+        primarySubtype === 'PROPERTY_AGENT') &&
+      adjustedConfidenceScore >= appliedThresholds.deleteThreshold
+    ) {
+      reviewLogit -= 1.2;
+    }
+    if (commercialProbability < 0.45) {
+      reviewLogit += 0.6;
+    }
+    if (commercialProbability > 0.84 && structuredEvidence) {
+      reviewLogit -= 0.85;
+    }
+
+    const reviewProbability = this.sigmoid(reviewLogit);
+    let reviewReasons = [...classification.reviewReasons];
+    if (primarySubtype !== 'GOODS' && primarySubtype !== 'GENERIC') {
+      reviewReasons = reviewReasons.filter((reason) => reason !== 'generic-subtype');
+    }
+    if (
+      (primarySubtype === 'GOODS_RETAIL' || primarySubtype === 'PROPERTY_COMMERCIAL') &&
+      adjustedConfidenceScore >= appliedThresholds.deleteThreshold &&
+      directDealEvidence
+    ) {
+      reviewReasons = reviewReasons.filter(
+        (reason) =>
+          reason !== 'private-sale-override' &&
+          reason !== 'conflicting-negative-signals' &&
+          reason !== 'near-threshold' &&
+          reason !== 'medium-band',
+      );
+    }
+
+    const hasHardReviewReason = reviewReasons.includes('campaign-dependent');
+    let reviewRecommended =
+      reviewReasons.length > 0 &&
+      (adjustedDecisionBand !== 'HIGH' ||
+        reviewReasons.includes('campaign-dependent') ||
+        reviewReasons.includes('generic-subtype') ||
+        reviewReasons.includes('conflicting-negative-signals'));
+
+    if (
+      !hasHardReviewReason &&
+      reviewProbability <= 0.34 &&
+      adjustedDecisionBand === 'HIGH' &&
+      structuredEvidence &&
+      directDealEvidence
+    ) {
+      reviewRecommended = false;
+      reviewReasons = [];
+      classifierReasons.push('cleared-review');
+    } else if (
+      reviewProbability >= 0.72 &&
+      adjustedConfidenceScore >= appliedThresholds.warnThreshold
+    ) {
+      reviewRecommended = true;
+      if (!reviewReasons.includes('classifier-ambiguous')) {
+        reviewReasons.push('classifier-ambiguous');
+      }
+      classifierReasons.push('review:ambiguous');
+    }
+
+    const decision: CommercialSecondStageDecision = {
+      adjustedConfidenceScore,
+      primarySubtype,
+      supportingSubtypes: [...new Set(supportingSubtypes)].slice(0, 3),
+      reviewRecommended,
+      reviewReasons: [...new Set(reviewReasons)],
+      classifierVersion: COMMERCIAL_SECOND_STAGE_VERSION,
+      commercialProbability: Number(commercialProbability.toFixed(4)),
+      reviewProbability: Number(reviewProbability.toFixed(4)),
+      classifierReasons,
+    };
+    this.rememberCommercialSecondStageDecision(cacheKey, decision);
+    return decision;
+  }
+
+  private shouldRunCommercialSecondStage(params: {
+    state: CommercialSignalState;
+    confidenceScore: number;
+    decisionBand: CommercialDecisionBand;
+    appliedThresholds: CommercialThresholdProfile;
+    classification: CommercialClassification;
+  }): boolean {
+    const { state, confidenceScore, decisionBand, appliedThresholds, classification } = params;
+    return (
+      confidenceScore <= appliedThresholds.deleteThreshold + 4 ||
+      decisionBand === 'LOW' ||
+      classification.reviewRecommended ||
+      classification.primarySubtype === 'GOODS' ||
+      classification.primarySubtype === 'GENERIC' ||
+      state.hasGoodsRetailContext ||
+      state.hasCommercialPropertyContext ||
+      (state.hasCampaignContext && confidenceScore <= appliedThresholds.deleteThreshold + 8) ||
+      (state.hasPrivateSaleContext &&
+        !state.hasPropertyAgentContext &&
+        !state.hasCommercialPropertyContext) ||
+      (state.hasGoodsRetailContext && classification.primarySubtype !== 'GOODS_RETAIL') ||
+      (state.hasCommercialPropertyContext &&
+        classification.primarySubtype !== 'PROPERTY_COMMERCIAL')
+    );
+  }
+
+  private buildCommercialSecondStageCacheKey(params: {
+    normalizedText: string;
+    confidenceScore: number;
+    decisionBand: CommercialDecisionBand;
+    appliedThresholds: CommercialThresholdProfile;
+    classification: CommercialClassification;
+    commercialCampaignContext?: CommercialCampaignContext | null;
+  }): string {
+    const {
+      normalizedText,
+      confidenceScore,
+      decisionBand,
+      appliedThresholds,
+      classification,
+      commercialCampaignContext,
+    } = params;
+    const textHash = createHash('sha1').update(normalizedText).digest('hex').slice(0, 16);
+    return [
+      COMMERCIAL_SECOND_STAGE_VERSION,
+      textHash,
+      classification.primarySubtype,
+      decisionBand,
+      Math.round(confidenceScore),
+      appliedThresholds.warnThreshold,
+      appliedThresholds.deleteThreshold,
+      commercialCampaignContext?.sameTextDistinctChatCount ?? 0,
+      commercialCampaignContext?.repeatedPhoneDistinctChatCount ?? 0,
+      commercialCampaignContext?.repeatedLinkDistinctChatCount ?? 0,
+      commercialCampaignContext?.senderDistinctChatCount ?? 0,
+    ].join('|');
+  }
+
+  private rememberCommercialSecondStageDecision(
+    cacheKey: string,
+    decision: CommercialSecondStageDecision,
+  ): void {
+    this.commercialSecondStageCache.set(cacheKey, decision);
+    if (this.commercialSecondStageCache.size <= COMMERCIAL_SECOND_STAGE_CACHE_MAX_ENTRIES) {
+      return;
+    }
+
+    const oldestKey = this.commercialSecondStageCache.keys().next().value;
+    if (typeof oldestKey === 'string') {
+      this.commercialSecondStageCache.delete(oldestKey);
+    }
+  }
+
+  private sigmoid(value: number): number {
+    if (value >= 0) {
+      const exponent = Math.exp(-value);
+      return 1 / (1 + exponent);
+    }
+
+    const exponent = Math.exp(value);
+    return exponent / (1 + exponent);
   }
 
   private classifyCommercialDetection(params: {
@@ -2241,11 +2762,11 @@ export class RuleEngineService {
       (state.hasDealChannel && state.hasContact);
     const hasCampaignDependentEvidence = Boolean(
       commercialCampaignContext &&
-        state.hasCampaignContext &&
-        ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
-          (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
-          (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
-            (state.hasContact || state.hasDealChannel || state.hasTransactional))),
+      state.hasCampaignContext &&
+      ((commercialCampaignContext.repeatedPhoneDistinctChatCount >= 2 && state.hasContact) ||
+        (commercialCampaignContext.repeatedLinkDistinctChatCount >= 2 && state.hasDealChannel) ||
+        (commercialCampaignContext.sameTextDistinctChatCount >= 3 &&
+          (state.hasContact || state.hasDealChannel || state.hasTransactional))),
     );
     const hasStructuredEvidence =
       (state.hasPropertyAgentContext ||
@@ -2601,7 +3122,7 @@ export class RuleEngineService {
     const goodsRetailHits = ADS_GOODS_RETAIL_PATTERNS.filter(({ pattern }) =>
       matchesPattern(pattern),
     );
-    for (const { label } of goodsRetailHits.slice(0, 2)) {
+    for (const { label } of goodsRetailHits.slice(0, 3)) {
       addPositive(`goods-retail:${label}`, 10);
       hasGoodsRetailContext = true;
       hasCommercialContext = true;

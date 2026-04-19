@@ -1575,11 +1575,7 @@ describe('RuleEngineService', () => {
 
     expect(violation).toBeDefined();
     expect(violation?.metadata?.matchedSignals).toEqual(
-      expect.arrayContaining([
-        'promo:распродаж',
-        'service-specialty:монтаж',
-        'transaction:price',
-      ]),
+      expect.arrayContaining(['promo:распродаж', 'service-specialty:монтаж', 'transaction:price']),
     );
   });
 
@@ -1623,9 +1619,7 @@ describe('RuleEngineService', () => {
     );
 
     expect(violation).toBeDefined();
-    expect(violation?.metadata?.matchedSignals).not.toEqual(
-      expect.arrayContaining(['group:клуб']),
-    );
+    expect(violation?.metadata?.matchedSignals).not.toEqual(expect.arrayContaining(['group:клуб']));
   });
 
   it('boosts a borderline service ad when the same sender repeats it across chats', async () => {
@@ -1745,14 +1739,29 @@ describe('RuleEngineService', () => {
   describe('commercial real-world benchmark', () => {
     it.each(COMMERCIAL_REAL_WORLD_POSITIVE_CASES)(
       'detects $label',
-      async ({ text, expectedSubtype, reviewRecommended, expectedSignals, overrides }) => {
+      async ({
+        text,
+        expectedSubtype,
+        reviewRecommended,
+        expectedSignals,
+        overrides,
+        requireClassifier,
+        campaignContext,
+      }) => {
         const service = createRuleEngine();
-        const violation = await detectCommercialViolation(service, text, overrides);
+        const violation = await detectCommercialViolation(service, text, overrides, {
+          commercialCampaignContext: campaignContext,
+        });
 
         expect(violation).toBeDefined();
         expect(violation?.metadata?.primarySubtype).toBe(expectedSubtype);
         if (typeof reviewRecommended === 'boolean') {
           expect(violation?.metadata?.reviewRecommended).toBe(reviewRecommended);
+        }
+        if (requireClassifier) {
+          expect(violation?.metadata?.classifierVersion).toBeDefined();
+          expect(violation?.metadata?.commercialProbability).toEqual(expect.any(Number));
+          expect(violation?.metadata?.reviewProbability).toEqual(expect.any(Number));
         }
         expect(violation?.metadata?.matchedSignals).toEqual(
           expect.arrayContaining(expectedSignals),
@@ -1760,15 +1769,12 @@ describe('RuleEngineService', () => {
       },
     );
 
-    it.each(COMMERCIAL_REAL_WORLD_NEGATIVE_CASES)(
-      'skips $label',
-      async ({ text, overrides }) => {
-        const service = createRuleEngine();
-        const violation = await detectCommercialViolation(service, text, overrides);
+    it.each(COMMERCIAL_REAL_WORLD_NEGATIVE_CASES)('skips $label', async ({ text, overrides }) => {
+      const service = createRuleEngine();
+      const violation = await detectCommercialViolation(service, text, overrides);
 
-        expect(violation).toBeUndefined();
-      },
-    );
+      expect(violation).toBeUndefined();
+    });
   });
 
   describe('commercial sensitivity matrix', () => {
