@@ -9,14 +9,6 @@ type ManagedEntityListItem = {
   title: string;
 };
 
-export type VisibleLaunchContext = {
-  tab: LastEntityType;
-  chatId: string;
-  title: string;
-  avatarUrl?: string | null;
-  link?: string | null;
-};
-
 export function readLastChatId(): string {
   try {
     return (
@@ -108,9 +100,6 @@ export function buildManagedEntitiesRoute(entityType: LastEntityType): string {
 export function buildHomeView<T extends ManagedEntityListItem>(options: {
   entities: readonly T[] | null | undefined;
   query: string;
-  activeTab: LastEntityType;
-  visibleLaunchContext: VisibleLaunchContext | null;
-  provisionalEntity?: T | null;
 }) {
   const normalizedQuery = options.query.trim().toLowerCase();
   const matchingEntities = !Array.isArray(options.entities)
@@ -120,21 +109,6 @@ export function buildHomeView<T extends ManagedEntityListItem>(options: {
       : options.entities.filter((entity) =>
           `${entity.title} ${entity.id}`.toLowerCase().includes(normalizedQuery),
         );
-  const activeLaunchContext =
-    options.visibleLaunchContext?.tab === options.activeTab ? options.visibleLaunchContext : null;
-  const hasLaunchContextInList =
-    activeLaunchContext !== null &&
-    matchingEntities.some((entity) => entity.id === activeLaunchContext.chatId);
-  const provisionalEntity =
-    activeLaunchContext !== null &&
-    !hasLaunchContextInList &&
-    options.provisionalEntity &&
-    `${options.provisionalEntity.title} ${options.provisionalEntity.id}`
-      .toLowerCase()
-      .includes(normalizedQuery)
-      ? options.provisionalEntity
-      : null;
-  const listEntities = provisionalEntity ? [provisionalEntity, ...matchingEntities] : matchingEntities;
 
-  return [listEntities, listEntities.length, false] as const;
+  return [matchingEntities, matchingEntities.length] as const;
 }

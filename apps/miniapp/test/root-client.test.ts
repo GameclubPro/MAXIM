@@ -13,7 +13,7 @@ function createApiStub(response: unknown, calls: string[]): ApiTransport {
   };
 }
 
-test('getMe preserves validated launch context from /me', async () => {
+test('getMe parses the current admin profile from /me', async () => {
   const calls: string[] = [];
   const api = createApiStub(
     {
@@ -22,11 +22,6 @@ test('getMe preserves validated launch context from /me', async () => {
       displayName: 'Designer',
       avatarUrl: 'https://cdn.max/avatar.png',
       profileUrl: 'https://max.ru/designer',
-      launchContext: {
-        chatId: 'chat-42',
-        chatTitle: 'Текущий чат',
-        chatType: 'chat',
-      },
       canAccessSystem: true,
     },
     calls,
@@ -40,11 +35,6 @@ test('getMe preserves validated launch context from /me', async () => {
     displayName: 'Designer',
     avatarUrl: 'https://cdn.max/avatar.png',
     profileUrl: 'https://max.ru/designer',
-    launchContext: {
-      chatId: 'chat-42',
-      chatTitle: 'Текущий чат',
-      chatType: 'chat',
-    },
     canAccessSystem: true,
   });
   assert.deepEqual(calls, ['/me']);

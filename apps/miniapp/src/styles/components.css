@@ -1363,59 +1363,6 @@
   gap: var(--space-2);
 }
 
-.launch-context-card {
-  position: relative;
-  overflow: hidden;
-  display: grid;
-  gap: 14px;
-  border-color: rgba(255, 255, 255, 0.8);
-  background:
-    radial-gradient(140% 140% at 0% 0%, rgba(11, 132, 255, 0.18), transparent 52%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(233, 245, 255, 0.72));
-}
-
-.launch-context-card__head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.launch-context-card__body {
-  display: grid;
-  gap: 14px;
-}
-
-.launch-context-card__identity {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-}
-
-.launch-context-card__copy {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-
-.launch-context-card__copy h2 {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.28;
-}
-
-.launch-context-card__copy p {
-  margin: 0;
-  color: var(--text-secondary);
-  line-height: 1.45;
-}
-
-.launch-context-card__actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-2);
-}
-
 .channel-overview-card {
   position: relative;
   overflow: hidden;

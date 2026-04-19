@@ -14,6 +14,7 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { describeApiError } from '../lib/api-error';
+import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
@@ -22,7 +23,6 @@ import {
   readLastEntityType,
   saveLastEntityId,
   saveLastEntityType,
-  type VisibleLaunchContext,
 } from '../lib/last-chat';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
@@ -58,11 +58,6 @@ const LazySystemEntryCard = lazy(async () => {
 const LazyChatOnboardingSection = lazy(async () => {
   const module = await import('../components/chat-onboarding-section');
   return { default: module.ChatOnboardingSection };
-});
-
-const LazyLaunchContextSection = lazy(async () => {
-  const module = await import('../components/launch-context-section');
-  return { default: module.LaunchContextSection };
 });
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
@@ -161,10 +156,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [canAccessSystem, setCanAccessSystem] = useState(false);
-  const [launchContextTabHint, setLaunchContextTabHint] = useState<ManagedTab | null>(null);
-  const [visibleLaunchContext, setVisibleLaunchContext] = useState<VisibleLaunchContext | null>(
-    null,
-  );
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -173,13 +164,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   });
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
-    launchContextTabHint ?? readLastEntityType(),
+    readLastEntityType(),
   ) as ManagedTab;
   const activeEntitiesKey = getEntitiesKey(activeTab);
   const chatsState = useManagedEntitiesSync({
     api,
     entityType: 'chat',
-    enabled: activeTab === 'chat' || launchContextTabHint === 'chat',
+    enabled: activeTab === 'chat',
     reloadNonce: refreshRequestByTab.chat.nonce,
     reloadBehavior: refreshRequestByTab.chat.behavior,
     resumeOnVisibilityReturn: true,
@@ -193,7 +184,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const channelsState = useManagedEntitiesSync({
     api,
     entityType: 'channel',
-    enabled: activeTab === 'channel' || launchContextTabHint === 'channel',
+    enabled: activeTab === 'channel',
     reloadNonce: refreshRequestByTab.channel.nonce,
     reloadBehavior: refreshRequestByTab.channel.behavior,
     resumeOnVisibilityReturn: true,
@@ -247,36 +238,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     Array.isArray(activeEntities) &&
     activeEntities.length === 0;
 
-  const [filteredEntities, visibleEntitiesCount, hasVisibleLaunchContext] = useMemo(
-    () => {
-      const provisionalLaunchEntity =
-        visibleLaunchContext && visibleLaunchContext.tab === activeTab
-          ? {
-              id: visibleLaunchContext.chatId,
-              title: visibleLaunchContext.title,
-              createdAt: '',
-              entityType: activeTab,
-              link: visibleLaunchContext.link ?? null,
-              avatarUrl: visibleLaunchContext.avatarUrl ?? null,
-              channelOverview: null,
-              assignedBots: [],
-              primaryBotId: null,
-              sharedMode: 'owned' as const,
-            }
-          : null;
-
-      return buildHomeView({
+  const [filteredEntities, visibleEntitiesCount] = useMemo(
+    () =>
+      buildHomeView({
         entities: activeEntities,
         query,
-        activeTab,
-        visibleLaunchContext,
-        provisionalEntity: provisionalLaunchEntity,
-      });
-    },
-    [activeEntities, activeTab, query, visibleLaunchContext],
+      }),
+    [activeEntities, query],
   );
-  const showSearchCard = !isNoEntitiesForTab || hasVisibleLaunchContext;
-  const showEmptyState = isNoEntitiesForTab && !hasVisibleLaunchContext;
+  const showSearchCard = !isNoEntitiesForTab;
+  const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
   const settledRefreshMarker = useMemo(() => buildManagedEntitiesSettledMarker({
@@ -348,6 +319,24 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     saveLastEntityType(activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void getMe(api, { signal: controller.signal })
+      .then((me) => {
+        if (!controller.signal.aborted) {
+          setCanAccessSystem(me.canAccessSystem === true);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setCanAccessSystem(false);
+        }
+      });
+
+    return () => controller.abort();
+  }, [api]);
 
   function prefetchChatSettings(chatId: string) {
     preloadSettingsPage();
@@ -468,30 +457,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      <Suspense fallback={null}>
-        <LazyLaunchContextSection
-          api={api}
-          activeTab={activeTab}
-          chatsState={chatsState}
-          channelsState={channelsState}
-          onLaunchContextTabChange={setLaunchContextTabHint}
-          onVisibleLaunchContextChange={(nextValue) => {
-            setVisibleLaunchContext((currentValue) => {
-              if (
-                currentValue?.tab === nextValue?.tab &&
-                currentValue?.chatId === nextValue?.chatId
-              ) {
-                return currentValue;
-              }
-
-              return nextValue;
-            });
-          }}
-          onQueueRefresh={queueRefresh}
-          onSystemAccessChange={setCanAccessSystem}
-        />
-      </Suspense>
-
       {showSystemCard ? (
         <Suspense fallback={null}>
           <LazySystemEntryCard api={api} />
@@ -586,8 +551,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       !showEmptyState &&
       Array.isArray(activeEntities) &&
       activeEntities.length > 0 &&
-      filteredEntities.length === 0 &&
-      !hasVisibleLaunchContext ? (
+      filteredEntities.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"

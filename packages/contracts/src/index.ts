@@ -1976,15 +1976,6 @@ export const meSchema = z.object({
   displayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
-  launchContext: z
-    .object({
-      chatId: z.string().trim().min(1),
-      chatTitle: z.string().nullable().optional().default(null),
-      chatType: z.enum(['chat', 'channel', 'dialog']).nullable().optional().default(null),
-    })
-    .nullable()
-    .optional()
-    .default(null),
   canAccessSystem: z.boolean().optional(),
 });
 export type Me = z.infer<typeof meSchema>;

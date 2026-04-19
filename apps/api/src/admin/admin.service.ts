@@ -499,8 +499,6 @@ const MANAGED_ENTITIES_ALLOWLIST_RESPONSE_BUDGET_MS = 250;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_REVALIDATION_LIMIT = 3;
 const MANAGED_ENTITIES_SUSPICIOUS_ALLOWLIST_ADMIN_TIMEOUT_MS = 300;
 const MANAGED_ENTITIES_LAST_SUCCESS_SNAPSHOT_TTL_MS = 60_000;
-const MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS = 1_000;
-const MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS = 750;
 const MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS = 500;
 const MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS = 1_500;
 const MANAGED_ENTITIES_LOCAL_DISCOVERY_ADMIN_TIMEOUT_MS = 1_000;
@@ -1042,7 +1040,6 @@ export class AdminService implements OnModuleDestroy {
       profileUrl:
         this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
         this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
-      launchContext: this.buildMeLaunchContext(user),
       ...(canAccessSystem ? { canAccessSystem: true } : {}),
     };
     const contextChatId =
@@ -1079,7 +1076,6 @@ export class AdminService implements OnModuleDestroy {
         displayName,
         avatarUrl,
         profileUrl,
-        launchContext: this.buildMeLaunchContext(user),
         ...(canAccessSystem ? { canAccessSystem: true } : {}),
       };
     } catch (error: unknown) {
@@ -1093,22 +1089,6 @@ export class AdminService implements OnModuleDestroy {
       );
       return fallback;
     }
-  }
-
-  private buildMeLaunchContext(user: AuthUser): Me['launchContext'] {
-    const chatId = this.readTrimmedString(user.chatId);
-    if (!chatId) {
-      return null;
-    }
-
-    return {
-      chatId,
-      chatTitle: this.readTrimmedString(user.chatTitle) ?? null,
-      chatType:
-        user.chatType === 'chat' || user.chatType === 'channel' || user.chatType === 'dialog'
-          ? user.chatType
-          : null,
-    };
   }
 
   async listChats(
@@ -1405,7 +1385,6 @@ export class AdminService implements OnModuleDestroy {
     options: ManagedEntitiesListOptions = {},
   ): Promise<ManagedEntitiesListResult> {
     let lightweightBootstrapPromise: Promise<{
-      currentChat: ChatSummary | null;
       recentBotAdded: ChatSummary[];
     }> | null = null;
     const loadLightweightBootstrap = async () => {
@@ -1446,7 +1425,6 @@ export class AdminService implements OnModuleDestroy {
           });
           const mergedFresh = await mergeWithLightweightBootstrap(fresh.items);
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
-          this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'fresh');
           this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
           return {
             items,
@@ -1495,7 +1473,6 @@ export class AdminService implements OnModuleDestroy {
         const items = await this.attachManagedEntityBotAssignments(
           await this.hydrateManagedEntities(initial),
         );
-        this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'cached');
         this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
         return {
           items,
@@ -1533,7 +1510,6 @@ export class AdminService implements OnModuleDestroy {
               await this.hydrateManagedEntities(discoveredItems),
             )
           : [];
-      this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'remote');
       this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
 
       return {
@@ -1564,9 +1540,7 @@ export class AdminService implements OnModuleDestroy {
       const snapshotIds =
         bootstrap !== null ? new Set(publishedSnapshot.items.map((item) => item.id)) : null;
       const hasBootstrapOutsideSnapshot =
-        bootstrap !== null &&
-        ((bootstrap.currentChat !== null && !snapshotIds?.has(bootstrap.currentChat.id)) ||
-          bootstrap.recentBotAdded.some((item) => !snapshotIds?.has(item.id)));
+        bootstrap !== null && bootstrap.recentBotAdded.some((item) => !snapshotIds?.has(item.id));
       if (!hasBootstrapOutsideSnapshot) {
         const diffResponse = await this.readManagedEntitiesPublishedDiffResponseForRefresh(
           user.userId,
@@ -1645,9 +1619,6 @@ export class AdminService implements OnModuleDestroy {
             await this.hydrateManagedEntities(mergedCached),
           )
         : [];
-    if (shouldMergeLightweightBootstrap) {
-      this.logMissingLaunchContextAfterLightweightPass(user, entityType, items, 'refresh');
-    }
     this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
     this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
     return {
@@ -2295,20 +2266,12 @@ export class AdminService implements OnModuleDestroy {
   private async mergeManagedEntitiesPublishedSnapshotWithLightweightBootstrap(
     items: readonly ChatSummary[],
     bootstrap: {
-      currentChat: ChatSummary | null;
       recentBotAdded: ChatSummary[];
     },
   ): Promise<ChatSummary[]> {
     const snapshotIds = new Set(items.map((item) => item.id));
-    const currentChat =
-      bootstrap.currentChat && !snapshotIds.has(bootstrap.currentChat.id)
-        ? bootstrap.currentChat
-        : null;
     const recentBotAdded = bootstrap.recentBotAdded.filter((chat) => !snapshotIds.has(chat.id));
-    const bootstrapCandidates = this.mergeManagedEntityGroups(
-      currentChat ? [currentChat] : [],
-      recentBotAdded,
-    );
+    const bootstrapCandidates = this.mergeManagedEntityGroups(recentBotAdded);
     if (bootstrapCandidates.length === 0) {
       return items.map((item) => this.cloneManagedEntitySummary(item));
     }
@@ -2319,7 +2282,6 @@ export class AdminService implements OnModuleDestroy {
     const hydratedById = new Map(hydratedBootstrap.map((item) => [item.id, item]));
 
     return this.mergeManagedEntitiesWithLightweightBootstrap(items, {
-      currentChat: currentChat ? (hydratedById.get(currentChat.id) ?? currentChat) : null,
       recentBotAdded: recentBotAdded.map((chat) => hydratedById.get(chat.id) ?? chat),
     });
   }
@@ -2715,12 +2677,10 @@ export class AdminService implements OnModuleDestroy {
   private mergeManagedEntitiesWithLightweightBootstrap(
     items: readonly ChatSummary[],
     bootstrap: {
-      currentChat: ChatSummary | null;
       recentBotAdded: ChatSummary[];
     },
   ): ChatSummary[] {
     return this.mergeManagedEntityGroups(
-      bootstrap.currentChat ? [bootstrap.currentChat] : [],
       bootstrap.recentBotAdded,
       [...items],
     );
@@ -2730,25 +2690,11 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
   ): Promise<{
-    currentChat: ChatSummary | null;
     recentBotAdded: ChatSummary[];
   }> {
     const recentBotAddedPromise = this.bootstrapRecentBotAddedEntities(user, entityType);
-    const currentChatPromise = this.bootstrapCurrentChat(user, entityType);
 
-    const [currentChat, recentBotAdded] = await Promise.all([
-      this.awaitManagedEntitiesResponseValueWithinBudget(currentChatPromise, {
-        fallback: null,
-        budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_CURRENT_CHAT_RESPONSE_BUDGET_MS,
-        timeoutMessage:
-          'Detached current chat bootstrap from lightweight managed entities response after response budget exceeded',
-        failureMessage:
-          'Current chat bootstrap failed during lightweight managed entities response',
-        logData: {
-          entityType,
-          userId: user.userId,
-        },
-      }),
+    const [recentBotAdded] = await Promise.all([
       this.awaitManagedEntitiesResponseValueWithinBudget(recentBotAddedPromise, {
         fallback: [],
         budgetMs: MANAGED_ENTITIES_LIGHTWEIGHT_RECENT_BOOTSTRAP_RESPONSE_BUDGET_MS,
@@ -2764,7 +2710,6 @@ export class AdminService implements OnModuleDestroy {
     ]);
 
     return {
-      currentChat,
       recentBotAdded,
     };
   }
@@ -3684,39 +3629,6 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private buildCurrentContextDiscoveryCandidates(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-  ): ManagedEntitiesDiscoverySnapshot {
-    if (!user.chatId) {
-      return [];
-    }
-
-    const currentContextEntityType = this.resolveCurrentContextManagedEntityType(user);
-    if (!currentContextEntityType) {
-      return [];
-    }
-    if (entityType !== 'all' && currentContextEntityType !== entityType) {
-      return [];
-    }
-    if (currentContextEntityType === 'chat' && this.isPrivateDirectChat(user.chatId)) {
-      return [];
-    }
-
-    return [
-      {
-        chatId: user.chatId,
-        title: this.readTrimmedString(user.chatTitle) ?? user.chatId,
-        lastEventTime: Date.now(),
-        entityType: currentContextEntityType,
-        link: null,
-        avatarUrl: null,
-        botId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? null,
-        botIds: this.maxBotLinkService ? [this.maxBotLinkService.getContextOrDefaultBotId()] : [],
-      },
-    ];
-  }
-
   private async readLocalManagedEntitiesRefreshState(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -3908,7 +3820,6 @@ export class AdminService implements OnModuleDestroy {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
   ): Promise<ManagedEntitiesDiscoverySnapshot> {
-    const currentContextCandidates = this.buildCurrentContextDiscoveryCandidates(user, entityType);
     let localCandidates: ManagedEntitiesDiscoverySnapshot = [];
 
     try {
@@ -3932,7 +3843,7 @@ export class AdminService implements OnModuleDestroy {
       );
     }
 
-    return this.mergeManagedEntitiesDiscoverySnapshots(currentContextCandidates, localCandidates);
+    return localCandidates;
   }
 
   private async persistManagedEntityAccessBestEffort(params: {
@@ -3948,7 +3859,6 @@ export class AdminService implements OnModuleDestroy {
     source:
       | 'remote_discovery'
       | 'local_discovery'
-      | 'current_chat_bootstrap'
       | 'recent_bot_added_bootstrap';
   }): Promise<ChatSummary> {
     try {
@@ -3962,7 +3872,6 @@ export class AdminService implements OnModuleDestroy {
           preferredBotId: params.preferredBotId ?? null,
           observedBotIds: params.observedBotIds ?? [],
           titleUpdateMode:
-            params.source === 'current_chat_bootstrap' ||
             params.source === 'recent_bot_added_bootstrap'
               ? 'fallback_only'
               : 'always',
@@ -4846,12 +4755,10 @@ export class AdminService implements OnModuleDestroy {
         (entry) => entry.cachedAccess === 'user_denied' || entry.cachedAccess === 'bot_denied',
       )
       .map((entry) => this.toManagedEntitiesDiscoveryCandidate(entry.chat));
-    const currentContextCandidates = this.buildCurrentContextDiscoveryCandidates(user, entityType);
     const prioritizedCandidateIds = new Set(
-      [...currentContextCandidates, ...staleDeniedCachedCandidates].map((chat) => chat.chatId),
+      staleDeniedCachedCandidates.map((chat) => chat.chatId),
     );
     const candidateChats = this.mergeManagedEntitiesDiscoverySnapshots(
-      currentContextCandidates,
       staleDeniedCachedCandidates,
       await this.loadManagedEntitiesLocalDiscoverySnapshot(user, entityType, {
         limit: options.fullScan
@@ -23103,98 +23010,6 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return persistedChat;
-  }
-
-  private async bootstrapCurrentChat(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-  ): Promise<ChatSummary | null> {
-    if (!user.chatId) {
-      return null;
-    }
-
-    const currentContextEntityType = this.resolveCurrentContextManagedEntityType(user);
-    if (!currentContextEntityType) {
-      return null;
-    }
-    if (entityType !== 'all' && currentContextEntityType !== entityType) {
-      return null;
-    }
-    if (currentContextEntityType === 'chat' && this.isPrivateDirectChat(user.chatId)) {
-      return null;
-    }
-
-    const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId, {
-      bypassNegativeCache: true,
-      trafficClass: 'interactive',
-      sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-      timeoutMs: MANAGED_ENTITIES_CURRENT_CHAT_BOOTSTRAP_ADMIN_TIMEOUT_MS,
-    });
-    if (access.status !== 'granted') {
-      return null;
-    }
-
-    const chat = await this.persistManagedEntityAccessBestEffort({
-      chatId: user.chatId,
-      userId: user.userId,
-      title: user.chatTitle ?? null,
-      entityType: currentContextEntityType,
-      preferredBotId: this.maxBotLinkService?.getContextOrDefaultBotId() ?? null,
-      source: 'current_chat_bootstrap',
-    });
-
-    this.scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
-      user.userId,
-      currentContextEntityType,
-      [chat],
-    );
-
-    return chat;
-  }
-
-  private logMissingLaunchContextAfterLightweightPass(
-    user: AuthUser,
-    entityType: ManagedEntityTypeFilter,
-    items: readonly ChatSummary[],
-    source: 'cached' | 'fresh' | 'remote' | 'refresh',
-  ): void {
-    const launchChatId = this.readTrimmedString(user.chatId);
-    const launchEntityType = this.resolveCurrentContextManagedEntityType(user);
-    if (!launchChatId || !launchEntityType) {
-      return;
-    }
-    if (entityType !== 'all' && launchEntityType !== entityType) {
-      return;
-    }
-    if (launchEntityType === 'chat' && this.isPrivateDirectChat(launchChatId)) {
-      return;
-    }
-    if (items.some((item) => item.id === launchChatId)) {
-      return;
-    }
-
-    this.logger.log(
-      {
-        userId: user.userId,
-        launchChatId,
-        launchChatTitle: this.readTrimmedString(user.chatTitle) ?? null,
-        launchChatType: user.chatType ?? null,
-        entityType,
-        source,
-      },
-      'Launch context managed entity not found after lightweight pass',
-    );
-  }
-
-  private resolveCurrentContextManagedEntityType(user: AuthUser): ManagedEntityType | null {
-    if (user.chatType === 'channel') {
-      return 'channel';
-    }
-    if (user.chatType === 'dialog') {
-      return null;
-    }
-
-    return 'chat';
   }
 
   private isPrivateDirectChat(chatId: string): boolean {

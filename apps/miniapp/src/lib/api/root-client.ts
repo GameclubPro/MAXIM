@@ -159,28 +159,12 @@ function parseMe(value: unknown): Me {
     throw new Error('Invalid me response');
   }
 
-  const launchContext = isRecord(value.launchContext) ? value.launchContext : null;
-  const launchContextChatType =
-    launchContext?.chatType === 'chat' ||
-    launchContext?.chatType === 'channel' ||
-    launchContext?.chatType === 'dialog'
-      ? launchContext.chatType
-      : null;
-
   return {
     userId: value.userId,
     username: typeof value.username === 'string' ? value.username : null,
     displayName: typeof value.displayName === 'string' ? value.displayName : null,
     avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : null,
     profileUrl: typeof value.profileUrl === 'string' ? value.profileUrl : null,
-    launchContext:
-      launchContext !== null && typeof launchContext.chatId === 'string'
-        ? {
-            chatId: launchContext.chatId,
-            chatTitle: typeof launchContext.chatTitle === 'string' ? launchContext.chatTitle : null,
-            chatType: launchContextChatType,
-          }
-        : null,
     ...(value.canAccessSystem === true ? { canAccessSystem: true } : {}),
   };
 }
