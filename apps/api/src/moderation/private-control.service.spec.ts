@@ -2677,7 +2677,8 @@ describe('PrivateControlService', () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-6');
     const sourceText = '🔥MAX Docs\n\nВторой абзац';
-    const formattedText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+    const renderedHtml =
+      '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац';
     const label = 'MAX Docs';
     const from = messageOffsetIndexOf(sourceText, label);
     const length = countMessageOffsetUnits(label);
@@ -2705,8 +2706,8 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
       '152517912',
       expect.objectContaining({
-        text: formattedText,
-        textFormat: 'markdown',
+        text: renderedHtml,
+        textFormat: 'html',
       }),
     );
 
@@ -2715,11 +2716,23 @@ describe('PrivateControlService', () => {
     expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
       channels[0].id,
       expect.objectContaining({ userId: 'user-1' }),
-      {
+      expect.objectContaining({
         token: 'cdt-suggest-token-6',
-        text: formattedText,
-        textFormat: 'markdown',
-      },
+        text: sourceText,
+        textMarkup: [
+          expect.objectContaining({
+            from,
+            length,
+            type: 'strong',
+          }),
+          expect.objectContaining({
+            from,
+            length,
+            type: 'link',
+            url: 'https://dev.max.ru/docs-api',
+          }),
+        ],
+      }),
     );
   });
 

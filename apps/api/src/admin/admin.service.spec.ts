@@ -21063,7 +21063,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
 
     const suggestToken = await publishSuggestDialogToken(service, maxClient);
-    const richText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+    const sourceText = '🔥MAX Docs\n\nВторой абзац';
+    const expectedHtml =
+      '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац';
 
     await service.createChannelSuggestionFromBot(
       'channel-1',
@@ -21075,16 +21077,28 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
       {
         token: suggestToken,
-        text: richText,
-        textFormat: 'markdown',
+        text: sourceText,
+        textMarkup: [
+          {
+            from: 2,
+            length: 8,
+            type: 'strong',
+          },
+          {
+            from: 2,
+            length: 8,
+            type: 'link',
+            url: 'https://dev.max.ru/docs-api',
+          },
+        ],
       },
     );
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
-      expect.stringContaining(richText),
+      expect.stringContaining(expectedHtml),
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       expect.objectContaining({
         trafficClass: 'background',
@@ -21096,8 +21110,20 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         data: expect.objectContaining({
           payload: expect.objectContaining({
             source: 'private_bot',
-            text: richText,
-            textFormat: 'markdown',
+            text: sourceText,
+            textMarkup: [
+              expect.objectContaining({
+                from: 2,
+                length: 8,
+                type: 'strong',
+              }),
+              expect.objectContaining({
+                from: 2,
+                length: 8,
+                type: 'link',
+                url: 'https://dev.max.ru/docs-api',
+              }),
+            ],
           }),
         }),
       }),
@@ -22227,7 +22253,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
   it('publishes a reviewed suggestion with restored MAX markup without flattening paragraphs', async () => {
     const sourceThreadId = '12121212-1212-4121-8121-121212121212';
-    const richText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+    const sourceText = '🔥MAX Docs\n\nВторой абзац';
+    const expectedHtml =
+      '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац';
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -22249,8 +22277,20 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         type: 'suggest',
         actorUserId: 'user-1',
         authorDisplayName: 'Пользователь',
-        text: richText,
-        textFormat: 'markdown',
+        text: sourceText,
+        textMarkup: [
+          {
+            from: 2,
+            length: 8,
+            type: 'strong',
+          },
+          {
+            from: 2,
+            length: 8,
+            type: 'link',
+            url: 'https://dev.max.ru/docs-api',
+          },
+        ],
         threadId: sourceThreadId,
         reviewStatus: 'pending',
         deliveries: [
@@ -22314,17 +22354,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      `От подписчика [Пользователь](max://user/user-1)\n\n${richText}`,
+      `От подписчика <a href="max://user/user-1">Пользователь</a>\n\n${expectedHtml}`,
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
       }),
       { botId: 'channel-bot-2' },
     );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       '555001',
       'mid-admin-review-rich-1',
-      expect.stringContaining(richText),
-      { buttons: [], textFormat: 'markdown' },
+      expect.stringContaining(expectedHtml),
+      { buttons: [], textFormat: 'html' },
       { botId: 'private-bot-2' },
     );
   });

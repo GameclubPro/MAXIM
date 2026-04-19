@@ -190,6 +190,13 @@ import {
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import {
+  escapeHtml,
+  escapeHtmlAttribute,
+  escapeHtmlPreservingWhitespace,
+  renderMaxTextMarkupAsHtml,
+  type MaxTextMarkup,
+} from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
@@ -376,9 +383,12 @@ type ChannelSuggestionImageAsset = {
   fileName?: string | null;
 };
 
+type ChannelSuggestionTextMarkup = MaxTextMarkup;
+
 type ChannelSuggestionDeliveryInput = {
   text: string;
   textFormat?: BroadcastTextFormat | null;
+  textMarkup?: ChannelSuggestionTextMarkup[] | null;
   images?: ChannelSuggestionImageAsset[] | null;
   imageBase64?: string | null;
   imageMimeType?: string | null;
@@ -809,6 +819,7 @@ type ChannelSuggestionFromBotPayload = {
   images: ChannelSuggestionImageAsset[];
   text: string;
   textFormat: BroadcastTextFormat;
+  textMarkup: ChannelSuggestionTextMarkup[];
   imageBase64: string | null;
   imageMimeType: string | null;
   imageFileName: string | null;
@@ -7197,6 +7208,7 @@ export class AdminService implements OnModuleDestroy {
       source: 'private_bot',
       text: parsed.text,
       textFormat: parsed.textFormat,
+      textMarkup: parsed.textMarkup,
       images: parsed.images,
       imageBase64: parsed.imageBase64,
       imageMimeType: parsed.imageMimeType,
@@ -18458,6 +18470,52 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private readChannelSuggestionTextMarkup(value: unknown): ChannelSuggestionTextMarkup[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.readChannelSuggestionTextMarkupItem(item))
+      .filter((item): item is ChannelSuggestionTextMarkup => item !== null);
+  }
+
+  private readChannelSuggestionTextMarkupItem(value: unknown): ChannelSuggestionTextMarkup | null {
+    const row = this.readObjectPayloadOrNull(value);
+    if (!row) {
+      return null;
+    }
+
+    const type = this.readLowerString(row.type);
+    const from = this.toSafeInteger(row.from);
+    const length = this.toSafeInteger(row.length);
+    if (
+      !type ||
+      from < 0 ||
+      length <= 0 ||
+      ![
+        'emphasized',
+        'heading',
+        'link',
+        'monospaced',
+        'strikethrough',
+        'strong',
+        'underline',
+        'user_mention',
+      ].includes(type)
+    ) {
+      return null;
+    }
+
+    return {
+      from,
+      length,
+      type: type as ChannelSuggestionTextMarkup['type'],
+      url: this.readTrimmedString(row.url),
+      userLink: this.readTrimmedString(row.userLink ?? row.user_link),
+    };
+  }
+
   private normalizeChannelSuggestionImages(params: {
     images?: ChannelSuggestionImageAsset[] | null;
     imageBase64?: string | null;
@@ -19310,6 +19368,7 @@ export class AdminService implements OnModuleDestroy {
     source: ChannelDialogMessageSource;
     text: string;
     textFormat?: BroadcastTextFormat | null;
+    textMarkup?: ChannelSuggestionTextMarkup[] | null;
     images?: ChannelSuggestionImageAsset[] | null;
     imageBase64?: string | null;
     imageMimeType?: string | null;
@@ -19347,6 +19406,9 @@ export class AdminService implements OnModuleDestroy {
           threadId: params.threadId,
           text: params.text,
           ...(params.textFormat === 'markdown' ? { textFormat: params.textFormat } : {}),
+          ...(params.textMarkup && params.textMarkup.length > 0
+            ? { textMarkup: params.textMarkup as Prisma.InputJsonValue }
+            : {}),
           actorUserId: params.user.userId,
           authorDisplayName: this.resolveChannelSuggestionActorDisplayName(params.user),
           authorAvatarUrl: this.readTrimmedString(params.user.avatarUrl) ?? null,
@@ -19393,6 +19455,7 @@ export class AdminService implements OnModuleDestroy {
       {
         text: params.text,
         ...(params.textFormat ? { textFormat: params.textFormat } : {}),
+        ...(params.textMarkup ? { textMarkup: params.textMarkup } : {}),
         images: normalizedImages,
         imageBase64: params.imageBase64,
         imageMimeType: params.imageMimeType,
@@ -19603,21 +19666,29 @@ export class AdminService implements OnModuleDestroy {
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorName = this.resolveChannelSuggestionActorDisplayName(user) ?? `user:${user.userId}`;
     const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
-    const messageOptions = await this.buildChannelSuggestionMessageOptions(
+    const baseMessageOptions = await this.buildChannelSuggestionMessageOptions(
       suggestion,
       buttons,
       privateDeliveryBotId,
     );
-    const message = this.buildChannelSuggestionAdminMessage({
+    const messagePayload = this.buildChannelSuggestionAdminMessagePayload({
       status: 'pending',
       channelTitle,
       actorName,
       actorUserId: user.userId,
       text: suggestion.text,
       textFormat: suggestion.textFormat ?? 'plain',
+      textMarkup: suggestion.textMarkup ?? [],
       reviewedBy: null,
       publishedUrl: null,
     });
+    const messageOptions = {
+      ...baseMessageOptions,
+      textFormat: messagePayload.textFormat,
+    } satisfies Pick<
+      MaxSendMessageOptions,
+      'buttons' | 'imagePayload' | 'attachments' | 'textFormat'
+    >;
     const deliveries: ChannelSuggestionAdminDelivery[] = [];
     const deliveredAdminUserIds: string[] = [];
 
@@ -19631,7 +19702,7 @@ export class AdminService implements OnModuleDestroy {
         const published = await this.sendChannelSuggestionAdminMessageWithRetry({
           adminUserId,
           privateChatId,
-          message,
+          message: messagePayload.text,
           options: messageOptions,
           ...(privateDeliveryBotId ? { botId: privateDeliveryBotId } : {}),
         });
@@ -19713,16 +19784,20 @@ export class AdminService implements OnModuleDestroy {
     return [PRIVATE_CONTROL_CALLBACK_PREFIX, action, ...normalizedArgs].join('|');
   }
 
-  private buildChannelSuggestionAdminMessage(params: {
+  private buildChannelSuggestionAdminMessagePayload(params: {
     status: 'pending' | 'published' | 'cancelled';
     channelTitle: string;
     actorName: string;
     actorUserId: string;
     text: string;
     textFormat: BroadcastTextFormat;
+    textMarkup: ChannelSuggestionTextMarkup[];
     reviewedBy: string | null;
     publishedUrl: string | null;
-  }): string {
+  }): {
+    text: string;
+    textFormat: MaxSendMessageOptions['textFormat'];
+  } {
     const normalizedText = params.text.trim();
     const title =
       params.status === 'published'
@@ -19731,27 +19806,71 @@ export class AdminService implements OnModuleDestroy {
           ? '✖️ Предложка отклонена'
           : '📰 Новая предложка';
     const normalizedActorUserId = params.actorUserId.trim();
+    const richTextHtml = normalizedText
+      ? this.renderChannelSuggestionTextHtml(
+          normalizedText,
+          params.textMarkup,
+          params.textFormat,
+        )
+      : null;
+
+    if (richTextHtml) {
+      const senderLine = normalizedActorUserId
+        ? `<a href="max://user/${encodeURIComponent(normalizedActorUserId)}">${escapeHtml(
+            params.actorName,
+          )}</a>`
+        : escapeHtml(params.actorName);
+
+      return {
+        text: [
+          `<strong>${escapeHtml(title)}</strong>`,
+          '',
+          `Канал: ${escapeHtml(params.channelTitle)}`,
+          `Отправитель: ${senderLine}`,
+          ...(normalizedActorUserId
+            ? [`MAX ID: <code>${escapeHtml(normalizedActorUserId)}</code>`]
+            : []),
+          ...(params.reviewedBy ? [`Решение принял: ${escapeHtml(params.reviewedBy)}`] : []),
+          ...(params.publishedUrl
+            ? [
+                `<a href="${escapeHtmlAttribute(params.publishedUrl)}">${escapeHtml(
+                  params.publishedUrl,
+                )}</a>`,
+              ]
+            : []),
+          '',
+          '━━━━━━━━━━━━',
+          '<strong>Контент публикации</strong>',
+          richTextHtml,
+        ].join('\n'),
+        textFormat: 'html',
+      };
+    }
+
     const senderLine = normalizedActorUserId
       ? `[${this.escapeMarkdown(params.actorName)}](max://user/${encodeURIComponent(normalizedActorUserId)})`
       : this.escapeMarkdown(params.actorName);
 
-    return [
-      this.markdownTitle(title),
-      '',
-      `Канал: ${this.escapeMarkdown(params.channelTitle)}`,
-      `Отправитель: ${senderLine}`,
-      ...(normalizedActorUserId
-        ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
-        : []),
-      ...(params.reviewedBy ? [`Решение принял: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
-      ...(params.publishedUrl ? [params.publishedUrl] : []),
-      '',
-      '━━━━━━━━━━━━',
-      this.markdownTitle('Контент публикации'),
-      ...(normalizedText
-        ? [this.renderSuggestionTextForMarkdown(normalizedText, params.textFormat)]
-        : ['_Медиа без подписи. Смотрите вложение выше._']),
-    ].join('\n');
+    return {
+      text: [
+        this.markdownTitle(title),
+        '',
+        `Канал: ${this.escapeMarkdown(params.channelTitle)}`,
+        `Отправитель: ${senderLine}`,
+        ...(normalizedActorUserId
+          ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
+          : []),
+        ...(params.reviewedBy ? [`Решение принял: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
+        ...(params.publishedUrl ? [params.publishedUrl] : []),
+        '',
+        '━━━━━━━━━━━━',
+        this.markdownTitle('Контент публикации'),
+        ...(normalizedText
+          ? [this.renderSuggestionTextForMarkdown(normalizedText, params.textFormat)]
+          : ['_Медиа без подписи. Смотрите вложение выше._']),
+      ].join('\n'),
+      textFormat: 'markdown',
+    };
   }
 
   private async publishStoredChannelSuggestion(
@@ -19783,12 +19902,15 @@ export class AdminService implements OnModuleDestroy {
       resolvedBotId,
     );
     const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
-    const messageText = this.buildPublishedChannelSuggestionMessageText(
+    const textFormat = this.normalizeBroadcastTextFormat(
+      this.readTrimmedString(payload.textFormat) ?? 'plain',
+    );
+    const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
+    const messageTextPayload = this.buildPublishedChannelSuggestionMessagePayload(
       payload,
       text,
-      this.normalizeBroadcastTextFormat(
-        this.readTrimmedString(payload.textFormat) ?? 'plain',
-      ),
+      textFormat,
+      textMarkup,
     );
 
     if (!text && !media.imagePayload && !media.attachments?.length) {
@@ -19802,11 +19924,11 @@ export class AdminService implements OnModuleDestroy {
       ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
       ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
       ...(media.attachments?.length ? { attachments: media.attachments } : {}),
-      textFormat: 'markdown',
+      textFormat: messageTextPayload.textFormat,
     };
     const published = await this.publishMessageWithRetry(
       chatId,
-      messageText,
+      messageTextPayload.text,
       messageOptions,
       resolvedBotId,
     );
@@ -19823,23 +19945,49 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private buildPublishedChannelSuggestionMessageText(
+  private buildPublishedChannelSuggestionMessagePayload(
     payload: Record<string, unknown>,
     suggestionText: string,
     textFormat: BroadcastTextFormat,
-  ): string {
+    textMarkup: ChannelSuggestionTextMarkup[],
+  ): {
+    text: string;
+    textFormat: MaxSendMessageOptions['textFormat'];
+  } {
     const actorUserId = this.readTrimmedString(payload.actorUserId);
     const actorName = this.readTrimmedString(payload.authorDisplayName) ?? actorUserId ?? '';
+    const normalizedSuggestionText = suggestionText.trim();
+    const richTextHtml = normalizedSuggestionText
+      ? this.renderChannelSuggestionTextHtml(normalizedSuggestionText, textMarkup, textFormat)
+      : null;
+
+    if (richTextHtml) {
+      const attribution = actorUserId
+        ? `От подписчика <a href="max://user/${encodeURIComponent(actorUserId)}">${escapeHtml(
+            actorName || 'подписчика',
+          )}</a>`
+        : actorName
+          ? `От подписчика ${escapeHtml(actorName)}`
+          : 'От подписчика';
+
+      return {
+        text: normalizedSuggestionText ? `${attribution}\n\n${richTextHtml}` : attribution,
+        textFormat: 'html',
+      };
+    }
+
     const attribution = actorUserId
       ? `От подписчика [${this.escapeMarkdown(actorName || 'подписчика')}](max://user/${encodeURIComponent(actorUserId)})`
       : actorName
         ? `От подписчика ${this.escapeMarkdown(actorName)}`
         : 'От подписчика';
-    const normalizedSuggestionText = suggestionText.trim();
 
-    return normalizedSuggestionText
-      ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(normalizedSuggestionText, textFormat)}`
-      : attribution;
+    return {
+      text: normalizedSuggestionText
+        ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(normalizedSuggestionText, textFormat)}`
+        : attribution,
+      textFormat: 'markdown',
+    };
   }
 
   private async buildPublishedChannelSuggestionButtonContext(
@@ -19917,7 +20065,8 @@ export class AdminService implements OnModuleDestroy {
     const reviewedBy = this.readTrimmedString(payload.reviewedByDisplayName);
     const reviewStatus =
       this.readLowerString(payload.reviewStatus) === 'published' ? 'published' : 'cancelled';
-    const message = this.buildChannelSuggestionAdminMessage({
+    const textMarkup = this.readChannelSuggestionTextMarkup(payload.textMarkup);
+    const messagePayload = this.buildChannelSuggestionAdminMessagePayload({
       status: reviewStatus,
       channelTitle,
       actorName,
@@ -19926,6 +20075,7 @@ export class AdminService implements OnModuleDestroy {
       textFormat: this.normalizeBroadcastTextFormat(
         this.readTrimmedString(payload.textFormat) ?? 'plain',
       ),
+      textMarkup,
       reviewedBy,
       publishedUrl: this.readTrimmedString(payload.publishedUrl),
     });
@@ -19937,10 +20087,10 @@ export class AdminService implements OnModuleDestroy {
           await this.maxClient.editMessageInlineKeyboard(
             delivery.privateChatId,
             delivery.messageId,
-            message,
+            messagePayload.text,
             {
               buttons: [],
-              textFormat: 'markdown',
+              textFormat: messagePayload.textFormat,
             },
             { botId: deliveryBotId },
           );
@@ -19948,10 +20098,10 @@ export class AdminService implements OnModuleDestroy {
           await this.maxClient.editMessageInlineKeyboard(
             delivery.privateChatId,
             delivery.messageId,
-            message,
+            messagePayload.text,
             {
               buttons: [],
-              textFormat: 'markdown',
+              textFormat: messagePayload.textFormat,
             },
           );
         }
@@ -20004,6 +20154,24 @@ export class AdminService implements OnModuleDestroy {
     return `**${this.escapeMarkdown(title)}**`;
   }
 
+  private renderChannelSuggestionTextHtml(
+    value: string,
+    textMarkup: ChannelSuggestionTextMarkup[],
+    textFormat: BroadcastTextFormat | null | undefined,
+  ): string | null {
+    if (textMarkup.length > 0) {
+      return renderMaxTextMarkupAsHtml(value, textMarkup) ?? escapeHtmlPreservingWhitespace(value);
+    }
+
+    if (textFormat === 'markdown') {
+      return renderSupportedMarkdownAsHtml(value, {
+        blockMode: 'raw',
+      });
+    }
+
+    return null;
+  }
+
   private renderSuggestionTextForMarkdown(
     value: string,
     textFormat: BroadcastTextFormat | null | undefined,
@@ -20046,6 +20214,7 @@ export class AdminService implements OnModuleDestroy {
     const textFormat = this.normalizeBroadcastTextFormat(
       this.readTrimmedString(row.textFormat) ?? 'plain',
     );
+    const textMarkup = this.readChannelSuggestionTextMarkup(row.textMarkup);
     const imageBase64 = this.readTrimmedString(row.imageBase64);
     const imageMimeType = this.readTrimmedString(row.imageMimeType);
     const imageFileName = this.readTrimmedString(row.imageFileName);
@@ -20104,6 +20273,7 @@ export class AdminService implements OnModuleDestroy {
       images,
       text,
       textFormat,
+      textMarkup,
       imageBase64,
       imageMimeType,
       imageFileName,

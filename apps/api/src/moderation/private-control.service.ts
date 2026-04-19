@@ -34,7 +34,14 @@ import {
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
-import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
+import {
+  containsSupportedMarkdownSyntax,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
+import {
+  renderMaxTextMarkupAsHtml,
+  type MaxTextMarkup,
+} from '../common/max-text-markup.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   buildCompactGiveawayHandoffStartPayload,
@@ -189,6 +196,7 @@ type PrivateSuggestionDraft = {
   token: string;
   text: string;
   textFormat: BroadcastTextFormat;
+  textMarkup: IncomingMessageMarkup[];
   images: PrivateSuggestionImageDraft[];
   video: PrivateSuggestionVideoDraft | null;
   // Legacy field keeps older persisted drafts readable until they are replaced.
@@ -275,21 +283,7 @@ type PrivateContext = {
   callbackPayload: string | null;
 };
 
-type IncomingMessageMarkup = {
-  from: number;
-  length: number;
-  type:
-    | 'emphasized'
-    | 'heading'
-    | 'link'
-    | 'monospaced'
-    | 'strikethrough'
-    | 'strong'
-    | 'underline'
-    | 'user_mention';
-  url: string | null;
-  userLink: string | null;
-};
+type IncomingMessageMarkup = MaxTextMarkup;
 
 type PrivateView = {
   text: string;
@@ -2620,7 +2614,10 @@ export class PrivateControlService {
       result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
         token: draft.token,
         text: draft.text,
-        ...(draft.textFormat === 'markdown' ? { textFormat: draft.textFormat } : {}),
+        ...(draft.textMarkup.length > 0 ? { textMarkup: draft.textMarkup } : {}),
+        ...(draft.textMarkup.length === 0 && draft.textFormat === 'markdown'
+          ? { textFormat: draft.textFormat }
+          : {}),
         ...(draft.images.length > 0
           ? {
               images: draft.images.map((image) => ({
@@ -5264,10 +5261,11 @@ export class PrivateControlService {
         }
 
         const nextTextPayload = rawText
-          ? this.extractIncomingFormattedTextPayload(context.update, rawText)
+          ? this.extractIncomingSuggestionTextPayload(context.update, rawText)
           : {
               text: previousDraft?.text ?? '',
               textFormat: previousDraft?.textFormat ?? 'plain',
+              textMarkup: previousDraft?.textMarkup ?? [],
             };
 
         session.suggestionDraft = {
@@ -5275,6 +5273,7 @@ export class PrivateControlService {
           token: pendingInput.token,
           text: nextTextPayload.text,
           textFormat: nextTextPayload.textFormat,
+          textMarkup: nextTextPayload.textMarkup,
           images: nextImages,
           video: nextVideo,
           imageBase64:
@@ -8953,6 +8952,7 @@ export class PrivateControlService {
     draft: PrivateSuggestionDraft,
     buttons: MaxMessageButton[][],
   ): MaxCustomMessagePayload {
+    const textPayload = this.buildSuggestionDraftTextPayload(draft);
     const attachments: Record<string, unknown>[] = [];
 
     if (draft.images.length > 0) {
@@ -8980,10 +8980,8 @@ export class PrivateControlService {
     }
 
     return {
-      ...(draft.text ? { text: draft.text } : {}),
-      ...(draft.text && draft.textFormat === 'markdown'
-        ? { textFormat: draft.textFormat }
-        : {}),
+      ...(textPayload ? { text: textPayload.text } : {}),
+      ...(textPayload?.textFormat ? { textFormat: textPayload.textFormat } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     };
   }
@@ -10069,6 +10067,60 @@ export class PrivateControlService {
 
   private shouldUseMarkdown(text: string): boolean {
     return containsSupportedMarkdownSyntax(text);
+  }
+
+  private buildSuggestionDraftTextPayload(
+    draft: Pick<PrivateSuggestionDraft, 'text' | 'textFormat' | 'textMarkup'>,
+  ): { text: string; textFormat?: MaxSendMessageOptions['textFormat'] } | null {
+    if (!draft.text) {
+      return null;
+    }
+
+    if (draft.textMarkup.length > 0) {
+      return {
+        text: renderMaxTextMarkupAsHtml(draft.text, draft.textMarkup) ?? draft.text,
+        textFormat: 'html',
+      };
+    }
+
+    if (draft.textFormat === 'markdown') {
+      return {
+        text: renderSupportedMarkdownAsHtml(draft.text, {
+          blockMode: 'raw',
+        }),
+        textFormat: 'html',
+      };
+    }
+
+    return {
+      text: draft.text,
+    };
+  }
+
+  private extractIncomingSuggestionTextPayload(
+    update: MaxUpdate,
+    fallbackText: string,
+  ): {
+    text: string;
+    textFormat: BroadcastTextFormat;
+    textMarkup: IncomingMessageMarkup[];
+  } {
+    const messageNode = this.extractIncomingMessageNode(update);
+    const body = this.asRecord(messageNode?.body);
+    const sourceText = this.readString(body?.text ?? messageNode?.text) || fallbackText;
+    if (!sourceText) {
+      return {
+        text: fallbackText,
+        textFormat: 'plain',
+        textMarkup: [],
+      };
+    }
+
+    return {
+      text: sourceText,
+      textFormat: 'plain',
+      textMarkup: this.extractIncomingMessageMarkup(messageNode),
+    };
   }
 
   private extractIncomingFormattedTextPayload(
@@ -12822,12 +12874,14 @@ export class PrivateControlService {
       (legacyMedia?.kind === 'video' ? legacyMedia : null);
     const normalizedImages =
       images.length > 0 ? images : legacyMedia?.kind === 'image' ? [legacyMedia] : [];
+    const textMarkup = this.normalizeSuggestionTextMarkup(rawRow.textMarkup);
 
     return {
       chatId,
       token,
       text: typeof row.text === 'string' ? row.text : '',
       textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
+      textMarkup,
       images: normalizedImages,
       video,
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
@@ -12884,6 +12938,16 @@ export class PrivateControlService {
   private normalizeSuggestionVideoDraft(raw: unknown): PrivateSuggestionVideoDraft | null {
     const media = this.normalizeSuggestionMediaDraft(raw);
     return media?.kind === 'video' ? media : null;
+  }
+
+  private normalizeSuggestionTextMarkup(raw: unknown): IncomingMessageMarkup[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+
+    return raw
+      .map((item) => this.normalizeIncomingMessageMarkup(item))
+      .filter((item): item is IncomingMessageMarkup => item !== null);
   }
 
   private parseScreen(value: unknown): PrivateScreen {
