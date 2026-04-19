@@ -2869,12 +2869,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'IRONIC') {
       if (action === 'WARN') {
-        return 'Да, это уже предупреждение. Повтор не сделал мысль убедительнее.';
+        return '⚠️ Это уже предупреждение. На бис тут выходят не до бесконечности.';
       }
       if (action === 'MUTE') {
-        return `Мут на ${muteDurationLabel}. Повторение полезно в учебнике, не в чате.`;
+        return `🔒 Мут на ${muteDurationLabel}. На бис тут выходят не все.`;
       }
-      return 'Бан без таймера. Эксперимент с повторами официально завершён.';
+      return '⛔ Занавес. Бан до ручного разбана.';
     }
 
     if (action === 'WARN') {
@@ -2911,7 +2911,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (style === 'IRONIC') {
-      return 'Повтор убрал. Эхо здесь карьеру не сделает.';
+      return messageDeleted
+        ? '♻️ Повтор убрал. На бис тут не вызывают.'
+        : '👀 Повтор заметил. На бис пока без санкций.';
     }
 
     return 'Пока без взыскания.';
@@ -3212,7 +3214,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (botSpeechStyle === 'IRONIC') {
-      return `${userLabel}, на этот раз дошло до бана без таймера. Настойчивость была впечатляющей, но лишней.`;
+      return `${userLabel}, на этом занавес ⛔ Бан до ручного разбана.`;
     }
 
     return `Товарищ ${userLabel}, тут уже шлагбаум ⛔ До ручного разбана.`;
