@@ -8966,6 +8966,130 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 
+  it('shows a fresh user-scoped bot_added chat provisionally from the inline recent cache before read-model writes finish', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: 'Перепел inline',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-04-20T09:00:00.000Z'),
+      primaryBotId: '777000_4_bot',
+      botId: '777000_4_bot',
+    }));
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock({
+        getManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue([
+          {
+            ...createChatSummaryFixture({
+              id: 'chat-inline-1',
+              title: 'Chat chat-inline-1',
+              createdAt: new Date('2026-04-20T09:00:00.000Z').toISOString(),
+              entityType: 'chat',
+              primaryBotId: '777000_4_bot',
+            }),
+            bootstrapUserIds: ['admin-1'],
+          },
+        ]),
+      }) as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'denied',
+      source: 'remote',
+      reason: 'bot_not_admin',
+    });
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-inline-1',
+        title: 'Перепел inline',
+        createdAt: '2026-04-20T09:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+  });
+
+  it('prefers a user-scoped recent bot_added row over a global inline cache hit for the same chat', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          chat_id: 'chat-priority-1',
+          chat_title: '',
+          is_channel: 'false',
+          last_event_at: new Date('2026-04-20T10:00:00.000Z').toISOString(),
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
+      id: where.id,
+      title: 'Приоритетный чат',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-04-20T10:00:00.000Z'),
+      primaryBotId: '777000_4_bot',
+      botId: '777000_4_bot',
+    }));
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      createChatContextCacheMock({
+        getManagedEntitiesRecentBootstrap: jest.fn().mockResolvedValue([
+          createChatSummaryFixture({
+            id: 'chat-priority-1',
+            title: 'Глобальный кэш',
+            createdAt: new Date('2026-04-20T09:59:00.000Z').toISOString(),
+            entityType: 'chat',
+            primaryBotId: '777000_4_bot',
+          }),
+        ]),
+      }) as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'denied',
+      source: 'remote',
+      reason: 'bot_not_admin',
+    });
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-priority-1',
+        title: 'Приоритетный чат',
+        createdAt: '2026-04-20T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+  });
+
   it('schedules a published snapshot rebuild when recent bot_added bootstrap finds a chat missing from the snapshot', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw
@@ -9833,11 +9957,6 @@ describe('AdminService.listChats', () => {
     ).resolves.toEqual([]);
 
     expect(maxChatAdminRosterSyncService.scheduleDiscoverySnapshotSync).toHaveBeenCalledWith([
-      expect.objectContaining({
-        chatId: 'chat-launch',
-        title: 'Лонч-чат',
-        entityType: 'chat',
-      }),
       expect.objectContaining({
         chatId: 'chat-priority',
         title: 'Приоритетный чат',

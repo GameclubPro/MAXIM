@@ -1007,7 +1007,7 @@ describe('WebhookService', () => {
             chatId: '-100128',
             chatTitle: 'Кэшируемый чат',
             entityType: 'channel',
-            senderId: 'id613002203036_bot',
+            senderId: 'user-77',
             text: '',
             createdAt: new Date('2026-04-03T12:02:00.000Z').toISOString(),
           },
@@ -1029,6 +1029,7 @@ describe('WebhookService', () => {
         channelOverview: null,
       },
       60,
+      'user-77',
     );
   });
 

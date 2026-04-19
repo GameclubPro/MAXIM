@@ -4047,9 +4047,12 @@ export class AdminService implements OnModuleDestroy {
     const managedEntitiesReadPrisma = this.getManagedEntitiesReadPrisma();
     const [rows, cachedRows] = await Promise.all([
       this.loadRecentBotAddedBootstrapRows(normalizedUserId),
-      this.loadRecentBotAddedBootstrapCacheRows(entityType),
+      this.loadRecentBotAddedBootstrapCacheRows(normalizedUserId, entityType),
     ]);
-    const safeRows = [...cachedRows, ...(Array.isArray(rows) ? rows : [])];
+    const safeRows = this.mergeRecentBotAddedBootstrapRows(
+      cachedRows,
+      Array.isArray(rows) ? rows : [],
+    );
 
     const bootstrapped: ChatSummary[] = [];
     const seen = new Set<string>();
@@ -4222,6 +4225,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private async loadRecentBotAddedBootstrapCacheRows(
+    userId: string,
     entityType: ManagedEntityTypeFilter,
   ): Promise<
     Array<{
@@ -4236,6 +4240,7 @@ export class AdminService implements OnModuleDestroy {
       return [];
     }
 
+    const normalizedUserId = userId.trim();
     const entityTypes: ManagedEntityType[] =
       entityType === 'all' ? ['chat', 'channel'] : [entityType];
     const groups = await Promise.all(
@@ -4245,19 +4250,94 @@ export class AdminService implements OnModuleDestroy {
       ),
     );
 
-    return this.mergeManagedEntityGroups(
+    return this.mergeRecentBotAddedBootstrapRows(
       ...groups.map((group) =>
         group
           .filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType))
-          .map((chat) => this.cloneManagedEntitySummary(chat)),
+          .map((chat) => ({
+            chat_id: chat.id,
+            chat_title: chat.title,
+            is_channel: chat.entityType === 'channel' ? 'true' : 'false',
+            user_scoped:
+              normalizedUserId.length > 0 &&
+              Array.isArray(chat.bootstrapUserIds) &&
+              chat.bootstrapUserIds.some((candidateUserId) => candidateUserId === normalizedUserId),
+            last_event_at: this.readTrimmedString(chat.createdAt),
+          })),
       ),
-    ).map((chat) => ({
-      chat_id: chat.id,
-      chat_title: chat.title,
-      is_channel: chat.entityType === 'channel' ? 'true' : 'false',
-      user_scoped: false,
-      last_event_at: null,
-    }));
+    );
+  }
+
+  private mergeRecentBotAddedBootstrapRows(
+    ...groups: Array<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        is_channel: string | null;
+        user_scoped: boolean;
+        last_event_at: Date | string | null;
+      }>
+    >
+  ): Array<{
+    chat_id: string | null;
+    chat_title: string | null;
+    is_channel: string | null;
+    user_scoped: boolean;
+    last_event_at: Date | string | null;
+  }> {
+    const merged = new Map<
+      string,
+      {
+        chat_id: string | null;
+        chat_title: string | null;
+        is_channel: string | null;
+        user_scoped: boolean;
+        last_event_at: Date | string | null;
+      }
+    >();
+
+    for (const group of groups) {
+      for (const row of group) {
+        const chatId = this.readTrimmedString(row.chat_id);
+        if (!chatId) {
+          continue;
+        }
+
+        const existing = merged.get(chatId);
+        if (!existing) {
+          merged.set(chatId, row);
+          continue;
+        }
+
+        if (row.user_scoped && !existing.user_scoped) {
+          merged.set(chatId, row);
+          continue;
+        }
+        if (!row.user_scoped && existing.user_scoped) {
+          continue;
+        }
+
+        const existingEventAtMs = this.readRecentBotAddedEventTimestampMs(existing.last_event_at);
+        const nextEventAtMs = this.readRecentBotAddedEventTimestampMs(row.last_event_at);
+        if (
+          nextEventAtMs !== null &&
+          (existingEventAtMs === null || nextEventAtMs > existingEventAtMs)
+        ) {
+          merged.set(chatId, row);
+          continue;
+        }
+
+        if (
+          nextEventAtMs === existingEventAtMs &&
+          this.readTrimmedString(row.chat_title) &&
+          !this.readTrimmedString(existing.chat_title)
+        ) {
+          merged.set(chatId, row);
+        }
+      }
+    }
+
+    return [...merged.values()];
   }
 
   private async buildRecentBotAddedProvisionalChat(params: {

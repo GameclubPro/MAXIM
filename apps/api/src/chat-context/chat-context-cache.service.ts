@@ -24,7 +24,10 @@ export type ChatContext = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
-type ManagedEntitiesRecentBootstrapSnapshot = ChatSummary[];
+type ManagedEntitiesRecentBootstrapEntry = ChatSummary & {
+  bootstrapUserIds?: string[];
+};
+type ManagedEntitiesRecentBootstrapSnapshot = ManagedEntitiesRecentBootstrapEntry[];
 export type ManagedEntitiesPublishedSnapshot = {
   version: string;
   builtAt: string;
@@ -66,6 +69,7 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private static readonly DEFAULT_MANAGED_ENTITY_HEADER_TTL_SEC = 60 * 60;
   private static readonly DEFAULT_MANAGED_ENTITY_BOT_PROFILE_TTL_SEC = 6 * 60 * 60;
   private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS = 20;
+  private static readonly MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS = 8;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
   private readonly subscriber: Redis;
@@ -816,7 +820,11 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async upsertManagedEntitiesRecentBootstrap(item: ChatSummary, ttlSec: number): Promise<void> {
+  async upsertManagedEntitiesRecentBootstrap(
+    item: ChatSummary,
+    ttlSec: number,
+    userId?: string | null,
+  ): Promise<void> {
     const normalizedChatId = item.id.trim();
     if (!normalizedChatId) {
       return;
@@ -824,8 +832,26 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
     const entityType = item.entityType;
     const current = await this.getManagedEntitiesRecentBootstrap(entityType);
+    const existing =
+      current.find((entry) => entry.id.trim() === normalizedChatId) ?? null;
+    const normalizedUserId =
+      typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
+    const mergedBootstrapUserIds = Array.from(
+      new Set([
+        ...(normalizedUserId ? [normalizedUserId] : []),
+        ...((existing?.bootstrapUserIds ?? [])
+          .map((value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null))
+          .filter((value): value is string => Boolean(value))),
+      ]),
+    ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
+    const nextEntry: ManagedEntitiesRecentBootstrapEntry = {
+      ...item,
+      ...(mergedBootstrapUserIds.length > 0
+        ? { bootstrapUserIds: mergedBootstrapUserIds }
+        : {}),
+    };
     const next = [
-      item,
+      nextEntry,
       ...current.filter((entry) => entry.id.trim() !== normalizedChatId),
     ].slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_ITEMS);
 
@@ -1194,7 +1220,22 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private isManagedEntitiesRecentBootstrapSnapshot(
     value: unknown,
   ): value is ManagedEntitiesRecentBootstrapSnapshot {
-    return Array.isArray(value) && value.every((item) => this.isChatSummary(item));
+    return Array.isArray(value) && value.every((item) => this.isManagedEntitiesRecentBootstrapEntry(item));
+  }
+
+  private isManagedEntitiesRecentBootstrapEntry(
+    value: unknown,
+  ): value is ManagedEntitiesRecentBootstrapEntry {
+    if (!this.isChatSummary(value)) {
+      return false;
+    }
+
+    const record = value as Record<string, unknown>;
+    return (
+      record.bootstrapUserIds === undefined ||
+      (Array.isArray(record.bootstrapUserIds) &&
+        record.bootstrapUserIds.every((userId) => typeof userId === 'string'))
+    );
   }
 
   private isManagedEntitiesPublishedSnapshot(

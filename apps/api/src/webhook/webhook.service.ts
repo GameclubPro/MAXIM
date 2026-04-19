@@ -220,11 +220,13 @@ export class WebhookService {
       sharedMode: 'owned',
       channelOverview: null,
     };
+    const bootstrapUserId = this.readManagedEntityPendingBootstrapUserId(update);
 
     try {
       await this.chatContextCache.upsertManagedEntitiesRecentBootstrap(
         summary,
         MANAGED_ENTITIES_PENDING_BOOTSTRAP_TTL_SEC,
+        bootstrapUserId,
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -236,6 +238,16 @@ export class WebhookService {
         'Failed to stage managed entity pending bootstrap from bot_added webhook',
       );
     }
+  }
+
+  private readManagedEntityPendingBootstrapUserId(update: MaxUpdate): string | null {
+    const senderId = update.message?.senderId?.trim() ?? '';
+    if (!senderId) {
+      return null;
+    }
+
+    const botId = update.botId?.trim() ?? '';
+    return senderId !== botId ? senderId : null;
   }
 
   private deferBackgroundTask(
