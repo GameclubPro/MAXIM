@@ -1530,6 +1530,62 @@ describe('RuleEngineService', () => {
     expect(violation).toBeUndefined();
   });
 
+  it('detects house repair and lifting service from real logs after property-noise tuning', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Участником сво и пенсионерам скидка 35%. Подъем домов и бань, ремонт и строительство. Поднятие зданий и сооружений. Замена нижних венцов. Строительство беседок, террас, веранд и пристроек. Устройство и ремонт фундаментов, отмосток. Звоните +7 900 000 00 00.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'promo:скидк',
+        'service-specialty:подъем-домов',
+        'service-specialty:ремонт-фундаментов',
+      ]),
+    );
+  });
+
+  it('detects promo goods sale with samovyvoz when service and deal signals are strong', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Распродажа! Пена монтажная под пистолет 65л. Лето. 800 грамм, по 350 р. Самовывоз ул. Республиканская 32. ЭкономСтрой ДВ. +7 909 853 90 88.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining([
+        'promo:распродаж',
+        'service-specialty:монтаж',
+        'transaction:price',
+      ]),
+    );
+  });
+
+  it('detects broker real-estate ad when your commission is implied by your markup', async () => {
+    const service = createRuleEngine();
+    const violation = await detectCommercialViolation(
+      service,
+      'Однушка Российский. Ремонт мебель техника. 43 кв, 4/7 этаж без лифта. Разбивка. Ваши сверху, любой заклад. Виктория +7 918 254 32 84.',
+      {
+        commercialAdsSensitivity: 'STRICT',
+      },
+    );
+
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.matchedSignals).toEqual(
+      expect.arrayContaining(['property-agent:комиссия-сверху']),
+    );
+  });
+
   it('does not add marketplace ozon signal for ozonation service ads', async () => {
     const service = createRuleEngine();
     const violation = await detectCommercialViolation(

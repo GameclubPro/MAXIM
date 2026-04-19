@@ -735,6 +735,28 @@ const ADS_SERVICE_OFFER_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:сделаю|изготовлю|построю|отремонтирую|починю|пробурю|сварю|сошью|свяжу|соберу)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
+const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'подъем-домов',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])под[ъь]?ем(?:[\p{L}\p{N}\s.,:;()/-]{0,24})(?:дом[\p{L}\p{N}_-]*|бан[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'замена-венцов',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])замен(?:а|им|ю|ить)(?:[\p{L}\p{N}\s.,:;()/-]{0,18})нижн(?:их|его)(?:[\p{L}\p{N}\s.,:;()/-]{0,12})венц(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'ремонт-фундаментов',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:устройств[\p{L}\p{N}_-]*|ремонт[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,14})фундамент[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'строительство-пристроек',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])строительств[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,20})(?:беседк[\p{L}\p{N}_-]*|террас[\p{L}\p{N}_-]*|веранд[\p{L}\p{N}_-]*|пристро[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
 const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
   {
     label: 'property-sale',
@@ -768,7 +790,7 @@ const ADS_PROPERTY_AGENT_PATTERNS: LabeledPattern[] = [
   {
     label: 'комиссия-сверху',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:ваша|ваши)\s+комисси[\p{L}\p{N}\s.,:;/-]{0,10}сверх(?:у|ом)?(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:(?:ваша|ваши)\s+комисси[\p{L}\p{N}\s.,:;/-]{0,10}сверх(?:у|ом)?|(?:ваша|ваши)\s+сверх(?:у|ом)?)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
     label: 'комиссия-обсуждается',
@@ -1279,31 +1301,37 @@ export class RuleEngineService {
       matchesPattern(pattern),
     );
 
+    const hasPromoContext = ADS_PROMO_MARKERS.some((marker) => hasMarker(marker));
+    const hasBuyoutContext = ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker));
+    const hasRecruitmentContext =
+      ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
+    const hasInfoProductContext = ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker));
     const hasCommercialContext =
-      ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
+      hasPromoContext ||
       ADS_BUSINESS_MARKERS.some(
         (marker) =>
           !(hasPropertyPrivateContext && PROPERTY_LISTING_NOISE_BUSINESS_MARKERS.has(marker)) &&
           hasMarker(marker),
       ) ||
       ADS_BUSINESS_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
-      ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_RECRUITMENT_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
-      ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker)) ||
+      hasBuyoutContext ||
+      hasRecruitmentContext ||
+      hasInfoProductContext ||
       hasPropertyAgentContext;
     const hasIntentContext = ADS_INTENT_MARKERS.some((marker) => hasMarker(marker));
     const hasServiceOfferContext =
       [...ADS_SERVICE_INTENT_MARKERS].some((marker) => hasMarker(marker)) ||
       ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
-    const hasServiceSpecialtyContext = ADS_SERVICE_SPECIALTY_MARKERS.some(
-      (marker) =>
-        !(
-          hasPropertyPrivateContext &&
-          !hasServiceOfferContext &&
-          PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
-        ) && hasMarker(marker),
-    );
+    const hasServiceSpecialtyContext =
+      ADS_SERVICE_SPECIALTY_MARKERS.some(
+        (marker) =>
+          !(
+            hasPropertyPrivateContext &&
+            !hasServiceOfferContext &&
+            PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+          ) && hasMarker(marker),
+      ) || ADS_SERVICE_SPECIALTY_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasGroupContext = ADS_GROUP_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasGroupPromotionIntent =
       ADS_GROUP_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
@@ -1337,13 +1365,23 @@ export class RuleEngineService {
     const hasServiceCommercialContext =
       (hasServiceOfferContext && hasDealSignal) ||
       (hasServiceSpecialtyContext && hasDealSignal && !hasSearchRequestContext);
+    const hasPrivateSaleCommercialOverride =
+      hasPropertyAgentContext ||
+      hasCommercialAudienceContext ||
+      hasChannelPlacementContext ||
+      hasBuyoutContext ||
+      hasRecruitmentContext ||
+      hasInfoProductContext ||
+      hasServiceCommercialContext;
+    const hasPrivateContextMarker = ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasSelfPromotionalContext =
       hasIntentContext ||
-      ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_RECRUITMENT_MARKERS.some((marker) => hasMarker(marker)) ||
-      ADS_INFO_PRODUCT_MARKERS.some((marker) => hasMarker(marker)) ||
+      hasPromoContext ||
+      hasBuyoutContext ||
+      hasRecruitmentContext ||
+      hasInfoProductContext ||
       hasServiceOfferContext ||
+      hasServiceCommercialContext ||
       hasCallToActionContext ||
       hasGroupPromotionIntent ||
       hasCommercialAudienceContext ||
@@ -1360,13 +1398,8 @@ export class RuleEngineService {
         hasServiceCommercialContext ||
         (hasGroupContext && hasDealSignal && hasGroupTradeContext && hasGroupPromotionIntent)) &&
       hasDealSignal &&
-      !(
-        hasPropertyPrivateContext &&
-        !hasPropertyAgentContext &&
-        !hasCommercialAudienceContext &&
-        !hasChannelPlacementContext
-      ) &&
-      !ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker))
+      !(hasPropertyPrivateContext && !hasPrivateSaleCommercialOverride) &&
+      !(hasPrivateContextMarker && !hasPrivateSaleCommercialOverride)
     );
   }
 
@@ -1378,6 +1411,7 @@ export class RuleEngineService {
       state.hasRecruitmentContext ||
       state.hasInfoProductContext ||
       state.hasServiceOfferContext ||
+      state.hasServiceContext ||
       state.hasCallToActionContext ||
       state.hasGroupPromotionIntent ||
       state.hasCommercialAudienceContext ||
@@ -1814,16 +1848,17 @@ export class RuleEngineService {
       state.hasServiceContext;
     const hasSelfPromotionalCommercialContext =
       this.hasExplicitSelfPromotionalCommercialContext(state);
+    const hasPrivateSaleCommercialOverride =
+      state.hasPropertyAgentContext ||
+      state.hasGroupPromoContext ||
+      state.hasCommercialAudienceContext ||
+      state.hasRecruitmentContext ||
+      state.hasBuyoutContext ||
+      state.hasInfoProductContext ||
+      state.hasServiceContext ||
+      state.hasServiceOfferContext;
 
-    if (
-      state.hasPrivateSaleContext &&
-      !state.hasPropertyAgentContext &&
-      !state.hasGroupPromoContext &&
-      !state.hasCommercialAudienceContext &&
-      !state.hasRecruitmentContext &&
-      !state.hasBuyoutContext &&
-      !state.hasInfoProductContext
-    ) {
+    if (state.hasPrivateSaleContext && !hasPrivateSaleCommercialOverride) {
       return null;
     }
 
@@ -2147,15 +2182,20 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
-    const serviceSpecialtyHits = ADS_SERVICE_SPECIALTY_MARKERS.filter(
-      (marker) =>
-        !(
-          hasPropertyPrivateContext &&
-          !hasServiceOfferContext &&
-          PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
-        ) && hasMarker(marker),
-    );
-    for (const marker of serviceSpecialtyHits.slice(0, 3)) {
+    const serviceSpecialtyHits = [
+      ...ADS_SERVICE_SPECIALTY_MARKERS.filter(
+        (marker) =>
+          !(
+            hasPropertyPrivateContext &&
+            !hasServiceOfferContext &&
+            PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS.has(marker)
+          ) && hasMarker(marker),
+      ),
+      ...ADS_SERVICE_SPECIALTY_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
+    for (const marker of [...new Set(serviceSpecialtyHits)].slice(0, 3)) {
       addPositive(`service-specialty:${marker}`, 8);
       hasServiceSpecialtyContext = true;
     }
