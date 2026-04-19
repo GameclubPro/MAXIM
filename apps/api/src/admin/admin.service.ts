@@ -7223,6 +7223,7 @@ export class AdminService implements OnModuleDestroy {
       ok: true,
       delivered: created.delivered,
       deliveredToUserId: created.deliveredToUserId,
+      queued: created.queued,
     } as const;
   }
 
@@ -19090,6 +19091,10 @@ export class AdminService implements OnModuleDestroy {
     return normalized.length > 0 ? normalized : null;
   }
 
+  private readRawString(value: unknown): string | null {
+    return typeof value === 'string' ? value : null;
+  }
+
   private readLowerString(value: unknown): string | null {
     const normalized = this.readTrimmedString(value);
     return normalized ? normalized.toLowerCase() : null;
@@ -19381,6 +19386,7 @@ export class AdminService implements OnModuleDestroy {
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date };
     delivered: boolean;
     deliveredToUserId: string | null;
+    queued: boolean;
   }> {
     const normalizedImages = this.normalizeChannelSuggestionImages({
       images: params.images,
@@ -19445,6 +19451,7 @@ export class AdminService implements OnModuleDestroy {
         row: created,
         delivered: false,
         deliveredToUserId: null,
+        queued: true,
       };
     }
 
@@ -19472,6 +19479,7 @@ export class AdminService implements OnModuleDestroy {
       row: updated,
       delivered: delivery.delivered,
       deliveredToUserId: delivery.deliveredToUserId,
+      queued: false,
     };
   }
 
@@ -19517,7 +19525,11 @@ export class AdminService implements OnModuleDestroy {
         avatarUrl: this.readTrimmedString(payload.authorAvatarUrl),
       },
       {
-        text: this.readTrimmedString(payload.text) ?? '',
+        text: this.readRawString(payload.text) ?? '',
+        textFormat: this.normalizeBroadcastTextFormat(
+          this.readTrimmedString(payload.textFormat) ?? 'plain',
+        ),
+        textMarkup: this.readChannelSuggestionTextMarkup(payload.textMarkup),
         images: this.readChannelSuggestionImageAssets(payload.images),
         imageBase64: this.readTrimmedString(payload.imageBase64),
         imageMimeType: this.readTrimmedString(payload.imageMimeType),
@@ -19798,7 +19810,7 @@ export class AdminService implements OnModuleDestroy {
     text: string;
     textFormat: MaxSendMessageOptions['textFormat'];
   } {
-    const normalizedText = params.text.trim();
+    const hasMeaningfulText = params.text.trim().length > 0;
     const title =
       params.status === 'published'
         ? '✅ Предложка опубликована'
@@ -19806,12 +19818,8 @@ export class AdminService implements OnModuleDestroy {
           ? '✖️ Предложка отклонена'
           : '📰 Новая предложка';
     const normalizedActorUserId = params.actorUserId.trim();
-    const richTextHtml = normalizedText
-      ? this.renderChannelSuggestionTextHtml(
-          normalizedText,
-          params.textMarkup,
-          params.textFormat,
-        )
+    const richTextHtml = hasMeaningfulText
+      ? this.renderChannelSuggestionTextHtml(params.text, params.textMarkup, params.textFormat)
       : null;
 
     if (richTextHtml) {
@@ -19865,8 +19873,8 @@ export class AdminService implements OnModuleDestroy {
         '',
         '━━━━━━━━━━━━',
         this.markdownTitle('Контент публикации'),
-        ...(normalizedText
-          ? [this.renderSuggestionTextForMarkdown(normalizedText, params.textFormat)]
+        ...(hasMeaningfulText
+          ? [this.renderSuggestionTextForMarkdown(params.text, params.textFormat)]
           : ['_Медиа без подписи. Смотрите вложение выше._']),
       ].join('\n'),
       textFormat: 'markdown',
@@ -19887,7 +19895,7 @@ export class AdminService implements OnModuleDestroy {
     botId: string | null;
   }> {
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
-    const text = this.readTrimmedString(payload.text) ?? '';
+    const text = this.readRawString(payload.text) ?? '';
     const media = await this.resolveChannelSuggestionAttachments(
       {
         images: this.readChannelSuggestionImageAssets(payload.images),
@@ -19913,7 +19921,7 @@ export class AdminService implements OnModuleDestroy {
       textMarkup,
     );
 
-    if (!text && !media.imagePayload && !media.attachments?.length) {
+    if (!text.trim() && !media.imagePayload && !media.attachments?.length) {
       throw new BadRequestException('В предложке нет текста или медиа для публикации.');
     }
 
@@ -19956,9 +19964,9 @@ export class AdminService implements OnModuleDestroy {
   } {
     const actorUserId = this.readTrimmedString(payload.actorUserId);
     const actorName = this.readTrimmedString(payload.authorDisplayName) ?? actorUserId ?? '';
-    const normalizedSuggestionText = suggestionText.trim();
-    const richTextHtml = normalizedSuggestionText
-      ? this.renderChannelSuggestionTextHtml(normalizedSuggestionText, textMarkup, textFormat)
+    const hasMeaningfulSuggestionText = suggestionText.trim().length > 0;
+    const richTextHtml = hasMeaningfulSuggestionText
+      ? this.renderChannelSuggestionTextHtml(suggestionText, textMarkup, textFormat)
       : null;
 
     if (richTextHtml) {
@@ -19971,7 +19979,7 @@ export class AdminService implements OnModuleDestroy {
           : 'От подписчика';
 
       return {
-        text: normalizedSuggestionText ? `${attribution}\n\n${richTextHtml}` : attribution,
+        text: hasMeaningfulSuggestionText ? `${attribution}\n\n${richTextHtml}` : attribution,
         textFormat: 'html',
       };
     }
@@ -19983,8 +19991,8 @@ export class AdminService implements OnModuleDestroy {
         : 'От подписчика';
 
     return {
-      text: normalizedSuggestionText
-        ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(normalizedSuggestionText, textFormat)}`
+      text: hasMeaningfulSuggestionText
+        ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(suggestionText, textFormat)}`
         : attribution,
       textFormat: 'markdown',
     };
@@ -20071,7 +20079,7 @@ export class AdminService implements OnModuleDestroy {
       channelTitle,
       actorName,
       actorUserId,
-      text: this.readTrimmedString(payload.text) ?? '',
+      text: this.readRawString(payload.text) ?? '',
       textFormat: this.normalizeBroadcastTextFormat(
         this.readTrimmedString(payload.textFormat) ?? 'plain',
       ),
@@ -20198,7 +20206,7 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Неверный токен предложки.');
     }
 
-    const text = this.readTrimmedString(row.text) ?? '';
+    const text = this.readRawString(row.text) ?? '';
     if (text.length > 2_000) {
       throw new BadRequestException('Текст предложки слишком длинный.');
     }
@@ -20223,7 +20231,7 @@ export class AdminService implements OnModuleDestroy {
     const mediaMimeType = this.readTrimmedString(row.mediaMimeType);
     const mediaFileName = this.readTrimmedString(row.mediaFileName);
 
-    if (!text && images.length === 0 && !imageBase64 && !mediaPayload) {
+    if (!text.trim() && images.length === 0 && !imageBase64 && !mediaPayload) {
       throw new BadRequestException('Пришлите текст, фото, видео или подпись к медиа.');
     }
 

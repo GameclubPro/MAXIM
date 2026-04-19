@@ -792,6 +792,7 @@ function createHarness(
       ok: true,
       delivered: true,
       deliveredToUserId: 'admin-1',
+      queued: false,
     }),
     reviewChannelSuggestionByAdmin: jest.fn().mockResolvedValue({
       status: 'reviewed',
@@ -2671,6 +2672,43 @@ describe('PrivateControlService', () => {
     );
 
     expect(getLastEditedText(maxClient)).toContain('📰 Предложка');
+  });
+
+  it('shows a queue confirmation instead of a fake delivery failure when suggestion delivery is deferred', async () => {
+    const { service, adminService, maxClient, channels } = createHarness({
+      adminService: {
+        createChannelSuggestionFromBot: jest.fn().mockResolvedValue({
+          ok: true,
+          delivered: false,
+          deliveredToUserId: null,
+          queued: true,
+        }),
+      },
+    });
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-q');
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|suggestion_compose|${channels[0].id}|cdt-suggest-token-q`),
+    );
+    await service.handleUpdate(createPrivateTextUpdate('Текст для очереди'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        token: 'cdt-suggest-token-q',
+        text: 'Текст для очереди',
+      }),
+    );
+    expect(getLastEditedText(maxClient)).toContain('⏳ Материал принят');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Материал принят и поставлен в очередь доставки редакторам канала.',
+    );
+    expect(getLastEditedText(maxClient)).not.toContain(
+      'Сейчас не удалось сразу доставить материал редакторам канала.',
+    );
   });
 
   it('preserves MAX body markup in suggestion preview and admin delivery payload', async () => {

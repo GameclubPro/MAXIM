@@ -21130,6 +21130,146 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('keeps MAX markup when queued bot suggestions are later delivered to admins', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-rich-queued-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:11:45.000Z'),
+    });
+    (prisma.auditLog as any).findUnique = jest.fn().mockResolvedValue({
+      id: 'suggestion-rich-queued-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      action: 'CHANNEL_DIALOG_SUGGESTION',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: '\n🔥MAX Docs\n\nВторой абзац',
+        textFormat: 'plain',
+        textMarkup: [
+          {
+            from: 3,
+            length: 8,
+            type: 'strong',
+          },
+          {
+            from: 3,
+            length: 8,
+            type: 'link',
+            url: 'https://dev.max.ru/docs-api',
+          },
+        ],
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+        source: 'private_bot',
+        reviewStatus: 'pending',
+        hasImage: false,
+        imageCount: 0,
+        hasVideo: false,
+        images: [],
+      },
+      createdAt: new Date('2026-03-10T12:11:45.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6c', url: null }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-admin-rich-queued-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const adminSuggestionDeliveryQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      adminSuggestionDeliveryQueue as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+    const sourceText = '\n🔥MAX Docs\n\nВторой абзац';
+    const expectedHtml =
+      '\n🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац';
+
+    const result = await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: sourceText,
+        textMarkup: [
+          {
+            from: 3,
+            length: 8,
+            type: 'strong',
+          },
+          {
+            from: 3,
+            length: 8,
+            type: 'link',
+            url: 'https://dev.max.ru/docs-api',
+          },
+        ],
+      },
+    );
+
+    expect(result).toEqual({
+      ok: true,
+      delivered: false,
+      deliveredToUserId: null,
+      queued: true,
+    });
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+
+    await service.processChannelSuggestionDeliveryJob('suggestion-rich-queued-1');
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining(expectedHtml),
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+      }),
+    );
+  });
+
   it('rejects a suggestion when the per-user daily limit is reached', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

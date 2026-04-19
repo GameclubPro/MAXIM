@@ -2068,11 +2068,14 @@ export class PrivateControlService {
       messageNode.message_text,
       messageNode.messageText,
       body?.text,
+      body?.caption,
       body?.plain,
       content?.text,
       content?.caption,
       payload?.text,
+      payload?.caption,
       nestedMessage?.text,
+      nestedMessage?.caption,
     ];
 
     for (const candidate of candidates) {
@@ -2537,11 +2540,14 @@ export class PrivateControlService {
       node.message_text,
       node.messageText,
       body?.text,
+      body?.caption,
       body?.plain,
       content?.text,
       content?.caption,
       payload?.text,
+      payload?.caption,
       nestedMessage?.text,
+      nestedMessage?.caption,
     ];
 
     for (const candidate of candidates) {
@@ -2651,10 +2657,16 @@ export class PrivateControlService {
 
     const view = result.delivered
       ? await this.renderChannelSuggestionSubmittedView(draft.chatId, draft.token)
-      : await this.renderChannelSuggestionQueuedView(draft.chatId, draft.token);
+      : result.queued
+        ? await this.renderChannelSuggestionQueuedView(draft.chatId, draft.token)
+        : await this.renderChannelSuggestionUndeliveredView(draft.chatId, draft.token);
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
-      notification: result.delivered ? 'Отправлено админам' : 'Сохранено без доставки',
+      notification: result.delivered
+        ? 'Отправлено редакторам'
+        : result.queued
+          ? 'Поставлено в очередь'
+          : 'Сохранено, доставка не подтверждена',
     });
   }
 
@@ -8750,10 +8762,29 @@ export class PrivateControlService {
   ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('⏳ Материал сохранён'),
+        this.markdownTitle('⏳ Материал принят'),
         '',
-        'Сейчас не удалось сразу доставить материал редакторам канала.',
-        'Материал сохранён, но редакторы его ещё не получили.',
+        'Материал принят и поставлен в очередь доставки редакторам канала.',
+        'Обычно он появляется у редакторов чуть позже без вашего участия.',
+        '',
+        'Дополнить уже отправленную предложку нельзя: для правок отправьте новую.',
+      ].join('\n'),
+      options: {
+        buttons: await this.buildChannelSuggestionCompletionButtons(chatId, token),
+      },
+    };
+  }
+
+  private async renderChannelSuggestionUndeliveredView(
+    chatId: string,
+    token: string,
+  ): Promise<PrivateView> {
+    return {
+      text: [
+        this.markdownTitle('⚠️ Материал сохранён'),
+        '',
+        'Черновик сохранён, но бот не подтвердил доставку редакторам канала.',
+        'Лучше отправить предложку ещё раз или проверить, что редакторы открывали личные сообщения бота.',
         '',
         'Дополнить уже сохранённую предложку нельзя: при правках отправьте новую.',
       ].join('\n'),
@@ -10106,8 +10137,8 @@ export class PrivateControlService {
     textMarkup: IncomingMessageMarkup[];
   } {
     const messageNode = this.extractIncomingMessageNode(update);
-    const body = this.asRecord(messageNode?.body);
-    const sourceText = this.readString(body?.text ?? messageNode?.text) || fallbackText;
+    const sourceText =
+      (messageNode ? this.extractMessageTextFromNode(messageNode) : null) || fallbackText;
     if (!sourceText) {
       return {
         text: fallbackText,
@@ -10131,8 +10162,8 @@ export class PrivateControlService {
     textFormat: BroadcastTextFormat;
   } {
     const messageNode = this.extractIncomingMessageNode(update);
-    const body = this.asRecord(messageNode?.body);
-    const sourceText = this.readString(body?.text ?? messageNode?.text) || fallbackText;
+    const sourceText =
+      (messageNode ? this.extractMessageTextFromNode(messageNode) : null) || fallbackText;
     if (!sourceText) {
       return {
         text: fallbackText,
@@ -10179,11 +10210,25 @@ export class PrivateControlService {
     messageNode: Record<string, unknown> | null,
   ): IncomingMessageMarkup[] {
     const body = this.asRecord(messageNode?.body);
-    const rawMarkup = Array.isArray(body?.markup)
-      ? body.markup
-      : Array.isArray(messageNode?.markup)
-        ? messageNode.markup
-        : [];
+    const content = this.asRecord(messageNode?.content);
+    const payload = this.asRecord(messageNode?.payload);
+    const nestedMessage = this.asRecord(messageNode?.message);
+    const rawMarkup =
+      [
+        body?.markup,
+        body?.text_markup,
+        body?.caption_markup,
+        content?.markup,
+        content?.text_markup,
+        content?.caption_markup,
+        payload?.markup,
+        payload?.text_markup,
+        payload?.caption_markup,
+        nestedMessage?.markup,
+        nestedMessage?.text_markup,
+        nestedMessage?.caption_markup,
+        messageNode?.markup,
+      ].find((value) => Array.isArray(value)) ?? [];
 
     return rawMarkup
       .map((item) => this.normalizeIncomingMessageMarkup(item))
