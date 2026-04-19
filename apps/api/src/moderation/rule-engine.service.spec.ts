@@ -1,4 +1,8 @@
 import { LinkPolicy, type ChatSettings } from '@prisma/client';
+import {
+  COMMERCIAL_REAL_WORLD_NEGATIVE_CASES,
+  COMMERCIAL_REAL_WORLD_POSITIVE_CASES,
+} from './commercial-real-world.fixture';
 import type { CommercialCampaignContext } from './commercial-campaign.util';
 import { PROFANITY_EXACT_VARIANT_COUNT } from './profanity-lexicon';
 import { RuleEngineService } from './rule-engine.service';
@@ -1735,6 +1739,35 @@ describe('RuleEngineService', () => {
         'booster:urgency',
         'booster:quantity',
       ]),
+    );
+  });
+
+  describe('commercial real-world benchmark', () => {
+    it.each(COMMERCIAL_REAL_WORLD_POSITIVE_CASES)(
+      'detects $label',
+      async ({ text, expectedSubtype, reviewRecommended, expectedSignals, overrides }) => {
+        const service = createRuleEngine();
+        const violation = await detectCommercialViolation(service, text, overrides);
+
+        expect(violation).toBeDefined();
+        expect(violation?.metadata?.primarySubtype).toBe(expectedSubtype);
+        if (typeof reviewRecommended === 'boolean') {
+          expect(violation?.metadata?.reviewRecommended).toBe(reviewRecommended);
+        }
+        expect(violation?.metadata?.matchedSignals).toEqual(
+          expect.arrayContaining(expectedSignals),
+        );
+      },
+    );
+
+    it.each(COMMERCIAL_REAL_WORLD_NEGATIVE_CASES)(
+      'skips $label',
+      async ({ text, overrides }) => {
+        const service = createRuleEngine();
+        const violation = await detectCommercialViolation(service, text, overrides);
+
+        expect(violation).toBeUndefined();
+      },
     );
   });
 

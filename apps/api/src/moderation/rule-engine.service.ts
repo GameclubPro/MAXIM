@@ -136,6 +136,7 @@ type CommercialSignalState = {
   hasCommercialContext: boolean;
   hasCampaignContext: boolean;
   hasPrivateSaleContext: boolean;
+  hasPropertyPrivateContext: boolean;
   hasPropertyAgentContext: boolean;
   hasStrongNegativeContext: boolean;
 };
@@ -730,6 +731,11 @@ const ADS_SEARCH_REQUEST_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])(?:кто\s+(?:знает|подскажет|делал|обращал[\p{L}\p{N}_-]*|заказывал|пользовал[\p{L}\p{N}_-]*)|может\s+кто\s+знает)(?=$|[^\p{L}\p{N}_-])/u,
   },
   {
+    label: 'request:who-repairs',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])кто\s+(?:ремонтиру(?:ет|ют)|чинит)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
     label: 'request:contact',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:у\s+кого\s+есть|поделитесь|есть\s+ли)\s+(?:контакт[\p{L}\p{N}_-]*|номер[\p{L}\p{N}_-]*|телефон[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/u,
@@ -792,7 +798,7 @@ const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
   {
     label: 'property-listing',
     pattern:
-      /(?:^|[^\p{L}\p{N}_-])(?:квартир[\p{L}\p{N}_-]*|дом[\p{L}\p{N}_-]*|участ[\p{L}\p{N}_-]*|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,100})(?:этаж|балкон|лоджи|сануз|ипотек|собственник|жк|дкп|обремен|ремонт)(?=$|[^\p{L}\p{N}_-])/u,
+      /(?:^|[^\p{L}\p{N}_-])(?:квартир[\p{L}\p{N}_-]*|кв\.?|студи[\p{L}\p{N}_-]*|комнат[\p{L}\p{N}_-]*|\d+\s*к\.?\s*кв\.?)(?:[\p{L}\p{N}\s.,:;()/-]{0,100})(?:этаж|балкон|лоджи|сануз|ипотек|собственник|жк|дкп|обремен|ремонт|мебел[\p{L}\p{N}_-]*|техник[\p{L}\p{N}_-]*|цена)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
 const ADS_PROPERTY_CONTEXT_PATTERNS: LabeledPattern[] = [
@@ -810,6 +816,11 @@ const ADS_PROPERTY_CONTEXT_PATTERNS: LabeledPattern[] = [
     label: 'property-land',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:ижс|днт|снт|з\/у|участок|земельный\s+участок)(?:[\p{L}\p{N}\s.,:;()/-]{0,80})(?:сот|дом|цена|продам|продаю|комисси|тел\.?|телефон|ремонт)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+  {
+    label: 'property-house-specs',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:дом|коттедж|таунхаус)(?:[\p{L}\p{N}\s.,:;()/-]{0,120})(?:участ(?:ок)?|сот|ипотек|септик|скважин|газ(?:\s+по\s+меже)?|свет|цена)(?=$|[^\p{L}\p{N}_-])/u,
   },
 ];
 const ADS_PROPERTY_AGENT_PATTERNS: LabeledPattern[] = [
@@ -848,6 +859,7 @@ const PROPERTY_LISTING_NOISE_SERVICE_SPECIALTY_MARKERS = new Set([
   'сантехник',
   'сборк',
   'установк',
+  'септик',
 ]);
 const PROPERTY_LISTING_NOISE_BUSINESS_MARKERS = new Set(['магазин', 'студия']);
 const ADS_SPECIAL_TOKEN_MATCHERS = new Map<string, RegExp>([
@@ -866,6 +878,8 @@ const ADS_PRICE_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])\d{2,}\s?(?:₽|руб(?:\.|лей)?|р\.?|₸|\$|€)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_TRANSACTIONAL_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:цена|цены|стоимость|оплата|предоплата|доставка|в наличии)(?=$|[^\p{L}\p{N}_-])/iu;
+const ADS_PROPERTY_UTILITY_PAYMENT_PATTERN =
+  /(?:^|[^\p{L}\p{N}_-])ком(?:мунальн(?:ые|ых|ым|ыми))?(?:\s*|\.)услуг[\p{L}\p{N}_-]*(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_URGENCY_PATTERN =
   /(?:^|[^\p{L}\p{N}_-])(?:срочно|только сегодня|до конца дня|осталось\s+\d+)(?=$|[^\p{L}\p{N}_-])/iu;
 const ADS_QUANTITY_PATTERN =
@@ -1329,6 +1343,9 @@ export class RuleEngineService {
     const hasMarker = (marker: string): boolean => this.hasCommercialMarker(marker, markerContext);
     const matchesPattern = (pattern: RegExp): boolean =>
       this.matchesCommercialPattern(pattern, markerContext);
+    const hasUtilityPaymentContext =
+      ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(normalizedText) ||
+      ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(rawLoweredText);
     const hasPropertyPrivateContext =
       ADS_PROPERTY_PRIVATE_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
       ADS_PROPERTY_CONTEXT_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
@@ -1354,9 +1371,23 @@ export class RuleEngineService {
       hasRecruitmentContext ||
       hasInfoProductContext ||
       hasPropertyAgentContext;
-    const hasIntentContext = ADS_INTENT_MARKERS.some((marker) => hasMarker(marker));
+    const hasIntentContext = ADS_INTENT_MARKERS.some(
+      (marker) =>
+        !(
+          hasPropertyPrivateContext &&
+          hasUtilityPaymentContext &&
+          ADS_SERVICE_INTENT_MARKERS.has(marker)
+        ) && hasMarker(marker),
+    );
     const hasServiceOfferContext =
-      [...ADS_SERVICE_INTENT_MARKERS].some((marker) => hasMarker(marker)) ||
+      [...ADS_SERVICE_INTENT_MARKERS].some(
+        (marker) =>
+          !(
+            hasPropertyPrivateContext &&
+            hasUtilityPaymentContext &&
+            ADS_SERVICE_INTENT_MARKERS.has(marker)
+          ) && hasMarker(marker),
+      ) ||
       ADS_SERVICE_OFFER_PATTERNS.some(({ pattern }) => matchesPattern(pattern));
     const hasServiceSpecialtyContext =
       ADS_SERVICE_SPECIALTY_MARKERS.some(
@@ -1400,6 +1431,8 @@ export class RuleEngineService {
     const hasServiceCommercialContext =
       (hasServiceOfferContext && hasDealSignal) ||
       (hasServiceSpecialtyContext && hasDealSignal && !hasSearchRequestContext);
+    const hasPropertyServiceCommercialOverride =
+      hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
       hasPropertyAgentContext ||
       hasCommercialAudienceContext ||
@@ -1407,7 +1440,7 @@ export class RuleEngineService {
       hasBuyoutContext ||
       hasRecruitmentContext ||
       hasInfoProductContext ||
-      hasServiceCommercialContext;
+      hasPropertyServiceCommercialOverride;
     const hasPrivateContextMarker = ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasSelfPromotionalContext =
       hasIntentContext ||
@@ -1907,7 +1940,8 @@ export class RuleEngineService {
       state.hasRecruitmentContext ||
       state.hasBuyoutContext ||
       state.hasInfoProductContext ||
-      state.hasServiceContext ||
+      (state.hasServiceContext &&
+        (!state.hasPropertyPrivateContext || state.hasServiceOfferContext)) ||
       state.hasServiceOfferContext;
 
     if (state.hasPrivateSaleContext && !hasPrivateSaleCommercialOverride) {
@@ -2300,8 +2334,35 @@ export class RuleEngineService {
     const hasMarker = (marker: string): boolean => this.hasCommercialMarker(marker, markerContext);
     const matchesPattern = (pattern: RegExp): boolean =>
       this.matchesCommercialPattern(pattern, markerContext);
+    const hasUtilityPaymentContext =
+      ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(normalizedText) ||
+      ADS_PROPERTY_UTILITY_PAYMENT_PATTERN.test(rawLoweredText);
 
-    const intentHits = ADS_INTENT_MARKERS.filter((marker) => hasMarker(marker));
+    const propertyPrivateHits = [
+      ...ADS_PROPERTY_PRIVATE_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+      ...ADS_PROPERTY_CONTEXT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
+        ({ label }) => label,
+      ),
+    ];
+    if (propertyPrivateHits.length > 0) {
+      addNegative('private:property-sale', 26, true);
+      hasPrivateSaleContext = true;
+      hasPropertyPrivateContext = true;
+    }
+
+    const intentHits = ADS_INTENT_MARKERS.filter((marker) => {
+      if (
+        hasPropertyPrivateContext &&
+        hasUtilityPaymentContext &&
+        ADS_SERVICE_INTENT_MARKERS.has(marker)
+      ) {
+        return false;
+      }
+
+      return hasMarker(marker);
+    });
     for (const marker of intentHits.slice(0, 3)) {
       addPositive(`intent:${marker}`, 10);
       hasIntent = true;
@@ -2326,20 +2387,6 @@ export class RuleEngineService {
       addPositive(`promo:${marker}`, 12);
       hasPromoContext = true;
       hasCommercialContext = true;
-    }
-
-    const propertyPrivateHits = [
-      ...ADS_PROPERTY_PRIVATE_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-        ({ label }) => label,
-      ),
-      ...ADS_PROPERTY_CONTEXT_PATTERNS.filter(({ pattern }) => matchesPattern(pattern)).map(
-        ({ label }) => label,
-      ),
-    ];
-    if (propertyPrivateHits.length > 0) {
-      addNegative('private:property-sale', 26, true);
-      hasPrivateSaleContext = true;
-      hasPropertyPrivateContext = true;
     }
 
     const propertyAgentHits = ADS_PROPERTY_AGENT_PATTERNS.filter(({ pattern }) =>
@@ -2769,6 +2816,7 @@ export class RuleEngineService {
       hasCommercialContext,
       hasCampaignContext,
       hasPrivateSaleContext,
+      hasPropertyPrivateContext,
       hasPropertyAgentContext,
       hasStrongNegativeContext,
     };
