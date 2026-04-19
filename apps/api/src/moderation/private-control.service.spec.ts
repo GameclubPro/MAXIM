@@ -2673,6 +2673,56 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain('📰 Предложка');
   });
 
+  it('preserves MAX body markup in suggestion preview and admin delivery payload', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-6');
+    const sourceText = '🔥MAX Docs\n\nВторой абзац';
+    const formattedText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+    const label = 'MAX Docs';
+    const from = messageOffsetIndexOf(sourceText, label);
+    const length = countMessageOffsetUnits(label);
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|suggestion_compose|${channels[0].id}|cdt-suggest-token-6`),
+    );
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          from,
+          length,
+          type: 'strong',
+        },
+        {
+          from,
+          length,
+          type: 'link',
+          url: 'https://dev.max.ru/docs-api',
+        },
+      ]),
+    );
+
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenLastCalledWith(
+      '152517912',
+      expect.objectContaining({
+        text: formattedText,
+        textFormat: 'markdown',
+      }),
+    );
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      {
+        token: 'cdt-suggest-token-6',
+        text: formattedText,
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('accumulates suggestion photos in preview and keeps them when text changes', async () => {
     const { service, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-4');

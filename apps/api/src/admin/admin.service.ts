@@ -378,6 +378,7 @@ type ChannelSuggestionImageAsset = {
 
 type ChannelSuggestionDeliveryInput = {
   text: string;
+  textFormat?: BroadcastTextFormat | null;
   images?: ChannelSuggestionImageAsset[] | null;
   imageBase64?: string | null;
   imageMimeType?: string | null;
@@ -807,6 +808,7 @@ type ChannelSuggestionFromBotPayload = {
   token: string;
   images: ChannelSuggestionImageAsset[];
   text: string;
+  textFormat: BroadcastTextFormat;
   imageBase64: string | null;
   imageMimeType: string | null;
   imageFileName: string | null;
@@ -7194,6 +7196,7 @@ export class AdminService implements OnModuleDestroy {
       threadId,
       source: 'private_bot',
       text: parsed.text,
+      textFormat: parsed.textFormat,
       images: parsed.images,
       imageBase64: parsed.imageBase64,
       imageMimeType: parsed.imageMimeType,
@@ -19306,6 +19309,7 @@ export class AdminService implements OnModuleDestroy {
     threadId: string | null;
     source: ChannelDialogMessageSource;
     text: string;
+    textFormat?: BroadcastTextFormat | null;
     images?: ChannelSuggestionImageAsset[] | null;
     imageBase64?: string | null;
     imageMimeType?: string | null;
@@ -19342,6 +19346,7 @@ export class AdminService implements OnModuleDestroy {
           type: 'suggest',
           threadId: params.threadId,
           text: params.text,
+          ...(params.textFormat === 'markdown' ? { textFormat: params.textFormat } : {}),
           actorUserId: params.user.userId,
           authorDisplayName: this.resolveChannelSuggestionActorDisplayName(params.user),
           authorAvatarUrl: this.readTrimmedString(params.user.avatarUrl) ?? null,
@@ -19387,6 +19392,7 @@ export class AdminService implements OnModuleDestroy {
       params.user,
       {
         text: params.text,
+        ...(params.textFormat ? { textFormat: params.textFormat } : {}),
         images: normalizedImages,
         imageBase64: params.imageBase64,
         imageMimeType: params.imageMimeType,
@@ -19608,6 +19614,7 @@ export class AdminService implements OnModuleDestroy {
       actorName,
       actorUserId: user.userId,
       text: suggestion.text,
+      textFormat: suggestion.textFormat ?? 'plain',
       reviewedBy: null,
       publishedUrl: null,
     });
@@ -19712,6 +19719,7 @@ export class AdminService implements OnModuleDestroy {
     actorName: string;
     actorUserId: string;
     text: string;
+    textFormat: BroadcastTextFormat;
     reviewedBy: string | null;
     publishedUrl: string | null;
   }): string {
@@ -19741,7 +19749,7 @@ export class AdminService implements OnModuleDestroy {
       '━━━━━━━━━━━━',
       this.markdownTitle('Контент публикации'),
       ...(normalizedText
-        ? [this.escapeMarkdown(normalizedText)]
+        ? [this.renderSuggestionTextForMarkdown(normalizedText, params.textFormat)]
         : ['_Медиа без подписи. Смотрите вложение выше._']),
     ].join('\n');
   }
@@ -19775,7 +19783,13 @@ export class AdminService implements OnModuleDestroy {
       resolvedBotId,
     );
     const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
-    const messageText = this.buildPublishedChannelSuggestionMessageText(payload, text);
+    const messageText = this.buildPublishedChannelSuggestionMessageText(
+      payload,
+      text,
+      this.normalizeBroadcastTextFormat(
+        this.readTrimmedString(payload.textFormat) ?? 'plain',
+      ),
+    );
 
     if (!text && !media.imagePayload && !media.attachments?.length) {
       throw new BadRequestException('В предложке нет текста или медиа для публикации.');
@@ -19812,6 +19826,7 @@ export class AdminService implements OnModuleDestroy {
   private buildPublishedChannelSuggestionMessageText(
     payload: Record<string, unknown>,
     suggestionText: string,
+    textFormat: BroadcastTextFormat,
   ): string {
     const actorUserId = this.readTrimmedString(payload.actorUserId);
     const actorName = this.readTrimmedString(payload.authorDisplayName) ?? actorUserId ?? '';
@@ -19823,7 +19838,7 @@ export class AdminService implements OnModuleDestroy {
     const normalizedSuggestionText = suggestionText.trim();
 
     return normalizedSuggestionText
-      ? `${attribution}\n\n${this.escapeMarkdown(normalizedSuggestionText)}`
+      ? `${attribution}\n\n${this.renderSuggestionTextForMarkdown(normalizedSuggestionText, textFormat)}`
       : attribution;
   }
 
@@ -19908,6 +19923,9 @@ export class AdminService implements OnModuleDestroy {
       actorName,
       actorUserId,
       text: this.readTrimmedString(payload.text) ?? '',
+      textFormat: this.normalizeBroadcastTextFormat(
+        this.readTrimmedString(payload.textFormat) ?? 'plain',
+      ),
       reviewedBy,
       publishedUrl: this.readTrimmedString(payload.publishedUrl),
     });
@@ -19986,8 +20004,19 @@ export class AdminService implements OnModuleDestroy {
     return `**${this.escapeMarkdown(title)}**`;
   }
 
+  private renderSuggestionTextForMarkdown(
+    value: string,
+    textFormat: BroadcastTextFormat | null | undefined,
+  ): string {
+    return textFormat === 'markdown' ? value : this.escapeMarkdownPlainText(value);
+  }
+
   private escapeMarkdown(value: string): string {
     return value.replace(/([\\_*[\]()`])/g, '\\$1');
+  }
+
+  private escapeMarkdownPlainText(value: string): string {
+    return value.replace(/([\\`*_[\]()~+#])/g, '\\$1');
   }
 
   private parseChannelSuggestionFromBotPayload(body: unknown): ChannelSuggestionFromBotPayload {
@@ -20014,6 +20043,9 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const images = this.readChannelSuggestionImageAssets(row.images);
+    const textFormat = this.normalizeBroadcastTextFormat(
+      this.readTrimmedString(row.textFormat) ?? 'plain',
+    );
     const imageBase64 = this.readTrimmedString(row.imageBase64);
     const imageMimeType = this.readTrimmedString(row.imageMimeType);
     const imageFileName = this.readTrimmedString(row.imageFileName);
@@ -20071,6 +20103,7 @@ export class AdminService implements OnModuleDestroy {
       token,
       images,
       text,
+      textFormat,
       imageBase64,
       imageMimeType,
       imageFileName,

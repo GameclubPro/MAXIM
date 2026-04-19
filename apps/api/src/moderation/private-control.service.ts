@@ -188,6 +188,7 @@ type PrivateSuggestionDraft = {
   chatId: string;
   token: string;
   text: string;
+  textFormat: BroadcastTextFormat;
   images: PrivateSuggestionImageDraft[];
   video: PrivateSuggestionVideoDraft | null;
   // Legacy field keeps older persisted drafts readable until they are replaced.
@@ -2619,6 +2620,7 @@ export class PrivateControlService {
       result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
         token: draft.token,
         text: draft.text,
+        ...(draft.textFormat === 'markdown' ? { textFormat: draft.textFormat } : {}),
         ...(draft.images.length > 0
           ? {
               images: draft.images.map((image) => ({
@@ -5261,10 +5263,18 @@ export class PrivateControlService {
           nextVideo = null;
         }
 
+        const nextTextPayload = rawText
+          ? this.extractIncomingFormattedTextPayload(context.update, rawText)
+          : {
+              text: previousDraft?.text ?? '',
+              textFormat: previousDraft?.textFormat ?? 'plain',
+            };
+
         session.suggestionDraft = {
           chatId: pendingInput.chatId,
           token: pendingInput.token,
-          text: rawText || previousDraft?.text || '',
+          text: nextTextPayload.text,
+          textFormat: nextTextPayload.textFormat,
           images: nextImages,
           video: nextVideo,
           imageBase64:
@@ -8971,6 +8981,9 @@ export class PrivateControlService {
 
     return {
       ...(draft.text ? { text: draft.text } : {}),
+      ...(draft.text && draft.textFormat === 'markdown'
+        ? { textFormat: draft.textFormat }
+        : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
     };
   }
@@ -10058,17 +10071,40 @@ export class PrivateControlService {
     return containsSupportedMarkdownSyntax(text);
   }
 
-  private extractIncomingFormattedText(update: MaxUpdate, fallbackText: string): string {
+  private extractIncomingFormattedTextPayload(
+    update: MaxUpdate,
+    fallbackText: string,
+  ): {
+    text: string;
+    textFormat: BroadcastTextFormat;
+  } {
     const messageNode = this.extractIncomingMessageNode(update);
     const body = this.asRecord(messageNode?.body);
     const sourceText = this.readString(body?.text ?? messageNode?.text) || fallbackText;
     if (!sourceText) {
-      return fallbackText;
+      return {
+        text: fallbackText,
+        textFormat: 'plain',
+      };
     }
 
     const markup = this.extractIncomingMessageMarkup(messageNode);
     const rendered = this.renderIncomingMarkupAsMarkdown(sourceText, markup);
-    return rendered || sourceText;
+    if (rendered) {
+      return {
+        text: rendered,
+        textFormat: 'markdown',
+      };
+    }
+
+    return {
+      text: sourceText,
+      textFormat: 'plain',
+    };
+  }
+
+  private extractIncomingFormattedText(update: MaxUpdate, fallbackText: string): string {
+    return this.extractIncomingFormattedTextPayload(update, fallbackText).text;
   }
 
   private extractIncomingMessageNode(update: MaxUpdate): Record<string, unknown> | null {
@@ -12791,6 +12827,7 @@ export class PrivateControlService {
       chatId,
       token,
       text: typeof row.text === 'string' ? row.text : '',
+      textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
       images: normalizedImages,
       video,
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',

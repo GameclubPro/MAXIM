@@ -21020,6 +21020,90 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('delivers bot-submitted suggestions with restored MAX markup to admins', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-rich-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:11:30.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6b', url: null }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-admin-rich-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+    const richText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: richText,
+        textFormat: 'markdown',
+      },
+    );
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining(richText),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      expect.objectContaining({
+        trafficClass: 'background',
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            source: 'private_bot',
+            text: richText,
+            textFormat: 'markdown',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('rejects a suggestion when the per-user daily limit is reached', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -22136,6 +22220,110 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       '555001',
       'mid-admin-review-1',
       expect.stringContaining('**Контент публикации**'),
+      { buttons: [], textFormat: 'markdown' },
+      { botId: 'private-bot-2' },
+    );
+  });
+
+  it('publishes a reviewed suggestion with restored MAX markup without flattening paragraphs', async () => {
+    const sourceThreadId = '12121212-1212-4121-8121-121212121212';
+    const richText = '🔥[**MAX Docs**](https://dev.max.ru/docs-api)\n\nВторой абзац';
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: '📰 Предложить пост',
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-rich-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-1',
+        authorDisplayName: 'Пользователь',
+        text: richText,
+        textFormat: 'markdown',
+        threadId: sourceThreadId,
+        reviewStatus: 'pending',
+        deliveries: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            messageId: 'mid-admin-review-rich-1',
+            botId: 'private-bot-2',
+          },
+        ],
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-post-rich-1',
+        url: 'https://max.ru/chats/channel-1/message/1001',
+      }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service as any, 'resolveManualActionBotAssignment')
+      .mockResolvedValue('channel-bot-2');
+
+    const result = await service.reviewChannelSuggestionByAdmin(
+      'suggestion-review-rich-1',
+      {
+        userId: 'admin-1',
+        username: 'chief',
+        displayName: 'Главный редактор',
+        chatTitle: null,
+      },
+      'publish',
+    );
+
+    expect(result).toEqual({
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/1001',
+    });
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      `От подписчика [Пользователь](max://user/user-1)\n\n${richText}`,
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+      { botId: 'channel-bot-2' },
+    );
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      '555001',
+      'mid-admin-review-rich-1',
+      expect.stringContaining(richText),
       { buttons: [], textFormat: 'markdown' },
       { botId: 'private-bot-2' },
     );
