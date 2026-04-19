@@ -18,10 +18,12 @@ export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
 export type CommercialSubtype =
   | 'CHANNEL_PLACEMENT'
   | 'PROPERTY_AGENT'
+  | 'PROPERTY_COMMERCIAL'
   | 'RECRUITMENT'
   | 'INFO_PRODUCT'
   | 'BUYOUT'
   | 'SERVICES'
+  | 'GOODS_RETAIL'
   | 'GOODS'
   | 'GROUP_PROMOTION'
   | 'GENERIC';
@@ -138,6 +140,9 @@ type CommercialSignalState = {
   hasPrivateSaleContext: boolean;
   hasPropertyPrivateContext: boolean;
   hasPropertyAgentContext: boolean;
+  hasCommercialPropertyContext: boolean;
+  hasGoodsRetailContext: boolean;
+  hasPrivateGoodsItemContext: boolean;
   hasStrongNegativeContext: boolean;
 };
 
@@ -445,6 +450,7 @@ const ADS_BUSINESS_MARKERS = [
   'салон',
   'студия',
   'компания',
+  'агентств',
   'официально',
   'каталог',
   'витрина',
@@ -789,6 +795,40 @@ const ADS_SERVICE_SPECIALTY_PATTERNS: LabeledPattern[] = [
       /(?:^|[^\p{L}\p{N}_-])строительств[\p{L}\p{N}_-]*(?:[\p{L}\p{N}\s.,:;()/-]{0,20})(?:беседк[\p{L}\p{N}_-]*|террас[\p{L}\p{N}_-]*|веранд[\p{L}\p{N}_-]*|пристро[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
+const ADS_GOODS_RETAIL_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'sizes-and-colors',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:разн(?:ые|ых)\s+(?:размер(?:ы)?|цвет(?:а)?|модел[\p{L}\p{N}_-]*)|размер(?:ы)?\s+и\s+цвет(?:а)?|материал[\p{L}\p{N}\s.,:;()/-]{0,18}на\s+выбор)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'catalog-media',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:скину|отправлю)(?:[\p{L}\p{N}\s.,:;()/-]{0,18})(?:фото|видео|каталог)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'manufacturer',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:от\s+производител[\p{L}\p{N}_-]*|от\s+завода)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'commercial-use',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:для\s+улицы\s+и\s+помещений|до\s+вашего\s+офиса|для\s+офиса)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
+const ADS_PRIVATE_GOODS_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'apparel-size',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:бомбер|куртк[\p{L}\p{N}_-]*|пальт[\p{L}\p{N}_-]*|плать[\p{L}\p{N}_-]*|юбк[\p{L}\p{N}_-]*|джинс[\p{L}\p{N}_-]*|брюк[\p{L}\p{N}_-]*|кофт[\p{L}\p{N}_-]*|свитер[\p{L}\p{N}_-]*|худи|футболк[\p{L}\p{N}_-]*|кроссовк[\p{L}\p{N}_-]*|ботинк[\p{L}\p{N}_-]*|сапог[\p{L}\p{N}_-]*)(?:[\p{L}\p{N}\s.,:;()/-]{0,70})(?:размер|маломерит|замер)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'measurements',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:подробн(?:ые|ых)?\s+замер[\p{L}\p{N}_-]*|замеры\s+могу\s+отправить|доставка\s+до\s+подъезда)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+];
 const ADS_PROPERTY_PRIVATE_PATTERNS: LabeledPattern[] = [
   {
     label: 'property-sale',
@@ -821,6 +861,18 @@ const ADS_PROPERTY_CONTEXT_PATTERNS: LabeledPattern[] = [
     label: 'property-house-specs',
     pattern:
       /(?:^|[^\p{L}\p{N}_-])(?:дом|коттедж|таунхаус)(?:[\p{L}\p{N}\s.,:;()/-]{0,120})(?:участ(?:ок)?|сот|ипотек|септик|скважин|газ(?:\s+по\s+меже)?|свет|цена)(?=$|[^\p{L}\p{N}_-])/u,
+  },
+];
+const ADS_PROPERTY_COMMERCIAL_PATTERNS: LabeledPattern[] = [
+  {
+    label: 'commercial-space',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:коммерци[\p{L}\p{N}_-]*|нежил[\p{L}\p{N}_-]*|(?:продажа|продам|продается|продаётся|аренда|сдам)(?:[\p{L}\p{N}\s.,:;()/-]{0,36})помещени[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
+  },
+  {
+    label: 'street-traffic',
+    pattern:
+      /(?:^|[^\p{L}\p{N}_-])(?:вход\s+с\s+улицы|хороший\s+трафик|фасадн[\p{L}\p{N}_-]*\s+окн[\p{L}\p{N}_-]*)(?=$|[^\p{L}\p{N}_-])/iu,
   },
 ];
 const ADS_PROPERTY_AGENT_PATTERNS: LabeledPattern[] = [
@@ -1352,6 +1404,9 @@ export class RuleEngineService {
     const hasPropertyAgentContext = ADS_PROPERTY_AGENT_PATTERNS.some(({ pattern }) =>
       matchesPattern(pattern),
     );
+    const hasCommercialPropertyContext = ADS_PROPERTY_COMMERCIAL_PATTERNS.some(({ pattern }) =>
+      matchesPattern(pattern),
+    );
 
     const hasPromoContext = ADS_PROMO_MARKERS.some((marker) => hasMarker(marker));
     const hasBuyoutContext = ADS_BUYOUT_MARKERS.some((marker) => hasMarker(marker));
@@ -1429,20 +1484,36 @@ export class RuleEngineService {
       ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
       hasIntentContext ||
       ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
+    const hasContactContext =
+      ADS_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
     const hasServiceCommercialContext =
       (hasServiceOfferContext && hasDealSignal) ||
       (hasServiceSpecialtyContext && hasDealSignal && !hasSearchRequestContext);
+    const hasGoodsRetailContext =
+      ADS_GOODS_RETAIL_PATTERNS.some(({ pattern }) => matchesPattern(pattern)) ||
+      (!hasPropertyPrivateContext &&
+        (hasPromoContext || hasBusinessContext) &&
+        (hasMarker('в наличии') ||
+          hasMarker('каталог') ||
+          hasMarker('ассортимент') ||
+          hasMarker('заказывайте')));
+    const hasPrivateGoodsItemContext = ADS_PRIVATE_GOODS_PATTERNS.some(({ pattern }) =>
+      matchesPattern(pattern),
+    );
     const hasPropertyServiceCommercialOverride =
       hasServiceCommercialContext && (!hasPropertyPrivateContext || hasServiceOfferContext);
     const hasPrivateSaleCommercialOverride =
       hasPropertyAgentContext ||
+      hasCommercialPropertyContext ||
       hasBusinessContext ||
       hasCommercialAudienceContext ||
       hasChannelPlacementContext ||
       hasBuyoutContext ||
       hasRecruitmentContext ||
       hasInfoProductContext ||
-      hasPropertyServiceCommercialOverride;
+      hasPropertyServiceCommercialOverride ||
+      hasGoodsRetailContext;
     const hasPrivateContextMarker = ADS_PRIVATE_CONTEXT_MARKERS.some((marker) => hasMarker(marker));
     const hasSelfPromotionalContext =
       hasIntentContext ||
@@ -1452,18 +1523,32 @@ export class RuleEngineService {
       hasInfoProductContext ||
       hasServiceOfferContext ||
       hasServiceCommercialContext ||
+      hasGoodsRetailContext ||
       hasCallToActionContext ||
       hasGroupPromotionIntent ||
       hasCommercialAudienceContext ||
       hasChannelPlacementContext ||
-      hasPropertyAgentContext;
+      hasPropertyAgentContext ||
+      hasCommercialPropertyContext;
 
     if (hasSearchRequestContext && !hasSelfPromotionalContext) {
       return false;
     }
 
+    if (
+      hasPrivateGoodsItemContext &&
+      !hasGoodsRetailContext &&
+      !hasBusinessContext &&
+      !hasContactContext &&
+      !ADS_LINK_PATTERN.test(rawLoweredText)
+    ) {
+      return false;
+    }
+
     return (
       (hasCommercialContext ||
+        hasCommercialPropertyContext ||
+        hasGoodsRetailContext ||
         hasChannelPlacementContext ||
         hasServiceCommercialContext ||
         (hasGroupContext && hasDealSignal && hasGroupTradeContext && hasGroupPromotionIntent)) &&
@@ -1485,7 +1570,9 @@ export class RuleEngineService {
       state.hasCallToActionContext ||
       state.hasGroupPromotionIntent ||
       state.hasCommercialAudienceContext ||
-      state.hasPropertyAgentContext
+      state.hasPropertyAgentContext ||
+      state.hasCommercialPropertyContext ||
+      state.hasGoodsRetailContext
     );
   }
 
@@ -1932,17 +2019,21 @@ export class RuleEngineService {
       state.hasInfoProductContext ||
       state.hasGroupPromoContext ||
       state.hasServiceContext ||
+      state.hasCommercialPropertyContext ||
+      state.hasGoodsRetailContext ||
       state.hasCampaignContext;
     const hasSelfPromotionalCommercialContext =
       this.hasExplicitSelfPromotionalCommercialContext(state);
     const hasPrivateSaleCommercialOverride =
       state.hasPropertyAgentContext ||
+      state.hasCommercialPropertyContext ||
       state.hasBusinessContext ||
       state.hasGroupPromoContext ||
       state.hasCommercialAudienceContext ||
       state.hasRecruitmentContext ||
       state.hasBuyoutContext ||
       state.hasInfoProductContext ||
+      state.hasGoodsRetailContext ||
       (state.hasServiceContext &&
         (!state.hasPropertyPrivateContext || state.hasServiceOfferContext)) ||
       state.hasServiceOfferContext;
@@ -1956,6 +2047,17 @@ export class RuleEngineService {
     }
 
     if (state.hasJobSeekingContext) {
+      return null;
+    }
+
+    if (
+      state.hasPrivateGoodsItemContext &&
+      !state.hasGoodsRetailContext &&
+      !state.hasBusinessContext &&
+      !state.hasContact &&
+      !state.hasDealChannel &&
+      !state.hasCampaignContext
+    ) {
       return null;
     }
 
@@ -2078,6 +2180,10 @@ export class RuleEngineService {
       addSubtype('PROPERTY_AGENT', 100);
     }
 
+    if (state.hasCommercialPropertyContext) {
+      addSubtype('PROPERTY_COMMERCIAL', 96);
+    }
+
     if (state.hasRecruitmentContext) {
       addSubtype('RECRUITMENT', 95);
     }
@@ -2096,6 +2202,10 @@ export class RuleEngineService {
       addSubtype('SERVICES', 74);
     }
 
+    if (state.hasGoodsRetailContext) {
+      addSubtype('GOODS_RETAIL', state.hasServiceContext ? 76 : 86);
+    }
+
     if (state.hasGroupPromotionIntent && state.hasDealChannel) {
       addSubtype('GROUP_PROMOTION', state.hasGroupPromoContext ? 82 : 72);
     }
@@ -2103,8 +2213,10 @@ export class RuleEngineService {
     if (
       !state.hasServiceContext &&
       !state.hasPropertyAgentContext &&
+      !state.hasCommercialPropertyContext &&
       !state.hasRecruitmentContext &&
       !state.hasInfoProductContext &&
+      !state.hasGoodsRetailContext &&
       (state.hasIntent || state.hasPromoContext || state.hasBusinessContext) &&
       (state.hasPrice || state.hasTransactional || state.hasContact || state.hasDealChannel)
     ) {
@@ -2137,10 +2249,12 @@ export class RuleEngineService {
     );
     const hasStructuredEvidence =
       (state.hasPropertyAgentContext ||
+        state.hasCommercialPropertyContext ||
         state.hasRecruitmentContext ||
         state.hasInfoProductContext ||
         state.hasBuyoutContext ||
         state.hasServiceContext ||
+        state.hasGoodsRetailContext ||
         state.hasGroupPromoContext ||
         state.hasBusinessContext ||
         state.hasPromoContext) &&
@@ -2156,6 +2270,10 @@ export class RuleEngineService {
       primarySubtype === 'PROPERTY_AGENT' &&
       confidenceScore >= appliedThresholds.deleteThreshold &&
       (state.hasPrice || state.hasContact || state.hasTransactional);
+    const suppressStructuredGoodsReviewNoise =
+      (primarySubtype === 'GOODS_RETAIL' || primarySubtype === 'PROPERTY_COMMERCIAL') &&
+      confidenceScore >= appliedThresholds.deleteThreshold &&
+      (state.hasPrice || state.hasContact || state.hasTransactional);
 
     const reviewReasons: string[] = [];
     if (decisionBand !== 'HIGH') {
@@ -2166,7 +2284,8 @@ export class RuleEngineService {
     }
     if (
       (state.hasStrongNegativeContext || state.negativeSignals.length > 0) &&
-      !suppressPropertyAgentReviewNoise
+      !suppressPropertyAgentReviewNoise &&
+      !suppressStructuredGoodsReviewNoise
     ) {
       reviewReasons.push('conflicting-negative-signals');
     }
@@ -2178,8 +2297,11 @@ export class RuleEngineService {
     }
     if (
       state.hasPrivateSaleContext &&
-      (state.hasServiceContext || state.hasPropertyAgentContext) &&
-      !suppressPropertyAgentReviewNoise
+      (state.hasServiceContext ||
+        state.hasPropertyAgentContext ||
+        state.hasCommercialPropertyContext) &&
+      !suppressPropertyAgentReviewNoise &&
+      !suppressStructuredGoodsReviewNoise
     ) {
       reviewReasons.push('private-sale-override');
     }
@@ -2327,6 +2449,9 @@ export class RuleEngineService {
     let hasCampaignContext = false;
     let hasPrivateSaleContext = false;
     let hasPropertyAgentContext = false;
+    let hasCommercialPropertyContext = false;
+    let hasGoodsRetailContext = false;
+    let hasPrivateGoodsItemContext = false;
     let hasStrongNegativeContext = false;
     let hasGroupContext = false;
     let hasGroupTradeContext = false;
@@ -2402,6 +2527,16 @@ export class RuleEngineService {
       hasCommercialContext = true;
     }
 
+    const commercialPropertyHits = ADS_PROPERTY_COMMERCIAL_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of commercialPropertyHits.slice(0, 2)) {
+      addPositive(`property-commercial:${label}`, 16);
+      hasCommercialPropertyContext = true;
+      hasBusinessContext = true;
+      hasCommercialContext = true;
+    }
+
     const businessHits = [
       ...ADS_BUSINESS_MARKERS.filter(
         (marker) =>
@@ -2461,6 +2596,15 @@ export class RuleEngineService {
     for (const marker of [...new Set(serviceSpecialtyHits)].slice(0, 3)) {
       addPositive(`service-specialty:${marker}`, 8);
       hasServiceSpecialtyContext = true;
+    }
+
+    const goodsRetailHits = ADS_GOODS_RETAIL_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of goodsRetailHits.slice(0, 2)) {
+      addPositive(`goods-retail:${label}`, 10);
+      hasGoodsRetailContext = true;
+      hasCommercialContext = true;
     }
 
     const groupContextHits = ADS_GROUP_CONTEXT_MARKERS.filter((marker) => hasMarker(marker));
@@ -2536,6 +2680,20 @@ export class RuleEngineService {
       addPositive('transaction:keywords', 8);
       hasTransactional = true;
       hasDealSignal = true;
+    }
+
+    if (
+      !hasGoodsRetailContext &&
+      !hasPropertyPrivateContext &&
+      (hasPromoContext || hasBusinessContext) &&
+      (hasMarker('в наличии') ||
+        hasMarker('каталог') ||
+        hasMarker('ассортимент') ||
+        hasMarker('заказывайте'))
+    ) {
+      addPositive('goods-retail:inventory', 10);
+      hasGoodsRetailContext = true;
+      hasCommercialContext = true;
     }
 
     const contactHits = ADS_CONTACT_MARKERS.filter((marker) => hasMarker(marker));
@@ -2628,6 +2786,15 @@ export class RuleEngineService {
       }
 
       addNegative(`private:${marker}`, 26, true);
+      hasPrivateSaleContext = true;
+    }
+
+    const privateGoodsHits = ADS_PRIVATE_GOODS_PATTERNS.filter(({ pattern }) =>
+      matchesPattern(pattern),
+    );
+    for (const { label } of privateGoodsHits.slice(0, 2)) {
+      addNegative(`private-goods:${label}`, 18, true);
+      hasPrivateGoodsItemContext = true;
       hasPrivateSaleContext = true;
     }
 
@@ -2821,6 +2988,9 @@ export class RuleEngineService {
       hasPrivateSaleContext,
       hasPropertyPrivateContext,
       hasPropertyAgentContext,
+      hasCommercialPropertyContext,
+      hasGoodsRetailContext,
+      hasPrivateGoodsItemContext,
       hasStrongNegativeContext,
     };
   }

@@ -118,9 +118,14 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
   {
     label: 'commercial premises sale from production logs',
     text: `#продам #недвижимость #коммерция #краснодар #центр Продажа помещения в центре. Площадь 46.2 м². Назначение жилое, но более 30 лет используется как коммерция. Вход с улицы, фасадные окна, свет 15 кВт, вода и канализация центральные. Цена 5.3 млн. +7 900 000 00 13.`,
-    expectedSubtype: 'GOODS',
-    reviewRecommended: true,
-    expectedSignals: ['intent:продам', 'business:коммерция', 'transaction:keywords', 'contact:phone'],
+    expectedSubtype: 'PROPERTY_COMMERCIAL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'intent:продам',
+      'business:коммерция',
+      'property-commercial:commercial-space',
+      'contact:phone',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -130,9 +135,26 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
   {
     label: 'bike sales with delivery from production logs',
     text: `В продаже новые велосипеды. Цены от 15 000 р. Возможна доставка. В наличии разные размеры и цвета. Пишите или звоните, отвечу на все вопросы, скину подробные фото и видео. Телефон +7 900 000 00 08.`,
-    expectedSubtype: 'GOODS',
-    reviewRecommended: true,
-    expectedSignals: ['promo:доставк', 'promo:в наличии', 'contact:phone', 'combo:contact+price'],
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: ['promo:доставк', 'goods-retail:sizes-and-colors', 'contact:phone', 'combo:contact+price'],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'signboard catalog ad from production logs',
+    text: `Рекламное агентство. Сезон штендеров-книжек открыт. Штендеры с вашей рекламой для улицы и помещений. Пластиковые и металлические. Стоимость 2900 рублей. Доставка до вашего офиса бесплатно. +7 900 000 00 14.`,
+    expectedSubtype: 'GOODS_RETAIL',
+    reviewRecommended: false,
+    expectedSignals: [
+      'goods-retail:commercial-use',
+      'transaction:price',
+      'contact:phone',
+      'combo:business+deal',
+    ],
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,
@@ -184,6 +206,24 @@ export const COMMERCIAL_REAL_WORLD_NEGATIVE_CASES: CommercialRealWorldNegativeCa
   {
     label: 'service recommendation request from production logs',
     text: `Здравствуйте, кто ремонтирует стиральные машинки-автомат? Напишите, пожалуйста, в личные сообщения.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'single clothing item with size and doorstep delivery from production logs',
+    text: `Бомбер как куртка, размер 44, 1200р. Возможна доставка до подъезда.`,
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'single apparel item with measurements from production logs',
+    text: `Новый, размер указан 52, маломерит. 1300р, подробные замеры могу отправить по запросу. Возможна доставка до подъезда.`,
     overrides: {
       commercialAdsSensitivity: 'STRICT',
       commercialAdsWarnThreshold: 38,

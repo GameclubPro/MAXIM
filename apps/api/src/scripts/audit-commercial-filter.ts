@@ -542,11 +542,13 @@ function mapSubtypeToSegment(subtype: string | null): AuditSegment | null {
     case 'GROUP_PROMOTION':
       return 'CHANNEL_PLACEMENT';
     case 'PROPERTY_AGENT':
+    case 'PROPERTY_COMMERCIAL':
       return 'PROPERTY';
     case 'RECRUITMENT':
       return 'RECRUITMENT';
     case 'INFO_PRODUCT':
       return 'INFO_PRODUCT';
+    case 'GOODS_RETAIL':
     case 'GOODS':
       return 'GOODS';
     case 'BUYOUT':
