@@ -24,6 +24,7 @@
     "prisma:migrate:dev": "prisma migrate dev --schema prisma/schema.prisma",
     "prisma:migrate:deploy": "prisma migrate deploy --schema prisma/schema.prisma",
     "prisma:seed": "tsx prisma/seed.ts",
+    "moderation:audit-commercial": "tsx src/scripts/audit-commercial-filter.ts",
     "managed-entities:backfill": "tsx src/scripts/backfill-managed-entities-index.ts",
     "moderation:repair-missed-deletes": "tsx src/scripts/repair-missed-moderation-deletes.ts"
   },
