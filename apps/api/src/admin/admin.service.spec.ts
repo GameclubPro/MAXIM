@@ -12729,6 +12729,26 @@ describe('AdminService.listChats', () => {
       }),
     };
     const chatContextCache = createChatContextCacheMock();
+    await chatContextCache.setManagedEntitiesPublishedSnapshot(
+      'admin-1',
+      'chat',
+      {
+        version: 'snapshot-old',
+        builtAt: '2026-04-05T00:09:00.000Z',
+        lastSyncedAt: null,
+        itemCount: 1,
+        itemsHash: 'hash-old',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-fallback',
+            title: 'Chat chat-fallback',
+            createdAt: '2026-04-05T00:10:00.000Z',
+            entityType: 'chat',
+          }),
+        ],
+      },
+      3600,
+    );
     const service = new AdminService(
       prisma as never,
       maxClient as never,
@@ -12785,6 +12805,21 @@ describe('AdminService.listChats', () => {
         link: 'https://max.ru/chat-fallback',
         participantsCount: 17,
         avatarUrl: 'https://i.oneme.ru/chat-fallback.webp',
+      }),
+    );
+    await expect(
+      chatContextCache.getManagedEntitiesPublishedSnapshot('admin-1', 'chat'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        itemCount: 1,
+        items: [
+          expect.objectContaining({
+            id: 'chat-fallback',
+            title: 'Рак',
+            link: 'https://max.ru/chat-fallback',
+            avatarUrl: 'https://i.oneme.ru/chat-fallback.webp',
+          }),
+        ],
       }),
     );
     expect(schedulePublishedSnapshotRebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');

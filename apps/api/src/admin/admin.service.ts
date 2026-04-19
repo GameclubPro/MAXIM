@@ -1872,6 +1872,114 @@ export class AdminService implements OnModuleDestroy {
     this.managedEntitiesPublishedSnapshotRuns.set(key, pending);
   }
 
+  private async upsertManagedEntitiesPublishedSnapshotItem(
+    userId: string,
+    summary: ChatSummary,
+  ): Promise<void> {
+    if (
+      !this.supportsManagedEntitiesPublishedSnapshot(summary.entityType) ||
+      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
+      typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function'
+    ) {
+      return;
+    }
+
+    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+      userId,
+      summary.entityType,
+    );
+    if (!currentSnapshot) {
+      return;
+    }
+
+    const nextItems = currentSnapshot.items.map((item) => this.cloneManagedEntitySummary(item));
+    const existingIndex = nextItems.findIndex((item) => item.id === summary.id);
+    let changed = false;
+
+    if (existingIndex < 0) {
+      nextItems.unshift(this.cloneManagedEntitySummary(summary));
+      changed = true;
+    } else {
+      const existing = nextItems[existingIndex];
+      const mergedTitle =
+        this.isFallbackTitle(summary.id, existing.title) && !this.isFallbackTitle(summary.id, summary.title)
+          ? summary.title
+          : existing.title;
+      const mergedLink = existing.link ?? summary.link ?? null;
+      const mergedAvatarUrl = existing.avatarUrl ?? summary.avatarUrl;
+      const mergedPrimaryBotId = existing.primaryBotId ?? summary.primaryBotId ?? null;
+
+      if (
+        mergedTitle !== existing.title ||
+        mergedLink !== (existing.link ?? null) ||
+        mergedAvatarUrl !== existing.avatarUrl ||
+        mergedPrimaryBotId !== (existing.primaryBotId ?? null)
+      ) {
+        nextItems[existingIndex] = {
+          ...existing,
+          title: mergedTitle,
+          link: mergedLink,
+          ...(mergedAvatarUrl ? { avatarUrl: mergedAvatarUrl } : {}),
+          primaryBotId: mergedPrimaryBotId,
+        };
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return;
+    }
+
+    await this.writeManagedEntitiesPublishedSnapshotPatched(
+      userId,
+      summary.entityType,
+      currentSnapshot,
+      nextItems,
+    );
+  }
+
+  private async writeManagedEntitiesPublishedSnapshotPatched(
+    userId: string,
+    entityType: ManagedEntityType,
+    currentSnapshot: ManagedEntitiesPublishedSnapshot,
+    items: readonly ChatSummary[],
+  ): Promise<void> {
+    if (typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function') {
+      return;
+    }
+
+    const nextSnapshot: ManagedEntitiesPublishedSnapshot = {
+      version: randomUUID(),
+      builtAt: new Date().toISOString(),
+      lastSyncedAt: currentSnapshot.lastSyncedAt,
+      itemCount: items.length,
+      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(items, currentSnapshot.lastSyncedAt),
+      items: items.map((item) => this.cloneManagedEntitySummary(item)),
+    };
+
+    await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
+      userId,
+      entityType,
+      nextSnapshot,
+      MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+    );
+
+    const nextDiff = this.buildManagedEntitiesPublishedSnapshotDiff(currentSnapshot, nextSnapshot);
+    if (
+      nextDiff &&
+      this.managedEntitiesPublishedDiffWriteEnabled &&
+      typeof this.chatContextCache.setManagedEntitiesPublishedDiff === 'function'
+    ) {
+      await this.chatContextCache.setManagedEntitiesPublishedDiff(
+        userId,
+        entityType,
+        nextDiff.baseVersion,
+        nextDiff,
+        MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
+      );
+    }
+  }
+
   private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
     userId: string,
     entityType: ManagedEntityTypeFilter,
@@ -4561,14 +4669,15 @@ export class AdminService implements OnModuleDestroy {
         };
 
         await this.persistManagedEntityHeaderSnapshot(chat, hydratedSnapshot);
-        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
-
         const hydrated = this.cloneManagedEntitySummary({
           ...chat,
           title: resolvedTitle,
           link: resolvedLink,
           ...(resolvedAvatarUrl ? { avatarUrl: resolvedAvatarUrl } : {}),
         });
+        await this.upsertManagedEntitiesPublishedSnapshotItem(userId, hydrated);
+        this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+
         this.rememberManagedEntitiesLastSuccessChats(userId, [hydrated]);
         return hydrated;
       } catch (error: unknown) {
