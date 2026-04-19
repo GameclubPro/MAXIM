@@ -232,6 +232,57 @@ export const COMMERCIAL_REAL_WORLD_POSITIVE_CASES: CommercialRealWorldPositiveCa
     },
   },
   {
+    label: 'broker flat listing from last two hours moderation window',
+    text: `💎 ЖК Самолет 2💎 🏢 Тип квартиры: Евро 2к 📐 Площадь: 37 м² 🎨 Отделка: Ремонт Мебель Тех 🔑 Квартира на ключах ⏰ Показ: 24/7 — в любое удобное время 💼 Комиссия: ваша комиссия сверху 💸 Цена: 6.500.000 ₽ 💸 📞 Звоните прямо сейчас: +7 900 000 00 19`,
+    expectedSubtype: 'PROPERTY_AGENT',
+    reviewRecommended: false,
+    expectedSignals: [
+      'property-agent:комиссия-сверху',
+      'property-agent:на-ключах',
+      'property-agent:показ-247',
+      'transaction:price',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'finishing crew recruitment ad from last two hours moderation window',
+    text: `Требуется бригада отделочников работа в Сургуте объём большой обращаться по телефону +7 932 406 24 28 напишите`,
+    expectedSubtype: 'RECRUITMENT',
+    reviewRecommended: false,
+    expectedSignals: [
+      'recruitment:требуется',
+      'service-specialty:бригада',
+      'contact:по телефону',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
+    label: 'labor and demolition service ad from last two hours moderation window',
+    text: `Разнорабочие, подсобные рабочие, грузчики, выполняем работу под ваши задачи. 8 967 828 01 02. Отмостки, кровля, заборы, ремонт крыш, демонтаж построек и зданий, копка ям и траншей.`,
+    expectedSubtype: 'SERVICES',
+    reviewRecommended: false,
+    expectedSignals: [
+      'service-specialty:ремонт',
+      'service-specialty:грузчик',
+      'service-specialty:демонтаж',
+      'contact:phone',
+    ],
+    overrides: {
+      commercialAdsSensitivity: 'STRICT',
+      commercialAdsWarnThreshold: 38,
+      commercialAdsDeleteThreshold: 55,
+    },
+  },
+  {
     label: 'business plan service with training context from production logs',
     text: `Реклама. Разработка бизнес-плана. Желаете получить от государства до 350 тыс руб на развитие собственного бизнеса или ЛПХ? Разработаю бизнес-план, проведу аудит лаборатории, помогу с аккредитацией и обучением персонала. Звоните или пишите в телеграм: +7 900 000 00 09.`,
     expectedSubtype: 'INFO_PRODUCT',
