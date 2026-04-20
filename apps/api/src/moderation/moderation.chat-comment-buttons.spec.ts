@@ -155,7 +155,7 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-1',
       'Пост админа',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
         debugContext: {
           screen: 'chat-auto-comments',
           action: 'replace-admin-message-with-bot-copy',
@@ -212,7 +212,7 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-fallback',
       'Пост админа для fallback',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
       }),
       undefined,
     );

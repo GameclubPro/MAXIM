@@ -16026,9 +16026,8 @@ describe('ModerationService', () => {
         buttons: [
           [
             expect.objectContaining({
-              type: 'open_app',
-              contactId: '990002',
-              webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
+              type: 'link',
+              url: expect.stringContaining('https://max.ru/scan-bot-2?startapp='),
             }),
           ],
         ],

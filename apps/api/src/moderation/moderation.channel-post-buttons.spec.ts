@@ -186,11 +186,9 @@ describe('ModerationService channel auto post buttons', () => {
         buttons: [
           [
             expect.objectContaining({
-              type: 'open_app',
+              type: 'link',
               text: '💬 Комментарии · 0',
-              webApp: expect.stringContaining(
-                'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
-              ),
+              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
             }),
           ],
           [

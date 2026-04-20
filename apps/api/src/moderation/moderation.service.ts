@@ -13693,20 +13693,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId(botId);
 
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
     if (webAppUrl && botContactId) {
       return {
         type: 'open_app',
         text,
         webApp: webAppUrl,
         contactId: botContactId,
-      };
-    }
-
-    if (launchUrl) {
-      return {
-        type: 'link',
-        text,
-        url: launchUrl,
       };
     }
 
@@ -13728,20 +13728,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId(botId);
 
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
     if (webAppUrl && botContactId) {
       return {
         type: 'open_app',
         text,
         webApp: webAppUrl,
         contactId: botContactId,
-      };
-    }
-
-    if (launchUrl) {
-      return {
-        type: 'link',
-        text,
-        url: launchUrl,
       };
     }
 

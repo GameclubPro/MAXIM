@@ -17149,8 +17149,9 @@ describe('AdminService.sendBroadcast', () => {
       customButtonUrl: '',
     });
 
-    expect(buttons).toMatchObject([[{ text: '💬 Комментарии · 0', type: 'open_app' }]]);
     const commentsButton = buttons[0]?.[0];
+    expect(buttons).toMatchObject([[{ text: '💬 Комментарии · 0', type: 'link' }]]);
+    expect(readButtonUrl(commentsButton)).toContain('https://max.ru/777000_bot?startapp=');
     const commentsToken = readDialogButtonToken(commentsButton);
     const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
 
@@ -17361,7 +17362,7 @@ describe('AdminService.sendBroadcast', () => {
       'mid-bot-copy-7',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'open_app' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'link' })]],
       }),
     );
   });
@@ -18073,12 +18074,19 @@ describe('AdminService.sendChannelBroadcast', () => {
       invalidate: jest.fn(),
     };
     const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
       ),
       getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
       getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
       resolveBotId: jest.fn().mockResolvedValue(undefined),
+      resolveBotIdForCapability: jest.fn().mockResolvedValue(undefined),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new AdminService(
@@ -18130,14 +18138,14 @@ describe('AdminService.sendChannelBroadcast', () => {
         [
           expect.objectContaining({
             text: '💬 Комментарии · 0',
-            type: 'open_app',
-            contactId: '990002',
+            type: 'link',
+            url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
           }),
         ],
       ],
     });
-    expect(String(options.buttons[0][0].webApp ?? '')).toContain(
-      'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
+    expect(String(options.buttons[0][0].url ?? '')).toContain(
+      'https://max.ru/channel-bot-2?startapp=',
     );
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
   });
@@ -19574,16 +19582,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[1]).toHaveLength(1);
     expect(commentsButton).toMatchObject({
-      type: 'open_app',
+      type: 'link',
       text: 'Комментарии · 0',
     });
     expect(suggestButton).toMatchObject({
       type: 'link',
       text: 'Предложить пост',
     });
-    expect(commentsButton.webApp).toContain(
-      'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
-    );
+    expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
     expect(suggestButton.url).toContain('https://max.ru/777000_bot?start=');
 
     const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
@@ -20609,7 +20615,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       null,
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: 'Комментарии · 4', type: 'open_app' })],
+          [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
@@ -20622,11 +20628,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
     const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as
-      | { contactId?: string; webApp?: string }
+      | { url?: string }
       | undefined;
     expect(commentsButton).toMatchObject({
-      contactId: '990002',
-      webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
+      url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
     });
   });
 
@@ -20784,7 +20789,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       null,
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: '💬 Комментарии · 5', type: 'open_app' })],
+          [expect.objectContaining({ text: '💬 Комментарии · 5', type: 'link' })],
           [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
@@ -20865,7 +20870,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-forward-reply-2',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 6', type: 'open_app' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 6', type: 'link' })]],
       }),
     );
   });
@@ -22567,8 +22572,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           [
             expect.objectContaining({
               text: '💬 Комментарии · 0',
-              type: 'open_app',
-              webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
+              type: 'link',
+              url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
             }),
           ],
           [
@@ -22590,10 +22595,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const [, , publishedOptions] =
       maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = publishedOptions?.buttons?.[0]?.[0] as
-      | { url?: string; webApp?: string; contactId?: string }
+      | { url?: string; webApp?: string }
       | undefined;
     const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
-    expect(commentsButton?.contactId).toBe('990002');
+    expect(commentsButton?.url).toContain('https://max.ru/channel-bot-2?startapp=');
     expect(suggestButton?.url).toContain('https://max.ru/channel-bot-2?start=');
     const suggestStartParam = suggestButton?.url
       ? new URL(suggestButton.url).searchParams.get('start')
