@@ -118,7 +118,7 @@ function createConfigMock(
 function createAdminServiceMock() {
   return {
     buildChannelSuggestionStartPayload: jest.fn(
-      (chatId: string, threadId: string) => `cds-${chatId}:${threadId}`,
+      (chatId: string, threadId: string) => `cds-${chatId}-${threadId}`,
     ),
   };
 }
@@ -186,15 +186,18 @@ describe('ModerationService channel auto post buttons', () => {
         buttons: [
           [
             expect.objectContaining({
-              type: 'link',
+              type: 'open_app',
               text: '💬 Комментарии · 0',
+              webApp: expect.stringContaining(
+                'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
+              ),
             }),
           ],
           [
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],
@@ -801,7 +804,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],
@@ -938,7 +941,7 @@ describe('ModerationService channel auto post buttons', () => {
             expect.objectContaining({
               type: 'link',
               text: '📰 Предложить пост',
-              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+              url: expect.stringContaining('https://max.ru/777000_bot?start='),
             }),
           ],
         ],

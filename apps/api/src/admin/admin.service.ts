@@ -12719,20 +12719,20 @@ export class AdminService implements OnModuleDestroy {
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
 
-    if (launchUrl) {
-      return {
-        type: 'link',
-        text,
-        url: launchUrl,
-      };
-    }
-
     if (webAppUrl && botContactId) {
       return {
         type: 'open_app',
         text,
         webApp: webAppUrl,
         contactId: botContactId,
+      };
+    }
+
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
       };
     }
 
@@ -20658,19 +20658,19 @@ export class AdminService implements OnModuleDestroy {
     const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
 
-    return launchUrl
+    return webAppUrl && botContactId
       ? {
+          type: 'open_app',
+          text,
+          webApp: webAppUrl,
+          contactId: botContactId,
+        }
+      : launchUrl
+        ? {
           type: 'link',
           text,
           url: launchUrl,
         }
-      : webAppUrl && botContactId
-        ? {
-            type: 'open_app',
-            text,
-            webApp: webAppUrl,
-            contactId: botContactId,
-          }
         : {
             type: 'link',
             text,

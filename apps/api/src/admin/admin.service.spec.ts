@@ -984,6 +984,31 @@ function decodeBase64UrlJson<T>(value: string): T {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
 }
 
+function readButtonUrl(button: { url?: string; webApp?: string } | null | undefined): string {
+  const url = typeof button?.webApp === 'string' ? button.webApp : button?.url;
+  if (typeof url !== 'string' || url.trim().length === 0) {
+    throw new Error('Button URL is missing');
+  }
+
+  return url;
+}
+
+function readDialogButtonToken(button: { url?: string; webApp?: string } | null | undefined): string {
+  const url = new URL(readButtonUrl(button));
+  const directToken = url.searchParams.get('token');
+  if (directToken) {
+    return directToken;
+  }
+
+  const startParam = url.searchParams.get('startapp');
+  if (!startParam?.startsWith('cd-')) {
+    throw new Error('Dialog launch payload is missing');
+  }
+
+  const launch = decodeBase64UrlJson<{ t: string }>(startParam.slice(3));
+  return launch.t;
+}
+
 async function publishCommentsDialogToken(
   service: AdminService,
   maxClient: { sendMessageImmediateWithResolvedLink: jest.Mock },
@@ -1005,9 +1030,7 @@ async function publishCommentsDialogToken(
 
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const commentsButton = options.buttons?.[0]?.[0];
-  const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
-  const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
-  return commentsLaunch.t;
+  return readDialogButtonToken(commentsButton);
 }
 
 async function publishSuggestDialogToken(
@@ -17056,18 +17079,12 @@ describe('AdminService.sendBroadcast', () => {
       customButtonUrl: '',
     });
 
-    expect(buttons).toMatchObject([[{ text: '💬 Комментарии · 0', type: 'link' }]]);
+    expect(buttons).toMatchObject([[{ text: '💬 Комментарии · 0', type: 'open_app' }]]);
     const commentsButton = buttons[0]?.[0];
-    const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
-    const commentsLaunch = decodeBase64UrlJson<{ k: string; c: string; m: string; t: string }>(
-      commentsStartParam!.slice(3),
-    );
+    const commentsToken = readDialogButtonToken(commentsButton);
+    const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
 
-    expect(commentsLaunch).toMatchObject({
-      k: 'chat-dialog',
-      c: 'chat-1',
-      m: 'comments',
-    });
+    expect(commentsTokenPayload.d).toBeTruthy();
   });
 
   it('splits custom broadcast link buttons into MAX-safe rows before the comments button', async () => {
@@ -17274,7 +17291,7 @@ describe('AdminService.sendBroadcast', () => {
       'mid-bot-copy-7',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'open_app' })]],
       }),
     );
   });
@@ -18026,9 +18043,11 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
       textFormat: 'html',
-      buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
+      buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
     });
-    expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(String(options.buttons[0][0].webApp ?? '')).toContain(
+      'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
+    );
   });
 
   it('publishes channel broadcast with system suggestion button in the first message', async () => {
@@ -19463,41 +19482,33 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[1]).toHaveLength(1);
     expect(commentsButton).toMatchObject({
-      type: 'link',
+      type: 'open_app',
       text: 'Комментарии · 0',
     });
     expect(suggestButton).toMatchObject({
       type: 'link',
       text: 'Предложить пост',
     });
-    expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(commentsButton.webApp).toContain(
+      'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
+    );
     expect(suggestButton.url).toContain('https://max.ru/777000_bot?start=');
 
-    const commentsUrl = new URL(commentsButton.url);
-    const commentsStartParam = commentsUrl.searchParams.get('startapp');
     const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
-
-    expect(commentsStartParam).toMatch(/^cd-/u);
     expect(suggestStartParam).toMatch(/^cds-/u);
 
-    const commentsLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
-      commentsStartParam!.slice(3),
-    );
     const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
     expect(parsedSuggestion).toMatchObject({
       chatId: 'channel-1',
       token: expect.stringMatching(/^cdt-/u),
     });
-    const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(commentsLaunch.t.slice(4));
+    const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(
+      readDialogButtonToken(commentsButton).slice(4),
+    );
     const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(
       parsedSuggestion!.token.slice(4),
     );
 
-    expect(commentsLaunch).toMatchObject({
-      c: 'channel-1',
-      m: 'comments',
-    });
-    expect(commentsLaunch.t).toMatch(/^cdt-/u);
     expect(commentsToken.d).toBe(suggestToken.d);
     expect(commentsToken.s).not.toBe(suggestToken.s);
 
@@ -19728,9 +19739,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = options.buttons?.[0]?.[0];
-    const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
-    const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
-    const commentsToken = commentsLaunch.t;
+    const commentsToken = readDialogButtonToken(commentsButton);
     const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
 
     await service.createChannelDialogMessage(
@@ -20407,8 +20416,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       null,
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
-          [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
+          [expect.objectContaining({ text: 'Комментарии · 4', type: 'open_app' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
       { botId: 'channel-bot-2' },
@@ -20488,7 +20497,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-auto-suggest-99',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: 'Предложить пост', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: 'Предложить пост' })]],
       }),
     );
   });
@@ -20569,8 +20578,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       null,
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: '💬 Комментарии · 5', type: 'link' })],
-          [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
+          [expect.objectContaining({ text: '💬 Комментарии · 5', type: 'open_app' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
         ],
       }),
     );
@@ -20650,7 +20659,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-forward-reply-2',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 6', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 6', type: 'open_app' })]],
       }),
     );
   });
@@ -22304,8 +22313,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           [
             expect.objectContaining({
               text: '💬 Комментарии · 0',
-              type: 'link',
-              url: expect.stringContaining('startapp='),
+              type: 'open_app',
+              webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
             }),
           ],
           [
@@ -22321,16 +22330,16 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     const [, , publishedOptions] =
       maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
-    const commentsButton = publishedOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
+    const commentsButton = publishedOptions?.buttons?.[0]?.[0] as
+      | { url?: string; webApp?: string }
+      | undefined;
     const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
-    const commentsStartParam = commentsButton?.url
-      ? new URL(commentsButton.url).searchParams.get('startapp')
-      : null;
     const suggestStartParam = suggestButton?.url
       ? new URL(suggestButton.url).searchParams.get('start')
       : null;
-    const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
-    const commentsToken = decodeBase64UrlJson<{ d: string }>(commentsLaunch.t.slice(4));
+    const commentsToken = decodeBase64UrlJson<{ d: string }>(
+      readDialogButtonToken(commentsButton).slice(4),
+    );
     const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
     const suggestToken = decodeBase64UrlJson<{ d: string }>(parsedSuggestion!.token.slice(4));
     const autoAttachPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {

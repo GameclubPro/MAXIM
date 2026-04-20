@@ -58,6 +58,37 @@ function readInitDataFromLocation(source: string): string {
   return '';
 }
 
+function readUserIdValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
+  if (typeof value === 'number' && Number.isSafeInteger(value)) {
+    return String(value);
+  }
+
+  return null;
+}
+
+function readUnsafeBridgeUserId(): string | null {
+  const candidates = [
+    (window.MAX?.WebApp?.initDataUnsafe as { user?: { id?: unknown } } | undefined)?.user?.id,
+    (window.MAX?.WebApp?.init_data_unsafe as { user?: { id?: unknown } } | undefined)?.user?.id,
+    (window.WebApp?.initDataUnsafe as { user?: { id?: unknown } } | undefined)?.user?.id,
+    (window.WebApp?.init_data_unsafe as { user?: { id?: unknown } } | undefined)?.user?.id,
+  ];
+
+  for (const candidate of candidates) {
+    const userId = readUserIdValue(candidate);
+    if (userId) {
+      return userId;
+    }
+  }
+
+  return null;
+}
+
 export function getInitData(): string {
   const bridgeCandidates = [
     window.MAX?.WebApp?.initData,
@@ -82,6 +113,29 @@ export function getInitData(): string {
   }
 
   return '';
+}
+
+export function readUserIdFromInitData(initData: string): string | null {
+  const normalized = normalizeInitData(initData);
+  if (!normalized) {
+    return null;
+  }
+
+  const encodedUser = new URLSearchParams(normalized).get('user');
+  if (!encodedUser?.trim()) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(encodedUser) as { id?: unknown };
+    return readUserIdValue(parsed.id);
+  } catch {
+    return null;
+  }
+}
+
+export function getInitDataUserId(): string | null {
+  return readUnsafeBridgeUserId() ?? readUserIdFromInitData(getInitData());
 }
 
 const DEFAULT_INIT_DATA_POLL_INTERVAL_MS = 150;

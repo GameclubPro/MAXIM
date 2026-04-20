@@ -28,6 +28,13 @@ import {
   LazyGiveawayPage,
   LazySettingsPage,
   LazySystemPage,
+  preloadChannelDialogPage,
+  preloadChannelSettingsPage,
+  preloadChannelStatsPage,
+  preloadEventsPage,
+  preloadGiveawayPage,
+  preloadSettingsPage,
+  preloadSystemPage,
 } from './pages/lazy-pages';
 
 const queryClient = new QueryClient({
@@ -52,6 +59,134 @@ function RouteFallback() {
   );
 }
 
+function parseRoute(route: string): URL | null {
+  try {
+    return new URL(route, 'https://miniapp.local');
+  } catch {
+    return null;
+  }
+}
+
+function mergeRouteSearch(currentSearch: string, targetSearch: string): string {
+  const merged = new URLSearchParams(currentSearch);
+  const target = new URLSearchParams(targetSearch);
+  const targetKeys = new Set(Array.from(target.keys()));
+
+  for (const key of targetKeys) {
+    merged.delete(key);
+  }
+
+  for (const [key, value] of target.entries()) {
+    merged.append(key, value);
+  }
+
+  const serialized = merged.toString();
+  return serialized ? `?${serialized}` : '';
+}
+
+function isLaunchRouteApplied(
+  currentPathname: string,
+  currentSearch: string,
+  targetRoute: string,
+): boolean {
+  const parsedTarget = parseRoute(targetRoute);
+  if (!parsedTarget) {
+    return true;
+  }
+
+  if (currentPathname !== parsedTarget.pathname) {
+    return false;
+  }
+
+  const current = new URLSearchParams(currentSearch);
+  for (const [key, value] of parsedTarget.searchParams.entries()) {
+    if (current.get(key) !== value) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function buildMergedLaunchRoute(targetRoute: string, currentSearch: string): string {
+  const parsedTarget = parseRoute(targetRoute);
+  if (!parsedTarget) {
+    return targetRoute;
+  }
+
+  return `${parsedTarget.pathname}${mergeRouteSearch(currentSearch, parsedTarget.search)}`;
+}
+
+function buildWindowPathForRoute(pathname: string): string {
+  if (!PUBLIC_ROUTER_BASENAME) {
+    return pathname;
+  }
+
+  return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
+}
+
+function applyInitialLaunchRoute(targetRoute: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const parsedTarget = parseRoute(targetRoute);
+  if (!parsedTarget) {
+    return;
+  }
+
+  const nextPathname = buildWindowPathForRoute(parsedTarget.pathname);
+  const nextSearch = mergeRouteSearch(window.location.search, parsedTarget.search);
+  if (window.location.pathname === nextPathname && window.location.search === nextSearch) {
+    return;
+  }
+
+  const nextUrl = `${nextPathname}${nextSearch}${window.location.hash}`;
+  window.history.replaceState(window.history.state, '', nextUrl);
+}
+
+function preloadLaunchRouteModule(route: string): void {
+  const parsedRoute = parseRoute(route);
+  if (!parsedRoute) {
+    return;
+  }
+
+  const pathname = parsedRoute.pathname;
+  if (/^\/(?:chat|channel)\/[^/]+\/dialog\/(?:comments|suggest)$/u.test(pathname)) {
+    void preloadChannelDialogPage();
+    return;
+  }
+
+  if (/^\/chat\/[^/]+\/settings$/u.test(pathname)) {
+    void preloadSettingsPage();
+    return;
+  }
+
+  if (/^\/channel\/[^/]+\/settings$/u.test(pathname)) {
+    void preloadChannelSettingsPage();
+    return;
+  }
+
+  if (/^\/channel\/[^/]+\/stats$/u.test(pathname)) {
+    void preloadChannelStatsPage();
+    return;
+  }
+
+  if (/^\/chat\/[^/]+\/events$/u.test(pathname)) {
+    void preloadEventsPage();
+    return;
+  }
+
+  if (/^\/giveaways\/[^/]+$/u.test(pathname)) {
+    void preloadGiveawayPage();
+    return;
+  }
+
+  if (pathname === '/system') {
+    void preloadSystemPage();
+  }
+}
+
 function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -63,10 +198,10 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
       return;
     }
 
+    preloadLaunchRouteModule(targetRoute);
     appliedRouteRef.current = targetRoute;
-    const currentRoute = `${location.pathname}${location.search}`;
-    if (currentRoute !== targetRoute) {
-      navigate(targetRoute, { replace: true });
+    if (!isLaunchRouteApplied(location.pathname, location.search, targetRoute)) {
+      navigate(buildMergedLaunchRoute(targetRoute, location.search), { replace: true });
     }
   }, [launchInitData, location.pathname, location.search, navigate]);
 
@@ -128,6 +263,7 @@ export function App() {
   const preview = getPreviewBootstrap(initData);
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
+  const preparedLaunchRouteRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (initData) {
@@ -194,6 +330,15 @@ export function App() {
     : initData
       ? createApiTransport(getInitData)
       : null;
+
+  if (!preview.enabled && initData) {
+    const launchRoute = resolveLaunchRoute(initData);
+    if (launchRoute && preparedLaunchRouteRef.current !== launchRoute) {
+      preloadLaunchRouteModule(launchRoute);
+      applyInitialLaunchRoute(launchRoute);
+      preparedLaunchRouteRef.current = launchRoute;
+    }
+  }
 
   if (!apiClient) {
     return (

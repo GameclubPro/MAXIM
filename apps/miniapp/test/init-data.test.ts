@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getInitData, waitForInitData } from '../src/lib/init-data';
+import { getInitData, getInitDataUserId, readUserIdFromInitData, waitForInitData } from '../src/lib/init-data';
 
 type MutableWindow = Window &
   typeof globalThis & {
@@ -14,11 +14,31 @@ type MutableWindow = Window &
     WebApp?: {
       initData?: string;
       init_data?: string;
+      initDataUnsafe?: {
+        user?: {
+          id?: number | string;
+        };
+      };
+      init_data_unsafe?: {
+        user?: {
+          id?: number | string;
+        };
+      };
     };
     MAX?: {
       WebApp?: {
         initData?: string;
         init_data?: string;
+        initDataUnsafe?: {
+          user?: {
+            id?: number | string;
+          };
+        };
+        init_data_unsafe?: {
+          user?: {
+            id?: number | string;
+          };
+        };
       };
     };
   };
@@ -105,6 +125,29 @@ test('prefers hash WebAppData over stale query init_data when bridge initData is
   );
 
   assert.equal(getInitData(), 'hash-hash=fresh');
+});
+
+test('reads the user id from initData payload', () => {
+  assert.equal(
+    readUserIdFromInitData(
+      'query_id=q1&user=%7B%22id%22%3A67890%2C%22first_name%22%3A%22Max%22%7D&hash=ok',
+    ),
+    '67890',
+  );
+});
+
+test('prefers the bridge user id when MAX exposes initDataUnsafe', () => {
+  assignWindow('https://maxim.play-team.ru/app/?init_data=query-hash%3Dnew', {
+    WebApp: {
+      initDataUnsafe: {
+        user: {
+          id: 4321,
+        },
+      },
+    },
+  });
+
+  assert.equal(getInitDataUserId(), '4321');
 });
 
 test('observes late bridge initData after initial empty startup', async () => {

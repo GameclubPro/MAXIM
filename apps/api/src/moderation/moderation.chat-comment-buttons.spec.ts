@@ -155,12 +155,13 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-1',
       'Пост админа',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
         debugContext: {
           screen: 'chat-auto-comments',
           action: 'replace-admin-message-with-bot-copy',
         },
       }),
+      undefined,
     );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-admin-1', {
       immediate: true,
@@ -211,8 +212,9 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-fallback',
       'Пост админа для fallback',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
       }),
+      undefined,
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -3,6 +3,21 @@ server {
   server_name _;
 
   root /usr/share/nginx/html;
+  gzip on;
+  gzip_vary on;
+  gzip_proxied any;
+  gzip_comp_level 6;
+  gzip_min_length 1024;
+  gzip_types
+    text/plain
+    text/css
+    text/xml
+    text/javascript
+    application/javascript
+    application/json
+    application/manifest+json
+    application/xml
+    image/svg+xml;
 
   location = __MINIAPP_BASE_PATH__index.html {
     try_files $uri =404;

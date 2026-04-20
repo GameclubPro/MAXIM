@@ -53,7 +53,6 @@ import {
   toggleChannelDialogReaction,
   toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
-import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
@@ -64,6 +63,7 @@ import {
 } from '../lib/design-preview';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { readChatTitle } from '../lib/chat-titles';
+import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import {
   maxImpact,
@@ -1261,16 +1261,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     () => resolveDialogTitle(chatId, entityType, chatTitle),
     [chatId, chatTitle, entityType],
   );
+  const currentUserId = useMemo(() => getInitDataUserId(), []);
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
-  const meQuery = useQuery({
-    queryKey: ['me'],
-    queryFn: ({ signal }) => getMe(api, { signal }),
-    retry: (failureCount, error) =>
-      !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
-    refetchOnWindowFocus: terminalDialogError === null,
-    retryOnMount: terminalDialogError === null,
-  });
 
   useEffect(() => {
     if (chatId) {
@@ -1329,7 +1322,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const redirectErrorMessage = suggestRedirectQuery.error
       ? normalizeApiError(suggestRedirectQuery.error)
       : '';
-    const meErrorMessage = meQuery.error ? normalizeApiError(meQuery.error) : '';
     const message =
       (redirectErrorMessage &&
         isTerminalDialogApiMessage(redirectErrorMessage) &&
@@ -1337,7 +1329,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       (dialogErrorMessage &&
         isTerminalDialogApiMessage(dialogErrorMessage) &&
         dialogErrorMessage) ||
-      (meErrorMessage && isTerminalDialogApiMessage(meErrorMessage) && meErrorMessage) ||
       '';
     if (!message) {
       return;
@@ -1359,7 +1350,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     dialogQuery.error,
     dialogQueryKey,
     entityType,
-    meQuery.error,
     navigate,
     pushToast,
     queryClient,
@@ -1407,9 +1397,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     dialogType === 'suggest'
       ? Boolean(draftLength || suggestionImages.length > 0)
       : draftLength > 0;
-  const activeMessageIsOwn = activeMessage
-    ? meQuery.data?.userId === activeMessage.authorUserId
-    : false;
+  const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
   const unreadStartIndex = useMemo(
     () =>
       firstUnreadMessageId
@@ -2826,7 +2814,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     );
                   }
 
-                  const isOwnMessage = meQuery.data?.userId === message.authorUserId;
+                  const isOwnMessage = currentUserId === message.authorUserId;
                   const isAdminMessage = message.isAdmin === true;
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
                   const isActiveMessage = activeMessageId === message.id;
