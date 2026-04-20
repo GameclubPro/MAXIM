@@ -3779,12 +3779,34 @@ describe('AdminService.getLogsDashboard', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
 
     const result = await service.getLogsDashboard(
@@ -3917,12 +3939,37 @@ describe('AdminService.getLogsDashboard', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+      resolveBotIdForCapability: jest.fn().mockResolvedValue(undefined),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
 
     const result = await service.getLogsDashboard(
@@ -4202,12 +4249,34 @@ describe('AdminService.getChatActivityFeed', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
 
     const firstPage = await service.getChatActivityFeed(
@@ -20455,12 +20524,35 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const chatContextCache = createChatContextCacheMock();
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
 
     const commentsToken = (
@@ -20499,6 +20591,19 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       }),
       { botId: 'channel-bot-2' },
     );
+    expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
+    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'channel-bot-2',
+    );
+    const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
+    const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as
+      | { contactId?: string; webApp?: string }
+      | undefined;
+    expect(commentsButton).toMatchObject({
+      contactId: '990002',
+      webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
+    });
   });
 
   it('refreshes suggestion-only auto-attached channel buttons after a new comment', async () => {
@@ -20787,12 +20892,37 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+      resolveBotIdForCapability: jest.fn().mockResolvedValue(undefined),
+      bindDiscoveredChatBots: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
 
     const suggestToken = await publishSuggestDialogToken(service, maxClient);
@@ -22354,12 +22484,35 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      buildMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation((startParam: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        ),
+      buildBotStartUrlSync: jest
+        .fn()
+        .mockImplementation((startPayload: string, botId?: string | null) =>
+          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        ),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
     jest
       .spyOn(service as any, 'resolveManualActionBotAssignment')
@@ -22405,12 +22558,19 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       }),
       { botId: 'channel-bot-2' },
     );
+    expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
+    expect(maxBotLinkService.buildBotStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+      'channel-bot-2',
+    );
     const [, , publishedOptions] =
       maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = publishedOptions?.buttons?.[0]?.[0] as
-      | { url?: string; webApp?: string }
+      | { url?: string; webApp?: string; contactId?: string }
       | undefined;
     const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
+    expect(commentsButton?.contactId).toBe('990002');
+    expect(suggestButton?.url).toContain('https://max.ru/channel-bot-2?start=');
     const suggestStartParam = suggestButton?.url
       ? new URL(suggestButton.url).searchParams.get('start')
       : null;

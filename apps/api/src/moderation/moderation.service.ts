@@ -13691,7 +13691,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(botId);
 
     if (webAppUrl && botContactId) {
       return {
@@ -13726,7 +13726,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): MaxMessageButton {
     const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(botId);
 
     if (webAppUrl && botContactId) {
       return {

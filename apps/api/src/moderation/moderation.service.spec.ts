@@ -15965,7 +15965,9 @@ describe('ModerationService', () => {
       buildEntryMiniappStartUrlSync: jest
         .fn()
         .mockImplementation((startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`),
-      resolveContactIdSync: jest.fn().mockReturnValue(null),
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'scan-bot-2' ? '990002' : null,
+      ),
     };
 
     const service = new ModerationService(
@@ -15975,7 +15977,17 @@ describe('ModerationService', () => {
       maxClient as never,
       undefined,
       undefined,
-      undefined,
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'MAX_BOT_ID') {
+            return '777000_bot';
+          }
+          if (key === 'APP_BASE_URL') {
+            return 'https://maxim.play-team.ru';
+          }
+          return undefined;
+        }),
+      } as never,
       undefined,
       undefined,
       undefined,
@@ -16011,7 +16023,15 @@ describe('ModerationService', () => {
       'mid-channel-1',
       'Пост канала',
       expect.objectContaining({
-        buttons: expect.any(Array),
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'open_app',
+              contactId: '990002',
+              webApp: expect.stringContaining('/app/channel/channel-1/dialog/comments?token='),
+            }),
+          ],
+        ],
       }),
       {
         trafficClass: 'background',
@@ -16020,6 +16040,7 @@ describe('ModerationService', () => {
         botId: 'scan-bot-2',
       },
     );
+    expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('scan-bot-2');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'channel-1',

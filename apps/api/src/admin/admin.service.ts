@@ -6975,22 +6975,29 @@ export class AdminService implements OnModuleDestroy {
     const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
     const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
     const threadId = existingThreadId || randomUUID();
-    const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
+    const commentsUrl = this.buildChannelDialogLaunchUrl(
+      chatId,
+      'comments',
+      threadId,
+      resolvedBotId,
+    );
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
     const suggestUrl =
-      this.buildBotStartUrl(suggestPayload) ??
-      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+      this.buildBotStartUrl(suggestPayload, resolvedBotId) ??
+      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId, resolvedBotId);
     const commentsButton = this.buildChannelDialogButton(
       chatId,
       'comments',
       threadId,
       formatCommentsButtonText(parsed.data.commentsButtonText, 0),
+      resolvedBotId,
     );
     const suggestButton = this.buildChannelDialogButton(
       chatId,
       'suggest',
       threadId,
       parsed.data.suggestButtonText,
+      resolvedBotId,
     );
     const buttons: MaxMessageButton[][] = [];
     if (parsed.data.includeCommentsButton) {
@@ -12700,10 +12707,11 @@ export class AdminService implements OnModuleDestroy {
     type: ChannelDialogType,
     threadId: string,
     text: string,
+    botId?: string | null,
   ): MaxMessageButton {
     if (type === 'suggest') {
       const startPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
-      const botStartUrl = this.buildBotStartUrl(startPayload);
+      const botStartUrl = this.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {
         return {
           type: 'link',
@@ -12713,9 +12721,9 @@ export class AdminService implements OnModuleDestroy {
       }
     }
 
-    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
+    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(botId);
 
     if (webAppUrl && botContactId) {
       return {
@@ -19191,6 +19199,7 @@ export class AdminService implements OnModuleDestroy {
               'comments',
               threadId,
               formatCommentsButtonText(this.readTrimmedString(payload.commentsButtonText), count),
+              botId,
             ),
           ]);
         }
@@ -19202,6 +19211,7 @@ export class AdminService implements OnModuleDestroy {
               'suggest',
               threadId,
               this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+              botId,
             ),
           ]);
         }
@@ -19231,6 +19241,7 @@ export class AdminService implements OnModuleDestroy {
             'comments',
             threadId,
             formatCommentsButtonText('💬 Комментарии', count),
+            botId,
           ),
         ]);
       }
@@ -19242,6 +19253,7 @@ export class AdminService implements OnModuleDestroy {
             'suggest',
             threadId,
             this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+            botId,
           ),
         ]);
       }
@@ -19310,6 +19322,7 @@ export class AdminService implements OnModuleDestroy {
               'comments',
               threadId,
               formatCommentsButtonText('💬 Комментарии', count),
+              botId,
             ),
           ],
         ],
@@ -19916,7 +19929,11 @@ export class AdminService implements OnModuleDestroy {
       },
       resolvedBotId,
     );
-    const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
+    const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(
+      chatId,
+      payload,
+      resolvedBotId,
+    );
     const textFormat = this.normalizeBroadcastTextFormat(
       this.readTrimmedString(payload.textFormat) ?? 'plain',
     );
@@ -20008,6 +20025,7 @@ export class AdminService implements OnModuleDestroy {
   private async buildPublishedChannelSuggestionButtonContext(
     chatId: string,
     payload: Record<string, unknown>,
+    botId?: string | null,
   ): Promise<{
     buttons: MaxMessageButton[][];
     threadId: string | null;
@@ -20046,12 +20064,15 @@ export class AdminService implements OnModuleDestroy {
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
+          botId,
         ),
       ]);
     }
 
     if (includeSuggestButton) {
-      buttons.push([this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText)]);
+      buttons.push([
+        this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText, botId),
+      ]);
     }
 
     return {
@@ -20643,8 +20664,9 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
+    botId?: string | null,
   ): string | null {
-    return this.buildEntityDialogLaunchUrl('channel', chatId, type, threadId);
+    return this.buildEntityDialogLaunchUrl('channel', chatId, type, threadId, botId);
   }
 
   private buildChannelDialogDirectWebAppUrl(
@@ -20660,10 +20682,11 @@ export class AdminService implements OnModuleDestroy {
     type: ChannelDialogType,
     threadId: string,
     text: string,
+    botId?: string | null,
   ): MaxMessageButton {
-    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId);
+    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId, botId);
     const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
-    const botContactId = this.resolveBotContactId();
+    const botContactId = this.resolveBotContactId(botId);
 
     return webAppUrl && botContactId
       ? {
@@ -20689,8 +20712,9 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
+    botId?: string | null,
   ): string | null {
-    return this.buildEntityDialogLaunchUrl('chat', chatId, type, threadId);
+    return this.buildEntityDialogLaunchUrl('chat', chatId, type, threadId, botId);
   }
 
   private buildChatDialogDirectWebAppUrl(
@@ -20706,9 +20730,11 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
+    botId?: string | null,
   ): string | null {
     return this.buildMiniappStartUrl(
       this.buildEntityDialogStartParam(entityType, chatId, type, threadId),
+      botId,
     );
   }
 
@@ -20770,26 +20796,26 @@ export class AdminService implements OnModuleDestroy {
     return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
   }
 
-  private buildMiniappStartUrl(startParam: string): string | null {
+  private buildMiniappStartUrl(startParam: string, botId?: string | null): string | null {
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam, botId) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)
     );
   }
 
-  private buildBotStartUrl(startPayload: string): string | null {
+  private buildBotStartUrl(startPayload: string, botId?: string | null): string | null {
     if (!isValidMaxBotStartPayload(startPayload)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload) ??
+      this.maxBotLinkService?.buildBotStartUrlSync?.(startPayload, botId) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`
         : null)
