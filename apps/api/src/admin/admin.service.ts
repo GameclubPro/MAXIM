@@ -9941,6 +9941,7 @@ export class AdminService implements OnModuleDestroy {
             request.payload,
             request.normalizedSourceText,
             imagePayload,
+            resolvedBotId,
           );
           if (occurrenceDelayMs === 0 && imagePayload) {
             await this.sendBroadcastImageMessageWithRetry(
@@ -10413,6 +10414,7 @@ export class AdminService implements OnModuleDestroy {
             request.payload,
             request.normalizedSourceText,
             imagePayload,
+            resolvedBotId,
           );
           sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
             delivery.targetChatId,
@@ -10650,18 +10652,24 @@ export class AdminService implements OnModuleDestroy {
     payload: SendBroadcastRequest,
     normalizedSourceText: string,
     imagePayload?: Record<string, unknown>,
+    botId?: string,
   ): Promise<{
     messageText: string;
     messageOptions:
       | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'>
       | undefined;
   }> {
-    const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
-      customButtons: payload.buttons,
-      includeCustomButton: payload.buttonEnabled,
-      customButtonText: payload.buttonText.trim(),
-      customButtonUrl: payload.buttonUrl.trim(),
-    });
+    const broadcastButtons = await this.resolveBroadcastButtons(
+      chatId,
+      entityType,
+      {
+        customButtons: payload.buttons,
+        includeCustomButton: payload.buttonEnabled,
+        customButtonText: payload.buttonText.trim(),
+        customButtonUrl: payload.buttonUrl.trim(),
+      },
+      botId,
+    );
     const hasMeaningfulText = normalizedSourceText.trim().length > 0;
     const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
     const messageText = shouldUseRichText
@@ -12620,6 +12628,7 @@ export class AdminService implements OnModuleDestroy {
       customButtonText: string;
       customButtonUrl: string;
     },
+    botId?: string,
   ): Promise<MaxMessageButton[][]> {
     const rows = this.buildBroadcastLinkButtonRows(
       this.normalizeManagedBroadcastButtons(options.customButtons, {
@@ -12650,6 +12659,7 @@ export class AdminService implements OnModuleDestroy {
             'comments',
             threadId,
             formatCommentsButtonText('💬 Комментарии', 0),
+            botId,
           ),
         ]);
       }
@@ -12684,6 +12694,7 @@ export class AdminService implements OnModuleDestroy {
           'comments',
           threadId,
           formatCommentsButtonText('💬 Комментарии', 0),
+          botId,
         ),
       ]);
     }
@@ -12695,6 +12706,7 @@ export class AdminService implements OnModuleDestroy {
           'suggest',
           threadId,
           channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+          botId,
         ),
       ]);
     }

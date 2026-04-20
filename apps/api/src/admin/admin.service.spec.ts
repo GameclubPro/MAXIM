@@ -22,6 +22,7 @@ type AdminServicePrivateAccess = {
     chatId: string,
     entityType: ManagedEntityType,
     options: Record<string, unknown>,
+    botId?: string,
   ) => Promise<Array<Array<{ text: string; type: string; url: string }>>>;
   buildEntityDialogToken: (
     entityType: ManagedEntityType,
@@ -18071,13 +18072,27 @@ describe('AdminService.sendChannelBroadcast', () => {
     const chatContextCache = {
       invalidate: jest.fn(),
     };
+    const maxBotLinkService = {
+      resolveContactIdSync: jest.fn((botId?: string | null) =>
+        botId === 'channel-bot-2' ? '990002' : null,
+      ),
+      getBotTokenSync: jest.fn().mockReturnValue('test-max-bot-token'),
+      getValidationTokens: jest.fn().mockReturnValue(['test-max-bot-token']),
+      resolveBotId: jest.fn().mockResolvedValue(undefined),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
     );
+    jest.spyOn(service as any, 'resolveDeliveryBotAssignment').mockResolvedValue('channel-bot-2');
 
     await service.sendChannelBroadcast(
       'channel-1',
@@ -18108,14 +18123,23 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
     expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
-    expect(dispatch).toEqual({ immediate: true });
+    expect(dispatch).toEqual({ immediate: true, botId: 'channel-bot-2' });
     expect(options).toMatchObject({
       textFormat: 'html',
-      buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'open_app' })]],
+      buttons: [
+        [
+          expect.objectContaining({
+            text: '💬 Комментарии · 0',
+            type: 'open_app',
+            contactId: '990002',
+          }),
+        ],
+      ],
     });
     expect(String(options.buttons[0][0].webApp ?? '')).toContain(
       'https://maxim.play-team.ru/app/channel/channel-1/dialog/comments?token=',
     );
+    expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
   });
 
   it('publishes channel broadcast with system suggestion button in the first message', async () => {
