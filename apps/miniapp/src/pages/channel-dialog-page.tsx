@@ -1210,24 +1210,19 @@ function resolveDialogTitle(
 }
 
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
-  const { chatId = '', mode } = useParams();
+  const { chatId = '' } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
-  const dialogType = resolveDialogType(mode);
+  const dialogType: ChannelDialogType = 'comments';
   const entityType = resolveDialogEntityType(location.pathname);
-  const isChannelSuggestRedirect = entityType === 'channel' && dialogType === 'suggest';
-  const isPreviewChannelSuggestRedirect = isChannelSuggestRedirect && chatId === PREVIEW_CHANNEL_ID;
   const [draft, setDraft] = useState('');
-  const [suggestionImages, setSuggestionImages] = useState<SuggestionDraftImage[]>([]);
-  const [isPreparingSuggestionImage, setIsPreparingSuggestionImage] = useState(false);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editRestoreState, setEditRestoreState] = useState<EditRestoreState | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
-  const [isBodyScrolled, setIsBodyScrolled] = useState(false);
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -1237,12 +1232,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     null,
   );
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
-  const suggestionImageInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
-  const suggestionImagesRef = useRef<SuggestionDraftImage[]>([]);
   const highlightTimerRef = useRef<number | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
@@ -1252,17 +1245,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messageRectsRef = useRef(new Map<string, DOMRect>());
   const ignoreNextBubbleClickRef = useRef(false);
   const launchErrorRedirectedRef = useRef(false);
-  const suggestRedirectOpenedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
-  const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
-  const chatLabel = useMemo(
-    () => resolveDialogTitle(chatId, entityType, chatTitle),
-    [chatId, chatTitle, entityType],
-  );
   const currentUserId = useMemo(() => getInitDataUserId(), []);
-  const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
 
   useEffect(() => {
@@ -1271,25 +1257,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   }, [chatId, entityType]);
 
-  useEffect(() => {
-    suggestionImagesRef.current = suggestionImages;
-  }, [suggestionImages]);
-
-  useEffect(() => {
-    return () => {
-      for (const { previewUrl } of suggestionImagesRef.current) {
-        URL.revokeObjectURL(previewUrl);
-      }
-    };
-  }, []);
-
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
     queryFn: ({ signal }) =>
       entityType === 'channel'
         ? getChannelDialog(api, chatId, dialogType, token, { signal })
         : getChatDialog(api, chatId, dialogType, token, { signal }),
-    enabled: Boolean(chatId && token) && terminalDialogError === null && !isChannelSuggestRedirect,
+    enabled: Boolean(chatId && token) && terminalDialogError === null,
     retry: (failureCount, error) =>
       !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
     refetchOnWindowFocus: terminalDialogError === null,
@@ -1300,17 +1274,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         return false;
       }
 
-      return dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false;
+      return 8_000;
     },
-  });
-  const suggestRedirectQuery = useQuery({
-    queryKey: ['channel-suggestion-redirect', chatId, token] as const,
-    queryFn: ({ signal }) => getChannelSuggestionRedirect(api, chatId, token, { signal }),
-    enabled: Boolean(chatId && token) && terminalDialogError === null && isChannelSuggestRedirect,
-    retry: (failureCount, error) =>
-      !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
-    refetchOnWindowFocus: false,
-    retryOnMount: terminalDialogError === null,
   });
 
   useEffect(() => {
@@ -1318,19 +1283,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const dialogErrorMessage = dialogQuery.error ? normalizeApiError(dialogQuery.error) : '';
-    const redirectErrorMessage = suggestRedirectQuery.error
-      ? normalizeApiError(suggestRedirectQuery.error)
-      : '';
-    const message =
-      (redirectErrorMessage &&
-        isTerminalDialogApiMessage(redirectErrorMessage) &&
-        redirectErrorMessage) ||
-      (dialogErrorMessage &&
-        isTerminalDialogApiMessage(dialogErrorMessage) &&
-        dialogErrorMessage) ||
-      '';
-    if (!message) {
+    const message = dialogQuery.error ? normalizeApiError(dialogQuery.error) : '';
+    if (!message || !isTerminalDialogApiMessage(message)) {
       return;
     }
 
@@ -1353,27 +1307,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     navigate,
     pushToast,
     queryClient,
-    suggestRedirectQuery.error,
   ]);
-
-  useEffect(() => {
-    if (
-      !isChannelSuggestRedirect ||
-      isPreviewChannelSuggestRedirect ||
-      suggestRedirectOpenedRef.current
-    ) {
-      return;
-    }
-
-    const url = suggestRedirectQuery.data?.url?.trim() ?? '';
-    if (!url) {
-      return;
-    }
-
-    if (openMaxBotLinkAndClose(url)) {
-      suggestRedirectOpenedRef.current = true;
-    }
-  }, [isChannelSuggestRedirect, isPreviewChannelSuggestRedirect, suggestRedirectQuery.data?.url]);
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
@@ -1391,12 +1325,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     [messages, replyToMessageId],
   );
   const draftLength = draft.trim().length;
-  const showComposeMeta =
-    dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget) || Boolean(editingMessage);
-  const canSubmitMessage =
-    dialogType === 'suggest'
-      ? Boolean(draftLength || suggestionImages.length > 0)
-      : draftLength > 0;
+  const showComposeMeta = draftLength > 0 || Boolean(replyTarget) || Boolean(editingMessage);
+  const canSubmitMessage = draftLength > 0;
   const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
   const unreadStartIndex = useMemo(
     () =>
@@ -1406,7 +1336,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     [firstUnreadMessageId, messages],
   );
   const unreadCount = unreadStartIndex >= 0 ? messages.length - unreadStartIndex : 0;
-  const showJumpToLatest = dialogType === 'comments' && unreadCount > 0 && !isNearBottom;
+  const showJumpToLatest = unreadCount > 0 && !isNearBottom;
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -1475,21 +1405,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setEditRestoreState(null);
     setReplyToMessageId(null);
     setIsReactionPickerExpanded(false);
-    setIsBodyScrolled(false);
     setIsNearBottom(true);
     setFirstUnreadMessageId(null);
     setTerminalDialogError(null);
     setReactionPopoverLayout(null);
     setDraft('');
-    setSuggestionImages((current) => {
-      for (const image of current) {
-        URL.revokeObjectURL(image.previewUrl);
-      }
-      return [];
-    });
-    if (suggestionImageInputRef.current) {
-      suggestionImageInputRef.current.value = '';
-    }
     lastMessageIdRef.current = null;
     messageNodeRefs.current.clear();
     messageLayoutContextRef.current = null;
@@ -1608,15 +1528,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setIsNearBottom(nearBottom);
 
     if (previousMessageId !== lastMessageId) {
-      if (dialogType === 'suggest' && previousMessageId === null) {
-        setFirstUnreadMessageId(null);
-        requestAnimationFrame(() => {
-          viewport.scrollTo({
-            top: 0,
-            behavior: 'auto',
-          });
-        });
-      } else if (shouldStickToBottom) {
+      if (shouldStickToBottom) {
         setFirstUnreadMessageId(null);
         requestAnimationFrame(() => {
           viewport.scrollTo({
@@ -1624,7 +1536,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             behavior: previousMessageId ? 'smooth' : 'auto',
           });
         });
-      } else if (dialogType === 'comments') {
+      } else {
         const nextUnreadMessageId = resolveNextUnreadMessageId(
           messages,
           previousMessageId,
@@ -1637,7 +1549,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     lastMessageIdRef.current = lastMessageId;
-  }, [dialogType, messages]);
+  }, [messages]);
 
   useEffect(() => {
     if (replyToMessageId && !messages.some((message) => message.id === replyToMessageId)) {
@@ -1733,7 +1645,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId]);
 
   useLayoutEffect(() => {
-    if (dialogType !== 'comments' || !activeMessageId) {
+    if (!activeMessageId) {
       setReactionPopoverLayout(null);
       return undefined;
     }
@@ -1819,7 +1731,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('resize', requestLayout);
       window.visualViewport?.removeEventListener('resize', requestLayout);
     };
-  }, [activeMessageId, activeMessageIsOwn, dialogType, isReactionPickerExpanded]);
+  }, [activeMessageId, activeMessageIsOwn, isReactionPickerExpanded]);
 
   useEffect(() => {
     if (!activeMessageId) {
@@ -1889,21 +1801,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId, reactionPopoverLayout]);
 
   const sendMutation = useMutation({
-    mutationFn: (payload: { text: string; images: SuggestionDraftImage[] }) =>
+    mutationFn: (payload: { text: string }) =>
       entityType === 'channel'
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
             replyToMessageId,
-            ...(payload.images.length > 0
-              ? {
-                  images: payload.images.map((image) => ({
-                    base64: image.base64,
-                    mimeType: image.mimeType,
-                    fileName: image.fileName,
-                  })),
-                }
-              : {}),
           })
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
@@ -1915,41 +1818,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         updateDialogMessage(current, result.message),
       );
       pushToast({
-        tone: result.message.delivered === false ? 'info' : 'success',
+        tone: 'success',
         title: 'Готово',
-        description:
-          dialogType === 'suggest'
-            ? result.message.delivered
-              ? 'Материал отправлен редакторам в личку бота.'
-              : 'Материал сохранён, но редакторам пока не доставлен.'
-            : 'Комментарий отправлен.',
+        description: 'Комментарий отправлен.',
       });
       setDraft('');
-      setSuggestionImages((current) => {
-        for (const image of current) {
-          URL.revokeObjectURL(image.previewUrl);
-        }
-        return [];
-      });
-      if (suggestionImageInputRef.current) {
-        suggestionImageInputRef.current.value = '';
-      }
       setReplyToMessageId(null);
       dismissMessageActions();
-      if (dialogType === 'comments') {
-        requestAnimationFrame(() => {
-          const viewport = scrollViewportRef.current;
-          if (!viewport) {
-            return;
-          }
-          setFirstUnreadMessageId(null);
-          setIsNearBottom(true);
-          viewport.scrollTo({
-            top: viewport.scrollHeight,
-            behavior: 'smooth',
-          });
+      requestAnimationFrame(() => {
+        const viewport = scrollViewportRef.current;
+        if (!viewport) {
+          return;
+        }
+        setFirstUnreadMessageId(null);
+        setIsNearBottom(true);
+        viewport.scrollTo({
+          top: viewport.scrollHeight,
+          behavior: 'smooth',
         });
-      }
+      });
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
       });
@@ -2078,8 +1965,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const isComposePending =
-    sendMutation.isPending || updateMutation.isPending || isPreparingSuggestionImage;
+  const isComposePending = sendMutation.isPending || updateMutation.isPending;
   const isCommentActionPending =
     reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
 
@@ -2090,10 +1976,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       toggle?: boolean;
     },
   ) => {
-    if (dialogType !== 'comments') {
-      return;
-    }
-
     maxImpact(options?.haptic ?? 'light');
     clearSwipeReplyGesture();
     setIsReactionPickerExpanded(false);
@@ -2106,7 +1988,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const handleBubblePointerDown =
     (message: ChannelDialogMessage, isOwnMessage: boolean) =>
     (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (dialogType !== 'comments' || event.pointerType === 'mouse') {
+      if (event.pointerType === 'mouse') {
         return;
       }
 
@@ -2243,10 +2125,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (dialogType !== 'comments') {
-      return;
-    }
-
     const target = event.currentTarget.ownerDocument.defaultView;
     if (target?.matchMedia('(pointer: coarse)').matches) {
       return;
@@ -2267,10 +2145,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const handleBubbleContextMenu =
     (messageId: string) => (event: ReactMouseEvent<HTMLDivElement>) => {
-      if (dialogType !== 'comments') {
-        return;
-      }
-
       event.preventDefault();
       ignoreNextBubbleClickRef.current = true;
       openMessageActions(messageId, {
@@ -2393,12 +2267,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const handleBodyScroll = (event: ReactUIEvent<HTMLElement>) => {
     const viewport = event.currentTarget;
-    setIsBodyScrolled(viewport.scrollTop > 18);
-
-    if (dialogType !== 'comments') {
-      return;
-    }
-
     const nearBottom = getViewportDistanceToBottom(viewport) < COMMENTS_NEAR_BOTTOM_THRESHOLD;
     setIsNearBottom(nearBottom);
     if (nearBottom && firstUnreadMessageId) {
@@ -2439,98 +2307,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     scrollToMessage(replyTarget.id);
   };
 
-  const clearSuggestionImages = () => {
-    setSuggestionImages((current) => {
-      for (const image of current) {
-        URL.revokeObjectURL(image.previewUrl);
-      }
-      return [];
-    });
-    if (suggestionImageInputRef.current) {
-      suggestionImageInputRef.current.value = '';
-    }
-  };
-
-  const removeSuggestionImage = (indexToRemove: number) => {
-    setSuggestionImages((current) =>
-      current.filter((image, index) => {
-        if (index === indexToRemove) {
-          URL.revokeObjectURL(image.previewUrl);
-          return false;
-        }
-
-        return true;
-      }),
-    );
-    if (suggestionImageInputRef.current) {
-      suggestionImageInputRef.current.value = '';
-    }
-    maxImpact('light');
-  };
-
-  const handleSuggestionImageChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length === 0) {
-      return;
-    }
-
-    const availableSlots = Math.max(0, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES - suggestionImages.length);
-    if (availableSlots === 0) {
-      event.target.value = '';
-      pushToast({
-        tone: 'info',
-        title: 'Лимит фото',
-        description: `В одной предложке можно отправить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`,
-      });
-      return;
-    }
-
-    setIsPreparingSuggestionImage(true);
-    const nextImages: SuggestionDraftImage[] = [];
-    try {
-      for (const file of files.slice(0, availableSlots)) {
-        const prepared = await prepareBroadcastImage(file);
-        nextImages.push({
-          base64: prepared.base64,
-          mimeType: prepared.mimeType,
-          fileName: prepared.fileName,
-          previewUrl: URL.createObjectURL(file),
-        });
-      }
-
-      maxImpact('light');
-      setSuggestionImages((current) => [...current, ...nextImages]);
-      if (files.length > availableSlots) {
-        pushToast({
-          tone: 'info',
-          title: 'Лимит фото',
-          description: `Добавили первые ${availableSlots} фото. Больше ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} в одну предложку нельзя.`,
-        });
-      }
-      event.target.value = '';
-    } catch (error) {
-      for (const image of nextImages) {
-        URL.revokeObjectURL(image.previewUrl);
-      }
-      event.target.value = '';
-      pushToast({
-        tone: 'danger',
-        title: 'Фото не добавлено',
-        description: normalizeApiError(error),
-      });
-    } finally {
-      setIsPreparingSuggestionImage(false);
-    }
-  };
-
   const onSubmit = () => {
     const text = draft.trim();
-    if (
-      isComposePending ||
-      !chatId ||
-      !token ||
-      (dialogType === 'suggest' ? !text && suggestionImages.length === 0 : !text)
-    ) {
+    if (isComposePending || !chatId || !token || !text) {
       return;
     }
 
@@ -2549,7 +2328,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     sendMutation.mutate({
       text,
-      images: dialogType === 'suggest' ? suggestionImages : [],
     });
   };
 
@@ -2591,65 +2369,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (isChannelSuggestRedirect) {
-    const redirectUrl = suggestRedirectQuery.data?.url?.trim() ?? '';
-    const redirectTitle = suggestRedirectQuery.data?.title?.trim() || chatLabel;
-    const isRedirectLoading = suggestRedirectQuery.isLoading && !redirectUrl;
-
-    return (
-      <div className="page-stack page-enter">
-        <div className="glass-card glass-card--md">
-          <StatusState
-            tone={suggestRedirectQuery.error ? 'danger' : 'neutral'}
-            title={
-              suggestRedirectQuery.error
-                ? 'Не удалось открыть чат с ботом'
-                : 'Открываем чат с ботом'
-            }
-            description={
-              suggestRedirectQuery.error
-                ? normalizeApiError(suggestRedirectQuery.error)
-                : isRedirectLoading
-                  ? `Переводим в диалог с ботом для канала «${redirectTitle}».`
-                  : `Если чат не открылся автоматически, нажмите кнопку ниже.`
-            }
-            action={
-              suggestRedirectQuery.error ? (
-                <div className="button-row">
-                  <button
-                    type="button"
-                    className="button button--danger"
-                    onClick={() => void suggestRedirectQuery.refetch()}
-                  >
-                    Повторить
-                  </button>
-                  <button type="button" className="button button--ghost" onClick={handleDismiss}>
-                    Назад
-                  </button>
-                </div>
-              ) : redirectUrl ? (
-                <button
-                  type="button"
-                  className="button button--accent"
-                  onClick={() => {
-                    if (!isPreviewChannelSuggestRedirect) {
-                      openMaxBotLinkAndClose(redirectUrl);
-                      return;
-                    }
-
-                    openMaxBotLink(redirectUrl);
-                  }}
-                >
-                  Открыть чат
-                </button>
-              ) : null
-            }
-          />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div
       ref={screenRef}
@@ -2660,40 +2379,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       </div>
 
       <div className="channel-dialog-shell">
-        {dialogType === 'comments' && introText ? (
+        {introText ? (
           <div className="channel-dialog-thread-context channel-dialog-thread-context--floating">
             <p>{introText}</p>
           </div>
         ) : null}
 
-        {dialogType === 'suggest' ? (
-          <header className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}>
-            <button
-              type="button"
-              className="channel-dialog-nav"
-              onClick={handleDismiss}
-              aria-label="Назад"
-            >
-              <BackIcon />
-            </button>
-
-            <div className="channel-dialog-topbar__title">
-              <h1>{view.title}</h1>
-              <span>{chatLabel}</span>
-            </div>
-
-            <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
-              Закрыть
-            </button>
-          </header>
-        ) : null}
-
         <section
           ref={scrollViewportRef}
-          className={cn(
-            'channel-dialog-body',
-            dialogType === 'comments' && introText && 'has-floating-thread-context',
-          )}
+          className={cn('channel-dialog-body', introText && 'has-floating-thread-context')}
           onScroll={handleBodyScroll}
         >
           {dialogQuery.isLoading ? (
@@ -2731,89 +2425,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {dialogType === 'suggest' ? (
-                <div className="channel-dialog-intro" style={SUGGEST_INTRO_STYLE}>
-                  <span style={SUGGEST_INTRO_EYEBROW_STYLE}>Тихая предложка</span>
-                  <strong style={SUGGEST_INTRO_TITLE_STYLE}>
-                    Идея уйдёт в редакцию, а не в общий чат
-                  </strong>
-                  {renderPlainTextParagraphs(
-                    introText ||
-                      'Напишите короткий текст, приложите несколько фото и отслеживайте статус прямо на этой странице. После отправки бот передаст материал редакторам в личку.',
-                  )}
-                  <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
-                    <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
-                    <span style={SUGGEST_BADGE_STYLE}>Бот пишет редакторам в личку</span>
-                  </div>
-                </div>
-              ) : null}
-
               {messages.length ? (
                 messages.map((message, index) => {
-                  if (dialogType === 'suggest') {
-                    const suggestionStatus = resolveSuggestionStatus(message);
-                    return (
-                      <article key={message.id} style={SUGGEST_CARD_STYLE}>
-                        <div style={SUGGEST_CARD_HEAD_STYLE}>
-                          <div style={SUGGEST_CARD_ROW_STYLE}>
-                            <span style={SUGGEST_CARD_EYEBROW_STYLE}>Ваше предложение</span>
-                            <time dateTime={message.createdAt} style={SUGGEST_CARD_TIME_STYLE}>
-                              {formatMessageTime(message.createdAt)}
-                            </time>
-                          </div>
-                          <div style={SUGGEST_CARD_ROW_STYLE}>
-                            <strong style={SUGGEST_CARD_TITLE_STYLE}>
-                              {suggestionStatus.headline}
-                            </strong>
-                            <span style={buildSuggestionStatusStyle(suggestionStatus.tone)}>
-                              {suggestionStatus.badge}
-                            </span>
-                          </div>
-                        </div>
-
-                        <p
-                          style={{
-                            ...SUGGEST_CARD_TEXT_STYLE,
-                            ...(message.text.trim() ? {} : SUGGEST_CARD_MUTED_TEXT_STYLE),
-                          }}
-                        >
-                          {resolveSuggestionText(message)}
-                        </p>
-
-                        {message.hasImage || message.hasVideo ? (
-                          <div style={SUGGEST_CARD_ATTACHMENT_STYLE}>
-                            <span style={SUGGEST_CARD_ATTACHMENT_BADGE_STYLE}>
-                              {message.hasVideo ? 'Видео' : 'Фото'}
-                            </span>
-                            <span>{resolveSuggestionAttachmentLabel(message)}</span>
-                          </div>
-                        ) : null}
-
-                        <div style={SUGGEST_CARD_ROW_STYLE}>
-                          <span style={SUGGEST_CARD_NOTE_STYLE}>{suggestionStatus.note}</span>
-                          {message.publishedUrl ? (
-                            <a
-                              href={message.publishedUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              style={SUGGEST_CARD_LINK_STYLE}
-                              onClick={(event) => {
-                                if (!(window.MAX?.WebApp ?? window.WebApp)) {
-                                  return;
-                                }
-
-                                event.preventDefault();
-                                openMaxBotLink(message.publishedUrl ?? '');
-                              }}
-                            >
-                              Открыть пост
-                            </a>
-                          ) : null}
-                        </div>
-                      </article>
-                    );
-                  }
-
                   const isOwnMessage = currentUserId === message.authorUserId;
                   const isAdminMessage = message.isAdmin === true;
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
@@ -2828,7 +2441,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
                   return (
                     <Fragment key={message.id}>
-                      {dialogType === 'comments' && unreadStartIndex === index ? (
+                      {unreadStartIndex === index ? (
                         <div className="channel-dialog-new-comments" aria-label="Новые комментарии">
                           <span className="channel-dialog-new-comments__pill">
                             Новые комментарии
@@ -2863,12 +2476,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         <div
                           className={cn(
                             'channel-dialog-message__content',
-                            dialogType === 'comments' && messageWidthTone,
-                            dialogType === 'comments' &&
-                              swipeReplyPreview?.messageId === message.id &&
-                              'is-swipe-active',
-                            dialogType === 'comments' &&
-                              swipeReplyPreview?.messageId === message.id &&
+                            messageWidthTone,
+                            swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
+                            swipeReplyPreview?.messageId === message.id &&
                               swipeReplyPreview.armed &&
                               'is-swipe-armed',
                             isActiveMessage && 'is-context-open',
@@ -2876,68 +2486,38 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           data-message-id={message.id}
                           style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
                         >
-                          {dialogType === 'comments' ? (
-                            <div className="channel-dialog-message__swipe-indicator" aria-hidden>
-                              <span className="channel-dialog-message__swipe-indicator-icon">
-                                <ReplyArrowIcon />
-                              </span>
-                            </div>
-                          ) : null}
+                          <div className="channel-dialog-message__swipe-indicator" aria-hidden>
+                            <span className="channel-dialog-message__swipe-indicator-icon">
+                              <ReplyArrowIcon />
+                            </span>
+                          </div>
 
                           <div
                             className={cn(
                               'channel-dialog-message__stack',
-                              dialogType === 'comments' &&
-                                swipeReplyPreview?.messageId === message.id &&
-                                'is-swipe-active',
+                              swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
                             )}
                           >
                             <div
                               className={cn(
                                 'channel-dialog-message__bubble',
-                                dialogType === 'comments' && 'is-selectable',
+                                'is-selectable',
                                 isActiveMessage && 'is-active',
                                 groupedWithPrevious && 'is-grouped',
                               )}
                               data-message-bubble-id={message.id}
                               style={buildAdminBubbleStyle(isAdminMessage, isOwnMessage)}
-                              onClick={
-                                dialogType === 'comments'
-                                  ? handleBubbleClick(message.id)
-                                  : undefined
-                              }
-                              onKeyDown={
-                                dialogType === 'comments'
-                                  ? handleBubbleKeyDown(message.id)
-                                  : undefined
-                              }
-                              onPointerDown={
-                                dialogType === 'comments'
-                                  ? handleBubblePointerDown(message, isOwnMessage)
-                                  : undefined
-                              }
-                              onPointerMove={
-                                dialogType === 'comments'
-                                  ? handleBubblePointerMove(message, isOwnMessage)
-                                  : undefined
-                              }
-                              onPointerUp={
-                                dialogType === 'comments'
-                                  ? handleBubblePointerUp(message)
-                                  : undefined
-                              }
-                              onPointerCancel={
-                                dialogType === 'comments' ? handleBubblePointerCancel : undefined
-                              }
-                              onContextMenu={
-                                dialogType === 'comments'
-                                  ? handleBubbleContextMenu(message.id)
-                                  : undefined
-                              }
-                              role={dialogType === 'comments' ? 'button' : undefined}
-                              tabIndex={dialogType === 'comments' ? 0 : undefined}
-                              aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
-                              aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
+                              onClick={handleBubbleClick(message.id)}
+                              onKeyDown={handleBubbleKeyDown(message.id)}
+                              onPointerDown={handleBubblePointerDown(message, isOwnMessage)}
+                              onPointerMove={handleBubblePointerMove(message, isOwnMessage)}
+                              onPointerUp={handleBubblePointerUp(message)}
+                              onPointerCancel={handleBubblePointerCancel}
+                              onContextMenu={handleBubbleContextMenu(message.id)}
+                              role="button"
+                              tabIndex={0}
+                              aria-pressed={isActiveMessage}
+                              aria-haspopup="dialog"
                             >
                               {!groupedWithPrevious ? (
                                 <div className="channel-dialog-message__meta">
@@ -2979,7 +2559,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               <p>{message.text}</p>
                             </div>
 
-                            {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
+                            {message.reactionGroups.length > 0 ? (
                               <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
                                 <div className="channel-dialog-message__reactions">
                                   {message.reactionGroups.map((group) => (
@@ -3010,33 +2590,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   );
                 })
               ) : (
-                <div
-                  className="channel-dialog-empty"
-                  style={dialogType === 'suggest' ? SUGGEST_EMPTY_STYLE : undefined}
-                >
-                  {dialogType === 'suggest' ? (
-                    <>
-                      <strong style={SUGGEST_EMPTY_TITLE_STYLE}>
-                        Пока нет отправленных предложек
-                      </strong>
-                      <p style={SUGGEST_EMPTY_COPY_STYLE}>
-                        Добавьте тему, подпись или несколько фото, чтобы отправить первую идею
-                        редактору.
-                      </p>
-                    </>
-                  ) : (
-                    'Пока пусто'
-                  )}
-                </div>
+                <div className="channel-dialog-empty">Пока пусто</div>
               )}
             </div>
           ) : null}
         </section>
 
-        <section
-          className="channel-dialog-compose"
-          style={dialogType === 'suggest' ? { background: 'none' } : undefined}
-        >
+        <section className="channel-dialog-compose">
           {showJumpToLatest ? (
             <button
               type="button"
@@ -3097,93 +2657,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               <div
                 className={cn(
                   'channel-dialog-compose__meta',
-                  dialogType !== 'suggest' && 'channel-dialog-compose__meta--solo',
+                  'channel-dialog-compose__meta--solo',
                 )}
               >
-                {dialogType === 'suggest' ? (
-                  <span>
-                    До {MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото в одной предложке. После отправки
-                    для правок создайте новую.
-                  </span>
-                ) : editingMessage ? (
+                {editingMessage ? (
                   <span>Изменение сохранится для всех участников треда</span>
                 ) : null}
-                <span>
-                  {draftLength}/2000
-                  {dialogType === 'suggest'
-                    ? ` · ${suggestionImages.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`
-                    : ''}
-                </span>
-              </div>
-            ) : null}
-
-            {dialogType === 'suggest' && suggestionImages.length > 0 ? (
-              <div
-                style={{
-                  display: 'grid',
-                  gap: 8,
-                }}
-              >
-                {suggestionImages.map((image, index) => (
-                  <div
-                    key={`${image.fileName}-${index}`}
-                    className="channel-dialog-compose__attachment"
-                  >
-                    <div className="channel-dialog-compose__attachment-preview">
-                      <img src={image.previewUrl} alt="" />
-                    </div>
-                    <div className="channel-dialog-compose__attachment-copy">
-                      <strong>
-                        Фото {index + 1}
-                        {suggestionImages.length > 1 ? ` из ${suggestionImages.length}` : ''}
-                      </strong>
-                      <span>{image.fileName}</span>
-                    </div>
-                    <button
-                      type="button"
-                      className="channel-dialog-compose__attachment-dismiss"
-                      onClick={() => removeSuggestionImage(index)}
-                      aria-label={`Убрать фото ${index + 1}`}
-                    >
-                      <CloseIcon />
-                    </button>
-                  </div>
-                ))}
-                {suggestionImages.length > 1 ? (
-                  <button
-                    type="button"
-                    className="channel-dialog-compose__attachment-dismiss"
-                    onClick={clearSuggestionImages}
-                    aria-label="Убрать все фото"
-                    style={{ justifySelf: 'flex-end' }}
-                  >
-                    Убрать все
-                  </button>
-                ) : null}
+                <span>{draftLength}/2000</span>
               </div>
             ) : null}
 
             <div className="channel-dialog-compose__row">
-              {dialogType === 'suggest' ? (
-                <label
-                  className={cn(
-                    'channel-dialog-compose__attach',
-                    (suggestionImages.length > 0 || isPreparingSuggestionImage) && 'is-active',
-                  )}
-                >
-                  <input
-                    ref={suggestionImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={handleSuggestionImageChange}
-                    disabled={sendMutation.isPending || isPreparingSuggestionImage}
-                  />
-                  <PlusIcon />
-                  <span>{isPreparingSuggestionImage ? '...' : 'Фото'}</span>
-                </label>
-              ) : null}
-
               <label className="channel-dialog-compose__field">
                 <textarea
                   ref={composeFieldRef}
@@ -3195,7 +2679,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       ? 'Изменить комментарий'
                       : replyTarget
                         ? 'Ответить на комментарий'
-                        : view.placeholder
+                        : 'Комментарий'
                   }
                   maxLength={2_000}
                 />
