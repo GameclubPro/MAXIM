@@ -7110,39 +7110,39 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, token);
-    const channelSettings = await this.getPublicChannelSettings(chatId);
-
     const action =
       dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
-    const rows = await this.prisma.auditLog.findMany({
-      where: {
-        chatId,
-        action,
-        ...(threadId
-          ? {
-              payload: {
-                path: ['threadId'],
-                equals: threadId,
-              },
-            }
-          : {}),
-        ...(dialogType === 'suggest' ? { actorUserId: user.userId } : {}),
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      take: CHANNEL_DIALOG_MESSAGES_LIMIT,
-    });
-    const adminUserIds =
-      dialogType === 'comments' ? await this.readDialogAdminUserIds(chatId) : new Set<string>();
+    const [channelSettings, rows, adminUserIds] = await Promise.all([
+      this.getPublicChannelSettings(chatId),
+      this.prisma.auditLog.findMany({
+        where: {
+          chatId,
+          action,
+          ...(threadId
+            ? {
+                payload: {
+                  path: ['threadId'],
+                  equals: threadId,
+                },
+              }
+            : {}),
+          ...(dialogType === 'suggest' ? { actorUserId: user.userId } : {}),
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+      }),
+      dialogType === 'comments'
+        ? this.readPersistedDialogAdminUserIds(chatId, 'channel')
+        : Promise.resolve(new Set<string>()),
+    ]);
 
-    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
-      chatId,
+    const messages =
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds)),
-    );
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -7578,40 +7578,38 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, token);
-    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    const [chatSettings, rows, adminUserIds] = await Promise.all([
+      this.getPublicChatCommentSettings(chatId),
+      this.prisma.auditLog.findMany({
+        where: {
+          chatId,
+          action: CHANNEL_DIALOG_ACTION_COMMENT,
+          ...(threadId
+            ? {
+                payload: {
+                  path: ['threadId'],
+                  equals: threadId,
+                },
+              }
+            : {}),
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+      }),
+      this.readPersistedDialogAdminUserIds(chatId, 'chat'),
+    ]);
 
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    const rows = await this.prisma.auditLog.findMany({
-      where: {
-        chatId,
-        action: CHANNEL_DIALOG_ACTION_COMMENT,
-        ...(threadId
-          ? {
-              payload: {
-                path: ['threadId'],
-                equals: threadId,
-              },
-            }
-          : {}),
-      },
-      orderBy: {
-        createdAt: 'desc',
-      },
-      take: CHANNEL_DIALOG_MESSAGES_LIMIT,
-    });
-    const adminUserIds =
-      dialogType === 'comments' ? await this.readDialogAdminUserIds(chatId) : new Set<string>();
-
-    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
-      chatId,
+    const messages =
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds)),
-    );
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -18884,55 +18882,64 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async enrichDialogMessagesWithAuthorAvatars(
+  private async readPersistedDialogAdminUserIds(
     chatId: string,
-    messages: ChannelDialogMessage[],
-  ): Promise<ChannelDialogMessage[]> {
-    const missingUserIds = Array.from(
-      new Set(
-        messages
-          .filter((message) => !this.readTrimmedString(message.avatarUrl))
-          .map((message) => message.authorUserId.trim())
-          .filter((value): value is string => value.length > 0),
-      ),
-    );
-    if (missingUserIds.length === 0) {
-      return messages;
-    }
-
+    entityType: ManagedEntityType,
+  ): Promise<Set<string>> {
     try {
-      const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
-      const profiles = await this.maxClient.getChatMemberProfiles(chatId, missingUserIds, {
-        trafficClass: 'interactive',
-        actionHealthLane: 'background',
-        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
-        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-      });
-      if (profiles.size === 0) {
-        return messages;
+      const persistedAdminIds = (
+        await this.prisma.chatAdminAllowlist.findMany({
+          where: { chatId },
+          select: { userId: true },
+        })
+      )
+        .map((row) => row.userId.trim())
+        .filter((userId) => userId.length > 0);
+
+      if (persistedAdminIds.length === 0) {
+        this.scheduleDialogAdminRosterWarmup(chatId, entityType, 'persisted_allowlist_miss');
       }
 
-      return messages.map((message) => {
-        if (this.readTrimmedString(message.avatarUrl)) {
-          return message;
-        }
-
-        return {
-          ...message,
-          avatarUrl: profiles.get(message.authorUserId)?.avatarUrl ?? null,
-        };
-      });
-    } catch (error) {
+      return new Set(persistedAdminIds);
+    } catch (error: unknown) {
+      this.scheduleDialogAdminRosterWarmup(chatId, entityType, 'persisted_allowlist_error');
       this.logger.warn(
         {
           chatId,
-          missingUserIds,
-          error: error instanceof Error ? error.message : String(error),
+          entityType,
+          err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to enrich dialog messages with author avatars',
+        'Failed to read persisted dialog admin ids',
       );
-      return messages;
+      return new Set<string>();
     }
+  }
+
+  private scheduleDialogAdminRosterWarmup(
+    chatId: string,
+    entityType: ManagedEntityType,
+    reason: 'persisted_allowlist_miss' | 'persisted_allowlist_error',
+  ): void {
+    if (!this.maxChatAdminRosterSyncService) {
+      return;
+    }
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId,
+        entityType,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId,
+            entityType,
+            reason,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule dialog admin roster warmup',
+        );
+      });
   }
 
   private channelCommentContainsLink(value: string): boolean {

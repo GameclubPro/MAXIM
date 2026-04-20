@@ -17324,7 +17324,7 @@ describe('AdminService.sendBroadcast', () => {
     expect(threadId).toBe('chat-thread-legacy');
   });
 
-  it('keeps avatar url on new chat comments and enriches missing avatars from MAX members', async () => {
+  it('keeps avatar url on new chat comments and skips remote avatar hydration during dialog reads', async () => {
     const prisma = createPrismaMock();
     prisma.chatSettings.findUnique.mockResolvedValue(
       chatSettingsSchema.parse({
@@ -17420,14 +17420,10 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
     expect(created.message.avatarUrl).toBe('https://cdn.max.ru/u/1/photo.jpg');
-    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-2'], {
-      trafficClass: 'interactive',
-      actionHealthLane: 'background',
-      ignoreFailureMetricStatuses: [403, 404],
-    });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
     expect(loaded.messages[0]).toMatchObject({
       authorUserId: 'user-2',
-      avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+      avatarUrl: null,
     });
   });
 
@@ -17469,6 +17465,7 @@ describe('AdminService.sendBroadcast', () => {
         createdAt: new Date('2026-03-06T07:54:00.000Z'),
       },
     ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'admin-1' }, { userId: 'user-1' }]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1', 'user-1']),
@@ -17517,6 +17514,8 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(created.message.isAdmin).toBe(true);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
     expect(loaded.messages[0]).toMatchObject({
       authorUserId: 'admin-1',
       isAdmin: true,
@@ -19785,6 +19784,84 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('loads channel dialog admin accents from the persisted allowlist without remote MAX reads', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-comment-user-1',
+        actorUserId: 'user-2',
+        payload: {
+          type: 'comments',
+          text: 'Обычный комментарий',
+          authorDisplayName: 'Марина',
+        },
+        createdAt: new Date('2026-03-20T09:05:00.000Z'),
+      },
+      {
+        id: 'channel-comment-admin-1',
+        actorUserId: 'admin-1',
+        payload: {
+          type: 'comments',
+          text: 'Комментарий администратора',
+          authorDisplayName: 'Александр',
+        },
+        createdAt: new Date('2026-03-20T09:00:00.000Z'),
+      },
+    ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'admin-1' }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn(),
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-fast-open',
+    ) as string;
+
+    const result = await service.getChannelDialog(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+    expect(result.messages[0]).toMatchObject({
+      authorUserId: 'admin-1',
+      isAdmin: true,
+      avatarUrl: null,
+    });
+    expect(result.messages[1]).toMatchObject({
+      authorUserId: 'user-2',
+      isAdmin: false,
+      avatarUrl: null,
+    });
   });
 
   it('stores a reply preview snapshot when posting a channel comment reply', async () => {
