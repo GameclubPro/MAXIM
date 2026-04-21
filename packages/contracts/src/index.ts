@@ -3129,6 +3129,9 @@ export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreen
 export const channelDialogTypeSchema = /*#__PURE__*/ z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
 export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 5;
+export const MAX_CHANNEL_DIALOG_ATTACHMENTS = 5;
+export const MAX_CHANNEL_DIALOG_COMMENT_FILES = 3;
+export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 5_200_000;
 
 export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z
   .object({
@@ -3188,11 +3191,55 @@ export const channelDialogImageInputSchema = /*#__PURE__*/ z
   });
 export type ChannelDialogImageInput = z.infer<typeof channelDialogImageInputSchema>;
 
+export const channelDialogAttachmentKindSchema = /*#__PURE__*/ z.enum(['image', 'file']);
+export type ChannelDialogAttachmentKind = z.infer<typeof channelDialogAttachmentKindSchema>;
+
+export const channelDialogAttachmentInputSchema = /*#__PURE__*/ z
+  .object({
+    type: channelDialogAttachmentKindSchema,
+    base64: z.string().trim().max(4_000_000).default(''),
+    mimeType: z.string().trim().max(128).default(''),
+    fileName: z.string().trim().max(128).default(''),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.base64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['base64'],
+        message: value.type === 'image' ? 'Добавьте фото.' : 'Добавьте файл.',
+      });
+    }
+
+    if (value.type === 'image') {
+      if (!value.mimeType.trim() || !value.mimeType.toLowerCase().startsWith('image/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['mimeType'],
+          message: 'Неверный формат фото.',
+        });
+      }
+      return;
+    }
+
+    if (!value.mimeType.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mimeType'],
+        message: 'Неверный формат файла.',
+      });
+    }
+  });
+export type ChannelDialogAttachmentInput = z.infer<typeof channelDialogAttachmentInputSchema>;
+
 export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
   .object({
     token: z.string().trim().min(16).max(256),
     text: z.string().trim().max(2_000).default(''),
     replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
+    attachments: z
+      .array(channelDialogAttachmentInputSchema)
+      .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
+      .default([]),
     imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
@@ -3213,6 +3260,55 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
         message: 'Неверный формат фото.',
       });
     }
+
+    const normalizedAttachments = [
+      ...value.attachments,
+      ...value.images.map((image) => ({
+        type: 'image' as const,
+        base64: image.base64,
+        mimeType: image.mimeType,
+        fileName: image.fileName,
+      })),
+      ...(value.images.length === 0 && value.imageBase64
+        ? [
+            {
+              type: 'image' as const,
+              base64: value.imageBase64.trim(),
+              mimeType: value.imageMimeType.trim(),
+              fileName: value.imageFileName.trim(),
+            },
+          ]
+        : []),
+    ];
+
+    if (normalizedAttachments.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
+      });
+    }
+
+    const fileAttachments = normalizedAttachments.filter((attachment) => attachment.type === 'file');
+    if (fileAttachments.length > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
+      });
+    }
+
+    const totalBase64Length = normalizedAttachments.reduce(
+      (acc, attachment) => acc + attachment.base64.trim().length,
+      0,
+    );
+    if (totalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: 'Суммарный размер вложений слишком большой.',
+      });
+    }
   })
   .transform((value) => ({
     ...value,
@@ -3228,6 +3324,26 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
               },
             ]
           : [],
+    attachments: [
+      ...value.attachments,
+      ...(value.images.length > 0
+        ? value.images.map((image) => ({
+            type: 'image' as const,
+            base64: image.base64.trim(),
+            mimeType: image.mimeType.trim(),
+            fileName: image.fileName.trim(),
+          }))
+        : value.imageBase64
+          ? [
+              {
+                type: 'image' as const,
+                base64: value.imageBase64.trim(),
+                mimeType: value.imageMimeType.trim(),
+                fileName: value.imageFileName.trim(),
+              },
+            ]
+          : []),
+    ].slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS),
   }));
 export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
@@ -3256,6 +3372,17 @@ export type ChannelDialogSuggestionReviewStatus = z.infer<
   typeof channelDialogSuggestionReviewStatusSchema
 >;
 
+export const channelDialogAttachmentSchema = /*#__PURE__*/ z.object({
+  kind: channelDialogAttachmentKindSchema,
+  url: z.string().trim().url().nullable().default(null),
+  fileName: z.string().trim().max(128).nullable().default(null),
+  mimeType: z.string().trim().max(128).nullable().default(null),
+  size: z.number().int().min(0).nullable().default(null),
+  width: z.number().int().min(1).nullable().optional(),
+  height: z.number().int().min(1).nullable().optional(),
+});
+export type ChannelDialogAttachment = z.infer<typeof channelDialogAttachmentSchema>;
+
 export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   id: z.string(),
   type: channelDialogTypeSchema,
@@ -3268,6 +3395,7 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   editedAt: z.string().datetime().nullable().optional(),
   replyToMessageId: z.string().nullable().optional(),
   replyTo: channelDialogReplyPreviewSchema.nullable().optional(),
+  attachments: z.array(channelDialogAttachmentSchema).max(MAX_CHANNEL_DIALOG_ATTACHMENTS).default([]),
   reactionGroups: z.array(channelDialogReactionGroupSchema).default([]),
   canEdit: z.boolean().default(false),
   canDelete: z.boolean().default(false),
@@ -3314,7 +3442,7 @@ export type CreateChannelDialogMessageResponse = z.infer<
 
 export const updateChannelDialogMessageRequestSchema = /*#__PURE__*/ z.object({
   token: z.string().trim().min(16).max(256),
-  text: z.string().trim().min(1).max(2_000),
+  text: z.string().trim().max(2_000).default(''),
 });
 export type UpdateChannelDialogMessageRequest = z.infer<
   typeof updateChannelDialogMessageRequestSchema

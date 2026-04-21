@@ -37,6 +37,7 @@ import {
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
+  type ChannelDialogAttachment,
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
   type ChannelDialogSuggestionReviewStatus,
@@ -96,6 +97,7 @@ import {
   type UpdateManagedEntityPrimaryBotRequest,
   type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
+  MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
   inferAllowlistMatchType,
   normalizeMessageLimitsBlockedWordCandidate,
@@ -379,6 +381,14 @@ type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
 type ChannelSuggestionImageAsset = {
   base64?: string | null;
   payload?: Record<string, unknown> | null;
+  mimeType?: string | null;
+  fileName?: string | null;
+};
+
+type ChannelDialogAttachmentAsset = {
+  kind: 'image' | 'file';
+  payload?: Record<string, unknown> | null;
+  base64?: string | null;
   mimeType?: string | null;
   fileName?: string | null;
 };
@@ -7456,11 +7466,17 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const images = parsed.data.images.map((image) => ({
-      base64: image.base64.trim(),
-      mimeType: image.mimeType.trim(),
-      fileName: image.fileName.trim(),
-    }));
+    const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
+      parsed.data.attachments,
+    );
+    const images = normalizedAttachments
+      .filter((attachment) => attachment.kind === 'image')
+      .map((image) => ({
+        base64: image.base64?.trim() ?? '',
+        mimeType: image.mimeType?.trim() ?? '',
+        fileName: image.fileName?.trim() ?? '',
+      }));
+    const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind === 'file');
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7476,16 +7492,16 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
-    if (dialogType === 'comments' && images.length > 0) {
-      throw new BadRequestException('Фото доступно только в предложке.');
-    }
-
-    if (dialogType === 'comments' && !text) {
-      throw new BadRequestException('Введите текст комментария.');
+    if (dialogType === 'comments' && !text && normalizedAttachments.length === 0) {
+      throw new BadRequestException('Введите текст комментария или добавьте вложение.');
     }
 
     if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
+    }
+
+    if (dialogType === 'suggest' && fileAttachments.length > 0) {
+      throw new BadRequestException('В предложке пока поддерживаются только фото.');
     }
 
     if (dialogType === 'suggest' && !text && images.length === 0) {
@@ -7521,6 +7537,11 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
+    const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
+      chatId,
+      normalizedAttachments,
+    );
+
     const created = await this.prisma.auditLog.create({
       data: {
         chatId,
@@ -7541,6 +7562,9 @@ export class AdminService implements OnModuleDestroy {
                 },
               }
             : {}),
+          ...(uploadedAttachments.length > 0
+            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
+            : {}),
           source,
         },
       },
@@ -7558,6 +7582,7 @@ export class AdminService implements OnModuleDestroy {
       editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
+      attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
       reactionGroups: [],
       canEdit: dialogType === 'comments',
       canDelete: dialogType === 'comments',
@@ -7644,7 +7669,9 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const hasImages = parsed.data.images.length > 0;
+    const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
+      parsed.data.attachments,
+    );
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7660,13 +7687,14 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    if (hasImages) {
-      throw new BadRequestException('Фото доступно только в предложке.');
+    if (!text && normalizedAttachments.length === 0) {
+      throw new BadRequestException('Введите текст комментария или добавьте вложение.');
     }
 
-    if (!text) {
-      throw new BadRequestException('Введите текст комментария.');
-    }
+    const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
+      chatId,
+      normalizedAttachments,
+    );
 
     const created = await this.prisma.auditLog.create({
       data: {
@@ -7688,6 +7716,9 @@ export class AdminService implements OnModuleDestroy {
                 },
               }
             : {}),
+          ...(uploadedAttachments.length > 0
+            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
+            : {}),
           delivered: true,
           deliveredToUserId: null,
           source: 'miniapp_dialog',
@@ -7707,6 +7738,7 @@ export class AdminService implements OnModuleDestroy {
       editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
+      attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
       reactionGroups: [],
       canEdit: true,
       canDelete: true,
@@ -18369,6 +18401,9 @@ export class AdminService implements OnModuleDestroy {
     const text = this.readTrimmedString(payload.text) ?? '';
     const editedAt = this.readTrimmedString(payload.editedAt);
     const replyTo = this.readDialogReplyPreview(payload.replyTo);
+    const attachments = this.buildChannelDialogCommentAttachments(
+      this.readChannelDialogAttachmentAssets(payload.attachments),
+    );
     const delivered = payload.delivered === true;
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
     const reviewStatus = this.readChannelDialogSuggestionReviewStatus(payload.reviewStatus);
@@ -18430,6 +18465,7 @@ export class AdminService implements OnModuleDestroy {
       editedAt: editedAt ?? null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
+      attachments,
       reactionGroups: this.readDialogReactionGroups(payload.reactions, currentUserId),
       canEdit: type === 'comments' && isOwnMessage,
       canDelete: type === 'comments' && isOwnMessage,
@@ -18449,6 +18485,132 @@ export class AdminService implements OnModuleDestroy {
           }
         : {}),
     };
+  }
+
+  private readChannelDialogAttachmentAssets(value: unknown): ChannelDialogAttachmentAsset[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.readChannelDialogAttachmentAsset(item))
+      .filter((attachment): attachment is ChannelDialogAttachmentAsset => attachment !== null)
+      .slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS);
+  }
+
+  private readChannelDialogAttachmentAsset(value: unknown): ChannelDialogAttachmentAsset | null {
+    const row = this.readObjectPayloadOrNull(value);
+    if (!row) {
+      return null;
+    }
+
+    const kind = this.readLowerString(row.kind ?? row.type);
+    if (kind !== 'image' && kind !== 'file') {
+      return null;
+    }
+
+    const payload = this.readObjectPayloadOrNull(row.payload);
+    if (payload && Object.keys(payload).length > 0) {
+      return {
+        kind,
+        payload,
+        mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
+        fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+      };
+    }
+
+    const base64 = this.readTrimmedString(row.base64);
+    if (!base64) {
+      return null;
+    }
+
+    return {
+      kind,
+      base64,
+      mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
+      fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+    };
+  }
+
+  private buildChannelDialogCommentAttachments(
+    attachments: ChannelDialogAttachmentAsset[],
+  ): ChannelDialogAttachment[] {
+    return attachments
+      .map((attachment) => this.mapChannelDialogAttachmentAsset(attachment))
+      .filter((attachment): attachment is ChannelDialogAttachment => attachment !== null);
+  }
+
+  private mapChannelDialogAttachmentAsset(
+    attachment: ChannelDialogAttachmentAsset,
+  ): ChannelDialogAttachment | null {
+    if (!attachment.payload || Object.keys(attachment.payload).length === 0) {
+      return null;
+    }
+
+    const payload = attachment.payload;
+    const fileName =
+      this.readTrimmedString(
+        attachment.fileName ??
+          payload.file_name ??
+          payload.fileName ??
+          payload.filename ??
+          payload.name,
+      ) ?? null;
+    const mimeType =
+      this.readTrimmedString(attachment.mimeType ?? payload.mime_type ?? payload.mimeType) ?? null;
+    const width = this.toSafeInteger(payload.width ?? payload.w);
+    const height = this.toSafeInteger(payload.height ?? payload.h);
+    const size = this.toSafeInteger(payload.size);
+
+    return {
+      kind: attachment.kind,
+      url: this.readTrimmedString(payload.url) ?? null,
+      fileName,
+      mimeType,
+      size: size > 0 ? size : null,
+      width: width > 0 ? width : null,
+      height: height > 0 ? height : null,
+    };
+  }
+
+  private buildChannelDialogReplyPreviewText(payload: Record<string, unknown>): string {
+    const text = this.readTrimmedString(payload.text);
+    if (text) {
+      return text;
+    }
+
+    return this.summarizeChannelDialogCommentAttachments(
+      this.buildChannelDialogCommentAttachments(this.readChannelDialogAttachmentAssets(payload.attachments)),
+    );
+  }
+
+  private summarizeChannelDialogCommentAttachments(
+    attachments: Pick<ChannelDialogAttachment, 'kind' | 'fileName'>[],
+  ): string {
+    if (attachments.length === 0) {
+      return '';
+    }
+
+    const imageCount = attachments.filter((attachment) => attachment.kind === 'image').length;
+    const files = attachments.filter((attachment) => attachment.kind === 'file');
+
+    if (imageCount > 0 && files.length === 0) {
+      if (imageCount > 1) {
+        return `Фото · ${imageCount} шт.`;
+      }
+      const fileName = attachments.find((attachment) => attachment.kind === 'image')?.fileName?.trim();
+      return fileName ? `Фото · ${fileName}` : 'Фото';
+    }
+
+    if (files.length > 0 && imageCount === 0) {
+      if (files.length > 1) {
+        return `Файлы · ${files.length} шт.`;
+      }
+      const fileName = files[0]?.fileName?.trim();
+      return fileName ? `Файл · ${fileName}` : 'Файл';
+    }
+
+    return `Вложения · ${attachments.length} шт.`;
   }
 
   private readChannelSuggestionImageAssets(value: unknown): ChannelSuggestionImageAsset[] {
@@ -18655,7 +18817,7 @@ export class AdminService implements OnModuleDestroy {
     return {
       messageId: row.id,
       authorDisplayName: this.readTrimmedString(payload.authorDisplayName),
-      text: this.readTrimmedString(payload.text) ?? '',
+      text: this.buildChannelDialogReplyPreviewText(payload),
     };
   }
 
@@ -18731,8 +18893,9 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const text = params.text.trim();
-    if (!text) {
-      throw new BadRequestException('Введите текст комментария.');
+    const existingAttachments = this.readChannelDialogAttachmentAssets(target.payload.attachments);
+    if (!text && existingAttachments.length === 0) {
+      throw new BadRequestException('Введите текст комментария или добавьте вложение.');
     }
 
     const updated = await this.prisma.auditLog.update({
@@ -20330,6 +20493,122 @@ export class AdminService implements OnModuleDestroy {
       mediaMimeType,
       mediaFileName,
     };
+  }
+
+  private normalizeChannelDialogCommentInputAttachments(
+    attachments: Array<{
+      type: 'image' | 'file';
+      base64: string;
+      mimeType: string;
+      fileName: string;
+    }>,
+  ): ChannelDialogAttachmentAsset[] {
+    return attachments
+      .map((attachment) => ({
+        kind: attachment.type,
+        base64: attachment.base64.trim(),
+        mimeType: attachment.mimeType.trim(),
+        fileName: attachment.fileName.trim(),
+      }))
+      .filter((attachment) => attachment.base64)
+      .slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS);
+  }
+
+  private async uploadChannelDialogCommentAttachments(
+    chatId: string,
+    attachments: ChannelDialogAttachmentAsset[],
+  ): Promise<ChannelDialogAttachmentAsset[]> {
+    if (attachments.length === 0) {
+      return [];
+    }
+
+    const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const uploaded: ChannelDialogAttachmentAsset[] = [];
+
+    for (const attachment of attachments) {
+      const normalized = await this.uploadChannelDialogCommentAttachment(attachment, resolvedBotId);
+      if (normalized) {
+        uploaded.push(normalized);
+      }
+    }
+
+    return uploaded;
+  }
+
+  private async uploadChannelDialogCommentAttachment(
+    attachment: ChannelDialogAttachmentAsset,
+    botId?: string,
+  ): Promise<ChannelDialogAttachmentAsset | null> {
+    const base64 = attachment.base64?.trim() ?? '';
+    if (!base64) {
+      return null;
+    }
+
+    const mimeType =
+      attachment.kind === 'image'
+        ? attachment.mimeType?.trim().toLowerCase() || 'image/jpeg'
+        : attachment.mimeType?.trim().toLowerCase() || 'application/octet-stream';
+    if (attachment.kind === 'image' && !mimeType.startsWith('image/')) {
+      throw new BadRequestException('Фото комментария передано в неверном формате.');
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = Buffer.from(base64, 'base64');
+    } catch {
+      throw new BadRequestException(
+        attachment.kind === 'image'
+          ? 'Не удалось прочитать фото комментария.'
+          : 'Не удалось прочитать файл комментария.',
+      );
+    }
+
+    if (buffer.length === 0) {
+      throw new BadRequestException(
+        attachment.kind === 'image'
+          ? 'Фото комментария оказалось пустым.'
+          : 'Файл комментария оказался пустым.',
+      );
+    }
+
+    const fileName =
+      this.readTrimmedString(attachment.fileName) ||
+      (attachment.kind === 'image'
+        ? this.resolveBroadcastImageFileName('', mimeType)
+        : 'comment-attachment.bin');
+
+    try {
+      const payload =
+        attachment.kind === 'image'
+          ? botId
+            ? await this.maxClient.uploadImage(buffer, fileName, mimeType, { botId })
+            : await this.maxClient.uploadImage(buffer, fileName, mimeType)
+          : botId
+            ? await this.maxClient.uploadFile(buffer, fileName, mimeType, { botId })
+            : await this.maxClient.uploadFile(buffer, fileName, mimeType);
+
+      return {
+        kind: attachment.kind,
+        payload,
+        mimeType,
+        fileName,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          kind: attachment.kind,
+          mimeType,
+          fileName,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to upload channel dialog attachment',
+      );
+      throw new BadRequestException(
+        attachment.kind === 'image'
+          ? 'Не удалось загрузить фото комментария.'
+          : 'Не удалось загрузить файл комментария.',
+      );
+    }
   }
 
   private async uploadChannelSuggestionImage(

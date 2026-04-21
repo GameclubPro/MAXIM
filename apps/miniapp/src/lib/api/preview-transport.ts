@@ -1106,6 +1106,29 @@ function resolveChannelAvatarUrl(channelId: string, state: PreviewState): string
   return state.channels.find((item) => item.id === channelId)?.avatarUrl ?? null;
 }
 
+function buildPreviewDialogAttachments(
+  attachments: Array<{
+    type: 'image' | 'file';
+    base64: string;
+    mimeType: string;
+    fileName: string;
+  }> = [],
+): ChannelDialogMessage['attachments'] {
+  return attachments.map((attachment) => ({
+    kind: attachment.type,
+    url: `data:${attachment.mimeType};base64,${attachment.base64}`,
+    fileName: attachment.fileName || null,
+    mimeType: attachment.mimeType || null,
+    size: Math.max(0, Math.floor((attachment.base64.length * 3) / 4)),
+    ...(attachment.type === 'image'
+      ? {
+          width: 120,
+          height: 120,
+        }
+      : {}),
+  }));
+}
+
 function buildPreviewDialogMessage(payload: {
   id: string;
   type: ChannelDialogType;
@@ -1117,6 +1140,7 @@ function buildPreviewDialogMessage(payload: {
   createdAt: string;
   replyToMessageId?: string | null;
   replyTo?: ChannelDialogMessage['replyTo'];
+  attachments?: ChannelDialogMessage['attachments'];
   reactionGroups?: ChannelDialogMessage['reactionGroups'];
   delivered?: boolean;
   deliveredToUserId?: string | null;
@@ -1140,6 +1164,7 @@ function buildPreviewDialogMessage(payload: {
       ? { replyToMessageId: payload.replyToMessageId }
       : {}),
     ...(payload.replyTo !== undefined ? { replyTo: payload.replyTo } : {}),
+    ...(payload.attachments !== undefined ? { attachments: payload.attachments } : {}),
     ...(payload.reactionGroups !== undefined ? { reactionGroups: payload.reactionGroups } : {}),
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
     ...(payload.deliveredToUserId !== undefined
@@ -1745,6 +1770,13 @@ function createInitialState(): PreviewState {
       deliveredChats: 1,
       failedChats: 0,
       pendingChats: 0,
+      blockedChats: 0,
+      failureBreakdown: {
+        transient: 0,
+        permanentTarget: 0,
+        quarantined: 0,
+        unknown: 0,
+      },
       canRetry: false,
       remainingCount: 2,
       createdAt: addHours(now, -36).toISOString(),
@@ -1887,6 +1919,13 @@ function createInitialState(): PreviewState {
       deliveredChats: 0,
       failedChats: 0,
       pendingChats: 1,
+      blockedChats: 0,
+      failureBreakdown: {
+        transient: 0,
+        permanentTarget: 0,
+        quarantined: 0,
+        unknown: 0,
+      },
       canRetry: false,
       remainingCount: 4,
       createdAt: addHours(now, -20).toISOString(),
@@ -1930,6 +1969,24 @@ function createInitialState(): PreviewState {
           avatarUrl: buildPreviewAvatarDataUrl('Наталья', '#6aa8ff', '#3b7ef0'),
           createdAt: addHours(now, -4.5).toISOString(),
           reactionGroups: [{ emoji: '👀', count: 2, reactedByMe: true }],
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-comments-attachment-1',
+          type: 'comments',
+          text: '',
+          authorUserId: 'preview-user-7',
+          authorDisplayName: 'Ольга',
+          avatarUrl: buildPreviewAvatarDataUrl('Ольга', '#f1a44b', '#ea7b4b'),
+          createdAt: addHours(now, -4.2).toISOString(),
+          attachments: [
+            {
+              kind: 'file',
+              url: 'https://example.test/protokol-sobraniya.pdf',
+              fileName: 'protokol-sobraniya.pdf',
+              mimeType: 'application/pdf',
+              size: 184_000,
+            },
+          ],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-4',
@@ -2015,6 +2072,26 @@ function createInitialState(): PreviewState {
           avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -9.8).toISOString(),
           reactionGroups: [{ emoji: '👍', count: 6, reactedByMe: true }],
+        }),
+        buildPreviewDialogMessage({
+          id: 'channel-comments-3',
+          type: 'comments',
+          text: 'Прикладываю кадр с перекрёстка, чтобы было понятнее, где образуется пробка.',
+          authorUserId: 'preview-user-12',
+          authorDisplayName: 'Ирина',
+          avatarUrl: buildPreviewAvatarDataUrl('Ирина', '#6aa8ff', '#3b7ef0'),
+          createdAt: addHours(now, -9.2).toISOString(),
+          attachments: [
+            {
+              kind: 'image',
+              url: buildPreviewAvatarDataUrl('Фото', '#dbe9ff', '#aacbff'),
+              fileName: 'traffic-photo.webp',
+              mimeType: 'image/webp',
+              size: 248_000,
+              width: 1200,
+              height: 900,
+            },
+          ],
         }),
       ],
     },
@@ -2847,6 +2924,7 @@ async function handleChatRequest(
               text: replyTarget.text,
             }
           : null,
+        attachments: dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
         reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {
@@ -3506,6 +3584,7 @@ async function handleChannelRequest(
               text: replyTarget.text,
             }
           : null,
+        attachments: dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
         reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {

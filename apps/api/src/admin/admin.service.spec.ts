@@ -23260,7 +23260,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
-  it('rejects empty text and photo uploads in channel comments', async () => {
+  it('rejects empty channel comments without attachments and stores uploaded attachments', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -23270,12 +23270,31 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         commentsEnabled: true,
       }),
     );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-attachment-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T10:12:00.000Z'),
+    });
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithResolvedLink: jest
         .fn()
         .mockResolvedValue({ messageId: 'mid-channel-engagement-9', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({
+        token: 'comment-image-1',
+        url: 'https://cdn.max.ru/comment-image-1.png',
+        width: 960,
+        height: 720,
+      }),
+      uploadFile: jest.fn().mockResolvedValue({
+        token: 'comment-file-1',
+        url: 'https://cdn.max.ru/comment-file-1.pdf',
+        file_name: 'minutes.pdf',
+        mime_type: 'application/pdf',
+        size: 123_000,
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -23305,27 +23324,90 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           text: '   ',
         },
       ),
-    ).rejects.toThrow('Введите текст комментария.');
+    ).rejects.toThrow('Введите текст комментария или добавьте вложение.');
 
-    await expect(
-      service.createChannelDialogMessage(
-        'channel-1',
-        {
-          userId: 'user-1',
-          username: 'user1',
-          displayName: 'Пользователь',
-          chatTitle: null,
-        },
-        'comments',
-        {
-          token: commentsToken,
-          text: 'Комментарий',
-          imageBase64: 'abc',
-          imageMimeType: 'image/png',
-          imageFileName: 'comment.png',
-        },
-      ),
-    ).rejects.toThrow('Фото доступно только в предложке.');
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: '',
+        attachments: [
+          {
+            type: 'image',
+            base64: 'YQ==',
+            mimeType: 'image/png',
+            fileName: 'comment.png',
+          },
+          {
+            type: 'file',
+            base64: 'Yg==',
+            mimeType: 'application/pdf',
+            fileName: 'minutes.pdf',
+          },
+        ],
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from('a'),
+      'comment.png',
+      'image/png',
+    );
+    expect(maxClient.uploadFile).toHaveBeenCalledWith(
+      Buffer.from('b'),
+      'minutes.pdf',
+      'application/pdf',
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            text: '',
+            attachments: [
+              expect.objectContaining({
+                kind: 'image',
+                fileName: 'comment.png',
+                mimeType: 'image/png',
+                payload: expect.objectContaining({
+                  token: 'comment-image-1',
+                  url: 'https://cdn.max.ru/comment-image-1.png',
+                }),
+              }),
+              expect.objectContaining({
+                kind: 'file',
+                fileName: 'minutes.pdf',
+                mimeType: 'application/pdf',
+                payload: expect.objectContaining({
+                  token: 'comment-file-1',
+                  url: 'https://cdn.max.ru/comment-file-1.pdf',
+                }),
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(result.message.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        fileName: 'comment.png',
+        mimeType: 'image/png',
+        url: 'https://cdn.max.ru/comment-image-1.png',
+      }),
+      expect.objectContaining({
+        kind: 'file',
+        fileName: 'minutes.pdf',
+        mimeType: 'application/pdf',
+        url: 'https://cdn.max.ru/comment-file-1.pdf',
+      }),
+    ]);
   });
 
   it('rejects channel comments with links when moderation blocks links', async () => {

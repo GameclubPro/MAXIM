@@ -1,9 +1,14 @@
 import type {
+  ChannelDialogAttachment,
   ChannelDialogMessage,
   ChannelDialogResponse,
   ChannelDialogType,
 } from '@maxim/contracts';
-import { MAX_CHANNEL_DIALOG_SUGGEST_IMAGES } from '@maxim/contracts';
+import {
+  MAX_CHANNEL_DIALOG_ATTACHMENTS,
+  MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
+  MAX_CHANNEL_DIALOG_COMMENT_FILES,
+} from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
   BubbleStar as IconoirBubbleStar,
@@ -61,7 +66,12 @@ import {
   PREVIEW_CHAT_ID,
   PREVIEW_CHAT_TITLE,
 } from '../lib/design-preview';
-import { prepareBroadcastImage } from '../lib/broadcast-image';
+import {
+  formatDialogAttachmentSize,
+  prepareCommentDialogFileAttachment,
+  prepareCommentDialogImageAttachment,
+  type PreparedCommentDialogAttachment,
+} from '../lib/dialog-attachments';
 import { readChatTitle } from '../lib/chat-titles';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
@@ -314,9 +324,58 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function hasCommentAttachments(
+  attachments: ChannelDialogAttachment[] | PreparedCommentDialogAttachment[] | null | undefined,
+): boolean {
+  return Array.isArray(attachments) && attachments.length > 0;
+}
+
+function resolveCommentAttachmentSummary(
+  attachments: Pick<ChannelDialogAttachment, 'kind' | 'fileName'>[] | null | undefined,
+): string {
+  if (!attachments?.length) {
+    return '';
+  }
+
+  const imageCount = attachments.filter((attachment) => attachment.kind === 'image').length;
+  const files = attachments.filter((attachment) => attachment.kind === 'file');
+
+  if (imageCount > 0 && files.length === 0) {
+    if (imageCount > 1) {
+      return `Фото · ${imageCount}`;
+    }
+    const fileName = attachments.find((attachment) => attachment.kind === 'image')?.fileName?.trim();
+    return fileName ? `Фото · ${fileName}` : 'Фото';
+  }
+
+  if (files.length > 0 && imageCount === 0) {
+    if (files.length > 1) {
+      return `Файлы · ${files.length}`;
+    }
+    const fileName = files[0]?.fileName?.trim();
+    return fileName ? `Файл · ${fileName}` : 'Файл';
+  }
+
+  return `Вложения · ${attachments.length}`;
+}
+
+function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): string {
+  return attachment.url?.trim() ?? '';
+}
+
+function calculateDraftAttachmentsBase64Length(
+  attachments: PreparedCommentDialogAttachment[],
+): number {
+  return attachments.reduce((total, attachment) => total + attachment.base64.length, 0);
+}
+
 function resolveMessageWidthTone(
   message: ChannelDialogMessage,
 ): 'is-wide' | 'is-medium' | 'is-compact' {
+  if (message.attachments.length > 0) {
+    return 'is-wide';
+  }
+
   if (message.replyTo) {
     return 'is-wide';
   }
@@ -870,6 +929,94 @@ function DialogAvatar({
   );
 }
 
+function CommentAttachmentGlyph({ kind }: { kind: 'image' | 'file' }) {
+  return kind === 'image' ? (
+    <IconoirCamera aria-hidden focusable="false" />
+  ) : (
+    <IconoirAttachment aria-hidden focusable="false" />
+  );
+}
+
+function CommentMessageAttachments({
+  attachments,
+}: {
+  attachments: ChannelDialogAttachment[];
+}) {
+  if (!attachments.length) {
+    return null;
+  }
+
+  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image');
+  const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file');
+
+  return (
+    <div className="channel-dialog-message__attachments">
+      {imageAttachments.length > 0 ? (
+        <div className="channel-dialog-message__image-grid">
+          {imageAttachments.map((attachment, attachmentIndex) => {
+            const url = getCommentAttachmentOpenUrl(attachment);
+            const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
+
+            return (
+              <button
+                key={`${fileName}-${attachmentIndex}`}
+                type="button"
+                className="channel-dialog-message__image-tile"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (url) {
+                    openMaxBotLink(url);
+                  }
+                }}
+                disabled={!url}
+                aria-label={fileName}
+              >
+                {url ? <img src={url} alt="" loading="lazy" /> : <CommentAttachmentGlyph kind="image" />}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+
+      {fileAttachments.length > 0 ? (
+        <div className="channel-dialog-message__file-list">
+          {fileAttachments.map((attachment, attachmentIndex) => {
+            const url = getCommentAttachmentOpenUrl(attachment);
+            const fileName = attachment.fileName?.trim() || `Файл ${attachmentIndex + 1}`;
+            const meta = attachment.size ? formatDialogAttachmentSize(attachment.size) : 'Открыть';
+
+            return (
+              <button
+                key={`${fileName}-${attachmentIndex}`}
+                type="button"
+                className="channel-dialog-message__file-pill"
+                onPointerDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (url) {
+                    openMaxBotLink(url);
+                  }
+                }}
+                disabled={!url}
+                aria-label={fileName}
+              >
+                <span className="channel-dialog-message__file-pill-icon" aria-hidden>
+                  <CommentAttachmentGlyph kind="file" />
+                </span>
+                <span className="channel-dialog-message__file-pill-copy">
+                  <strong>{fileName}</strong>
+                  <span>{meta}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function SendArrowIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -1146,6 +1293,7 @@ type SwipeReplyPreview = {
 type EditRestoreState = {
   draft: string;
   replyToMessageId: string | null;
+  draftAttachments: PreparedCommentDialogAttachment[];
 };
 
 type SwipeReplyGesture = {
@@ -1157,12 +1305,7 @@ type SwipeReplyGesture = {
   armed: boolean;
 };
 
-type SuggestionDraftImage = {
-  base64: string;
-  mimeType: string;
-  fileName: string;
-  previewUrl: string;
-};
+type CommentDraftAttachment = PreparedCommentDialogAttachment;
 
 type SuggestionStatusPresentation = {
   badge: string;
@@ -1218,6 +1361,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const dialogType: ChannelDialogType = 'comments';
   const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
+  const [draftAttachments, setDraftAttachments] = useState<CommentDraftAttachment[]>([]);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [editRestoreState, setEditRestoreState] = useState<EditRestoreState | null>(null);
@@ -1228,12 +1372,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
+  const [isPreparingAttachment, setIsPreparingAttachment] = useState(false);
+  const [floatingThreadContextHeight, setFloatingThreadContextHeight] = useState(0);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
   );
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const floatingThreadContextRef = useRef<HTMLDivElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
@@ -1311,6 +1460,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const floatingThreadContextOffset = introText
+    ? Math.max(96, (floatingThreadContextHeight > 0 ? floatingThreadContextHeight : 0) + 18)
+    : 0;
+  const dialogBodyStyle = introText
+    ? ({
+        '--channel-dialog-thread-context-offset': `${floatingThreadContextOffset}px`,
+      } as CSSProperties)
+    : undefined;
   const messageIdSet = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
   const activeMessage = useMemo(
     () => messages.find((message) => message.id === activeMessageId) ?? null,
@@ -1325,8 +1482,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     [messages, replyToMessageId],
   );
   const draftLength = draft.trim().length;
-  const showComposeMeta = draftLength > 0 || Boolean(replyTarget) || Boolean(editingMessage);
-  const canSubmitMessage = draftLength > 0;
+  const draftAttachmentCount = draftAttachments.length;
+  const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
+  const showComposeMeta =
+    draftLength > 0 ||
+    draftAttachmentCount > 0 ||
+    editingAttachmentCount > 0 ||
+    Boolean(replyTarget) ||
+    Boolean(editingMessage);
+  const canSubmitMessage =
+    !isPreparingAttachment && (draftLength > 0 || draftAttachmentCount > 0 || editingAttachmentCount > 0);
   const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
   const unreadStartIndex = useMemo(
     () =>
@@ -1337,6 +1502,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   );
   const unreadCount = unreadStartIndex >= 0 ? messages.length - unreadStartIndex : 0;
   const showJumpToLatest = unreadCount > 0 && !isNearBottom;
+  const draftAttachmentSummary = useMemo(
+    () =>
+      resolveCommentAttachmentSummary(
+        draftAttachments.map((attachment) => ({
+          kind: attachment.type,
+          fileName: attachment.fileName,
+        })),
+      ),
+    [draftAttachments],
+  );
+  const editingAttachmentSummary = useMemo(
+    () => resolveCommentAttachmentSummary(editingMessage?.attachments),
+    [editingMessage?.attachments],
+  );
+  const composeMetaLabel = isPreparingAttachment
+    ? 'Готовим вложения'
+    : editingMessage
+      ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
+      : draftAttachmentSummary;
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -1357,6 +1541,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
     highlightTimerRef.current = null;
     setHighlightedMessageId(null);
+  };
+
+  const resetAttachmentPickers = () => {
+    if (imageInputRef.current) {
+      imageInputRef.current.value = '';
+    }
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
   };
 
   const flashSourceHighlight = (messageId: string) => {
@@ -1387,13 +1580,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     if (options?.restoreDraft && editRestoreState) {
       setDraft(editRestoreState.draft);
       setReplyToMessageId(editRestoreState.replyToMessageId);
+      setDraftAttachments(editRestoreState.draftAttachments);
     } else {
       setDraft('');
       setReplyToMessageId(null);
+      setDraftAttachments([]);
     }
 
     setEditingMessageId(null);
     setEditRestoreState(null);
+    resetAttachmentPickers();
   };
 
   useEffect(() => {
@@ -1410,11 +1606,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setTerminalDialogError(null);
     setReactionPopoverLayout(null);
     setDraft('');
+    setDraftAttachments([]);
+    setIsPreparingAttachment(false);
     lastMessageIdRef.current = null;
     messageNodeRefs.current.clear();
     messageLayoutContextRef.current = null;
     messageRectsRef.current.clear();
     ignoreNextBubbleClickRef.current = false;
+    resetAttachmentPickers();
   }, [chatId, dialogType, entityType, token]);
 
   const handleDismiss = () => {
@@ -1431,7 +1630,35 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     field.style.height = '0px';
     const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
     field.style.height = `${nextHeight}px`;
-  }, [draft, editingMessage, replyTarget]);
+  }, [draft, editingMessage, replyTarget, draftAttachments.length]);
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined' || !introText) {
+      setFloatingThreadContextHeight(0);
+      return;
+    }
+
+    const node = floatingThreadContextRef.current;
+    if (!node) {
+      setFloatingThreadContextHeight(0);
+      return;
+    }
+
+    const measure = () => {
+      setFloatingThreadContextHeight(Math.ceil(node.getBoundingClientRect().height));
+    };
+
+    measure();
+    const observer =
+      typeof ResizeObserver === 'function' ? new ResizeObserver(() => measure()) : null;
+    observer?.observe(node);
+    window.addEventListener('resize', measure);
+
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [introText]);
 
   useEffect(
     () => () => {
@@ -1560,6 +1787,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setEditingMessageId(null);
       setEditRestoreState(null);
       setDraft('');
+      setDraftAttachments([]);
+      resetAttachmentPickers();
     }
 
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
@@ -1800,18 +2029,131 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     };
   }, [activeMessageId, reactionPopoverLayout]);
 
+  const appendDraftAttachments = (nextAttachments: CommentDraftAttachment[]) => {
+    if (nextAttachments.length === 0) {
+      return;
+    }
+
+    setDraftAttachments((current) => {
+      const merged = [...current, ...nextAttachments];
+      if (merged.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+        pushToast({
+          tone: 'danger',
+          title: 'Слишком много вложений',
+          description: `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
+        });
+        return current;
+      }
+
+      const fileCount = merged.filter((attachment) => attachment.type === 'file').length;
+      if (fileCount > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
+        pushToast({
+          tone: 'danger',
+          title: 'Слишком много файлов',
+          description: `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
+        });
+        return current;
+      }
+
+      const totalBase64Length = calculateDraftAttachmentsBase64Length(merged);
+      if (totalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
+        pushToast({
+          tone: 'danger',
+          title: 'Вложения слишком тяжёлые',
+          description: 'Уберите часть файлов или фото и попробуйте снова.',
+        });
+        return current;
+      }
+
+      maxSelectionChanged();
+      return merged;
+    });
+  };
+
+  const handleDraftImagesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    resetAttachmentPickers();
+    if (files.length === 0 || editingMessage) {
+      return;
+    }
+
+    setIsPreparingAttachment(true);
+    try {
+      const prepared = await Promise.all(
+        files.map((file) => prepareCommentDialogImageAttachment(file)),
+      );
+      appendDraftAttachments(prepared);
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Фото не добавлено',
+        description:
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'Не удалось подготовить фото.',
+      });
+    } finally {
+      setIsPreparingAttachment(false);
+    }
+  };
+
+  const handleDraftFilesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? []);
+    resetAttachmentPickers();
+    if (files.length === 0 || editingMessage) {
+      return;
+    }
+
+    setIsPreparingAttachment(true);
+    try {
+      const prepared = await Promise.all(
+        files.map((file) => prepareCommentDialogFileAttachment(file)),
+      );
+      appendDraftAttachments(prepared);
+    } catch (error: unknown) {
+      pushToast({
+        tone: 'danger',
+        title: 'Файл не добавлен',
+        description:
+          error instanceof Error && error.message.trim()
+            ? error.message
+            : 'Не удалось подготовить файл.',
+      });
+    } finally {
+      setIsPreparingAttachment(false);
+    }
+  };
+
+  const handleDraftAttachmentRemove = (index: number) => {
+    setDraftAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+    maxSelectionChanged();
+    resetAttachmentPickers();
+  };
+
   const sendMutation = useMutation({
-    mutationFn: (payload: { text: string }) =>
+    mutationFn: (payload: { text: string; attachments: CommentDraftAttachment[] }) =>
       entityType === 'channel'
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
             replyToMessageId,
+            attachments: payload.attachments.map((attachment) => ({
+              type: attachment.type,
+              base64: attachment.base64,
+              mimeType: attachment.mimeType,
+              fileName: attachment.fileName,
+            })),
           })
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
             replyToMessageId,
+            attachments: payload.attachments.map((attachment) => ({
+              type: attachment.type,
+              base64: attachment.base64,
+              mimeType: attachment.mimeType,
+              fileName: attachment.fileName,
+            })),
           }),
     onSuccess: (result) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
@@ -1824,6 +2166,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
       setDraft('');
       setReplyToMessageId(null);
+      setDraftAttachments([]);
+      resetAttachmentPickers();
       dismissMessageActions();
       requestAnimationFrame(() => {
         const viewport = scrollViewportRef.current;
@@ -2158,8 +2502,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setEditingMessageId(null);
     setEditRestoreState(null);
     setDraft('');
+    setDraftAttachments([]);
     setReplyToMessageId(message.id);
     dismissMessageActions();
+    resetAttachmentPickers();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
   };
 
@@ -2174,12 +2520,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         current ?? {
           draft,
           replyToMessageId,
+          draftAttachments,
         },
     );
     setReplyToMessageId(null);
     setEditingMessageId(message.id);
     setDraft(message.text);
+    setDraftAttachments([]);
     dismissMessageActions();
+    resetAttachmentPickers();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
   };
 
@@ -2240,7 +2589,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       '.channel-dialog-compose__surface',
     );
     const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
-    const topInset = introText ? 72 : 18;
+    const topInset = introText ? Math.max(18, floatingThreadContextOffset + 4) : 18;
     const bottomInset = composeHeight + 22;
     const availableHeight = Math.max(140, viewport.clientHeight - topInset - bottomInset);
     const desiredTop =
@@ -2309,11 +2658,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const onSubmit = () => {
     const text = draft.trim();
-    if (isComposePending || !chatId || !token || !text) {
+    if (isComposePending || !chatId || !token) {
       return;
     }
 
     if (editingMessage) {
+      if (!text && editingMessage.attachments.length === 0) {
+        return;
+      }
+
       if (text === editingMessage.text.trim()) {
         cancelEditing({ restoreDraft: true });
         return;
@@ -2326,8 +2679,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    if (!text && draftAttachments.length === 0) {
+      return;
+    }
+
     sendMutation.mutate({
       text,
+      attachments: draftAttachments,
     });
   };
 
@@ -2380,7 +2738,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       <div className="channel-dialog-shell">
         {introText ? (
-          <div className="channel-dialog-thread-context channel-dialog-thread-context--floating">
+          <div
+            ref={floatingThreadContextRef}
+            className="channel-dialog-thread-context channel-dialog-thread-context--floating"
+          >
             <p>{introText}</p>
           </div>
         ) : null}
@@ -2388,6 +2749,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         <section
           ref={scrollViewportRef}
           className={cn('channel-dialog-body', introText && 'has-floating-thread-context')}
+          style={dialogBodyStyle}
           onScroll={handleBodyScroll}
         >
           {dialogQuery.isLoading ? (
@@ -2556,7 +2918,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 )
                               ) : null}
 
-                              <p>{message.text}</p>
+                              <CommentMessageAttachments attachments={message.attachments} />
+                              {renderPlainTextParagraphs(message.text)}
                             </div>
 
                             {message.reactionGroups.length > 0 ? (
@@ -2613,6 +2976,21 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           <div className="channel-dialog-compose__surface">
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={handleDraftImagesChange}
+            />
+            <input
+              ref={fileInputRef}
+              type="file"
+              hidden
+              onChange={handleDraftFilesChange}
+            />
+
             {editingMessage ? (
               <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
                 <button
@@ -2621,7 +2999,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   onClick={() => scrollToMessage(editingMessage.id)}
                 >
                   <span>Редактирование комментария</span>
-                  <p>{summarizeReplyText(editingMessage.text, 84)}</p>
+                  <p>
+                    {summarizeReplyText(
+                      editingMessage.text || editingAttachmentSummary || 'Комментарий',
+                      84,
+                    )}
+                  </p>
                 </button>
                 <button
                   type="button"
@@ -2653,21 +3036,106 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
 
+            {editingMessage?.attachments.length ? (
+              editingMessage.attachments.map((attachment, attachmentIndex) => (
+                <div
+                  key={`editing-attachment-${attachmentIndex}`}
+                  className="channel-dialog-compose__attachment"
+                >
+                  <div className="channel-dialog-compose__attachment-preview" aria-hidden>
+                    {attachment.kind === 'image' && attachment.url ? (
+                      <img src={attachment.url} alt="" loading="lazy" />
+                    ) : (
+                      <CommentAttachmentGlyph kind={attachment.kind} />
+                    )}
+                  </div>
+                  <div className="channel-dialog-compose__attachment-copy">
+                    <strong>{attachment.kind === 'image' ? 'Фото' : 'Файл'}</strong>
+                    <span>
+                      {attachment.fileName?.trim() ||
+                        resolveCommentAttachmentSummary([attachment]) ||
+                        'Вложение'}
+                    </span>
+                  </div>
+                </div>
+              ))
+            ) : !editingMessage && draftAttachments.length > 0 ? (
+              draftAttachments.map((attachment, attachmentIndex) => (
+                <div
+                  key={`draft-attachment-${attachmentIndex}`}
+                  className="channel-dialog-compose__attachment"
+                >
+                  <div className="channel-dialog-compose__attachment-preview" aria-hidden>
+                    {attachment.type === 'image' && attachment.previewUrl ? (
+                      <img src={attachment.previewUrl} alt="" loading="lazy" />
+                    ) : (
+                      <CommentAttachmentGlyph kind={attachment.type} />
+                    )}
+                  </div>
+                  <div className="channel-dialog-compose__attachment-copy">
+                    <strong>{attachment.type === 'image' ? 'Фото' : 'Файл'}</strong>
+                    <span>
+                      {[attachment.fileName, formatDialogAttachmentSize(attachment.size)]
+                        .filter(Boolean)
+                        .join(' · ')}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="channel-dialog-compose__attachment-dismiss"
+                    onClick={() => handleDraftAttachmentRemove(attachmentIndex)}
+                    aria-label={`Убрать ${attachment.fileName || 'вложение'}`}
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ))
+            ) : null}
+
             {showComposeMeta ? (
               <div
                 className={cn(
                   'channel-dialog-compose__meta',
-                  'channel-dialog-compose__meta--solo',
+                  !composeMetaLabel && 'channel-dialog-compose__meta--solo',
                 )}
               >
-                {editingMessage ? (
-                  <span>Изменение сохранится для всех участников треда</span>
-                ) : null}
+                {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
                 <span>{draftLength}/2000</span>
               </div>
             ) : null}
 
             <div className="channel-dialog-compose__row">
+              {!editingMessage ? (
+                <div className="channel-dialog-compose__quick-actions">
+                  <button
+                    type="button"
+                    className={cn(
+                      'channel-dialog-compose__attach',
+                      'channel-dialog-compose__attach--icon',
+                      draftAttachments.some((attachment) => attachment.type === 'image') && 'is-active',
+                    )}
+                    onClick={() => imageInputRef.current?.click()}
+                    disabled={isComposePending || isPreparingAttachment}
+                    aria-label="Добавить фото"
+                  >
+                    <IconoirCamera aria-hidden focusable="false" />
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'channel-dialog-compose__attach',
+                      'channel-dialog-compose__attach--icon',
+                      draftAttachments.some((attachment) => attachment.type === 'file') && 'is-active',
+                    )}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={isComposePending || isPreparingAttachment}
+                    aria-label="Прикрепить файл"
+                  >
+                    <IconoirAttachment aria-hidden focusable="false" />
+                  </button>
+                </div>
+              ) : null}
+
               <label className="channel-dialog-compose__field">
                 <textarea
                   ref={composeFieldRef}
@@ -2676,7 +3144,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   onChange={(event) => setDraft(event.target.value)}
                   placeholder={
                     editingMessage
-                      ? 'Изменить комментарий'
+                      ? editingMessage.attachments.length > 0 && !editingMessage.text.trim()
+                        ? 'Добавить подпись'
+                        : 'Изменить комментарий'
                       : replyTarget
                         ? 'Ответить на комментарий'
                         : 'Комментарий'
