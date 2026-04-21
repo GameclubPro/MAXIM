@@ -121,6 +121,10 @@ function isMaxDeepLink(url: URL): boolean {
   return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
+function isInlinePreviewUrl(url: URL): boolean {
+  return url.protocol === 'data:' || url.protocol === 'blob:';
+}
+
 function scheduleMiniAppClose(): void {
   window.setTimeout(() => {
     resolveBridge()?.close?.();
@@ -156,6 +160,16 @@ export function openMaxBotLink(url: string): void {
       bridge.openMaxLink(normalizedUrl);
       return;
     }
+    window.location.assign(normalizedUrl);
+    return;
+  }
+
+  if (parsed && isInlinePreviewUrl(parsed)) {
+    const openedWindow = window.open?.(normalizedUrl, '_blank', 'noopener,noreferrer');
+    if (openedWindow) {
+      return;
+    }
+
     window.location.assign(normalizedUrl);
     return;
   }

@@ -360,7 +360,12 @@ function resolveCommentAttachmentSummary(
 }
 
 function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): string {
-  return attachment.url?.trim() ?? '';
+  const remoteUrl = attachment.url?.trim() ?? '';
+  if (remoteUrl) {
+    return remoteUrl;
+  }
+
+  return attachment.kind === 'image' ? attachment.previewUrl?.trim() ?? '' : '';
 }
 
 function getCommentAttachmentPreviewUrl(attachment: ChannelDialogAttachment): string {

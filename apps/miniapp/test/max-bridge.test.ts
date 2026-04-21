@@ -12,6 +12,7 @@ type MockWindow = {
     href: string;
     assign: (url: string) => void;
   };
+  open?: (url: string, target?: string, features?: string) => unknown;
   MAX?: {
     WebApp?: MockBridge;
   };
@@ -86,5 +87,29 @@ test('openMaxBotLink opens external links through bridge browser API', () => {
 
   openMaxBotLink('https://example.com/path');
   assert.deepEqual(opened, [{ kind: 'external', url: 'https://example.com/path' }]);
+  assert.deepEqual(assignedUrls, []);
+});
+
+test('openMaxBotLink avoids bridge browser API for inline preview urls', () => {
+  const assignedUrls: string[] = [];
+  const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
+  const popupUrls: string[] = [];
+  setMockWindow(
+    {
+      openMaxLink: (url) => opened.push({ kind: 'max', url }),
+      openLink: (url) => opened.push({ kind: 'external', url }),
+    },
+    assignedUrls,
+  );
+
+  globalThis.window.open = (url) => {
+    popupUrls.push(url);
+    return {};
+  };
+
+  openMaxBotLink('data:image/webp;base64,YQ==');
+
+  assert.deepEqual(opened, []);
+  assert.deepEqual(popupUrls, ['data:image/webp;base64,YQ==']);
   assert.deepEqual(assignedUrls, []);
 });
