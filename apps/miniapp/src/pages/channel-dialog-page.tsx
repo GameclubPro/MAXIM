@@ -3188,7 +3188,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       ref={imageInputRef}
                       className="channel-dialog-compose__attach-input"
                       type="file"
-                      accept="image/*"
+                      accept="image/*,.heic,.heif"
                       disabled={isComposePending || isPreparingAttachment}
                       onChange={handleDraftImagesChange}
                       tabIndex={-1}
