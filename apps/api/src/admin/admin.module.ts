@@ -13,6 +13,7 @@ import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
 import { AdminController } from './admin.controller';
+import { DialogCommentAttachmentHandoffService } from './dialog-comment-attachment-handoff.service';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
@@ -33,6 +34,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
   providers: [
     AdminService,
     ChannelStatsCollectorService,
+    DialogCommentAttachmentHandoffService,
     RedisCounterService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
@@ -41,6 +43,6 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ...(roleRunsAction(getAppRole()) ? [AdminManualFanoutProcessor] : []),
     ...(roleRunsAction(getAppRole()) ? [AdminSuggestionDeliveryProcessor] : []),
   ],
-  exports: [AdminService, ManagedGiveawayService],
+  exports: [AdminService, ManagedGiveawayService, DialogCommentAttachmentHandoffService],
 })
 export class AdminModule {}

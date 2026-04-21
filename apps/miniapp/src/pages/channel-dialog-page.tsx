@@ -1,5 +1,6 @@
 import type {
   ChannelDialogAttachment,
+  ChannelDialogAttachmentHandoffItem,
   ChannelDialogMessage,
   ChannelDialogResponse,
   ChannelDialogType,
@@ -50,9 +51,11 @@ import {
   createChannelDialogMessage,
   deleteChatDialogMessage,
   deleteChannelDialogMessage,
+  getEntityDialogCommentAttachmentHandoffState,
   getChatDialog,
   getChannelDialog,
   getChannelSuggestionRedirect,
+  handoffEntityDialogCommentAttachments,
   updateChatDialogMessage,
   updateChannelDialogMessage,
   toggleChannelDialogReaction,
@@ -76,6 +79,7 @@ import { readChatTitle } from '../lib/chat-titles';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import {
+  isMaxNativeMobile,
   maxImpact,
   maxSelectionChanged,
   openMaxBotLink,
@@ -325,7 +329,7 @@ function summarizeReplyText(value: string, maxLength = 96): string {
 }
 
 function hasCommentAttachments(
-  attachments: ChannelDialogAttachment[] | PreparedCommentDialogAttachment[] | null | undefined,
+  attachments: ChannelDialogAttachment[] | CommentDraftAttachment[] | null | undefined,
 ): boolean {
   return Array.isArray(attachments) && attachments.length > 0;
 }
@@ -380,9 +384,38 @@ function getCommentAttachmentImageStyle(
 }
 
 function calculateDraftAttachmentsBase64Length(
-  attachments: PreparedCommentDialogAttachment[],
+  attachments: CommentDraftAttachment[],
 ): number {
-  return attachments.reduce((total, attachment) => total + attachment.base64.length, 0);
+  return attachments.reduce(
+    (total, attachment) =>
+      total + (attachment.source === 'local' ? attachment.base64.length : 0),
+    0,
+  );
+}
+
+function toLocalCommentDraftAttachment(
+  attachment: PreparedCommentDialogAttachment,
+): LocalCommentDraftAttachment {
+  return {
+    ...attachment,
+    source: 'local',
+  };
+}
+
+function toHandoffCommentDraftAttachment(
+  attachment: ChannelDialogAttachmentHandoffItem,
+): HandoffCommentDraftAttachment {
+  return {
+    source: 'handoff',
+    id: attachment.id,
+    type: attachment.kind,
+    fileName: attachment.fileName?.trim() || (attachment.kind === 'image' ? 'Фото' : 'Файл'),
+    mimeType: attachment.mimeType?.trim() || 'application/octet-stream',
+    previewUrl: attachment.previewUrl?.trim() || attachment.url?.trim() || null,
+    size: attachment.size ?? null,
+    ...(attachment.width ? { width: attachment.width } : {}),
+    ...(attachment.height ? { height: attachment.height } : {}),
+  };
 }
 
 function resolveMessageWidthTone(
@@ -1315,7 +1348,7 @@ type SwipeReplyPreview = {
 type EditRestoreState = {
   draft: string;
   replyToMessageId: string | null;
-  draftAttachments: PreparedCommentDialogAttachment[];
+  draftAttachments: CommentDraftAttachment[];
 };
 
 type SwipeReplyGesture = {
@@ -1327,7 +1360,23 @@ type SwipeReplyGesture = {
   armed: boolean;
 };
 
-type CommentDraftAttachment = PreparedCommentDialogAttachment;
+type LocalCommentDraftAttachment = PreparedCommentDialogAttachment & {
+  source: 'local';
+};
+
+type HandoffCommentDraftAttachment = {
+  source: 'handoff';
+  id: string;
+  type: 'image' | 'file';
+  fileName: string;
+  mimeType: string;
+  previewUrl: string | null;
+  size: number | null;
+  width?: number;
+  height?: number;
+};
+
+type CommentDraftAttachment = LocalCommentDraftAttachment | HandoffCommentDraftAttachment;
 
 type SuggestionStatusPresentation = {
   badge: string;
@@ -1380,6 +1429,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
+  const handoffRequested = searchParams.get('handoff') === '1';
   const dialogType: ChannelDialogType = 'comments';
   const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
@@ -1415,11 +1465,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messageLayoutContextRef = useRef<string | null>(null);
   const messageRectsRef = useRef(new Map<string, DOMRect>());
   const ignoreNextBubbleClickRef = useRef(false);
+  const dismissedHandoffAttachmentIdsRef = useRef(new Set<string>());
   const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
   const currentUserId = useMemo(() => getInitDataUserId(), []);
+  const usesNativeAttachmentHandoff = useMemo(() => isMaxNativeMobile(), []);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
 
   useEffect(() => {
@@ -1447,6 +1499,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       return 8_000;
     },
+  });
+
+  const commentAttachmentHandoffStateQuery = useQuery({
+    queryKey: ['dialog-comment-attachment-handoff', entityType, chatId, token, handoffRequested],
+    queryFn: () => getEntityDialogCommentAttachmentHandoffState(api, entityType, chatId, token),
+    enabled: Boolean(chatId && token && handoffRequested) && terminalDialogError === null,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -1478,6 +1537,60 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     navigate,
     pushToast,
     queryClient,
+  ]);
+
+  useEffect(() => {
+    if (!handoffRequested || !commentAttachmentHandoffStateQuery.data) {
+      return;
+    }
+
+    let appendedCount = 0;
+    setDraftAttachments((current) => {
+      const existingHandoffIds = new Set(
+        current
+          .filter(
+            (attachment): attachment is HandoffCommentDraftAttachment =>
+              attachment.source === 'handoff',
+          )
+          .map((attachment) => attachment.id),
+      );
+      const nextAttachments = commentAttachmentHandoffStateQuery.data.attachments
+        .filter(
+          (attachment) =>
+            !existingHandoffIds.has(attachment.id) &&
+            !dismissedHandoffAttachmentIdsRef.current.has(attachment.id),
+        )
+        .map((attachment) => toHandoffCommentDraftAttachment(attachment));
+
+      appendedCount = nextAttachments.length;
+      return nextAttachments.length > 0 ? [...current, ...nextAttachments] : current;
+    });
+
+    if (appendedCount > 0) {
+      pushToast({
+        tone: 'success',
+        title: 'Вложения добавлены',
+        description: 'Файлы из личного чата бота появились в комментарии.',
+      });
+    }
+
+    const nextSearchParams = new URLSearchParams(location.search);
+    nextSearchParams.delete('handoff');
+    const nextSearch = nextSearchParams.toString();
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch ? `?${nextSearch}` : '',
+      },
+      { replace: true },
+    );
+  }, [
+    commentAttachmentHandoffStateQuery.data,
+    handoffRequested,
+    location.pathname,
+    location.search,
+    navigate,
+    pushToast,
   ]);
 
   const messages = dialogQuery.data?.messages ?? [];
@@ -1635,6 +1748,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     messageLayoutContextRef.current = null;
     messageRectsRef.current.clear();
     ignoreNextBubbleClickRef.current = false;
+    dismissedHandoffAttachmentIdsRef.current.clear();
     resetAttachmentPickers();
   }, [chatId, dialogType, entityType, token]);
 
@@ -2106,7 +2220,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       for (const file of files) {
         try {
-          prepared.push(await prepareCommentDialogImageAttachment(file));
+          prepared.push(toLocalCommentDraftAttachment(await prepareCommentDialogImageAttachment(file)));
         } catch (error: unknown) {
           if (!firstError && error instanceof Error && error.message.trim()) {
             firstError = error.message;
@@ -2156,7 +2270,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       for (const file of files) {
         try {
-          prepared.push(await prepareCommentDialogFileAttachment(file));
+          prepared.push(toLocalCommentDraftAttachment(await prepareCommentDialogFileAttachment(file)));
         } catch (error: unknown) {
           if (!firstError && error instanceof Error && error.message.trim()) {
             firstError = error.message;
@@ -2193,9 +2307,24 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
-    setDraftAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+    setDraftAttachments((current) => {
+      const target = current[index];
+      if (target?.source === 'handoff') {
+        dismissedHandoffAttachmentIdsRef.current.add(target.id);
+      }
+      return current.filter((_, attachmentIndex) => attachmentIndex !== index);
+    });
     maxSelectionChanged();
     resetAttachmentPickers();
+  };
+
+  const handleAttachmentHandoffStart = (accept: 'image' | 'file') => {
+    if (editingMessage || !chatId || !token || isAttachActionPending) {
+      return;
+    }
+
+    maxImpact('light');
+    attachmentHandoffMutation.mutate(accept);
   };
 
   const sendMutation = useMutation({
@@ -2205,27 +2334,49 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             token,
             text: payload.text,
             replyToMessageId,
-            attachments: payload.attachments.map((attachment) => ({
-              type: attachment.type,
-              base64: attachment.base64,
-              mimeType: attachment.mimeType,
-              fileName: attachment.fileName,
-              ...(attachment.width ? { width: attachment.width } : {}),
-              ...(attachment.height ? { height: attachment.height } : {}),
-            })),
+            handoffAttachmentIds: payload.attachments
+              .filter(
+                (attachment): attachment is HandoffCommentDraftAttachment =>
+                  attachment.source === 'handoff',
+              )
+              .map((attachment) => attachment.id),
+            attachments: payload.attachments
+              .filter(
+                (attachment): attachment is LocalCommentDraftAttachment =>
+                  attachment.source === 'local',
+              )
+              .map((attachment) => ({
+                type: attachment.type,
+                base64: attachment.base64,
+                mimeType: attachment.mimeType,
+                fileName: attachment.fileName,
+                ...(attachment.width ? { width: attachment.width } : {}),
+                ...(attachment.height ? { height: attachment.height } : {}),
+              })),
           })
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
             replyToMessageId,
-            attachments: payload.attachments.map((attachment) => ({
-              type: attachment.type,
-              base64: attachment.base64,
-              mimeType: attachment.mimeType,
-              fileName: attachment.fileName,
-              ...(attachment.width ? { width: attachment.width } : {}),
-              ...(attachment.height ? { height: attachment.height } : {}),
-            })),
+            handoffAttachmentIds: payload.attachments
+              .filter(
+                (attachment): attachment is HandoffCommentDraftAttachment =>
+                  attachment.source === 'handoff',
+              )
+              .map((attachment) => attachment.id),
+            attachments: payload.attachments
+              .filter(
+                (attachment): attachment is LocalCommentDraftAttachment =>
+                  attachment.source === 'local',
+              )
+              .map((attachment) => ({
+                type: attachment.type,
+                base64: attachment.base64,
+                mimeType: attachment.mimeType,
+                fileName: attachment.fileName,
+                ...(attachment.width ? { width: attachment.width } : {}),
+                ...(attachment.height ? { height: attachment.height } : {}),
+              })),
           }),
     onSuccess: (result) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
@@ -2239,6 +2390,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setDraft('');
       setReplyToMessageId(null);
       setDraftAttachments([]);
+      dismissedHandoffAttachmentIdsRef.current.clear();
       resetAttachmentPickers();
       dismissMessageActions();
       requestAnimationFrame(() => {
@@ -2261,6 +2413,26 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Ошибка',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
+  const attachmentHandoffMutation = useMutation({
+    mutationFn: (accept: 'image' | 'file') =>
+      handoffEntityDialogCommentAttachments(api, entityType, chatId, {
+        token,
+        accept,
+      }),
+    onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        openMaxBotLink(result.botUrl);
+      }
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть бота',
         description: normalizeApiError(error),
       });
     },
@@ -2382,6 +2554,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   });
 
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
+  const isAttachActionPending =
+    isComposePending || isPreparingAttachment || attachmentHandoffMutation.isPending;
   const isCommentActionPending =
     reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
 
@@ -3164,67 +3338,104 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <div className="channel-dialog-compose__row">
               {!editingMessage ? (
                 <div className="channel-dialog-compose__quick-actions">
-                  <label
-                    className={cn(
-                      'channel-dialog-compose__attach',
-                      'channel-dialog-compose__attach--icon',
-                      (isComposePending || isPreparingAttachment) &&
-                        'channel-dialog-compose__attach--disabled',
-                      draftAttachments.some((attachment) => attachment.type === 'image') && 'is-active',
-                    )}
-                    aria-label="Добавить фото"
-                    aria-disabled={isComposePending || isPreparingAttachment}
-                    role="button"
-                    tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') {
-                        return;
-                      }
-                      event.preventDefault();
-                      imageInputRef.current?.click();
-                    }}
-                  >
-                    <input
-                      ref={imageInputRef}
-                      className="channel-dialog-compose__attach-input"
-                      type="file"
-                      accept="image/*"
-                      disabled={isComposePending || isPreparingAttachment}
-                      onChange={handleDraftImagesChange}
-                      tabIndex={-1}
-                    />
-                    <IconoirCamera aria-hidden focusable="false" />
-                  </label>
-                  <label
-                    className={cn(
-                      'channel-dialog-compose__attach',
-                      'channel-dialog-compose__attach--icon',
-                      (isComposePending || isPreparingAttachment) &&
-                        'channel-dialog-compose__attach--disabled',
-                      draftAttachments.some((attachment) => attachment.type === 'file') && 'is-active',
-                    )}
-                    aria-label="Прикрепить файл"
-                    aria-disabled={isComposePending || isPreparingAttachment}
-                    role="button"
-                    tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') {
-                        return;
-                      }
-                      event.preventDefault();
-                      fileInputRef.current?.click();
-                    }}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      className="channel-dialog-compose__attach-input"
-                      type="file"
-                      disabled={isComposePending || isPreparingAttachment}
-                      onChange={handleDraftFilesChange}
-                      tabIndex={-1}
-                    />
-                    <IconoirAttachment aria-hidden focusable="false" />
-                  </label>
+                  {usesNativeAttachmentHandoff ? (
+                    <>
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          isAttachActionPending && 'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'image') &&
+                            'is-active',
+                        )}
+                        onClick={() => handleAttachmentHandoffStart('image')}
+                        disabled={isAttachActionPending}
+                        aria-label="Добавить фото через чат с ботом"
+                      >
+                        <IconoirCamera aria-hidden focusable="false" />
+                      </button>
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          isAttachActionPending && 'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'file') &&
+                            'is-active',
+                        )}
+                        onClick={() => handleAttachmentHandoffStart('file')}
+                        disabled={isAttachActionPending}
+                        aria-label="Прикрепить файл через чат с ботом"
+                      >
+                        <IconoirAttachment aria-hidden focusable="false" />
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <label
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          isAttachActionPending && 'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'image') &&
+                            'is-active',
+                        )}
+                        aria-label="Добавить фото"
+                        aria-disabled={isAttachActionPending}
+                        role="button"
+                        tabIndex={isAttachActionPending ? -1 : 0}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          imageInputRef.current?.click();
+                        }}
+                      >
+                        <input
+                          ref={imageInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          accept="image/*"
+                          disabled={isAttachActionPending}
+                          onChange={handleDraftImagesChange}
+                          tabIndex={-1}
+                        />
+                        <IconoirCamera aria-hidden focusable="false" />
+                      </label>
+                      <label
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          isAttachActionPending && 'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'file') &&
+                            'is-active',
+                        )}
+                        aria-label="Прикрепить файл"
+                        aria-disabled={isAttachActionPending}
+                        role="button"
+                        tabIndex={isAttachActionPending ? -1 : 0}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <input
+                          ref={fileInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          disabled={isAttachActionPending}
+                          onChange={handleDraftFilesChange}
+                          tabIndex={-1}
+                        />
+                        <IconoirAttachment aria-hidden focusable="false" />
+                      </label>
+                    </>
+                  )}
                 </div>
               ) : null}
 

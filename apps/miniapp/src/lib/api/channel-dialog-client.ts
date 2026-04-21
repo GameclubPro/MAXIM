@@ -1,4 +1,7 @@
 import {
+  broadcastHandoffResponseSchema,
+  channelDialogAttachmentHandoffRequestSchema,
+  channelDialogAttachmentHandoffStateSchema,
   channelDialogResponseSchema,
   channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
@@ -6,6 +9,9 @@ import {
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
+  type BroadcastHandoffResponse,
+  type ChannelDialogAttachmentHandoffRequest,
+  type ChannelDialogAttachmentHandoffState,
   type ChannelDialogResponse,
   type ChannelSuggestionRedirectResponse,
   type ChannelDialogType,
@@ -65,6 +71,16 @@ function buildDialogReactionsApiPath(
   return `${buildDialogMessageApiPath(entityType, chatId, dialogType, messageId)}/reactions`;
 }
 
+function buildDialogCommentAttachmentHandoffApiPath(
+  entityType: LastEntityType,
+  chatId: string,
+  token?: string,
+): string {
+  const entitySegment = entityType === 'channel' ? 'channels' : 'chats';
+  const basePath = `/${entitySegment}/${chatId}/dialog/comments/attachments/handoff`;
+  return token ? `${basePath}?token=${encodeURIComponent(token)}` : basePath;
+}
+
 export async function getEntityDialog(
   api: ApiTransport,
   entityType: LastEntityType,
@@ -93,6 +109,47 @@ export async function createEntityDialogMessage(
     body: JSON.stringify(requestBody),
   });
   return createChannelDialogMessageResponseSchema.parse(response);
+}
+
+export async function handoffEntityDialogCommentAttachments(
+  api: ApiTransport,
+  entityType: LastEntityType,
+  chatId: string,
+  payload: ChannelDialogAttachmentHandoffRequest,
+): Promise<BroadcastHandoffResponse> {
+  const requestBody = channelDialogAttachmentHandoffRequestSchema.parse(payload);
+  const response = await api.request(buildDialogCommentAttachmentHandoffApiPath(entityType, chatId), {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return broadcastHandoffResponseSchema.parse(response);
+}
+
+export async function getEntityDialogCommentAttachmentHandoffState(
+  api: ApiTransport,
+  entityType: LastEntityType,
+  chatId: string,
+  token: string,
+): Promise<ChannelDialogAttachmentHandoffState> {
+  const response = await api.request(
+    buildDialogCommentAttachmentHandoffApiPath(entityType, chatId, token),
+  );
+  return channelDialogAttachmentHandoffStateSchema.parse(response);
+}
+
+export async function clearEntityDialogCommentAttachmentHandoffState(
+  api: ApiTransport,
+  entityType: LastEntityType,
+  chatId: string,
+  token: string,
+): Promise<ChannelDialogAttachmentHandoffState> {
+  const response = await api.request(
+    buildDialogCommentAttachmentHandoffApiPath(entityType, chatId, token),
+    {
+      method: 'DELETE',
+    },
+  );
+  return channelDialogAttachmentHandoffStateSchema.parse(response);
 }
 
 export async function toggleEntityDialogReaction(

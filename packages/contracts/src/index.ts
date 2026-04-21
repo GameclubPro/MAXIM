@@ -2978,6 +2978,14 @@ export const broadcastHandoffResponseSchema = z.object({
 });
 export type BroadcastHandoffResponse = z.infer<typeof broadcastHandoffResponseSchema>;
 
+export const channelDialogAttachmentHandoffRequestSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+  accept: z.enum(['image', 'file']).default('file'),
+});
+export type ChannelDialogAttachmentHandoffRequest = z.infer<
+  typeof channelDialogAttachmentHandoffRequestSchema
+>;
+
 export const profileMentionHandoffRequestSchema = z.object({
   displayName: z.string().trim().min(1).max(128),
 });
@@ -3242,6 +3250,10 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       .array(channelDialogAttachmentInputSchema)
       .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
       .default([]),
+    handoffAttachmentIds: z
+      .array(z.string().trim().min(1).max(191))
+      .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
+      .default([]),
     imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
@@ -3283,7 +3295,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
         : []),
     ];
 
-    if (normalizedAttachments.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+    if (normalizedAttachments.length + value.handoffAttachmentIds.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['attachments'],
@@ -3350,6 +3362,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
             ]
           : []),
     ].slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS),
+    handoffAttachmentIds: value.handoffAttachmentIds.map((item) => item.trim()).filter(Boolean),
   }));
 export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
@@ -3389,6 +3402,24 @@ export const channelDialogAttachmentSchema = /*#__PURE__*/ z.object({
   height: z.number().int().min(1).nullable().optional(),
 });
 export type ChannelDialogAttachment = z.infer<typeof channelDialogAttachmentSchema>;
+
+export const channelDialogAttachmentHandoffItemSchema =
+  /*#__PURE__*/ channelDialogAttachmentSchema.extend({
+    id: z.string().trim().min(1).max(191),
+  });
+export type ChannelDialogAttachmentHandoffItem = z.infer<
+  typeof channelDialogAttachmentHandoffItemSchema
+>;
+
+export const channelDialogAttachmentHandoffStateSchema = /*#__PURE__*/ z.object({
+  attachments: z
+    .array(channelDialogAttachmentHandoffItemSchema)
+    .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
+    .default([]),
+});
+export type ChannelDialogAttachmentHandoffState = z.infer<
+  typeof channelDialogAttachmentHandoffStateSchema
+>;
 
 export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   id: z.string(),

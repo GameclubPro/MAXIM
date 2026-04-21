@@ -206,6 +206,15 @@ export function canShareMaxContent(): boolean {
   return typeof bridge?.shareMaxContent === 'function';
 }
 
+export function getMaxPlatform(): MaxPlatform {
+  return normalizePlatform(resolveBridge()?.platform, null);
+}
+
+export function isMaxNativeMobile(): boolean {
+  const platform = getMaxPlatform();
+  return platform === 'ios' || platform === 'android';
+}
+
 export async function shareMaxContent(payload: MaxSharePayload): Promise<void> {
   const bridge = resolveBridge();
   if (typeof bridge?.shareMaxContent !== 'function') {

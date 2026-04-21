@@ -5,6 +5,7 @@ import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
+  channelDialogAttachmentHandoffRequestSchema,
   formatDeleteBotMessagesDelayLabel,
   managedGiveawayHandoffRequestSchema,
   profileMentionHandoffRequestSchema,
@@ -14,6 +15,7 @@ import {
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
   type BroadcastScheduleMode,
+  type ChannelDialogAttachmentHandoffState,
   type ChannelSettings,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -32,6 +34,10 @@ import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
+import {
+  DialogCommentAttachmentHandoffService,
+  type DialogCommentAttachmentHandoffAppendInput,
+} from '../admin/dialog-comment-attachment-handoff.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
 import { collectBotTokenSecrets } from '../common/bot-token.util';
 import {
@@ -125,6 +131,13 @@ type PendingInput =
   | { kind: 'broadcast_photo' }
   | { kind: 'rules_text' }
   | { kind: 'rules_photo' }
+  | {
+      kind: 'dialog_comment_attachment';
+      chatId: string;
+      entityType: ManagedEntityType;
+      token: string;
+      accept: 'image' | 'file';
+    }
   | { kind: 'channel_suggestion'; chatId: string; token: string }
   | { kind: 'giveaway_title' }
   | { kind: 'giveaway_content' }
@@ -414,6 +427,7 @@ const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const BROADCAST_PUBLISH_DEDUP_WINDOW_MS = 15_000;
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
+const COMMENT_ATTACHMENT_HANDOFF_START_PAYLOAD = 'comment_attachment_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
@@ -1179,6 +1193,8 @@ export class PrivateControlService {
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
     @Optional() private readonly maxBotLinkService?: MaxBotLinkService,
+    @Optional()
+    private readonly dialogCommentAttachmentHandoffService?: DialogCommentAttachmentHandoffService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -1407,12 +1423,16 @@ export class PrivateControlService {
         : session.screen === 'chat_select'
           ? this.resolvePrimaryScreen(session)
           : session.screen;
+    const dialogCommentAttachmentPrompt =
+      session.pendingInput?.kind === 'dialog_comment_attachment' ? session.pendingInput : null;
     const preserveRulesTextPrompt =
       startPayload === RULES_HANDOFF_START_PAYLOAD && session.pendingInput?.kind === 'rules_text';
+    const preserveDialogCommentAttachmentPrompt = dialogCommentAttachmentPrompt !== null;
     if (
       session.pendingInput?.kind !== 'channel_suggestion' &&
       session.pendingInput?.kind !== 'broadcast_content' &&
       session.pendingInput?.kind !== 'giveaway_content' &&
+      !preserveDialogCommentAttachmentPrompt &&
       !preserveRulesTextPrompt
     ) {
       session.pendingInput = null;
@@ -1437,9 +1457,11 @@ export class PrivateControlService {
     const isPlainStart = typeof startPayload !== 'string' || startPayload.trim().length === 0;
     const shouldShowLauncherIntro =
       isPlainStart && !(await this.hasDeliveredLauncherIntro(context.actor.userId));
-    const view = shouldShowLauncherIntro
-      ? this.renderLauncherIntroView()
-      : await this.renderByCurrentScreen(context, session);
+    const view = dialogCommentAttachmentPrompt
+      ? this.renderDialogCommentAttachmentHandoffView(dialogCommentAttachmentPrompt)
+      : shouldShowLauncherIntro
+        ? this.renderLauncherIntroView()
+        : await this.renderByCurrentScreen(context, session);
 
     await this.respond(context, session, view, {
       callbackId: null,
@@ -1788,6 +1810,109 @@ export class PrivateControlService {
     });
 
     return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
+  async handoffDialogCommentAttachmentsFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffResponse> {
+    const parsed = channelDialogAttachmentHandoffRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    await this.assertDialogCommentAttachmentAccess(
+      sourceChatId,
+      user,
+      parsed.data.token,
+      entityType,
+    );
+
+    const session = await this.loadSession(user.userId);
+    session.selectedChatId = sourceChatId;
+    session.selectedEntityType = entityType;
+    session.managedGiveawayId = null;
+    session.entityTab = entityType;
+    session.uiMode = 'modern';
+    session.screen = 'home';
+    session.section = null;
+    session.channelSection = null;
+    session.searchQuery = null;
+    session.pendingMassAction = null;
+    session.pendingInput = {
+      kind: 'dialog_comment_attachment',
+      chatId: sourceChatId,
+      entityType,
+      token: parsed.data.token,
+      accept: parsed.data.accept,
+    };
+    session.lastScreenStack = [];
+
+    await this.saveSession(user.userId, session);
+
+    const botUrl = this.buildBotStartUrl(COMMENT_ATTACHMENT_HANDOFF_START_PAYLOAD);
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
+  async getDialogCommentAttachmentHandoffState(
+    sourceChatId: string,
+    user: AuthUser,
+    token: string,
+    entityType: ManagedEntityType,
+  ): Promise<ChannelDialogAttachmentHandoffState> {
+    await this.assertDialogCommentAttachmentAccess(sourceChatId, user, token, entityType);
+    return this.requireDialogCommentAttachmentHandoffService().getState(user.userId, {
+      chatId: sourceChatId,
+      entityType,
+      token,
+    });
+  }
+
+  async clearDialogCommentAttachmentHandoffState(
+    sourceChatId: string,
+    user: AuthUser,
+    token: string,
+    entityType: ManagedEntityType,
+  ): Promise<ChannelDialogAttachmentHandoffState> {
+    await this.assertDialogCommentAttachmentAccess(sourceChatId, user, token, entityType);
+    await this.requireDialogCommentAttachmentHandoffService().clear(user.userId, {
+      chatId: sourceChatId,
+      entityType,
+      token,
+    });
+    return this.requireDialogCommentAttachmentHandoffService().getState(user.userId, {
+      chatId: sourceChatId,
+      entityType,
+      token,
+    });
+  }
+
+  private async assertDialogCommentAttachmentAccess(
+    sourceChatId: string,
+    user: AuthUser,
+    token: string,
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelDialog(sourceChatId, user, 'comments', token);
+      return;
+    }
+
+    await this.adminService.getChatDialog(sourceChatId, user, 'comments', token);
+  }
+
+  private requireDialogCommentAttachmentHandoffService(): DialogCommentAttachmentHandoffService {
+    if (!this.dialogCommentAttachmentHandoffService) {
+      throw new BadRequestException('Импорт вложений временно недоступен.');
+    }
+
+    return this.dialogCommentAttachmentHandoffService;
   }
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
@@ -2874,7 +2999,10 @@ export class PrivateControlService {
       session.pendingInput.kind !== 'giveaway_content' &&
       callback.action !== 'input_cancel'
     ) {
-      const view = this.renderInputPrompt(session.pendingInput);
+      const view =
+        session.pendingInput.kind === 'dialog_comment_attachment'
+          ? this.renderDialogCommentAttachmentHandoffView(session.pendingInput)
+          : this.renderInputPrompt(session.pendingInput);
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
         notification: 'Сначала завершите ввод или нажмите «Отмена»',
@@ -5218,6 +5346,20 @@ export class PrivateControlService {
         return;
       }
 
+      case 'dialog_comment_attachment': {
+        const handoffState = await this.captureDialogCommentAttachments(context, pendingInput);
+        const notice =
+          handoffState.attachments.length > 0
+            ? `Сохранено ${handoffState.attachments.length} вложений.`
+            : 'Вложение сохранено.';
+        const view = this.renderDialogCommentAttachmentHandoffView(pendingInput, notice);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
       case 'channel_suggestion': {
         const imageSourceAttachments = this.extractImageSourceAttachments(context.update);
         const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
@@ -6010,6 +6152,139 @@ export class PrivateControlService {
       return `Фото правил обновлено.${republishHint}`;
     }
     return `Текст правил обновлён.${republishHint}`;
+  }
+
+  private async captureDialogCommentAttachments(
+    context: PrivateContext,
+    pendingInput: Extract<PendingInput, { kind: 'dialog_comment_attachment' }>,
+  ): Promise<ChannelDialogAttachmentHandoffState> {
+    const normalizedText = context.text.trim();
+    const imageSourceAttachments = this.extractImageSourceAttachments(context.update);
+    const fileAttachments = this.extractFileAttachments(context.update);
+    const unsupportedVideoFiles = fileAttachments.filter(
+      (attachment) =>
+        this.resolveVideoMimeType(attachment.mimeType, attachment.fileName, attachment.url) !== null,
+    );
+    const genericFileAttachments = fileAttachments.filter((attachment) => {
+      const isImage =
+        this.resolveImageMimeType(attachment.mimeType, attachment.fileName, attachment.url) !== null;
+      const isVideo =
+        this.resolveVideoMimeType(attachment.mimeType, attachment.fileName, attachment.url) !== null;
+      return !isImage && !isVideo;
+    });
+
+    if (this.hasVideoAttachment(context.update) || unsupportedVideoFiles.length > 0) {
+      throw new BadRequestException(
+        'Видео в комментариях пока не поддерживается. Отправьте фото или файл.',
+      );
+    }
+
+    if (
+      normalizedText &&
+      imageSourceAttachments.length === 0 &&
+      genericFileAttachments.length === 0
+    ) {
+      throw new BadRequestException(
+        'Текст комментария напишите в приложении. Сюда отправьте только фото или файл.',
+      );
+    }
+
+    if (pendingInput.accept === 'image' && genericFileAttachments.length > 0) {
+      throw new BadRequestException('Для этой кнопки отправьте только фото или изображение файлом.');
+    }
+
+    if (imageSourceAttachments.length === 0 && genericFileAttachments.length === 0) {
+      throw new BadRequestException(
+        pendingInput.accept === 'image'
+          ? 'Отправьте фото или изображение файлом.'
+          : 'Отправьте фото или файл.',
+      );
+    }
+
+    const nextAttachments: DialogCommentAttachmentHandoffAppendInput[] = [];
+
+    for (const imageSourceAttachment of imageSourceAttachments) {
+      nextAttachments.push(
+        await this.buildDialogCommentAttachmentFromImage(imageSourceAttachment),
+      );
+    }
+
+    if (pendingInput.accept === 'file') {
+      for (const fileAttachment of genericFileAttachments) {
+        nextAttachments.push(await this.buildDialogCommentAttachmentFromFile(fileAttachment));
+      }
+    }
+
+    if (nextAttachments.length === 0) {
+      throw new BadRequestException(
+        pendingInput.accept === 'image'
+          ? 'Отправьте фото или изображение файлом.'
+          : 'Отправьте фото или файл.',
+      );
+    }
+
+    return this.requireDialogCommentAttachmentHandoffService().appendAttachments(
+      context.actor.userId,
+      {
+        chatId: pendingInput.chatId,
+        entityType: pendingInput.entityType,
+        token: pendingInput.token,
+      },
+      nextAttachments,
+    );
+  }
+
+  private async buildDialogCommentAttachmentFromImage(
+    imageSourceAttachment: ParsedImageSourceAttachment,
+  ): Promise<DialogCommentAttachmentHandoffAppendInput> {
+    const downloaded = await this.downloadImageSourceAttachment(
+      imageSourceAttachment,
+      'dialog-comment-image',
+    );
+    const payload = await this.maxClient.uploadImage(
+      Buffer.from(downloaded.base64, 'base64'),
+      downloaded.fileName,
+      downloaded.mimeType,
+    );
+    const width =
+      imageSourceAttachment.kind === 'image'
+        ? imageSourceAttachment.attachment.width
+        : null;
+    const height =
+      imageSourceAttachment.kind === 'image'
+        ? imageSourceAttachment.attachment.height
+        : null;
+
+    return {
+      kind: 'image',
+      payload,
+      mimeType: downloaded.mimeType,
+      fileName: downloaded.fileName,
+      previewBase64: this.readString(payload.url) ? null : downloaded.base64,
+      width,
+      height,
+    };
+  }
+
+  private async buildDialogCommentAttachmentFromFile(
+    fileAttachment: ParsedFileAttachment,
+  ): Promise<DialogCommentAttachmentHandoffAppendInput> {
+    const downloaded = await this.downloadFileAttachment(fileAttachment, 'dialog-comment-file');
+    const payload = await this.maxClient.uploadFile(
+      downloaded.buffer,
+      downloaded.fileName,
+      downloaded.mimeType,
+    );
+
+    return {
+      kind: 'file',
+      payload,
+      mimeType: downloaded.mimeType,
+      fileName: downloaded.fileName,
+      previewBase64: null,
+      width: null,
+      height: null,
+    };
   }
 
   private async captureBroadcastContent(
@@ -8717,6 +8992,54 @@ export class PrivateControlService {
     };
   }
 
+  private renderDialogCommentAttachmentHandoffView(
+    input: Extract<PendingInput, { kind: 'dialog_comment_attachment' }>,
+    notice: string | null = null,
+  ): PrivateView {
+    const actionTitle =
+      input.accept === 'image' ? 'Добавьте фото к комментарию' : 'Добавьте файл к комментарию';
+    const description =
+      input.accept === 'image'
+        ? 'Пришлите следующим сообщением фото или изображение файлом.'
+        : 'Пришлите следующим сообщением фото или файл.';
+    const lines = [
+      this.markdownTitle(actionTitle),
+      '',
+      description,
+      'Текст комментария напишите в приложении.',
+      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
+    ];
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: this.buildDialogCommentAttachmentHandoffButtons(input),
+        textFormat: 'markdown',
+      },
+    };
+  }
+
+  private buildDialogCommentAttachmentHandoffButtons(
+    input: Extract<PendingInput, { kind: 'dialog_comment_attachment' }>,
+  ): MaxMessageButton[][] {
+    const miniappRoute = this.buildDialogCommentAttachmentMiniappRoute(
+      input.chatId,
+      input.entityType,
+      input.token,
+    );
+    const miniappUrl = this.buildDialogCommentAttachmentMiniappUrl(
+      input.chatId,
+      input.entityType,
+      input.token,
+    );
+
+    return [
+      [this.buildMiniappLaunchButton('↩️ В комментарии', miniappRoute, miniappUrl)],
+      [this.callbackButton('Отмена', this.cb('input_cancel'))],
+      ...this.buildFooterButtons({ includeMiniapp: false }),
+    ];
+  }
+
   private async renderChannelSuggestionIntroView(
     chatId: string,
     token: string,
@@ -9215,6 +9538,15 @@ export class PrivateControlService {
         return {
           title: 'Фото правил',
           description: 'Отправьте только фото или PNG/WebP/JPG файлом следующим сообщением.',
+        };
+      case 'dialog_comment_attachment':
+        return {
+          title:
+            input.accept === 'image' ? 'Фото для комментария' : 'Файл для комментария',
+          description:
+            input.accept === 'image'
+              ? 'Отправьте следующим сообщением фото или изображение файлом.'
+              : 'Отправьте следующим сообщением фото или файл.',
         };
       case 'channel_suggestion':
         return {
@@ -10758,6 +11090,36 @@ export class PrivateControlService {
     return `/chat/${encodeURIComponent(chatId)}/settings?focus=rules&handoff=1`;
   }
 
+  private buildDialogCommentAttachmentMiniappUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+    token: string,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    return `${this.appBaseUrl}/app${this.buildDialogCommentAttachmentMiniappRoute(
+      chatId,
+      entityType,
+      token,
+    )}`;
+  }
+
+  private buildDialogCommentAttachmentMiniappRoute(
+    chatId: string,
+    entityType: ManagedEntityType,
+    token: string,
+  ): string {
+    const encodedChatId = encodeURIComponent(chatId);
+    const encodedToken = encodeURIComponent(token.trim());
+    const baseRoute =
+      entityType === 'channel'
+        ? `/channel/${encodedChatId}/dialog/comments`
+        : `/chat/${encodedChatId}/dialog/comments`;
+    return `${baseRoute}?token=${encodedToken}&handoff=1`;
+  }
+
   private buildEntitySettingsHandoffMiniappUrl(
     chatId: string,
     entityType: ManagedEntityType,
@@ -11616,15 +11978,21 @@ export class PrivateControlService {
     return this.extractImageSourceAttachments(update)[0] ?? null;
   }
 
-  private extractFirstFileAttachment(update: MaxUpdate): ParsedFileAttachment | null {
+  private extractFileAttachments(update: MaxUpdate): ParsedFileAttachment[] {
+    const attachments: ParsedFileAttachment[] = [];
+
     for (const row of this.collectMessageAttachments(update)) {
       const parsed = this.parseFileAttachment(row);
       if (parsed) {
-        return parsed;
+        attachments.push(parsed);
       }
     }
 
-    return null;
+    return attachments;
+  }
+
+  private extractFirstFileAttachment(update: MaxUpdate): ParsedFileAttachment | null {
+    return this.extractFileAttachments(update)[0] ?? null;
   }
 
   private parseImageAttachment(row: Record<string, unknown>): ParsedImageAttachment | null {
@@ -11872,6 +12240,63 @@ export class PrivateControlService {
       }
 
       throw new BadRequestException('Не удалось загрузить видео из сообщения.');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async downloadFileAttachment(
+    fileAttachment: ParsedFileAttachment,
+    filePrefix = 'dialog-comment-file',
+  ): Promise<DownloadedBinaryAsset> {
+    if (!fileAttachment.url) {
+      throw new BadRequestException('Не удалось прочитать файл из сообщения.');
+    }
+
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 10_000);
+    const controller = new AbortController();
+
+    try {
+      const response = await fetch(fileAttachment.url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new BadRequestException(`Не удалось загрузить файл (${response.status}).`);
+      }
+
+      const mimeTypeHeader = response.headers.get('content-type') ?? '';
+      const mimeType = mimeTypeHeader.trim()
+        ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
+        : (fileAttachment.mimeType ?? 'application/octet-stream');
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      if (buffer.length === 0) {
+        throw new BadRequestException('Файл оказался пустым.');
+      }
+
+      const preferredFileName = this.normalizeDownloadedFileName(
+        fileAttachment.fileName ?? this.fileNameFromUrl(fileAttachment.url),
+      );
+      const fileName =
+        preferredFileName ??
+        `${filePrefix}-${fileAttachment.fileId ?? Date.now()}.${this.extensionFromGenericMimeType(mimeType)}`;
+
+      return {
+        buffer,
+        mimeType,
+        fileName,
+      };
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException('Не удалось загрузить файл из сообщения.');
     } finally {
       clearTimeout(timeout);
     }
@@ -12176,6 +12601,34 @@ export class PrivateControlService {
       .replace(/\s+/gu, ' ');
 
     return sanitized.length > 0 ? sanitized : null;
+  }
+
+  private extensionFromGenericMimeType(mimeType: string | null): string {
+    const normalized = mimeType?.trim().toLowerCase();
+    if (!normalized || !normalized.includes('/')) {
+      return 'bin';
+    }
+
+    const subtype = normalized.split('/')[1]?.trim() ?? '';
+    const normalizedSubtype = subtype.replace(/[^a-z0-9.+-]/gu, '');
+    if (!normalizedSubtype) {
+      return 'bin';
+    }
+
+    if (normalizedSubtype === 'jpeg') {
+      return 'jpg';
+    }
+
+    if (normalizedSubtype === 'octet-stream') {
+      return 'bin';
+    }
+
+    if (normalizedSubtype.includes('+')) {
+      const tail = normalizedSubtype.split('+').pop()?.trim() ?? '';
+      return tail || normalizedSubtype;
+    }
+
+    return normalizedSubtype;
   }
 
   private resolvePrimaryScreen(_session: PrivateSession): PrivateScreen {
@@ -12687,6 +13140,29 @@ export class PrivateControlService {
       };
     }
 
+    if (kind === 'dialog_comment_attachment') {
+      if (typeof row.chatId !== 'string' || !row.chatId.trim()) {
+        return null;
+      }
+      if (typeof row.token !== 'string' || !row.token.trim()) {
+        return null;
+      }
+      const entityType =
+        row.entityType === 'channel' ? 'channel' : row.entityType === 'chat' ? 'chat' : null;
+      const accept = row.accept === 'image' ? 'image' : row.accept === 'file' ? 'file' : null;
+      if (!entityType || !accept) {
+        return null;
+      }
+
+      return {
+        kind,
+        chatId: row.chatId.trim(),
+        entityType,
+        token: row.token.trim(),
+        accept,
+      };
+    }
+
     if (kind === 'manual_mute_duration') {
       if (typeof row.targetUserId !== 'string' || !row.targetUserId.trim()) {
         return null;
@@ -12726,6 +13202,7 @@ export class PrivateControlService {
       'broadcast_photo',
       'rules_text',
       'rules_photo',
+      'dialog_comment_attachment',
       'channel_suggestion',
       'giveaway_title',
       'giveaway_content',

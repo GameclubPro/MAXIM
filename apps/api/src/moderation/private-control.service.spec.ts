@@ -8,6 +8,7 @@ import {
   type ManagedPoll,
   type MaxUpdate,
 } from '@maxim/contracts';
+import { DialogCommentAttachmentHandoffService } from '../admin/dialog-comment-attachment-handoff.service';
 import { PrivateControlService } from './private-control.service';
 
 function createMaxApiError(status: number, message: string, code?: string): Error {
@@ -587,6 +588,7 @@ function createHarness(
 
   let previewMessageCounter = 0;
   let imageUploadCounter = 0;
+  let fileUploadCounter = 0;
   let videoUploadCounter = 0;
   const maxClient = {
     sendMessage: jest.fn().mockResolvedValue(undefined),
@@ -601,6 +603,10 @@ function createHarness(
     uploadImage: jest.fn().mockImplementation(async () => {
       imageUploadCounter += 1;
       return { token: `upload-token-${imageUploadCounter}` };
+    }),
+    uploadFile: jest.fn().mockImplementation(async () => {
+      fileUploadCounter += 1;
+      return { token: `upload-file-token-${fileUploadCounter}` };
     }),
     uploadVideo: jest.fn().mockImplementation(async () => {
       videoUploadCounter += 1;
@@ -627,6 +633,18 @@ function createHarness(
     listChatsForMassBroadcast: jest.fn().mockResolvedValue(chats),
     getChatHeader: jest.fn().mockResolvedValue({ id: chats[0].id, title: chats[0].title }),
     getChannelHeader: jest.fn().mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
+    getChatDialog: jest.fn().mockResolvedValue({
+      chatId: chats[0].id,
+      type: 'comments',
+      introText: null,
+      messages: [],
+    }),
+    getChannelDialog: jest.fn().mockResolvedValue({
+      chatId: channels[0].id,
+      type: 'comments',
+      introText: null,
+      messages: [],
+    }),
     getSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     getChatSettingsScreen: jest.fn().mockImplementation(async () => ({
       settings: overrides.settings ?? defaultSettings,
@@ -1888,6 +1906,119 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+  });
+
+  it('hands off comment attachments from miniapp into private bot and stores photo and file imports', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const handoffService = new DialogCommentAttachmentHandoffService();
+    Object.assign(
+      service as PrivateControlService & {
+        dialogCommentAttachmentHandoffService?: DialogCommentAttachmentHandoffService;
+      },
+      {
+        dialogCommentAttachmentHandoffService: handoffService,
+      },
+    );
+
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: channels[0].id,
+      chatTitle: channels[0].title,
+    };
+
+    const result = await service.handoffDialogCommentAttachmentsFromMiniapp(
+      channels[0].id,
+      actor,
+      {
+        token: 'channel-comment-token-1',
+        accept: 'file',
+      },
+      'channel',
+    );
+
+    expect(adminService.getChannelDialog).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      'comments',
+      'channel-comment-token-1',
+    );
+    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=comment_attachment_handoff');
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('comment_attachment_handoff'));
+
+    expect(getLastUiText(maxClient)).toContain('Добавьте файл к комментарию');
+    expect(getLastUiText(maxClient)).toContain('Текст комментария напишите в приложении.');
+
+    const returnButton = getLastButtons(maxClient)[0]?.[0] as { text?: string; url?: string };
+    expect(returnButton.text).toBe('↩️ В комментарии');
+    expect(returnButton.url).toContain('startapp=');
+    expect(decodeStartAppRoute(String(returnButton.url))).toBe(
+      `/channel/${encodeURIComponent(channels[0].id)}/dialog/comments?token=${encodeURIComponent(
+        'channel-comment-token-1',
+      )}&handoff=1`,
+    );
+
+    const originalFetch = global.fetch;
+    const imageBuffer = Buffer.from('comment-image');
+    const fileBuffer = Buffer.from('comment-file');
+    Object.defineProperty(global, 'fetch', {
+      configurable: true,
+      writable: true,
+      value: jest.fn().mockImplementation(async (url: string) => {
+        const source = String(url);
+        const isPdf = source.endsWith('.pdf');
+        const buffer = isPdf ? fileBuffer : imageBuffer;
+        const mimeType = isPdf ? 'application/pdf' : 'image/jpeg';
+
+        return {
+          ok: true,
+          headers: {
+            get: (name: string) => (name.toLowerCase() === 'content-type' ? mimeType : null),
+          },
+          arrayBuffer: async () =>
+            buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+        };
+      }) as typeof fetch,
+    });
+
+    try {
+      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(
+        createPrivateFileUpdate('notes.pdf', 'https://example.test/notes.pdf'),
+      );
+    } finally {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    }
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+    expect(maxClient.uploadFile).toHaveBeenCalledTimes(1);
+    expect(getLastUiText(maxClient)).toContain('Сохранено 2 вложений.');
+
+    const state = await service.getDialogCommentAttachmentHandoffState(
+      channels[0].id,
+      actor,
+      'channel-comment-token-1',
+      'channel',
+    );
+
+    expect(state.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        mimeType: 'image/jpeg',
+        previewUrl: expect.stringContaining('data:image/jpeg;base64,'),
+      }),
+      expect.objectContaining({
+        kind: 'file',
+        fileName: 'notes.pdf',
+        mimeType: 'application/pdf',
+      }),
+    ]);
   });
 
   it('updates rules text only after choosing the text button', async () => {
