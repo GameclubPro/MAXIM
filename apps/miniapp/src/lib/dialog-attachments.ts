@@ -9,7 +9,21 @@ export type PreparedCommentDialogAttachment = {
   fileName: string;
   previewUrl: string | null;
   size: number;
+  width?: number;
+  height?: number;
 };
+
+const PREVIEWABLE_IMAGE_MIME_TYPES = new Set([
+  'image/bmp',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+function canRenderImagePreview(mimeType: string): boolean {
+  return PREVIEWABLE_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
+}
 
 function readFileAsDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -54,8 +68,12 @@ export async function prepareCommentDialogImageAttachment(
     base64: prepared.base64,
     mimeType: prepared.mimeType,
     fileName: prepared.fileName,
-    previewUrl: `data:${prepared.mimeType};base64,${prepared.base64}`,
+    previewUrl: canRenderImagePreview(prepared.mimeType)
+      ? `data:${prepared.mimeType};base64,${prepared.base64}`
+      : null,
     size,
+    ...(prepared.width ? { width: prepared.width } : {}),
+    ...(prepared.height ? { height: prepared.height } : {}),
   };
 }
 

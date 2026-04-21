@@ -58,6 +58,8 @@ export type CreateChannelDialogMessagePayload = {
     base64: string;
     mimeType: string;
     fileName: string;
+    width?: number;
+    height?: number;
   }>;
   images?: Array<{
     base64: string;

@@ -2,11 +2,29 @@ const MAX_BROADCAST_IMAGE_BYTES = 3_000_000;
 const IMAGE_DIMENSION_STEPS = [1920, 1600, 1280, 960];
 const IMAGE_QUALITY_STEPS = [0.86, 0.8, 0.74, 0.68, 0.62];
 const FALLBACK_IMAGE_ERROR = 'Не удалось подготовить фото. Выберите другое изображение.';
+const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  webp: 'image/webp',
+};
+const NORMALIZED_IMAGE_MIME_TYPES: Record<string, string> = {
+  'image/jpg': 'image/jpeg',
+  'image/pjpeg': 'image/jpeg',
+};
 
-type PreparedBroadcastImage = {
+export type PreparedBroadcastImage = {
   base64: string;
   mimeType: string;
   fileName: string;
+  width: number | null;
+  height: number | null;
 };
 
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
@@ -36,13 +54,52 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return payload;
 }
 
-function loadImage(dataUrl: string): Promise<HTMLImageElement> {
+function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve(image);
-    image.onerror = () => reject(new Error('Не удалось открыть изображение.'));
-    image.src = dataUrl;
+    const objectUrl = URL.createObjectURL(blob);
+    image.onload = () => {
+      URL.revokeObjectURL(objectUrl);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(objectUrl);
+      reject(new Error('Не удалось открыть изображение.'));
+    };
+    image.src = objectUrl;
   });
+}
+
+function normalizeImageMimeType(mimeType: string): string {
+  const normalized = mimeType.trim().toLowerCase();
+  if (!normalized || normalized === 'image/*') {
+    return '';
+  }
+
+  return NORMALIZED_IMAGE_MIME_TYPES[normalized] ?? normalized;
+}
+
+function inferImageMimeTypeFromName(fileName: string): string {
+  const normalized = fileName.trim().toLowerCase();
+  const extensionMatch = normalized.match(/\.([a-z0-9]+)$/u);
+  if (!extensionMatch) {
+    return '';
+  }
+
+  return IMAGE_MIME_BY_EXTENSION[extensionMatch[1] ?? ''] ?? '';
+}
+
+function resolveInputImageMimeType(file: File): string {
+  return normalizeImageMimeType(file.type) || inferImageMimeTypeFromName(file.name);
+}
+
+function ensureTypedImageBlob(file: File, mimeType: string): Blob {
+  const normalizedMimeType = normalizeImageMimeType(file.type);
+  if (!mimeType || normalizedMimeType === mimeType) {
+    return file;
+  }
+
+  return new Blob([file], { type: mimeType });
 }
 
 function resolveOutputExtension(mimeType: string): string {
@@ -110,32 +167,27 @@ function canvasToBlob(
   });
 }
 
-async function readOriginalImage(file: File): Promise<PreparedBroadcastImage> {
-  const mimeType = file.type.trim().toLowerCase();
+async function readOriginalImage(
+  file: Blob,
+  mimeType: string,
+  fileName: string,
+  dimensions: { width: number | null; height: number | null } = { width: null, height: null },
+): Promise<PreparedBroadcastImage> {
   return {
     base64: await blobToBase64(file),
     mimeType,
-    fileName: resolveOutputFileName(file.name, mimeType),
+    fileName: resolveOutputFileName(fileName, mimeType),
+    width: dimensions.width,
+    height: dimensions.height,
   };
 }
 
 export async function prepareBroadcastImage(file: File): Promise<PreparedBroadcastImage> {
-  const mimeType = file.type.trim().toLowerCase();
-  if (!mimeType.startsWith('image/')) {
-    throw new Error('Нужен файл изображения.');
-  }
-
-  if (mimeType === 'image/gif') {
-    if (file.size > MAX_BROADCAST_IMAGE_BYTES) {
-      throw new Error(FALLBACK_IMAGE_ERROR);
-    }
-
-    return readOriginalImage(file);
-  }
+  const inputMimeType = resolveInputImageMimeType(file);
+  const sourceBlob = ensureTypedImageBlob(file, inputMimeType);
 
   try {
-    const sourceDataUrl = await readBlobAsDataUrl(file);
-    const image = await loadImage(sourceDataUrl);
+    const image = await loadImageFromBlob(sourceBlob);
     const sourceWidth = image.naturalWidth || image.width;
     const sourceHeight = image.naturalHeight || image.height;
 
@@ -143,8 +195,21 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
       throw new Error(FALLBACK_IMAGE_ERROR);
     }
 
+    if (inputMimeType === 'image/gif') {
+      if (file.size > MAX_BROADCAST_IMAGE_BYTES) {
+        throw new Error(FALLBACK_IMAGE_ERROR);
+      }
+
+      return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+        width: sourceWidth,
+        height: sourceHeight,
+      });
+    }
+
     let bestBlob: Blob | null = null;
     let bestMimeType = 'image/webp';
+    let bestWidth = sourceWidth;
+    let bestHeight = sourceHeight;
 
     for (const maxDimension of IMAGE_DIMENSION_STEPS) {
       const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
@@ -161,6 +226,8 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
           if (!bestBlob || blob.size < bestBlob.size) {
             bestBlob = blob;
             bestMimeType = actualMimeType;
+            bestWidth = scaled.width;
+            bestHeight = scaled.height;
           }
 
           if (blob.size <= MAX_BROADCAST_IMAGE_BYTES) {
@@ -168,14 +235,19 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
               base64: await blobToBase64(blob),
               mimeType: actualMimeType,
               fileName: resolveOutputFileName(file.name, actualMimeType),
+              width: scaled.width,
+              height: scaled.height,
             };
           }
         }
       }
     }
 
-    if (file.size <= MAX_BROADCAST_IMAGE_BYTES) {
-      return readOriginalImage(file);
+    if (inputMimeType && file.size <= MAX_BROADCAST_IMAGE_BYTES) {
+      return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+        width: sourceWidth,
+        height: sourceHeight,
+      });
     }
 
     if (bestBlob && bestBlob.size <= MAX_BROADCAST_IMAGE_BYTES) {
@@ -183,11 +255,17 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
         base64: await blobToBase64(bestBlob),
         mimeType: bestMimeType,
         fileName: resolveOutputFileName(file.name, bestMimeType),
+        width: bestWidth,
+        height: bestHeight,
       };
     }
   } catch (error: unknown) {
+    if (!inputMimeType) {
+      throw new Error('Нужен файл изображения.');
+    }
+
     if (file.size <= MAX_BROADCAST_IMAGE_BYTES) {
-      return readOriginalImage(file);
+      return readOriginalImage(sourceBlob, inputMimeType, file.name);
     }
 
     if (error instanceof Error && error.message.trim()) {

@@ -391,6 +391,9 @@ type ChannelDialogAttachmentAsset = {
   base64?: string | null;
   mimeType?: string | null;
   fileName?: string | null;
+  previewBase64?: string | null;
+  width?: number | null;
+  height?: number | null;
 };
 
 type ChannelSuggestionTextMarkup = MaxTextMarkup;
@@ -18516,6 +18519,9 @@ export class AdminService implements OnModuleDestroy {
         payload,
         mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
         fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+        previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
+        width: this.toSafeInteger(row.width ?? row.w),
+        height: this.toSafeInteger(row.height ?? row.h),
       };
     }
 
@@ -18529,6 +18535,9 @@ export class AdminService implements OnModuleDestroy {
       base64,
       mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
       fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+      previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
+      width: this.toSafeInteger(row.width ?? row.w),
+      height: this.toSafeInteger(row.height ?? row.h),
     };
   }
 
@@ -18558,13 +18567,23 @@ export class AdminService implements OnModuleDestroy {
       ) ?? null;
     const mimeType =
       this.readTrimmedString(attachment.mimeType ?? payload.mime_type ?? payload.mimeType) ?? null;
-    const width = this.toSafeInteger(payload.width ?? payload.w);
-    const height = this.toSafeInteger(payload.height ?? payload.h);
+    const width = this.toSafeInteger(attachment.width ?? payload.width ?? payload.w);
+    const height = this.toSafeInteger(attachment.height ?? payload.height ?? payload.h);
     const size = this.toSafeInteger(payload.size);
+    const url = this.readTrimmedString(payload.url) ?? null;
+    const previewBase64 = this.readTrimmedString(attachment.previewBase64 ?? payload.previewBase64);
+    const previewUrl =
+      url ||
+      (attachment.kind === 'image' &&
+      previewBase64 &&
+      this.canBuildChannelDialogImagePreview(mimeType)
+        ? `data:${mimeType};base64,${previewBase64}`
+        : null);
 
     return {
       kind: attachment.kind,
-      url: this.readTrimmedString(payload.url) ?? null,
+      url,
+      previewUrl,
       fileName,
       mimeType,
       size: size > 0 ? size : null,
@@ -20495,12 +20514,25 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
+  private canBuildChannelDialogImagePreview(mimeType: string | null | undefined): boolean {
+    const normalized = mimeType?.trim().toLowerCase() ?? '';
+    return (
+      normalized === 'image/bmp' ||
+      normalized === 'image/gif' ||
+      normalized === 'image/jpeg' ||
+      normalized === 'image/png' ||
+      normalized === 'image/webp'
+    );
+  }
+
   private normalizeChannelDialogCommentInputAttachments(
     attachments: Array<{
       type: 'image' | 'file';
       base64: string;
       mimeType: string;
       fileName: string;
+      width?: number;
+      height?: number;
     }>,
   ): ChannelDialogAttachmentAsset[] {
     return attachments
@@ -20509,6 +20541,8 @@ export class AdminService implements OnModuleDestroy {
         base64: attachment.base64.trim(),
         mimeType: attachment.mimeType.trim(),
         fileName: attachment.fileName.trim(),
+        width: this.toSafeInteger(attachment.width),
+        height: this.toSafeInteger(attachment.height),
       }))
       .filter((attachment) => attachment.base64)
       .slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS);
@@ -20592,6 +20626,14 @@ export class AdminService implements OnModuleDestroy {
         payload,
         mimeType,
         fileName,
+        previewBase64:
+          attachment.kind === 'image' &&
+          this.canBuildChannelDialogImagePreview(mimeType) &&
+          !this.readTrimmedString(payload.url)
+            ? base64
+            : undefined,
+        width: attachment.width ?? null,
+        height: attachment.height ?? null,
       };
     } catch (error: unknown) {
       this.logger.warn(

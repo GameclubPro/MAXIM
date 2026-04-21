@@ -363,6 +363,22 @@ function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): strin
   return attachment.url?.trim() ?? '';
 }
 
+function getCommentAttachmentPreviewUrl(attachment: ChannelDialogAttachment): string {
+  return attachment.previewUrl?.trim() || attachment.url?.trim() || '';
+}
+
+function getCommentAttachmentImageStyle(
+  attachment: Pick<ChannelDialogAttachment, 'width' | 'height'>,
+): CSSProperties | undefined {
+  if (!attachment.width || !attachment.height) {
+    return undefined;
+  }
+
+  return {
+    aspectRatio: `${attachment.width} / ${attachment.height}`,
+  };
+}
+
 function calculateDraftAttachmentsBase64Length(
   attachments: PreparedCommentDialogAttachment[],
 ): number {
@@ -955,6 +971,7 @@ function CommentMessageAttachments({
         <div className="channel-dialog-message__image-grid">
           {imageAttachments.map((attachment, attachmentIndex) => {
             const url = getCommentAttachmentOpenUrl(attachment);
+            const previewUrl = getCommentAttachmentPreviewUrl(attachment);
             const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
 
             return (
@@ -962,6 +979,7 @@ function CommentMessageAttachments({
                 key={`${fileName}-${attachmentIndex}`}
                 type="button"
                 className="channel-dialog-message__image-tile"
+                style={getCommentAttachmentImageStyle(attachment)}
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -972,7 +990,11 @@ function CommentMessageAttachments({
                 disabled={!url}
                 aria-label={fileName}
               >
-                {url ? <img src={url} alt="" loading="lazy" /> : <CommentAttachmentGlyph kind="image" />}
+                {previewUrl ? (
+                  <img src={previewUrl} alt="" loading="lazy" />
+                ) : (
+                  <CommentAttachmentGlyph kind="image" />
+                )}
               </button>
             );
           })}
@@ -2142,6 +2164,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               base64: attachment.base64,
               mimeType: attachment.mimeType,
               fileName: attachment.fileName,
+              ...(attachment.width ? { width: attachment.width } : {}),
+              ...(attachment.height ? { height: attachment.height } : {}),
             })),
           })
         : createChatDialogMessage(api, chatId, dialogType, {
@@ -2153,6 +2177,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               base64: attachment.base64,
               mimeType: attachment.mimeType,
               fileName: attachment.fileName,
+              ...(attachment.width ? { width: attachment.width } : {}),
+              ...(attachment.height ? { height: attachment.height } : {}),
             })),
           }),
     onSuccess: (result) => {
@@ -3028,8 +3054,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   className="channel-dialog-compose__attachment"
                 >
                   <div className="channel-dialog-compose__attachment-preview" aria-hidden>
-                    {attachment.kind === 'image' && attachment.url ? (
-                      <img src={attachment.url} alt="" loading="lazy" />
+                    {attachment.kind === 'image' && getCommentAttachmentPreviewUrl(attachment) ? (
+                      <img src={getCommentAttachmentPreviewUrl(attachment)} alt="" loading="lazy" />
                     ) : (
                       <CommentAttachmentGlyph kind={attachment.kind} />
                     )}

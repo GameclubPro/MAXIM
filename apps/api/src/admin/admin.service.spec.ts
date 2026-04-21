@@ -23464,6 +23464,181 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ]);
   });
 
+  it('keeps an inline preview for channel comment photos when MAX upload payload has no direct url', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-photo-preview-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T10:14:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-10', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({
+        photos: {
+          thumb: {
+            token: 'comment-image-preview-1',
+          },
+        },
+      }),
+      uploadFile: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = await publishCommentsDialogToken(service, maxClient);
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: '',
+        attachments: [
+          {
+            type: 'image',
+            base64: 'YQ==',
+            mimeType: 'image/webp',
+            fileName: 'camera-shot.webp',
+            width: 720,
+            height: 1280,
+          },
+        ],
+      },
+    );
+
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            attachments: [
+              expect.objectContaining({
+                kind: 'image',
+                mimeType: 'image/webp',
+                fileName: 'camera-shot.webp',
+                previewBase64: 'YQ==',
+                width: 720,
+                height: 1280,
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(result.message.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        url: null,
+        previewUrl: 'data:image/webp;base64,YQ==',
+        width: 720,
+        height: 1280,
+      }),
+    ]);
+  });
+
+  it('returns persisted inline previews for channel comment photos without remote urls', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-comment-with-preview-1',
+        actorUserId: 'user-2',
+        payload: {
+          type: 'comments',
+          text: '',
+          authorDisplayName: 'Марина',
+          attachments: [
+            {
+              kind: 'image',
+              mimeType: 'image/webp',
+              fileName: 'camera-shot.webp',
+              width: 720,
+              height: 1280,
+              previewBase64: 'YQ==',
+              payload: {
+                photos: {
+                  thumb: {
+                    token: 'comment-image-preview-1',
+                  },
+                },
+              },
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-20T09:00:00.000Z'),
+      },
+    ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn(),
+        getChatMemberProfiles: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-preview',
+    ) as string;
+
+    const result = await service.getChannelDialog(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    expect(result.messages[0]?.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        url: null,
+        previewUrl: 'data:image/webp;base64,YQ==',
+        width: 720,
+        height: 1280,
+      }),
+    ]);
+  });
+
   it('rejects channel comments with links when moderation blocks links', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

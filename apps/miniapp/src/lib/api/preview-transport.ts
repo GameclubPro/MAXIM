@@ -1117,6 +1117,7 @@ function buildPreviewDialogAttachments(
   return attachments.map((attachment) => ({
     kind: attachment.type,
     url: `data:${attachment.mimeType};base64,${attachment.base64}`,
+    previewUrl: `data:${attachment.mimeType};base64,${attachment.base64}`,
     fileName: attachment.fileName || null,
     mimeType: attachment.mimeType || null,
     size: Math.max(0, Math.floor((attachment.base64.length * 3) / 4)),
@@ -1982,6 +1983,7 @@ function createInitialState(): PreviewState {
             {
               kind: 'file',
               url: 'https://example.test/protokol-sobraniya.pdf',
+              previewUrl: 'https://example.test/protokol-sobraniya.pdf',
               fileName: 'protokol-sobraniya.pdf',
               mimeType: 'application/pdf',
               size: 184_000,
@@ -2085,6 +2087,7 @@ function createInitialState(): PreviewState {
             {
               kind: 'image',
               url: buildPreviewAvatarDataUrl('Фото', '#dbe9ff', '#aacbff'),
+              previewUrl: buildPreviewAvatarDataUrl('Фото', '#dbe9ff', '#aacbff'),
               fileName: 'traffic-photo.webp',
               mimeType: 'image/webp',
               size: 248_000,

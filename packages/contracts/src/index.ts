@@ -3200,6 +3200,8 @@ export const channelDialogAttachmentInputSchema = /*#__PURE__*/ z
     base64: z.string().trim().max(4_000_000).default(''),
     mimeType: z.string().trim().max(128).default(''),
     fileName: z.string().trim().max(128).default(''),
+    width: z.number().int().min(1).optional(),
+    height: z.number().int().min(1).optional(),
   })
   .superRefine((value, ctx) => {
     if (!value.base64) {
@@ -3332,6 +3334,8 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
             base64: image.base64.trim(),
             mimeType: image.mimeType.trim(),
             fileName: image.fileName.trim(),
+            width: undefined,
+            height: undefined,
           }))
         : value.imageBase64
           ? [
@@ -3340,6 +3344,8 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
                 base64: value.imageBase64.trim(),
                 mimeType: value.imageMimeType.trim(),
                 fileName: value.imageFileName.trim(),
+                width: undefined,
+                height: undefined,
               },
             ]
           : []),
@@ -3375,6 +3381,7 @@ export type ChannelDialogSuggestionReviewStatus = z.infer<
 export const channelDialogAttachmentSchema = /*#__PURE__*/ z.object({
   kind: channelDialogAttachmentKindSchema,
   url: z.string().trim().url().nullable().default(null),
+  previewUrl: z.string().trim().url().nullable().default(null),
   fileName: z.string().trim().max(128).nullable().default(null),
   mimeType: z.string().trim().max(128).nullable().default(null),
   size: z.number().int().min(0).nullable().default(null),
