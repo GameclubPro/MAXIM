@@ -1,6 +1,6 @@
 const MAX_BROADCAST_IMAGE_BYTES = 3_000_000;
-const IMAGE_DIMENSION_STEPS = [1920, 1600, 1280, 960];
-const IMAGE_QUALITY_STEPS = [0.86, 0.8, 0.74, 0.68, 0.62];
+const IMAGE_DIMENSION_STEPS = [1920, 1600, 1280, 960, 800, 640];
+const IMAGE_QUALITY_STEPS = [0.86, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44];
 const FALLBACK_IMAGE_ERROR = 'Не удалось подготовить фото. Выберите другое изображение.';
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',

@@ -1,7 +1,5 @@
 import { prepareBroadcastImage } from './broadcast-image';
 
-export const MAX_COMMENT_DIALOG_FILE_BYTES = 1_500_000;
-
 export type PreparedCommentDialogAttachment = {
   type: 'image' | 'file';
   base64: string;
@@ -80,10 +78,6 @@ export async function prepareCommentDialogImageAttachment(
 export async function prepareCommentDialogFileAttachment(
   file: File,
 ): Promise<PreparedCommentDialogAttachment> {
-  if (file.size > MAX_COMMENT_DIALOG_FILE_BYTES) {
-    throw new Error('Файл слишком большой. Максимум 1.5 MB.');
-  }
-
   const mimeType = file.type.trim() || 'application/octet-stream';
   const base64 = await fileToBase64(file);
 

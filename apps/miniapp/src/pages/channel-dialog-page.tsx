@@ -2094,17 +2094,39 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const handleDraftImagesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    resetAttachmentPickers();
     if (files.length === 0 || editingMessage) {
+      resetAttachmentPickers();
       return;
     }
 
     setIsPreparingAttachment(true);
     try {
-      const prepared = await Promise.all(
-        files.map((file) => prepareCommentDialogImageAttachment(file)),
-      );
-      appendDraftAttachments(prepared);
+      const prepared: CommentDraftAttachment[] = [];
+      let firstError: string | null = null;
+
+      for (const file of files) {
+        try {
+          prepared.push(await prepareCommentDialogImageAttachment(file));
+        } catch (error: unknown) {
+          if (!firstError && error instanceof Error && error.message.trim()) {
+            firstError = error.message;
+          } else if (!firstError) {
+            firstError = 'Не удалось подготовить фото.';
+          }
+        }
+      }
+
+      if (prepared.length > 0) {
+        appendDraftAttachments(prepared);
+      }
+
+      if (firstError) {
+        pushToast({
+          tone: 'danger',
+          title: 'Фото не добавлено',
+          description: firstError,
+        });
+      }
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
@@ -2115,23 +2137,46 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             : 'Не удалось подготовить фото.',
       });
     } finally {
+      resetAttachmentPickers();
       setIsPreparingAttachment(false);
     }
   };
 
   const handleDraftFilesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
     const files = Array.from(event.target.files ?? []);
-    resetAttachmentPickers();
     if (files.length === 0 || editingMessage) {
+      resetAttachmentPickers();
       return;
     }
 
     setIsPreparingAttachment(true);
     try {
-      const prepared = await Promise.all(
-        files.map((file) => prepareCommentDialogFileAttachment(file)),
-      );
-      appendDraftAttachments(prepared);
+      const prepared: CommentDraftAttachment[] = [];
+      let firstError: string | null = null;
+
+      for (const file of files) {
+        try {
+          prepared.push(await prepareCommentDialogFileAttachment(file));
+        } catch (error: unknown) {
+          if (!firstError && error instanceof Error && error.message.trim()) {
+            firstError = error.message;
+          } else if (!firstError) {
+            firstError = 'Не удалось подготовить файл.';
+          }
+        }
+      }
+
+      if (prepared.length > 0) {
+        appendDraftAttachments(prepared);
+      }
+
+      if (firstError) {
+        pushToast({
+          tone: 'danger',
+          title: 'Файл не добавлен',
+          description: firstError,
+        });
+      }
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
@@ -2142,6 +2187,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             : 'Не удалось подготовить файл.',
       });
     } finally {
+      resetAttachmentPickers();
       setIsPreparingAttachment(false);
     }
   };
@@ -3143,7 +3189,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       className="channel-dialog-compose__attach-input"
                       type="file"
                       accept="image/*"
-                      multiple
                       disabled={isComposePending || isPreparingAttachment}
                       onChange={handleDraftImagesChange}
                       tabIndex={-1}
@@ -3174,7 +3219,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       ref={fileInputRef}
                       className="channel-dialog-compose__attach-input"
                       type="file"
-                      multiple
                       disabled={isComposePending || isPreparingAttachment}
                       onChange={handleDraftFilesChange}
                       tabIndex={-1}
