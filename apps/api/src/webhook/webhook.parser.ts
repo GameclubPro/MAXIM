@@ -1200,6 +1200,7 @@ export class WebhookParser {
   private normalizeChatEntityType(
     row: Record<string, unknown>,
   ): 'chat' | 'channel' | undefined {
+    const isChannel = this.readBoolean(row.is_channel ?? row.isChannel);
     const rawType = this.readLowerString(
       row.chat_type ??
         row.chatType ??
@@ -1217,12 +1218,52 @@ export class WebhookParser {
       rawType === 'supergroup' ||
       rawType === 'dialog'
     ) {
+      if (isChannel === true) {
+        return 'channel';
+      }
+      return 'chat';
+    }
+
+    if (isChannel === true) {
+      return 'channel';
+    }
+    if (isChannel === false) {
       return 'chat';
     }
 
     const link = this.readString(row.link ?? row.url ?? row.invite_link ?? row.inviteLink);
-    if (link && link.toLowerCase().includes('/channel/')) {
+    if (link && /\/channels?\//iu.test(link)) {
       return 'channel';
+    }
+
+    return undefined;
+  }
+
+  private readBoolean(value: unknown): boolean | undefined {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'number') {
+      if (value === 1) {
+        return true;
+      }
+      if (value === 0) {
+        return false;
+      }
+      return undefined;
+    }
+
+    const normalized = this.readLowerString(value);
+    if (!normalized) {
+      return undefined;
+    }
+
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+      return false;
     }
 
     return undefined;

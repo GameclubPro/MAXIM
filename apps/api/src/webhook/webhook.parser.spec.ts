@@ -56,6 +56,23 @@ describe('WebhookParser', () => {
     expect(parsed.message?.senderName).toBe('Иван Петров');
   });
 
+  it('extracts channel entityType from bot_added is_channel payloads without explicit chat type', () => {
+    const parsed = parser.parse({
+      update_type: 'bot_added',
+      chat_id: '-100777',
+      is_channel: true,
+      user: {
+        user_id: 'user-channel-1',
+        first_name: 'MAX',
+        last_name: 'Admin',
+      },
+      timestamp: '2026-04-21T10:15:00.000Z',
+    });
+
+    expect(parsed.message?.chatId).toBe('-100777');
+    expect(parsed.message?.entityType).toBe('channel');
+  });
+
   it('extracts text from nested body.text when message.text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

@@ -2018,14 +2018,30 @@ export class MaxClientService implements OnModuleDestroy {
 
   private parseChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' {
     const rawType = row.type ?? row.chat_type ?? row.chatType;
+    const isChannel = this.readBoolean(row.is_channel ?? row.isChannel);
     if (typeof rawType === 'string') {
       const normalized = rawType.trim().toLowerCase();
       if (normalized === 'channel') {
         return 'channel';
       }
-      if (normalized === 'chat' || normalized === 'group' || normalized === 'supergroup') {
+      if (
+        normalized === 'chat' ||
+        normalized === 'group' ||
+        normalized === 'supergroup' ||
+        normalized === 'dialog'
+      ) {
+        if (isChannel === true) {
+          return 'channel';
+        }
         return 'chat';
       }
+    }
+
+    if (isChannel === true) {
+      return 'channel';
+    }
+    if (isChannel === false) {
+      return 'chat';
     }
 
     const link = this.parseChatLink(row);

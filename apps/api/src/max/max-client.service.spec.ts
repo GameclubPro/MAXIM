@@ -2444,6 +2444,36 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('detects private channel snapshots from is_channel when MAX omits type and link', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            title: 'Приватный канал',
+            participants_count: 4,
+            status: 'active',
+            is_public: false,
+            is_channel: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await expect(service.getChatSnapshot('channel-private-1')).resolves.toEqual(
+      expect.objectContaining({
+        chatId: 'channel-private-1',
+        title: 'Приватный канал',
+        entityType: 'channel',
+        isPublic: false,
+        link: null,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('applies background MAX API rate limit to background snapshot reads', async () => {
     const httpService = {
       request: jest.fn(),
