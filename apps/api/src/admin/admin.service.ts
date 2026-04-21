@@ -118,7 +118,6 @@ import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
-  MAX_CHANNEL_DIALOG_COMMENT_FILES,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
@@ -202,7 +201,6 @@ import {
 } from '../common/max-text-markup.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
-import { DialogCommentAttachmentHandoffService } from './dialog-comment-attachment-handoff.service';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
@@ -956,8 +954,6 @@ export class AdminService implements OnModuleDestroy {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
     private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
-    @Optional()
-    private readonly dialogCommentAttachmentHandoffService?: DialogCommentAttachmentHandoffService,
   ) {
     const configuredBotTokens = collectBotTokenSecrets(
       configService.getOrThrow<string>('MAX_BOT_TOKEN'),
@@ -7473,18 +7469,17 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const directAttachments = this.normalizeChannelDialogCommentInputAttachments(
+    const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
       parsed.data.attachments,
     );
-    const handoffAttachmentIds = parsed.data.handoffAttachmentIds;
-    const images = directAttachments
+    const images = normalizedAttachments
       .filter((attachment) => attachment.kind === 'image')
       .map((image) => ({
         base64: image.base64?.trim() ?? '',
         mimeType: image.mimeType?.trim() ?? '',
         fileName: image.fileName?.trim() ?? '',
       }));
-    const fileAttachments = directAttachments.filter((attachment) => attachment.kind === 'file');
+    const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind === 'file');
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7500,16 +7495,12 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
-    if (dialogType === 'comments' && !text && directAttachments.length === 0 && handoffAttachmentIds.length === 0) {
+    if (dialogType === 'comments' && !text && normalizedAttachments.length === 0) {
       throw new BadRequestException('Введите текст комментария или добавьте вложение.');
     }
 
     if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
-    }
-
-    if (dialogType === 'suggest' && handoffAttachmentIds.length > 0) {
-      throw new BadRequestException('В предложке пока поддерживаются только фото.');
     }
 
     if (dialogType === 'suggest' && fileAttachments.length > 0) {
@@ -7549,31 +7540,10 @@ export class AdminService implements OnModuleDestroy {
       });
     }
 
-    const handoffAttachments =
-      handoffAttachmentIds.length > 0
-        ? await this.requireDialogCommentAttachmentHandoffService().resolveAttachments(
-            user.userId,
-            {
-              chatId,
-              entityType: 'channel',
-              token: parsed.data.token,
-            },
-            handoffAttachmentIds,
-          )
-        : [];
-    const totalFileAttachments =
-      fileAttachments.length + handoffAttachments.filter((attachment) => attachment.kind === 'file').length;
-    if (totalFileAttachments > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
-      throw new BadRequestException(
-        `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
-      );
-    }
-
     const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
       chatId,
-      directAttachments,
+      normalizedAttachments,
     );
-    const finalAttachments = [...uploadedAttachments, ...handoffAttachments];
 
     const created = await this.prisma.auditLog.create({
       data: {
@@ -7595,24 +7565,13 @@ export class AdminService implements OnModuleDestroy {
                 },
               }
             : {}),
-          ...(finalAttachments.length > 0
-            ? { attachments: finalAttachments as Prisma.InputJsonValue }
+          ...(uploadedAttachments.length > 0
+            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
             : {}),
           source,
         },
       },
     });
-    if (handoffAttachmentIds.length > 0) {
-      await this.requireDialogCommentAttachmentHandoffService().removeAttachments(
-        user.userId,
-        {
-          chatId,
-          entityType: 'channel',
-          token: parsed.data.token,
-        },
-        handoffAttachmentIds,
-      );
-    }
 
     const message = {
       id: created.id,
@@ -7626,7 +7585,7 @@ export class AdminService implements OnModuleDestroy {
       editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
-      attachments: this.buildChannelDialogCommentAttachments(finalAttachments),
+      attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
       reactionGroups: [],
       canEdit: dialogType === 'comments',
       canDelete: dialogType === 'comments',
@@ -7713,10 +7672,9 @@ export class AdminService implements OnModuleDestroy {
 
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
-    const directAttachments = this.normalizeChannelDialogCommentInputAttachments(
+    const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
       parsed.data.attachments,
     );
-    const handoffAttachmentIds = parsed.data.handoffAttachmentIds;
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7732,36 +7690,14 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    if (!text && directAttachments.length === 0 && handoffAttachmentIds.length === 0) {
+    if (!text && normalizedAttachments.length === 0) {
       throw new BadRequestException('Введите текст комментария или добавьте вложение.');
-    }
-
-    const handoffAttachments =
-      handoffAttachmentIds.length > 0
-        ? await this.requireDialogCommentAttachmentHandoffService().resolveAttachments(
-            user.userId,
-            {
-              chatId,
-              entityType: 'chat',
-              token: parsed.data.token,
-            },
-            handoffAttachmentIds,
-          )
-        : [];
-    const totalFileAttachments =
-      directAttachments.filter((attachment) => attachment.kind === 'file').length +
-      handoffAttachments.filter((attachment) => attachment.kind === 'file').length;
-    if (totalFileAttachments > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
-      throw new BadRequestException(
-        `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
-      );
     }
 
     const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
       chatId,
-      directAttachments,
+      normalizedAttachments,
     );
-    const finalAttachments = [...uploadedAttachments, ...handoffAttachments];
 
     const created = await this.prisma.auditLog.create({
       data: {
@@ -7783,8 +7719,8 @@ export class AdminService implements OnModuleDestroy {
                 },
               }
             : {}),
-          ...(finalAttachments.length > 0
-            ? { attachments: finalAttachments as Prisma.InputJsonValue }
+          ...(uploadedAttachments.length > 0
+            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
             : {}),
           delivered: true,
           deliveredToUserId: null,
@@ -7792,17 +7728,6 @@ export class AdminService implements OnModuleDestroy {
         },
       },
     });
-    if (handoffAttachmentIds.length > 0) {
-      await this.requireDialogCommentAttachmentHandoffService().removeAttachments(
-        user.userId,
-        {
-          chatId,
-          entityType: 'chat',
-          token: parsed.data.token,
-        },
-        handoffAttachmentIds,
-      );
-    }
 
     const message = {
       id: created.id,
@@ -7816,7 +7741,7 @@ export class AdminService implements OnModuleDestroy {
       editedAt: null,
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
-      attachments: this.buildChannelDialogCommentAttachments(finalAttachments),
+      attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
       reactionGroups: [],
       canEdit: true,
       canDelete: true,
@@ -7835,14 +7760,6 @@ export class AdminService implements OnModuleDestroy {
       ok: true,
       message,
     });
-  }
-
-  private requireDialogCommentAttachmentHandoffService(): DialogCommentAttachmentHandoffService {
-    if (!this.dialogCommentAttachmentHandoffService) {
-      throw new ServiceUnavailableException('Импорт вложений временно недоступен.');
-    }
-
-    return this.dialogCommentAttachmentHandoffService;
   }
 
   async updateChannelDialogMessage(

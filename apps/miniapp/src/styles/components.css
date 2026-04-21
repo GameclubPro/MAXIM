@@ -4016,6 +4016,7 @@
   font-weight: 900;
   letter-spacing: 0.01em;
   cursor: pointer;
+  touch-action: manipulation;
 }
 
 .channel-dialog-compose__attach-input {
@@ -4027,6 +4028,7 @@
   opacity: 0;
   cursor: pointer;
   font-size: 0;
+  z-index: 2;
 }
 
 .channel-dialog-compose__attach--disabled {
@@ -4041,6 +4043,7 @@
 .channel-dialog-compose__attach svg {
   width: 17px;
   height: 17px;
+  pointer-events: none;
 }
 
 .channel-dialog-compose__attach--icon {

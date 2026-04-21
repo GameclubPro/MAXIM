@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { PrivateControlService } from './private-control.service';
@@ -97,90 +97,6 @@ export class PrivateControlController {
       user,
       userId,
       body,
-      'channel',
-    );
-  }
-
-  @Post('chats/:chatId/dialog/comments/attachments/handoff')
-  handoffChatCommentAttachments(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.privateControlService.handoffDialogCommentAttachmentsFromMiniapp(
-      chatId,
-      user,
-      body,
-      'chat',
-    );
-  }
-
-  @Post('channels/:chatId/dialog/comments/attachments/handoff')
-  handoffChannelCommentAttachments(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.privateControlService.handoffDialogCommentAttachmentsFromMiniapp(
-      chatId,
-      user,
-      body,
-      'channel',
-    );
-  }
-
-  @Get('chats/:chatId/dialog/comments/attachments/handoff')
-  getChatCommentAttachmentHandoffState(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Query('token') token: string | undefined,
-  ) {
-    return this.privateControlService.getDialogCommentAttachmentHandoffState(
-      chatId,
-      user,
-      token ?? '',
-      'chat',
-    );
-  }
-
-  @Get('channels/:chatId/dialog/comments/attachments/handoff')
-  getChannelCommentAttachmentHandoffState(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Query('token') token: string | undefined,
-  ) {
-    return this.privateControlService.getDialogCommentAttachmentHandoffState(
-      chatId,
-      user,
-      token ?? '',
-      'channel',
-    );
-  }
-
-  @Delete('chats/:chatId/dialog/comments/attachments/handoff')
-  clearChatCommentAttachmentHandoffState(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Query('token') token: string | undefined,
-  ) {
-    return this.privateControlService.clearDialogCommentAttachmentHandoffState(
-      chatId,
-      user,
-      token ?? '',
-      'chat',
-    );
-  }
-
-  @Delete('channels/:chatId/dialog/comments/attachments/handoff')
-  clearChannelCommentAttachmentHandoffState(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Query('token') token: string | undefined,
-  ) {
-    return this.privateControlService.clearDialogCommentAttachmentHandoffState(
-      chatId,
-      user,
-      token ?? '',
       'channel',
     );
   }

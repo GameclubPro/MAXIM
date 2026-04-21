@@ -53,7 +53,6 @@ export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
   replyToMessageId?: string | null;
-  handoffAttachmentIds?: string[];
   attachments?: Array<{
     type: 'image' | 'file';
     base64: string;
