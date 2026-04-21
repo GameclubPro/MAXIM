@@ -1,4 +1,3 @@
-import { MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 } from '@maxim/contracts';
 import { prepareBroadcastImage } from './broadcast-image';
 
 export type PreparedCommentDialogAttachment = {
@@ -20,9 +19,8 @@ const PREVIEWABLE_IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
-const COMMENT_IMAGE_FALLBACK_MAX_BYTES = Math.floor(
-  (MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 * 3) / 4,
-);
+const MAX_COMMENT_ATTACHMENT_BASE64_LENGTH = 4_000_000;
+const COMMENT_IMAGE_FALLBACK_MAX_BYTES = Math.floor((MAX_COMMENT_ATTACHMENT_BASE64_LENGTH * 3) / 4);
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',
   gif: 'image/gif',
@@ -171,7 +169,7 @@ export async function prepareCommentDialogImageAttachment(
     }
 
     if (file.size > COMMENT_IMAGE_FALLBACK_MAX_BYTES) {
-      throw new Error('Фото слишком большое. Выберите другое изображение.');
+      throw new Error('Фото слишком большое для отправки. Выберите изображение поменьше.');
     }
 
     if (!parsed.base64) {
