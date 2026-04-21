@@ -23775,14 +23775,37 @@ export class AdminService implements OnModuleDestroy {
     });
 
     if (current) {
-      if (this.fromPrismaEntityType(current.entityType) !== expectedEntityType) {
-        throw new BadRequestException(
-          expectedEntityType === 'channel'
-            ? 'Этот ID относится к чату, а не к каналу.'
-            : 'Этот ID относится к каналу, а не к чату.',
-        );
+      if (this.fromPrismaEntityType(current.entityType) === expectedEntityType) {
+        return;
       }
-      return;
+
+      try {
+        const resolvedBotId = await this.resolveBotAssignment(chatId);
+        const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+          trafficClass: 'interactive',
+          actionHealthLane: 'background',
+          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+        });
+        if (snapshot.entityType === expectedEntityType) {
+          await this.upsertUserChatAccess(chatId, userId, snapshot.title, expectedEntityType, {
+            updateEntityType: true,
+            titleUpdateMode: 'fallback_only',
+            preferredBotId: resolvedBotId ?? null,
+          });
+          return;
+        }
+      } catch (error: unknown) {
+        if (error instanceof BadRequestException) {
+          throw error;
+        }
+      }
+
+      throw new BadRequestException(
+        expectedEntityType === 'channel'
+          ? 'Этот ID относится к чату, а не к каналу.'
+          : 'Этот ID относится к каналу, а не к чату.',
+      );
     }
 
     try {

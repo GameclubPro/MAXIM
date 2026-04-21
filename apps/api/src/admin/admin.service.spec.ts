@@ -12918,6 +12918,60 @@ describe('AdminService.listChats', () => {
     expect(schedulePublishedSnapshotRebuildSpy).toHaveBeenCalledWith('admin-1', 'chat');
   });
 
+  it('repairs a stale persisted chat entity type when MAX confirms the id is a channel', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHAT',
+    });
+    const maxClient = {
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: '-100501',
+        title: 'Приватный канал MAX',
+        participantsCount: 8,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'channel',
+        avatarUrl: null,
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue('777000_bot');
+    const upsertSpy = jest
+      .spyOn(service as any, 'upsertUserChatAccess')
+      .mockResolvedValue({
+        id: '-100501',
+        title: 'Приватный канал MAX',
+        entityType: 'CHANNEL',
+        createdAt: new Date('2026-04-21T10:20:00.000Z'),
+        primaryBotId: '777000_bot',
+        botId: '777000_bot',
+      });
+
+    await expect((service as any).ensureEntityType('-100501', 'admin-1', 'channel')).resolves.toBe(
+      undefined,
+    );
+
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith(
+      '-100501',
+      expect.objectContaining({
+        botId: '777000_bot',
+        trafficClass: 'interactive',
+      }),
+    );
+    expect(upsertSpy).toHaveBeenCalledWith('-100501', 'admin-1', 'Приватный канал MAX', 'channel', {
+      updateEntityType: true,
+      titleUpdateMode: 'fallback_only',
+      preferredBotId: '777000_bot',
+    });
+  });
+
   it('keeps recent bot-added bootstrap alive when unsupported-chat pruning hits a saturated Prisma pool', async () => {
     const prisma = createPrismaMock();
     prisma.$queryRaw.mockResolvedValue([
