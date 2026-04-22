@@ -23521,8 +23521,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           {
             type: 'image',
             base64: 'YQ==',
-            mimeType: 'image/webp',
-            fileName: 'camera-shot.webp',
+            mimeType: 'image/png',
+            fileName: 'camera-shot.png',
             width: 720,
             height: 1280,
           },
@@ -23537,8 +23537,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             attachments: [
               expect.objectContaining({
                 kind: 'image',
-                mimeType: 'image/webp',
-                fileName: 'camera-shot.webp',
+                mimeType: 'image/png',
+                fileName: 'camera-shot.png',
                 previewBase64: 'YQ==',
                 width: 720,
                 height: 1280,
@@ -23552,11 +23552,70 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         kind: 'image',
         url: null,
-        previewUrl: 'data:image/webp;base64,YQ==',
+        previewUrl: 'data:image/png;base64,YQ==',
         width: 720,
         height: 1280,
       }),
     ]);
+  });
+
+  it('rejects channel comment photos in formats unsupported by MAX uploads', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-11', url: null }),
+      uploadImage: jest.fn(),
+      uploadFile: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = await publishCommentsDialogToken(service, maxClient);
+
+    await expect(
+      service.createChannelDialogMessage(
+        'channel-1',
+        {
+          userId: 'user-1',
+          username: 'user1',
+          displayName: 'Пользователь',
+          chatTitle: null,
+        },
+        'comments',
+        {
+          token: commentsToken,
+          text: '',
+          attachments: [
+            {
+              type: 'image',
+              base64: 'YQ==',
+              mimeType: 'image/webp',
+              fileName: 'camera-shot.webp',
+            },
+          ],
+        },
+      ),
+    ).rejects.toThrow(
+      'MAX пока не принимает этот формат фото. Используйте JPG, PNG, GIF, TIFF, BMP или HEIC.',
+    );
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
   });
 
   it('returns persisted inline previews for channel comment photos without remote urls', async () => {

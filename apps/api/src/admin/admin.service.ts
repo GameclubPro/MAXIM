@@ -20516,6 +20516,29 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
+  private normalizeMaxUploadImageMimeType(mimeType: string | null | undefined): string {
+    const normalized = mimeType?.trim().toLowerCase() ?? '';
+    if (normalized === 'image/jpg' || normalized === 'image/pjpeg') {
+      return 'image/jpeg';
+    }
+    if (normalized === 'image/x-png') {
+      return 'image/png';
+    }
+    return normalized;
+  }
+
+  private isSupportedMaxUploadImageMimeType(mimeType: string | null | undefined): boolean {
+    const normalized = this.normalizeMaxUploadImageMimeType(mimeType);
+    return (
+      normalized === 'image/bmp' ||
+      normalized === 'image/gif' ||
+      normalized === 'image/heic' ||
+      normalized === 'image/jpeg' ||
+      normalized === 'image/png' ||
+      normalized === 'image/tiff'
+    );
+  }
+
   private normalizeChannelDialogCommentInputAttachments(
     attachments: Array<{
       type: 'image' | 'file';
@@ -20571,10 +20594,15 @@ export class AdminService implements OnModuleDestroy {
 
     const mimeType =
       attachment.kind === 'image'
-        ? attachment.mimeType?.trim().toLowerCase() || 'image/jpeg'
+        ? this.normalizeMaxUploadImageMimeType(attachment.mimeType) || 'image/jpeg'
         : attachment.mimeType?.trim().toLowerCase() || 'application/octet-stream';
     if (attachment.kind === 'image' && !mimeType.startsWith('image/')) {
       throw new BadRequestException('Фото комментария передано в неверном формате.');
+    }
+    if (attachment.kind === 'image' && !this.isSupportedMaxUploadImageMimeType(mimeType)) {
+      throw new BadRequestException(
+        'MAX пока не принимает этот формат фото. Используйте JPG, PNG, GIF, TIFF, BMP или HEIC.',
+      );
     }
 
     let buffer: Buffer;

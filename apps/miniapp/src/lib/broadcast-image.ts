@@ -19,6 +19,10 @@ const NORMALIZED_IMAGE_MIME_TYPES: Record<string, string> = {
   'image/pjpeg': 'image/jpeg',
 };
 
+export function resolveMaxUploadImageTargetMimeTypes(inputMimeType: string): string[] {
+  return inputMimeType === 'image/png' ? ['image/png', 'image/jpeg'] : ['image/jpeg', 'image/png'];
+}
+
 export type PreparedBroadcastImage = {
   base64: string;
   mimeType: string;
@@ -103,9 +107,6 @@ function ensureTypedImageBlob(file: File, mimeType: string): Blob {
 }
 
 function resolveOutputExtension(mimeType: string): string {
-  if (mimeType === 'image/webp') {
-    return '.webp';
-  }
   if (mimeType === 'image/png') {
     return '.png';
   }
@@ -185,6 +186,7 @@ async function readOriginalImage(
 export async function prepareBroadcastImage(file: File): Promise<PreparedBroadcastImage> {
   const inputMimeType = resolveInputImageMimeType(file);
   const sourceBlob = ensureTypedImageBlob(file, inputMimeType);
+  const targetMimeTypes = resolveMaxUploadImageTargetMimeTypes(inputMimeType);
 
   try {
     const image = await loadImageFromBlob(sourceBlob);
@@ -207,7 +209,7 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
     }
 
     let bestBlob: Blob | null = null;
-    let bestMimeType = 'image/webp';
+    let bestMimeType = targetMimeTypes[0] ?? 'image/jpeg';
     let bestWidth = sourceWidth;
     let bestHeight = sourceHeight;
 
@@ -215,8 +217,9 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
       const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
       const canvas = renderToCanvas(image, scaled.width, scaled.height);
 
-      for (const targetMimeType of ['image/webp', 'image/jpeg']) {
-        for (const quality of IMAGE_QUALITY_STEPS) {
+      for (const targetMimeType of targetMimeTypes) {
+        const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
+        for (const quality of qualitySteps) {
           const blob = await canvasToBlob(canvas, targetMimeType, quality);
           if (!blob || !blob.size) {
             continue;
