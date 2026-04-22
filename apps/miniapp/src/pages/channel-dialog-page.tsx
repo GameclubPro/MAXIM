@@ -129,6 +129,7 @@ type CommentBackdropIconName =
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
+type CommentImageAlbumVariant = 'grid' | 'lead' | 'tail';
 
 type CommentBackdropWallpaperTile = {
   icon: CommentBackdropIconName;
@@ -401,6 +402,26 @@ function resolveCommentAttachmentBadge(
   return 'FILE';
 }
 
+function resolveCommentImageAlbumVariant(
+  attachments: Pick<ChannelDialogAttachment, 'width' | 'height'>[],
+): CommentImageAlbumVariant {
+  if (attachments.length !== 3 && attachments.length !== 5) {
+    return 'grid';
+  }
+
+  const lead = attachments[0];
+  if (lead?.width && lead.height && lead.width >= lead.height) {
+    return 'lead';
+  }
+
+  const tail = attachments[attachments.length - 1];
+  if (tail?.width && tail.height && tail.width >= tail.height) {
+    return 'tail';
+  }
+
+  return 'grid';
+}
+
 function resolveCommentAttachmentSummary(
   attachments:
     | Pick<ChannelDialogAttachment, 'kind' | 'mimeType' | 'fileName'>[]
@@ -448,8 +469,23 @@ function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): strin
   return isCommentAttachmentImageLike(attachment) ? attachment.previewUrl?.trim() ?? '' : '';
 }
 
+function getCommentAttachmentViewerUrl(attachment: ChannelDialogAttachment): string {
+  return attachment.url?.trim() || attachment.previewUrl?.trim() || '';
+}
+
 function getCommentAttachmentPreviewUrl(attachment: ChannelDialogAttachment): string {
   return attachment.previewUrl?.trim() || attachment.url?.trim() || '';
+}
+
+function resolveCommentAttachmentImageMeta(
+  attachment: Pick<ChannelDialogAttachment, 'width' | 'height' | 'size'>,
+): string {
+  return [
+    attachment.width && attachment.height ? `${attachment.width}×${attachment.height}` : null,
+    attachment.size ? formatDialogAttachmentSize(attachment.size) : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 }
 
 function getCommentAttachmentImageStyle(
@@ -1040,8 +1076,10 @@ function CommentAttachmentGlyph({ kind }: { kind: 'image' | 'file' }) {
 
 function CommentMessageAttachments({
   attachments,
+  onOpenImageAlbum,
 }: {
   attachments: ChannelDialogAttachment[];
+  onOpenImageAlbum?: (attachments: ChannelDialogAttachment[], index: number) => void;
 }) {
   if (!attachments.length) {
     return null;
@@ -1053,6 +1091,7 @@ function CommentMessageAttachments({
   const fileAttachments = attachments.filter(
     (attachment) => resolveCommentAttachmentKind(attachment) === 'file',
   );
+  const albumVariant = resolveCommentImageAlbumVariant(imageAttachments);
 
   return (
     <div className="channel-dialog-message__attachments">
@@ -1061,10 +1100,13 @@ function CommentMessageAttachments({
           className={cn(
             'channel-dialog-message__image-grid',
             imageAttachments.length === 1 && 'is-single',
+            `is-count-${Math.min(imageAttachments.length, MAX_CHANNEL_DIALOG_ATTACHMENTS)}`,
+            albumVariant === 'lead' && 'has-lead-image',
+            albumVariant === 'tail' && 'has-tail-image',
           )}
         >
           {imageAttachments.map((attachment, attachmentIndex) => {
-            const url = getCommentAttachmentOpenUrl(attachment);
+            const viewerUrl = getCommentAttachmentViewerUrl(attachment);
             const previewUrl = getCommentAttachmentPreviewUrl(attachment);
             const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
 
@@ -1077,11 +1119,11 @@ function CommentMessageAttachments({
                 onPointerDown={(event) => event.stopPropagation()}
                 onClick={(event) => {
                   event.stopPropagation();
-                  if (url) {
-                    openMaxBotLink(url);
+                  if (viewerUrl) {
+                    onOpenImageAlbum?.(imageAttachments, attachmentIndex);
                   }
                 }}
-                disabled={!url}
+                disabled={!viewerUrl}
                 aria-label={fileName}
               >
                 {previewUrl ? (
@@ -1412,6 +1454,11 @@ type ReactionPopoverLayout = {
   placement: 'above' | 'below';
 };
 
+type CommentImageViewerState = {
+  attachments: ChannelDialogAttachment[];
+  activeIndex: number;
+};
+
 type SwipeReplyPreview = {
   messageId: string;
   offset: number;
@@ -1502,6 +1549,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [isPreparingAttachment, setIsPreparingAttachment] = useState(false);
+  const [imageViewer, setImageViewer] = useState<CommentImageViewerState | null>(null);
   const [floatingThreadContextHeight, setFloatingThreadContextHeight] = useState(0);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
@@ -1601,6 +1649,40 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     queryClient,
   ]);
 
+  useEffect(() => {
+    if (!imageViewer) {
+      return undefined;
+    }
+
+    const { body, documentElement } = document;
+    const previousBodyOverflow = body.style.overflow;
+    const previousDocumentOverflow = documentElement.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        closeCommentImageAlbum();
+        return;
+      }
+
+      if (event.key === 'ArrowLeft') {
+        showPreviousCommentImage();
+      }
+
+      if (event.key === 'ArrowRight') {
+        showNextCommentImage();
+      }
+    };
+
+    body.style.overflow = 'hidden';
+    documentElement.style.overflow = 'hidden';
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      body.style.overflow = previousBodyOverflow;
+      documentElement.style.overflow = previousDocumentOverflow;
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [imageViewer]);
+
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const floatingThreadContextOffset = introText
@@ -1665,6 +1747,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
       : draftAttachmentSummary;
+  const activeViewerAttachment = imageViewer?.attachments[imageViewer.activeIndex] ?? null;
+  const activeViewerImageSrc = activeViewerAttachment
+    ? getCommentAttachmentViewerUrl(activeViewerAttachment)
+    : '';
+  const activeViewerImageMeta = activeViewerAttachment
+    ? resolveCommentAttachmentImageMeta(activeViewerAttachment)
+    : '';
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -1677,6 +1766,57 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const clearSwipeReplyGesture = () => {
     swipeReplyGestureRef.current = null;
     setSwipeReplyPreview(null);
+  };
+
+  const openCommentImageAlbum = (
+    attachments: ChannelDialogAttachment[],
+    requestedIndex: number,
+  ) => {
+    const viewerAttachments = attachments.filter((attachment) =>
+      Boolean(getCommentAttachmentViewerUrl(attachment)),
+    );
+    if (viewerAttachments.length === 0) {
+      return;
+    }
+
+    const requestedAttachment = attachments[requestedIndex] ?? null;
+    const activeIndex = requestedAttachment
+      ? Math.max(0, viewerAttachments.findIndex((attachment) => attachment === requestedAttachment))
+      : 0;
+
+    setActiveMessageId(null);
+    setImageViewer({
+      attachments: viewerAttachments,
+      activeIndex,
+    });
+  };
+
+  const closeCommentImageAlbum = () => {
+    setImageViewer(null);
+  };
+
+  const stepCommentImageAlbum = (direction: -1 | 1) => {
+    setImageViewer((current) => {
+      if (!current || current.attachments.length <= 1) {
+        return current;
+      }
+
+      const nextIndex =
+        (current.activeIndex + direction + current.attachments.length) % current.attachments.length;
+
+      return {
+        ...current,
+        activeIndex: nextIndex,
+      };
+    });
+  };
+
+  const showPreviousCommentImage = () => {
+    stepCommentImageAlbum(-1);
+  };
+
+  const showNextCommentImage = () => {
+    stepCommentImageAlbum(1);
   };
 
   const clearSourceHighlight = () => {
@@ -2189,38 +2329,80 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     setDraftAttachments((current) => {
-      const merged = [...current, ...nextAttachments];
-      if (merged.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+      const accepted = [...current];
+      let fileCount = current.filter((attachment) => attachment.type === 'file').length;
+      let totalBase64Length = calculateDraftAttachmentsBase64Length(current);
+      let rejectedByCount = 0;
+      let rejectedByFileLimit = 0;
+      let rejectedBySize = 0;
+
+      for (const attachment of nextAttachments) {
+        if (accepted.length >= MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+          rejectedByCount += 1;
+          continue;
+        }
+
+        if (attachment.type === 'file' && fileCount >= MAX_CHANNEL_DIALOG_COMMENT_FILES) {
+          rejectedByFileLimit += 1;
+          continue;
+        }
+
+        const nextTotalBase64Length = totalBase64Length + attachment.base64.length;
+        if (nextTotalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
+          rejectedBySize += 1;
+          continue;
+        }
+
+        accepted.push(attachment);
+        totalBase64Length = nextTotalBase64Length;
+        if (attachment.type === 'file') {
+          fileCount += 1;
+        }
+      }
+
+      const addedCount = accepted.length - current.length;
+      if (addedCount === 0) {
+        const description =
+          rejectedByCount > 0
+            ? `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`
+            : rejectedByFileLimit > 0
+              ? `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`
+              : 'Уберите часть файлов или фото и попробуйте снова.';
+
         pushToast({
           tone: 'danger',
-          title: 'Слишком много вложений',
-          description: `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
+          title:
+            rejectedBySize > 0
+              ? 'Вложения слишком тяжёлые'
+              : rejectedByFileLimit > 0
+                ? 'Слишком много файлов'
+                : 'Слишком много вложений',
+          description,
         });
         return current;
       }
 
-      const fileCount = merged.filter((attachment) => attachment.type === 'file').length;
-      if (fileCount > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
-        pushToast({
-          tone: 'danger',
-          title: 'Слишком много файлов',
-          description: `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
-        });
-        return current;
-      }
+      if (rejectedByCount > 0 || rejectedByFileLimit > 0 || rejectedBySize > 0) {
+        const rejectedCount = rejectedByCount + rejectedByFileLimit + rejectedBySize;
+        const description =
+          rejectedByCount > 0
+            ? `Лимит комментария — ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений. Остальные фото не добавили.`
+            : rejectedByFileLimit > 0
+              ? `Лимит файлов — ${MAX_CHANNEL_DIALOG_COMMENT_FILES}. Остальные вложения пропустили.`
+              : 'Часть фото не добавили, потому что суммарный размер получился слишком большим.';
 
-      const totalBase64Length = calculateDraftAttachmentsBase64Length(merged);
-      if (totalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
         pushToast({
-          tone: 'danger',
-          title: 'Вложения слишком тяжёлые',
-          description: 'Уберите часть файлов или фото и попробуйте снова.',
+          tone: 'info',
+          title: `Добавили ${addedCount} из ${nextAttachments.length}`,
+          description:
+            rejectedCount > 0
+              ? description
+              : 'Оставшиеся вложения уже были в комментарии.',
         });
-        return current;
       }
 
       maxSelectionChanged();
-      return merged;
+      return accepted;
     });
   };
 
@@ -3171,7 +3353,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 )
                               ) : null}
 
-                              <CommentMessageAttachments attachments={message.attachments} />
+                              <CommentMessageAttachments
+                                attachments={message.attachments}
+                                onOpenImageAlbum={openCommentImageAlbum}
+                              />
                               {renderPlainTextParagraphs(message.text)}
                             </div>
 
@@ -3391,6 +3576,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           className="channel-dialog-compose__attach-input"
                           type="file"
                           accept="image/*"
+                          multiple
                           disabled={isComposePending || isPreparingAttachment}
                           onChange={handleDraftImagesChange}
                           onInput={handleDraftImagesInput}
@@ -3474,6 +3660,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         className="channel-dialog-compose__picker-input"
                         type="file"
                         accept="image/*"
+                        multiple
                         disabled={isComposePending || isPreparingAttachment}
                         onChange={handleDraftImagesChange}
                         onInput={handleDraftImagesInput}
@@ -3571,6 +3758,117 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           </div>
         </section>
       </div>
+
+      {imageViewer && activeViewerAttachment && activeViewerImageSrc
+        ? createPortal(
+            <div className="channel-dialog-image-viewer" aria-hidden={false}>
+              <button
+                type="button"
+                className="channel-dialog-image-viewer__backdrop"
+                aria-label="Закрыть просмотр фото"
+                onClick={closeCommentImageAlbum}
+              />
+
+              <section
+                className="channel-dialog-image-viewer__panel"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Просмотр фото"
+              >
+                <div className="channel-dialog-image-viewer__topbar">
+                  <div className="channel-dialog-image-viewer__status">
+                    <strong>
+                      Фото {imageViewer.activeIndex + 1} из {imageViewer.attachments.length}
+                    </strong>
+                    {activeViewerImageMeta ? <span>{activeViewerImageMeta}</span> : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="channel-dialog-image-viewer__close"
+                    onClick={closeCommentImageAlbum}
+                    aria-label="Закрыть просмотр"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+
+                <div className="channel-dialog-image-viewer__stage">
+                  {imageViewer.attachments.length > 1 ? (
+                    <button
+                      type="button"
+                      className="channel-dialog-image-viewer__nav"
+                      onClick={showPreviousCommentImage}
+                      aria-label="Предыдущее фото"
+                    >
+                      <BackIcon />
+                    </button>
+                  ) : null}
+
+                  <div className="channel-dialog-image-viewer__frame">
+                    <img
+                      src={activeViewerImageSrc}
+                      alt={activeViewerAttachment.fileName?.trim() || 'Фото комментария'}
+                      loading="eager"
+                    />
+                  </div>
+
+                  {imageViewer.attachments.length > 1 ? (
+                    <button
+                      type="button"
+                      className={cn('channel-dialog-image-viewer__nav', 'is-next')}
+                      onClick={showNextCommentImage}
+                      aria-label="Следующее фото"
+                    >
+                      <BackIcon />
+                    </button>
+                  ) : null}
+                </div>
+
+                {activeViewerAttachment.fileName?.trim() ? (
+                  <div className="channel-dialog-image-viewer__caption">
+                    {activeViewerAttachment.fileName.trim()}
+                  </div>
+                ) : null}
+
+                {imageViewer.attachments.length > 1 ? (
+                  <div className="channel-dialog-image-viewer__thumbs" role="tablist">
+                    {imageViewer.attachments.map((attachment, attachmentIndex) => {
+                      const previewUrl = getCommentAttachmentPreviewUrl(attachment);
+                      const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
+
+                      return (
+                        <button
+                          key={`${fileName}-${attachmentIndex}`}
+                          type="button"
+                          className={cn(
+                            'channel-dialog-image-viewer__thumb',
+                            attachmentIndex === imageViewer.activeIndex && 'is-active',
+                          )}
+                          onClick={() =>
+                            setImageViewer((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    activeIndex: attachmentIndex,
+                                  }
+                                : current,
+                            )
+                          }
+                          role="tab"
+                          aria-selected={attachmentIndex === imageViewer.activeIndex}
+                          aria-label={`Открыть ${fileName}`}
+                        >
+                          {previewUrl ? <img src={previewUrl} alt="" loading="lazy" /> : null}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
 
       {dialogType === 'comments' && activeMessage
         ? createPortal(
