@@ -35,6 +35,7 @@ import {
   useState,
   type CSSProperties,
   type ChangeEvent as ReactChangeEvent,
+  type FormEvent as ReactFormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -128,6 +129,7 @@ type CommentBackdropIconName =
   | 'send';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
+type AttachmentInputKind = 'image' | 'file';
 
 type CommentBackdropWallpaperTile = {
   icon: CommentBackdropIconName;
@@ -1417,6 +1419,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
   const swipeReplyGestureRef = useRef<SwipeReplyGesture | null>(null);
+  const attachmentInputWatchCleanupRef = useRef<
+    Record<AttachmentInputKind, (() => void) | null>
+  >({
+    image: null,
+    file: null,
+  });
+  const lastHandledAttachmentSelectionRef = useRef<Record<AttachmentInputKind, string | null>>({
+    image: null,
+    file: null,
+  });
   const messageNodeRefs = useRef(new Map<string, HTMLElement>());
   const messageLayoutContextRef = useRef<string | null>(null);
   const messageRectsRef = useRef(new Map<string, DOMRect>());
@@ -1576,6 +1588,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const resetAttachmentPickers = () => {
+    attachmentInputWatchCleanupRef.current.image?.();
+    attachmentInputWatchCleanupRef.current.file?.();
+    attachmentInputWatchCleanupRef.current.image = null;
+    attachmentInputWatchCleanupRef.current.file = null;
+    lastHandledAttachmentSelectionRef.current.image = null;
+    lastHandledAttachmentSelectionRef.current.file = null;
     if (imageInputRef.current) {
       imageInputRef.current.value = '';
     }
@@ -1694,6 +1712,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   useEffect(
     () => () => {
+      attachmentInputWatchCleanupRef.current.image?.();
+      attachmentInputWatchCleanupRef.current.file?.();
+      attachmentInputWatchCleanupRef.current.image = null;
+      attachmentInputWatchCleanupRef.current.file = null;
       if (highlightTimerRef.current !== null && typeof window !== 'undefined') {
         window.clearTimeout(highlightTimerRef.current);
       }
@@ -2102,8 +2124,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     });
   };
 
-  const handleDraftImagesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
+  const buildAttachmentSelectionSignature = (files: File[]): string =>
+    files
+      .map((file) => [file.name, file.size, file.type, file.lastModified].join(':'))
+      .join('|');
+
+  const prepareDraftAttachmentsFromFiles = async (kind: AttachmentInputKind, files: File[]) => {
     if (files.length === 0 || editingMessage) {
       resetAttachmentPickers();
       return;
@@ -2116,12 +2142,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       for (const file of files) {
         try {
-          prepared.push(await prepareCommentDialogImageAttachment(file));
+          prepared.push(
+            kind === 'image'
+              ? await prepareCommentDialogImageAttachment(file)
+              : await prepareCommentDialogFileAttachment(file),
+          );
         } catch (error: unknown) {
           if (!firstError && error instanceof Error && error.message.trim()) {
             firstError = error.message;
           } else if (!firstError) {
-            firstError = 'Не удалось подготовить фото.';
+            firstError =
+              kind === 'image' ? 'Не удалось подготовить фото.' : 'Не удалось подготовить файл.';
           }
         }
       }
@@ -2133,18 +2164,20 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       if (firstError) {
         pushToast({
           tone: 'danger',
-          title: 'Фото не добавлено',
+          title: kind === 'image' ? 'Фото не добавлено' : 'Файл не добавлен',
           description: firstError,
         });
       }
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
-        title: 'Фото не добавлено',
+        title: kind === 'image' ? 'Фото не добавлено' : 'Файл не добавлен',
         description:
           error instanceof Error && error.message.trim()
             ? error.message
-            : 'Не удалось подготовить фото.',
+            : kind === 'image'
+              ? 'Не удалось подготовить фото.'
+              : 'Не удалось подготовить файл.',
       });
     } finally {
       resetAttachmentPickers();
@@ -2152,54 +2185,88 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   };
 
-  const handleDraftFilesChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(event.target.files ?? []);
-    if (files.length === 0 || editingMessage) {
-      resetAttachmentPickers();
+  const handleDraftAttachmentInputSelection = (
+    kind: AttachmentInputKind,
+    input: HTMLInputElement | null,
+  ): boolean => {
+    const files = Array.from(input?.files ?? []);
+    if (files.length === 0) {
+      return false;
+    }
+
+    const signature = buildAttachmentSelectionSignature(files);
+    if (lastHandledAttachmentSelectionRef.current[kind] === signature) {
+      attachmentInputWatchCleanupRef.current[kind]?.();
+      attachmentInputWatchCleanupRef.current[kind] = null;
+      return true;
+    }
+
+    lastHandledAttachmentSelectionRef.current[kind] = signature;
+    attachmentInputWatchCleanupRef.current[kind]?.();
+    attachmentInputWatchCleanupRef.current[kind] = null;
+    void prepareDraftAttachmentsFromFiles(kind, files);
+    return true;
+  };
+
+  const armAttachmentInputWatcher = (
+    kind: AttachmentInputKind,
+    input: HTMLInputElement | null,
+  ) => {
+    attachmentInputWatchCleanupRef.current[kind]?.();
+    attachmentInputWatchCleanupRef.current[kind] = null;
+
+    if (typeof window === 'undefined' || typeof document === 'undefined' || !input || input.disabled) {
       return;
     }
 
-    setIsPreparingAttachment(true);
-    try {
-      const prepared: CommentDraftAttachment[] = [];
-      let firstError: string | null = null;
-
-      for (const file of files) {
-        try {
-          prepared.push(await prepareCommentDialogFileAttachment(file));
-        } catch (error: unknown) {
-          if (!firstError && error instanceof Error && error.message.trim()) {
-            firstError = error.message;
-          } else if (!firstError) {
-            firstError = 'Не удалось подготовить файл.';
-          }
-        }
+    const timeoutIds = new Set<number>();
+    const scheduleDrain = (delays: number[]) => {
+      for (const delay of delays) {
+        const timeoutId = window.setTimeout(() => {
+          timeoutIds.delete(timeoutId);
+          handleDraftAttachmentInputSelection(kind, input);
+        }, delay);
+        timeoutIds.add(timeoutId);
       }
+    };
 
-      if (prepared.length > 0) {
-        appendDraftAttachments(prepared);
+    const handleFocus = () => {
+      scheduleDrain([80, 320, 900]);
+    };
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        scheduleDrain([80, 320, 900]);
       }
+    };
 
-      if (firstError) {
-        pushToast({
-          tone: 'danger',
-          title: 'Файл не добавлен',
-          description: firstError,
-        });
+    window.addEventListener('focus', handleFocus);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    scheduleDrain([1600, 4200, 8200]);
+
+    attachmentInputWatchCleanupRef.current[kind] = () => {
+      window.removeEventListener('focus', handleFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      for (const timeoutId of timeoutIds) {
+        window.clearTimeout(timeoutId);
       }
-    } catch (error: unknown) {
-      pushToast({
-        tone: 'danger',
-        title: 'Файл не добавлен',
-        description:
-          error instanceof Error && error.message.trim()
-            ? error.message
-            : 'Не удалось подготовить файл.',
-      });
-    } finally {
-      resetAttachmentPickers();
-      setIsPreparingAttachment(false);
-    }
+      timeoutIds.clear();
+    };
+  };
+
+  const handleDraftImagesChange = (event: ReactChangeEvent<HTMLInputElement>) => {
+    handleDraftAttachmentInputSelection('image', event.currentTarget);
+  };
+
+  const handleDraftFilesChange = (event: ReactChangeEvent<HTMLInputElement>) => {
+    handleDraftAttachmentInputSelection('file', event.currentTarget);
+  };
+
+  const handleDraftImagesInput = (event: ReactFormEvent<HTMLInputElement>) => {
+    handleDraftAttachmentInputSelection('image', event.currentTarget);
+  };
+
+  const handleDraftFilesInput = (event: ReactFormEvent<HTMLInputElement>) => {
+    handleDraftAttachmentInputSelection('file', event.currentTarget);
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
@@ -3189,11 +3256,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         role="button"
                         tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onClick={() => {
+                          armAttachmentInputWatcher('image', imageInputRef.current);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key !== 'Enter' && event.key !== ' ') {
                             return;
                           }
                           event.preventDefault();
+                          armAttachmentInputWatcher('image', imageInputRef.current);
                           imageInputRef.current?.click();
                         }}
                       >
@@ -3204,6 +3275,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           accept="image/*"
                           disabled={isComposePending || isPreparingAttachment}
                           onChange={handleDraftImagesChange}
+                          onInput={handleDraftImagesInput}
                           tabIndex={-1}
                         />
                         <IconoirCamera aria-hidden focusable="false" />
@@ -3221,11 +3293,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         role="button"
                         tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onClick={() => {
+                          armAttachmentInputWatcher('file', fileInputRef.current);
+                        }}
                         onKeyDown={(event) => {
                           if (event.key !== 'Enter' && event.key !== ' ') {
                             return;
                           }
                           event.preventDefault();
+                          armAttachmentInputWatcher('file', fileInputRef.current);
                           fileInputRef.current?.click();
                         }}
                       >
@@ -3235,6 +3311,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           type="file"
                           disabled={isComposePending || isPreparingAttachment}
                           onChange={handleDraftFilesChange}
+                          onInput={handleDraftFilesInput}
                           tabIndex={-1}
                         />
                         <IconoirAttachment aria-hidden focusable="false" />
@@ -3256,6 +3333,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         disabled={isComposePending || isPreparingAttachment}
                         onClick={() => {
+                          armAttachmentInputWatcher('image', imageInputRef.current);
                           openFileInputPicker(imageInputRef.current);
                         }}
                       >
@@ -3268,6 +3346,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         accept="image/*"
                         disabled={isComposePending || isPreparingAttachment}
                         onChange={handleDraftImagesChange}
+                        onInput={handleDraftImagesInput}
                         tabIndex={-1}
                       />
                       <button
@@ -3284,6 +3363,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         disabled={isComposePending || isPreparingAttachment}
                         onClick={() => {
+                          armAttachmentInputWatcher('file', fileInputRef.current);
                           openFileInputPicker(fileInputRef.current);
                         }}
                       >
@@ -3295,6 +3375,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         type="file"
                         disabled={isComposePending || isPreparingAttachment}
                         onChange={handleDraftFilesChange}
+                        onInput={handleDraftFilesInput}
                         tabIndex={-1}
                       />
                     </>
