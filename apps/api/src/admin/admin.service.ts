@@ -961,11 +961,11 @@ export class AdminService implements OnModuleDestroy {
       configService.get<string>('MAX_BOT_TOKEN_PREVIOUS'),
     );
     this.maxBotToken =
-      this.maxBotLinkService?.getBotTokenSync() ??
+      this.maxBotLinkService?.getBotTokenSync?.() ??
       configuredBotTokens[0] ??
       configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.maxBotTokenValidationSecrets =
-      this.maxBotLinkService?.getValidationTokens() ??
+      this.maxBotLinkService?.getValidationTokens?.() ??
       (configuredBotTokens.length > 0 ? configuredBotTokens : [this.maxBotToken]);
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
     this.explicitBotContactId = this.normalizeBotContactId(
@@ -2084,6 +2084,7 @@ export class AdminService implements OnModuleDestroy {
       is_channel: string | null;
       user_scoped: boolean;
       last_event_at: Date | string | null;
+      source: 'activity';
     }>
   > {
     const normalizedUserId = userId.trim();
@@ -2152,6 +2153,7 @@ export class AdminService implements OnModuleDestroy {
       is_channel: string | null;
       user_scoped: boolean;
       last_event_at: Date | string | null;
+      source: 'activity';
     }> = [];
     const seen = new Set<string>();
 
@@ -2159,10 +2161,12 @@ export class AdminService implements OnModuleDestroy {
       ...(Array.isArray(userScopedRows) ? userScopedRows : []).map((item) => ({
         ...item,
         user_scoped: true,
+        source: 'activity' as const,
       })),
       ...(Array.isArray(globalRows) ? globalRows : []).map((item) => ({
         ...item,
         user_scoped: false,
+        source: 'activity' as const,
       })),
     ]) {
       const chatId = this.readTrimmedString(row.chat_id);
@@ -4038,7 +4042,7 @@ export class AdminService implements OnModuleDestroy {
           .find((botId): botId is string => Boolean(botId)) ??
         null;
       if (resolvedBotId) {
-        this.maxBotLinkService?.rememberChatBotBinding(params.chatId, resolvedBotId);
+        this.maxBotLinkService?.rememberChatBotBinding?.(params.chatId, resolvedBotId);
       }
 
       this.logger.warn(
@@ -4369,6 +4373,7 @@ export class AdminService implements OnModuleDestroy {
       is_channel: string | null;
       user_scoped: boolean;
       last_event_at: Date | string | null;
+      source: 'cache' | 'activity';
     }>
   > {
     if (typeof this.chatContextCache.getManagedEntitiesRecentBootstrap !== 'function') {
@@ -4398,6 +4403,7 @@ export class AdminService implements OnModuleDestroy {
               Array.isArray(chat.bootstrapUserIds) &&
               chat.bootstrapUserIds.some((candidateUserId) => candidateUserId === normalizedUserId),
             last_event_at: this.readTrimmedString(chat.createdAt),
+            source: 'cache' as const,
           })),
       ),
     );
@@ -4411,6 +4417,7 @@ export class AdminService implements OnModuleDestroy {
         is_channel: string | null;
         user_scoped: boolean;
         last_event_at: Date | string | null;
+        source: 'activity' | 'cache';
       }>
     >
   ): Array<{
@@ -4419,6 +4426,7 @@ export class AdminService implements OnModuleDestroy {
     is_channel: string | null;
     user_scoped: boolean;
     last_event_at: Date | string | null;
+    source: 'activity' | 'cache';
   }> {
     const merged = new Map<
       string,
@@ -4428,6 +4436,7 @@ export class AdminService implements OnModuleDestroy {
         is_channel: string | null;
         user_scoped: boolean;
         last_event_at: Date | string | null;
+        source: 'activity' | 'cache';
       }
     >();
 
@@ -4449,6 +4458,13 @@ export class AdminService implements OnModuleDestroy {
           continue;
         }
         if (!row.user_scoped && existing.user_scoped) {
+          continue;
+        }
+        if (
+          existing.source === 'cache' &&
+          row.source !== 'cache' &&
+          existing.user_scoped === row.user_scoped
+        ) {
           continue;
         }
 
@@ -4482,6 +4498,7 @@ export class AdminService implements OnModuleDestroy {
       is_channel: string | null;
       user_scoped: boolean;
       last_event_at: Date | string | null;
+      source: 'activity' | 'cache';
     };
     userId: string;
     entityType: ManagedEntityTypeFilter;
@@ -4497,11 +4514,6 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
-    const eventAtMs = this.readRecentBotAddedEventTimestampMs(params.row.last_event_at);
-    if (eventAtMs === null || Date.now() - eventAtMs > RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS) {
-      return null;
-    }
-
     const [existing, cachedHeader] = await Promise.all([
       params.prisma.chat.findUnique({
         where: { id: chatId },
@@ -4514,6 +4526,17 @@ export class AdminService implements OnModuleDestroy {
       }),
       this.chatContextCache.getManagedEntityHeader?.(chatId, params.hintedEntityType) ?? null,
     ]);
+    const eventAtMs = this.readRecentBotAddedEventTimestampMs(params.row.last_event_at);
+    const hasPersistedBootstrapContext =
+      existing !== null || this.readTrimmedString(cachedHeader?.title) !== null;
+    if (
+      eventAtMs === null ||
+      (!hasPersistedBootstrapContext &&
+        params.row.source !== 'cache' &&
+        Date.now() - eventAtMs > RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS)
+    ) {
+      return null;
+    }
 
     const resolvedTitle =
       this.resolvePresentableManagedEntityTitle(
@@ -8741,7 +8764,7 @@ export class AdminService implements OnModuleDestroy {
           ...(verifiedBotId ? { botId: verifiedBotId, primaryBotId: verifiedBotId } : {}),
         },
       });
-      await this.maxBotLinkService?.bindDiscoveredChatBots({
+      await this.maxBotLinkService?.bindDiscoveredChatBots?.({
         chatId: normalizedChatId,
         primaryBotId: verifiedBotId,
         botIds:
@@ -21014,7 +21037,7 @@ export class AdminService implements OnModuleDestroy {
       botId?.trim() ??
       null;
     const currentChatId = user.chatId?.trim() ?? '';
-    const activeContextBotId = this.maxBotLinkService?.getContextOrDefaultBotId() ?? null;
+    const activeContextBotId = this.maxBotLinkService?.getContextOrDefaultBotId?.() ?? null;
     if (
       currentChatId &&
       /^[0-9]+$/u.test(currentChatId) &&
@@ -21538,7 +21561,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private resolveBotContactId(botId?: string | null): string | null {
-    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync(botId);
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync?.(botId);
     if (contextAwareContactId) {
       return contextAwareContactId;
     }
@@ -21572,7 +21595,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private isOwnBotUserId(userId: string): boolean {
-    if (this.maxBotLinkService?.isKnownBotUserId(userId)) {
+    if (this.maxBotLinkService?.isKnownBotUserId?.(userId)) {
       return true;
     }
 
@@ -21593,7 +21616,7 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private getCurrentBotToken(): string {
-    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken;
+    return this.maxBotLinkService?.getBotTokenSync?.() ?? this.maxBotToken;
   }
 
   private buildResolvedBotAssignmentData(resolvedBotId?: string | null): {
@@ -21647,7 +21670,7 @@ export class AdminService implements OnModuleDestroy {
 
     return (
       (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
-      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      (await this.maxBotLinkService?.resolveBotId?.({ chatId })) ??
       undefined
     );
   }
@@ -21864,7 +21887,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return (
-      (await this.maxBotLinkService?.resolveBotIdForCapability({
+      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
         chatId,
         capability,
       })) ?? undefined
@@ -23825,7 +23848,7 @@ export class AdminService implements OnModuleDestroy {
     });
     this.invalidateManagedEntitiesAllowlistCache(userId);
 
-    if (this.maxBotLinkService) {
+    if (typeof this.maxBotLinkService?.bindDiscoveredChatBots === 'function') {
       try {
         await this.maxBotLinkService.bindDiscoveredChatBots({
           chatId,

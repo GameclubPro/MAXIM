@@ -877,7 +877,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (typeof update.botId === 'string' && update.botId.trim().length > 0
         ? update.botId.trim()
         : null) ??
-      this.maxBotLinkService?.getDefaultBotId() ??
+      this.maxBotLinkService?.getDefaultBotId?.() ??
       null;
     if (this.readLowerString(update.type) === 'message_created' && update.message?.chatId) {
       void this.runtimeDiagnosticsService?.recordHotChatMessage({
@@ -3260,7 +3260,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private resolveActiveBotSpeechProfile(): ActiveBotSpeechProfile {
     const activeBotId = this.maxBotContextService?.getActiveBotId() ?? null;
-    const bot = this.maxBotLinkService?.getResolvedBotSync(activeBotId);
+    const bot = this.maxBotLinkService?.getResolvedBotSync?.(activeBotId);
     const characterName = bot?.characterName?.trim() || bot?.label?.trim() || 'Майор Максимов';
 
     return {
@@ -9600,7 +9600,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return (
       (await this.maxBotLinkService?.resolveBotIdForRead?.({ chatId })) ??
-      (await this.maxBotLinkService?.resolveBotId({ chatId })) ??
+      (await this.maxBotLinkService?.resolveBotId?.({ chatId })) ??
       null
     );
   }
@@ -10196,7 +10196,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveBotContactId(botId?: string | null): string | null {
-    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync(botId);
+    const contextAwareContactId = this.maxBotLinkService?.resolveContactIdSync?.(botId);
     if (contextAwareContactId) {
       return contextAwareContactId;
     }
@@ -12426,7 +12426,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           fallbackToPrimary: true,
         })
       )?.botId ??
-      (await this.maxBotLinkService?.resolveBotIdForCapability({
+      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
         chatId,
         capability: 'background_scans',
       })) ??
@@ -12752,7 +12752,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           fallbackToPrimary: true,
         })
       )?.botId ??
-      (await this.maxBotLinkService?.resolveBotIdForCapability({
+      (await this.maxBotLinkService?.resolveBotIdForCapability?.({
         chatId,
         capability: 'background_scans',
       })) ??
@@ -13920,7 +13920,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getCurrentBotToken(): string {
-    return this.maxBotLinkService?.getBotTokenSync() ?? this.maxBotToken ?? '';
+    return this.maxBotLinkService?.getBotTokenSync?.() ?? this.maxBotToken ?? '';
   }
 
   private async loadChatContext(
@@ -14730,7 +14730,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isOwnBotSender(userId: string): boolean {
-    if (this.maxBotLinkService?.isKnownBotUserId(userId)) {
+    if (this.maxBotLinkService?.isKnownBotUserId?.(userId)) {
       return true;
     }
 

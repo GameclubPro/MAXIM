@@ -272,9 +272,9 @@ describe('ModerationService shared chat ownership', () => {
       expect(guard).toMatchObject({
         mode: 'allow',
         activeBotId: 'id613002203036_bot',
-        primaryBotId: 'id613002203036_bot',
+        primaryBotId: null,
         assignedBotIds: ['id613002203036_bot'],
-        requiresExecutionLock: false,
+        requiresExecutionLock: true,
       });
       expect(setTimeoutSpy).toHaveBeenCalledTimes(1);
       expect(clearTimeoutSpy).toHaveBeenCalledTimes(1);
