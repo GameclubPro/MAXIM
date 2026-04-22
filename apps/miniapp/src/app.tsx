@@ -20,7 +20,6 @@ import { resolveLaunchRoute } from './lib/launch-route';
 import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
 import { PUBLIC_BASE_PATH, PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
-  LazyBrowserDialogComposePage,
   LazyChannelDialogPage,
   LazyChannelSuggestDialogPage,
   LazyChannelSettingsPage,
@@ -39,8 +38,6 @@ import {
   preloadSettingsPage,
   preloadSystemPage,
 } from './pages/lazy-pages';
-
-const BROWSER_DIALOG_COMPOSE_PATH = '/browser-dialog-compose';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -128,10 +125,6 @@ function buildWindowPathForRoute(pathname: string): string {
   }
 
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
-}
-
-function isStandaloneBrowserDialogWindowPath(pathname: string): boolean {
-  return pathname === buildWindowPathForRoute(BROWSER_DIALOG_COMPOSE_PATH);
 }
 
 function applyInitialLaunchRoute(targetRoute: string): void {
@@ -242,10 +235,6 @@ function AppRoutes({
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
       <Suspense fallback={<RouteFallback />}>
         <Routes>
-          <Route
-            path={BROWSER_DIALOG_COMPOSE_PATH}
-            element={<LazyBrowserDialogComposePage api={apiClient} />}
-          />
           <Route element={<Shell />}>
             <Route path="/" element={<LazyChatsPage api={apiClient} />} />
             <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
@@ -284,12 +273,8 @@ export function App() {
   const [initData, setInitData] = useState(() => getInitData());
   const preview = getPreviewBootstrap(initData);
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
-  const publicApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
   const preparedLaunchRouteRef = useRef<string | null>(null);
-  const standaloneBrowserDialogRoute =
-    typeof window !== 'undefined' &&
-    isStandaloneBrowserDialogWindowPath(window.location.pathname);
 
   useEffect(() => {
     if (initData) {
@@ -355,11 +340,9 @@ export function App() {
     ? previewApiRef.current
     : initData
       ? createApiTransport(getInitData)
-      : standaloneBrowserDialogRoute
-        ? (publicApiRef.current ??= createApiTransport(''))
       : null;
 
-  if (!preview.enabled && initData && !standaloneBrowserDialogRoute) {
+  if (!preview.enabled && initData) {
     const launchRoute = resolveLaunchRoute(initData);
     if (launchRoute && preparedLaunchRouteRef.current !== launchRoute) {
       preloadLaunchRouteModule(launchRoute);
@@ -406,10 +389,7 @@ export function App() {
               <AppRoutes apiClient={apiClient} launchInitData={null} />
             </PreviewScaffold>
           ) : (
-            <AppRoutes
-              apiClient={apiClient}
-              launchInitData={standaloneBrowserDialogRoute ? null : initData}
-            />
+            <AppRoutes apiClient={apiClient} launchInitData={initData} />
           )}
         </Router>
       </ToastProvider>

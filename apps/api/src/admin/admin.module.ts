@@ -13,7 +13,6 @@ import { ADMIN_MANUAL_FANOUT_QUEUE } from './admin-manual-fanout.queue';
 import { AdminSuggestionDeliveryProcessor } from './admin-suggestion-delivery.processor';
 import { ADMIN_SUGGESTION_DELIVERY_QUEUE } from './admin-suggestion-delivery.queue';
 import { AdminController } from './admin.controller';
-import { DialogBrowserHandoffController } from './dialog-browser-handoff.controller';
 import { ManagedBroadcastRunnerService } from './managed-broadcast-runner.service';
 import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service';
 import { ManagedGiveawayService } from './managed-giveaway.service';
@@ -30,7 +29,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
     ChatContextModule,
     SystemModule,
   ],
-  controllers: [AdminController, DialogBrowserHandoffController],
+  controllers: [AdminController],
   providers: [
     AdminService,
     ChannelStatsCollectorService,

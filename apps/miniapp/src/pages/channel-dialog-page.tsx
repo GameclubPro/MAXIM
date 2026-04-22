@@ -59,7 +59,6 @@ import {
   toggleChannelDialogReaction,
   toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
-import { createDialogBrowserHandoff } from '../lib/api/dialog-browser-handoff-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
@@ -82,7 +81,6 @@ import {
   maxImpact,
   maxSelectionChanged,
   openMaxBotLink,
-  openMaxBotLinkAndClose,
 } from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
@@ -1566,8 +1564,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
       : draftAttachmentSummary;
-  const useAndroidBrowserUploadFlow =
-    dialogType === 'comments' && useNativeTapFileInputs && !editingMessage;
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -2346,34 +2342,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const browserHandoffMutation = useMutation({
-    mutationFn: () =>
-      createDialogBrowserHandoff(api, entityType, chatId, dialogType, {
-        token,
-        text: draft,
-        replyToMessageId,
-      }),
-    onSuccess: (result) => {
-      if (!result.browserUrl.trim()) {
-        pushToast({
-          tone: 'danger',
-          title: 'Не удалось открыть браузер',
-          description: 'Ссылка на браузерную загрузку вернулась пустой.',
-        });
-        return;
-      }
-
-      openMaxBotLinkAndClose(result.browserUrl);
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть браузер',
-        description: normalizeApiError(error),
-      });
-    },
-  });
-
   const updateMutation = useMutation({
     mutationFn: ({ messageId, text }: { messageId: string; text: string }) =>
       entityType === 'channel'
@@ -2490,8 +2458,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   });
 
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
-  const isAttachmentActionPending =
-    isComposePending || isPreparingAttachment || browserHandoffMutation.isPending;
   const isCommentActionPending =
     reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
 
@@ -3274,36 +3240,81 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <div className="channel-dialog-compose__row">
               {!editingMessage ? (
                 <div className="channel-dialog-compose__quick-actions">
-                  {useAndroidBrowserUploadFlow ? (
+                  {useNativeTapFileInputs ? (
                     <>
-                      <button
-                        type="button"
+                      <label
                         className={cn(
                           'channel-dialog-compose__attach',
                           'channel-dialog-compose__attach--icon',
-                          isAttachmentActionPending && 'channel-dialog-compose__attach--disabled',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'image') &&
+                            'is-active',
                         )}
                         aria-label="Добавить фото"
-                        aria-disabled={isAttachmentActionPending}
-                        disabled={isAttachmentActionPending}
-                        onClick={() => browserHandoffMutation.mutate()}
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        role="button"
+                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onClick={() => {
+                          armAttachmentInputWatcher('image', imageInputRef.current);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          armAttachmentInputWatcher('image', imageInputRef.current);
+                          imageInputRef.current?.click();
+                        }}
                       >
+                        <input
+                          ref={imageInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          accept="image/*"
+                          disabled={isComposePending || isPreparingAttachment}
+                          onChange={handleDraftImagesChange}
+                          onInput={handleDraftImagesInput}
+                          tabIndex={-1}
+                        />
                         <IconoirCamera aria-hidden focusable="false" />
-                      </button>
-                      <button
-                        type="button"
+                      </label>
+                      <label
                         className={cn(
                           'channel-dialog-compose__attach',
                           'channel-dialog-compose__attach--icon',
-                          isAttachmentActionPending && 'channel-dialog-compose__attach--disabled',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'file') &&
+                            'is-active',
                         )}
                         aria-label="Прикрепить файл"
-                        aria-disabled={isAttachmentActionPending}
-                        disabled={isAttachmentActionPending}
-                        onClick={() => browserHandoffMutation.mutate()}
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        role="button"
+                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onClick={() => {
+                          armAttachmentInputWatcher('file', fileInputRef.current);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          armAttachmentInputWatcher('file', fileInputRef.current);
+                          fileInputRef.current?.click();
+                        }}
                       >
+                        <input
+                          ref={fileInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          disabled={isComposePending || isPreparingAttachment}
+                          onChange={handleDraftFilesChange}
+                          onInput={handleDraftFilesInput}
+                          tabIndex={-1}
+                        />
                         <IconoirAttachment aria-hidden focusable="false" />
-                      </button>
+                      </label>
                     </>
                   ) : (
                     <>
