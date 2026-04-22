@@ -2207,6 +2207,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     return true;
   };
 
+  const armDraftAttachmentInputWatcher = (kind: AttachmentInputKind) => {
+    armAttachmentInputWatcher(kind, kind === 'image' ? imageInputRef.current : fileInputRef.current);
+  };
+
   const armAttachmentInputWatcher = (
     kind: AttachmentInputKind,
     input: HTMLInputElement | null,
@@ -2240,7 +2244,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
-    scheduleDrain([1600, 4200, 8200]);
+    scheduleDrain([240, 900, 1600, 4200, 8200]);
 
     attachmentInputWatchCleanupRef.current[kind] = () => {
       window.removeEventListener('focus', handleFocus);
@@ -3256,14 +3260,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         role="button"
                         tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
                         onClick={() => {
-                          armAttachmentInputWatcher('image', imageInputRef.current);
+                          armDraftAttachmentInputWatcher('image');
                         }}
                         onKeyDown={(event) => {
                           if (event.key !== 'Enter' && event.key !== ' ') {
                             return;
                           }
                           event.preventDefault();
-                          armAttachmentInputWatcher('image', imageInputRef.current);
+                          armDraftAttachmentInputWatcher('image');
                           imageInputRef.current?.click();
                         }}
                       >
@@ -3275,6 +3279,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           disabled={isComposePending || isPreparingAttachment}
                           onChange={handleDraftImagesChange}
                           onInput={handleDraftImagesInput}
+                          onClickCapture={() => {
+                            armDraftAttachmentInputWatcher('image');
+                          }}
+                          onPointerDownCapture={() => {
+                            armDraftAttachmentInputWatcher('image');
+                          }}
                           tabIndex={-1}
                         />
                         <IconoirCamera aria-hidden focusable="false" />
@@ -3293,14 +3303,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         role="button"
                         tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
                         onClick={() => {
-                          armAttachmentInputWatcher('file', fileInputRef.current);
+                          armDraftAttachmentInputWatcher('file');
                         }}
                         onKeyDown={(event) => {
                           if (event.key !== 'Enter' && event.key !== ' ') {
                             return;
                           }
                           event.preventDefault();
-                          armAttachmentInputWatcher('file', fileInputRef.current);
+                          armDraftAttachmentInputWatcher('file');
                           fileInputRef.current?.click();
                         }}
                       >
@@ -3311,6 +3321,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           disabled={isComposePending || isPreparingAttachment}
                           onChange={handleDraftFilesChange}
                           onInput={handleDraftFilesInput}
+                          onClickCapture={() => {
+                            armDraftAttachmentInputWatcher('file');
+                          }}
+                          onPointerDownCapture={() => {
+                            armDraftAttachmentInputWatcher('file');
+                          }}
                           tabIndex={-1}
                         />
                         <IconoirAttachment aria-hidden focusable="false" />
@@ -3332,7 +3348,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         disabled={isComposePending || isPreparingAttachment}
                         onClick={() => {
-                          armAttachmentInputWatcher('image', imageInputRef.current);
+                          armDraftAttachmentInputWatcher('image');
                           openFileInputPicker(imageInputRef.current);
                         }}
                       >
@@ -3346,6 +3362,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         disabled={isComposePending || isPreparingAttachment}
                         onChange={handleDraftImagesChange}
                         onInput={handleDraftImagesInput}
+                        onClickCapture={() => {
+                          armDraftAttachmentInputWatcher('image');
+                        }}
+                        onPointerDownCapture={() => {
+                          armDraftAttachmentInputWatcher('image');
+                        }}
                         tabIndex={-1}
                       />
                       <button
@@ -3362,7 +3384,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         aria-disabled={isComposePending || isPreparingAttachment}
                         disabled={isComposePending || isPreparingAttachment}
                         onClick={() => {
-                          armAttachmentInputWatcher('file', fileInputRef.current);
+                          armDraftAttachmentInputWatcher('file');
                           openFileInputPicker(fileInputRef.current);
                         }}
                       >
@@ -3375,6 +3397,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         disabled={isComposePending || isPreparingAttachment}
                         onChange={handleDraftFilesChange}
                         onInput={handleDraftFilesInput}
+                        onClickCapture={() => {
+                          armDraftAttachmentInputWatcher('file');
+                        }}
+                        onPointerDownCapture={() => {
+                          armDraftAttachmentInputWatcher('file');
+                        }}
                         tabIndex={-1}
                       />
                     </>
