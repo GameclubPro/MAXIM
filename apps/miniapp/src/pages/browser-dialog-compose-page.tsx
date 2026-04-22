@@ -77,6 +77,20 @@ export function BrowserDialogComposePage({ api }: { api: ApiTransport }) {
     setDraftAttachments([]);
   }, [handoffQuery.data]);
 
+  useEffect(() => {
+    if (!submitResult?.returnUrl) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      openMaxBotLink(submitResult.returnUrl!);
+    }, 220);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [submitResult]);
+
   const appendDraftAttachments = (nextAttachments: PreparedCommentDialogAttachment[]) => {
     if (nextAttachments.length === 0) {
       return;
@@ -224,8 +238,12 @@ export function BrowserDialogComposePage({ api }: { api: ApiTransport }) {
         <GlassCard className="browser-dialog-compose__card" elevated>
           <StatusState
             tone="success"
-            title="Комментарий отправлен"
-            description="Загрузка прошла через обычный браузер, теперь можно вернуться в MAX."
+            title={submitResult.returnUrl ? 'Возвращаем в MAX' : 'Комментарий отправлен'}
+            description={
+              submitResult.returnUrl
+                ? 'Комментарий уже отправлен. Если MAX не откроется сам, вернитесь вручную.'
+                : 'Комментарий уже отправлен.'
+            }
             action={
               submitResult.returnUrl ? (
                 <button
@@ -287,11 +305,11 @@ export function BrowserDialogComposePage({ api }: { api: ApiTransport }) {
   return (
     <div className="page-stack page-enter browser-dialog-compose">
       <GlassCard className="browser-dialog-compose__card" elevated>
-        <div className="browser-dialog-compose__eyebrow">MAXIM Browser Upload</div>
+        <div className="browser-dialog-compose__eyebrow">Продолжение комментария</div>
         <h1 className="browser-dialog-compose__title">{handoff.title}</h1>
         <p className="browser-dialog-compose__lead">
-          Этот экран обходит встроенный Android file picker внутри MAX. Текст комментария
-          сохранён, файлы и фото можно выбрать уже здесь.
+          Текст комментария уже перенесён. Выберите фото или файл и отправьте сообщение, затем
+          страница вернёт вас обратно в MAX.
         </p>
 
         {handoff.replyTo ? (
