@@ -3355,6 +3355,54 @@ export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
 
+export const createDialogBrowserHandoffRequestSchema = /*#__PURE__*/ z.object({
+  token: z.string().trim().min(16).max(256),
+  text: z.string().max(2_000).default(''),
+  replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
+});
+export type CreateDialogBrowserHandoffRequest = z.infer<
+  typeof createDialogBrowserHandoffRequestSchema
+>;
+
+export const dialogBrowserHandoffResponseSchema = /*#__PURE__*/ z.object({
+  browserUrl: z.string().trim().url(),
+});
+export type DialogBrowserHandoffResponse = z.infer<typeof dialogBrowserHandoffResponseSchema>;
+
+export const submitDialogBrowserHandoffMessageRequestSchema = /*#__PURE__*/ z
+  .object({
+    text: z.string().max(2_000).default(''),
+    attachments: z
+      .array(channelDialogAttachmentInputSchema)
+      .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
+      .default([]),
+  })
+  .superRefine((value, ctx) => {
+    const totalBase64Length = value.attachments.reduce(
+      (acc, attachment) => acc + attachment.base64.trim().length,
+      0,
+    );
+    if (totalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: 'Суммарный размер вложений слишком большой.',
+      });
+    }
+
+    const fileAttachments = value.attachments.filter((attachment) => attachment.type === 'file');
+    if (fileAttachments.length > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['attachments'],
+        message: `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`,
+      });
+    }
+  });
+export type SubmitDialogBrowserHandoffMessageRequest = z.infer<
+  typeof submitDialogBrowserHandoffMessageRequestSchema
+>;
+
 export const channelDialogReactionGroupSchema = /*#__PURE__*/ z.object({
   emoji: z.string().trim().min(1).max(16),
   count: z.number().int().min(1),
@@ -3422,6 +3470,30 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   videoFileName: z.string().trim().max(128).nullable().optional(),
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
+
+export const dialogBrowserHandoffSessionResponseSchema = /*#__PURE__*/ z.object({
+  handoffId: z.string(),
+  entityType: managedEntityTypeSchema,
+  chatId: z.string(),
+  dialogType: channelDialogTypeSchema,
+  title: z.string().trim().max(256),
+  draftText: z.string().max(2_000).default(''),
+  replyToMessageId: z.string().nullable().default(null),
+  replyTo: channelDialogReplyPreviewSchema.nullable().default(null),
+  returnUrl: z.string().trim().url().nullable().default(null),
+});
+export type DialogBrowserHandoffSessionResponse = z.infer<
+  typeof dialogBrowserHandoffSessionResponseSchema
+>;
+
+export const submitDialogBrowserHandoffMessageResponseSchema = /*#__PURE__*/ z.object({
+  ok: z.boolean(),
+  message: channelDialogMessageSchema,
+  returnUrl: z.string().trim().url().nullable().default(null),
+});
+export type SubmitDialogBrowserHandoffMessageResponse = z.infer<
+  typeof submitDialogBrowserHandoffMessageResponseSchema
+>;
 
 export const channelDialogResponseSchema = /*#__PURE__*/ z.object({
   chatId: z.string(),

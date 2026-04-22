@@ -17,11 +17,14 @@ import {
   channelSuggestionRedirectResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
+  createDialogBrowserHandoffRequestSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
   deleteChannelDialogMessageRequestSchema,
   deleteChannelDialogMessageResponseSchema,
   dateRangeQuerySchema,
+  dialogBrowserHandoffResponseSchema,
+  dialogBrowserHandoffSessionResponseSchema,
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
@@ -51,6 +54,8 @@ import {
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
+  type DialogBrowserHandoffResponse,
+  type DialogBrowserHandoffSessionResponse,
   type ApplySectionToAllResponse,
   type ManagedBroadcastDetails,
   type MembershipActivityPage,
@@ -107,6 +112,8 @@ import {
   type ManagedPoll,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
+  submitDialogBrowserHandoffMessageRequestSchema,
+  submitDialogBrowserHandoffMessageResponseSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
   updateManagedEntityPartnerAssistRequestSchema,
@@ -812,6 +819,7 @@ const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
   'bot_started',
   'bot_added',
 ] as const;
+const DIALOG_BROWSER_HANDOFF_TTL_SEC = 30 * 60;
 type ChannelDialogTokenPayload = {
   v: 1;
   d: string;
@@ -825,7 +833,23 @@ class ManagedEntitiesRefreshThrottledError extends Error {
   }
 }
 
-type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
+type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot' | 'browser_handoff';
+type DialogMessageEntityType = 'chat' | 'channel';
+
+type DialogBrowserHandoffSession = {
+  v: 1;
+  handoffId: string;
+  entityType: DialogMessageEntityType;
+  chatId: string;
+  dialogType: 'comments';
+  token: string;
+  threadId: string | null;
+  draftText: string;
+  replyToMessageId: string | null;
+  returnUrl: string | null;
+  createdAt: string;
+  user: AuthUser;
+};
 
 type ChannelSuggestionFromBotPayload = {
   token: string;
@@ -928,6 +952,11 @@ export class AdminService implements OnModuleDestroy {
     string,
     TimedPromiseCacheEntry<ResolvedUserProfile>
   >();
+  private readonly dialogBrowserHandoffMemory = new Map<
+    string,
+    { expiresAt: number; session: DialogBrowserHandoffSession }
+  >();
+  private readonly dialogBrowserHandoffConsumedMemory = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1011,6 +1040,8 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
+    this.dialogBrowserHandoffMemory.clear();
+    this.dialogBrowserHandoffConsumedMemory.clear();
     await this.managedEntitiesReadPrisma?.$disconnect();
   }
 
@@ -7210,6 +7241,103 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
+  async createChannelDialogBrowserHandoff(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ): Promise<DialogBrowserHandoffResponse> {
+    return this.createDialogBrowserHandoff('channel', chatId, user, dialogTypeRaw, body);
+  }
+
+  async createChatDialogBrowserHandoff(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ): Promise<DialogBrowserHandoffResponse> {
+    return this.createDialogBrowserHandoff('chat', chatId, user, dialogTypeRaw, body);
+  }
+
+  async getDialogBrowserHandoffSession(
+    handoffId: string,
+  ): Promise<DialogBrowserHandoffSessionResponse> {
+    const session = await this.loadDialogBrowserHandoffSession(handoffId);
+    if (!session) {
+      throw new BadRequestException(
+        'Ссылка на загрузку устарела. Откройте загрузку через браузер снова из мини-приложения.',
+      );
+    }
+
+    const replyTo = await this.resolveDialogBrowserHandoffReplyPreview(session);
+    const persistedChat = await this.prisma.chat.findUnique({
+      where: { id: session.chatId },
+      select: { title: true },
+    });
+
+    return dialogBrowserHandoffSessionResponseSchema.parse({
+      handoffId: session.handoffId,
+      entityType: session.entityType,
+      chatId: session.chatId,
+      dialogType: session.dialogType,
+      title: persistedChat?.title?.trim() || session.chatId,
+      draftText: session.draftText,
+      replyToMessageId: replyTo?.messageId ?? null,
+      replyTo,
+      returnUrl: session.returnUrl,
+    });
+  }
+
+  async submitDialogBrowserHandoffMessage(
+    handoffId: string,
+    body: unknown,
+  ): Promise<ReturnType<typeof submitDialogBrowserHandoffMessageResponseSchema.parse>> {
+    const session = await this.loadDialogBrowserHandoffSession(handoffId);
+    if (!session) {
+      throw new BadRequestException(
+        'Ссылка на загрузку устарела. Откройте загрузку через браузер снова из мини-приложения.',
+      );
+    }
+
+    const parsed = submitDialogBrowserHandoffMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const replyTo = await this.resolveDialogBrowserHandoffReplyPreview(session);
+    const request = createChannelDialogMessageRequestSchema.parse({
+      token: session.token,
+      text: parsed.data.text,
+      replyToMessageId: replyTo?.messageId ?? null,
+      attachments: parsed.data.attachments,
+    });
+
+    const result =
+      session.entityType === 'channel'
+        ? await this.createChannelDialogMessageInternal(
+            session.chatId,
+            session.user,
+            session.dialogType,
+            request,
+            'browser_handoff',
+          )
+        : await this.createChatDialogMessageInternal(
+            session.chatId,
+            session.user,
+            session.dialogType,
+            request,
+            'browser_handoff',
+          );
+
+    await this.markDialogBrowserHandoffConsumed(handoffId);
+
+    return submitDialogBrowserHandoffMessageResponseSchema.parse({
+      ok: result.ok,
+      message: result.message,
+      returnUrl: session.returnUrl,
+    });
+  }
+
   async createChannelSuggestionFromBot(chatId: string, user: AuthUser, body: unknown) {
     const parsed = this.parseChannelSuggestionFromBotPayload(body);
     const threadId = this.resolveChannelDialogThreadId(chatId, 'suggest', parsed.token);
@@ -7539,70 +7667,18 @@ export class AdminService implements OnModuleDestroy {
         message: this.mapChannelDialogAuditLog(created.row, 'suggest', user.userId),
       });
     }
-
-    const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
+    return this.createEntityCommentDialogMessageInternal({
+      entityType: 'channel',
       chatId,
-      normalizedAttachments,
-    );
-
-    const created = await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: CHANNEL_DIALOG_ACTION_COMMENT,
-        payload: {
-          type: dialogType,
-          threadId,
-          text,
-          authorDisplayName: authorDisplayName ?? null,
-          authorAvatarUrl: authorAvatarUrl ?? null,
-          ...(replyTo
-            ? {
-                replyTo: {
-                  messageId: replyTo.messageId,
-                  authorDisplayName: replyTo.authorDisplayName,
-                  text: replyTo.text,
-                },
-              }
-            : {}),
-          ...(uploadedAttachments.length > 0
-            ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
-            : {}),
-          source,
-        },
-      },
-    });
-
-    const message = {
-      id: created.id,
-      type: dialogType,
+      user,
+      dialogType,
+      threadId,
       text,
-      authorUserId: user.userId,
-      authorDisplayName: authorDisplayName ?? null,
-      isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
-      avatarUrl: authorAvatarUrl ?? null,
-      createdAt: created.createdAt.toISOString(),
-      editedAt: null,
-      replyToMessageId: replyTo?.messageId ?? null,
-      replyTo: replyTo ?? null,
-      attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
-      reactionGroups: [],
-      canEdit: dialogType === 'comments',
-      canDelete: dialogType === 'comments',
-      canDeleteAsAdmin: false,
-    };
-
-    if (dialogType === 'comments' && threadId) {
-      await this.syncCommentsButtonCount({
-        chatId,
-        entityType: 'channel',
-        threadId,
-      });
-    }
-
-    return createChannelDialogMessageResponseSchema.parse({
-      ok: true,
-      message,
+      normalizedAttachments,
+      replyTo,
+      source,
+      authorDisplayName,
+      authorAvatarUrl,
     });
   }
 
@@ -7660,6 +7736,16 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     body: unknown,
   ) {
+    return this.createChatDialogMessageInternal(chatId, user, dialogTypeRaw, body, 'miniapp_dialog');
+  }
+
+  private async createChatDialogMessageInternal(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+    source: ChannelDialogMessageSource,
+  ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
@@ -7694,53 +7780,85 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Введите текст комментария или добавьте вложение.');
     }
 
-    const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
+    return this.createEntityCommentDialogMessageInternal({
+      entityType: 'chat',
       chatId,
+      user,
+      dialogType,
+      threadId,
+      text,
       normalizedAttachments,
+      replyTo,
+      source,
+      authorDisplayName,
+      authorAvatarUrl,
+    });
+  }
+
+  private async createEntityCommentDialogMessageInternal(params: {
+    entityType: DialogMessageEntityType;
+    chatId: string;
+    user: AuthUser;
+    dialogType: 'comments';
+    threadId: string | null;
+    text: string;
+    normalizedAttachments: ChannelDialogAttachmentAsset[];
+    replyTo: ChannelDialogReplyPreview | null;
+    source: ChannelDialogMessageSource;
+    authorDisplayName: string | null;
+    authorAvatarUrl: string | null;
+  }) {
+    const uploadedAttachments = await this.uploadChannelDialogCommentAttachments(
+      params.chatId,
+      params.normalizedAttachments,
     );
 
     const created = await this.prisma.auditLog.create({
       data: {
-        chatId,
-        actorUserId: user.userId,
+        chatId: params.chatId,
+        actorUserId: params.user.userId,
         action: CHANNEL_DIALOG_ACTION_COMMENT,
         payload: {
-          type: dialogType,
-          threadId,
-          text,
-          authorDisplayName: authorDisplayName ?? null,
-          authorAvatarUrl: authorAvatarUrl ?? null,
-          ...(replyTo
+          type: params.dialogType,
+          threadId: params.threadId,
+          text: params.text,
+          authorDisplayName: params.authorDisplayName ?? null,
+          authorAvatarUrl: params.authorAvatarUrl ?? null,
+          ...(params.replyTo
             ? {
                 replyTo: {
-                  messageId: replyTo.messageId,
-                  authorDisplayName: replyTo.authorDisplayName,
-                  text: replyTo.text,
+                  messageId: params.replyTo.messageId,
+                  authorDisplayName: params.replyTo.authorDisplayName,
+                  text: params.replyTo.text,
                 },
               }
             : {}),
           ...(uploadedAttachments.length > 0
             ? { attachments: uploadedAttachments as Prisma.InputJsonValue }
             : {}),
-          delivered: true,
-          deliveredToUserId: null,
-          source: 'miniapp_dialog',
+          ...(params.entityType === 'chat'
+            ? {
+                delivered: true,
+                deliveredToUserId: null,
+              }
+            : {}),
+          source: params.source,
         },
       },
     });
 
     const message = {
       id: created.id,
-      type: dialogType,
-      text,
-      authorUserId: user.userId,
-      authorDisplayName: authorDisplayName ?? null,
-      isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
-      avatarUrl: authorAvatarUrl ?? null,
+      type: params.dialogType,
+      text: params.text,
+      authorUserId: params.user.userId,
+      authorDisplayName: params.authorDisplayName ?? null,
+      isAdmin: (await this.readDialogAdminUserIds(params.chatId)).has(params.user.userId),
+      avatarUrl: params.authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       editedAt: null,
-      replyToMessageId: replyTo?.messageId ?? null,
-      replyTo: replyTo ?? null,
+      replyToMessageId: params.replyTo?.messageId ?? null,
+      replyTo: params.replyTo ?? null,
       attachments: this.buildChannelDialogCommentAttachments(uploadedAttachments),
       reactionGroups: [],
       canEdit: true,
@@ -7748,11 +7866,11 @@ export class AdminService implements OnModuleDestroy {
       canDeleteAsAdmin: false,
     };
 
-    if (threadId) {
+    if (params.threadId) {
       await this.syncCommentsButtonCount({
-        chatId,
-        entityType: 'chat',
-        threadId,
+        chatId: params.chatId,
+        entityType: params.entityType,
+        threadId: params.threadId,
       });
     }
 
@@ -7760,6 +7878,297 @@ export class AdminService implements OnModuleDestroy {
       ok: true,
       message,
     });
+  }
+
+  private async createDialogBrowserHandoff(
+    entityType: DialogMessageEntityType,
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ): Promise<DialogBrowserHandoffResponse> {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    if (dialogType !== 'comments') {
+      throw new BadRequestException('В браузер можно вынести только комментарии.');
+    }
+
+    const parsed = createDialogBrowserHandoffRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const threadId =
+      entityType === 'channel'
+        ? this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token)
+        : this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
+
+    const replyTo = await this.resolveDialogReplyPreview({
+      chatId,
+      entityType,
+      dialogType,
+      threadId,
+      replyToMessageId: parsed.data.replyToMessageId ?? null,
+    });
+
+    if (entityType === 'channel') {
+      const channelSettings = await this.getPublicChannelSettings(chatId);
+      if (!channelSettings.commentsEnabled) {
+        throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+      }
+    } else {
+      const chatSettings = await this.getPublicChatCommentSettings(chatId);
+      if (!chatSettings.commentsEnabled) {
+        throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+      }
+    }
+
+    const handoffId = randomUUID();
+    const browserUrl = this.buildDialogBrowserHandoffUrl(handoffId);
+    if (!browserUrl) {
+      throw new BadRequestException('Браузерный загрузчик сейчас недоступен.');
+    }
+
+    const returnUrl =
+      entityType === 'channel'
+        ? this.buildChannelDialogLaunchUrl(chatId, dialogType, threadId ?? '')
+        : this.buildChatDialogLaunchUrl(chatId, dialogType, threadId ?? '');
+
+    await this.saveDialogBrowserHandoffSession({
+      v: 1,
+      handoffId,
+      entityType,
+      chatId,
+      dialogType,
+      token: parsed.data.token.trim(),
+      threadId,
+      draftText: parsed.data.text,
+      replyToMessageId: replyTo?.messageId ?? null,
+      returnUrl,
+      createdAt: new Date().toISOString(),
+      user: {
+        userId: user.userId,
+        username: user.username ?? null,
+        displayName: user.displayName ?? null,
+        avatarUrl: this.readTrimmedString(user.avatarUrl),
+        profileUrl: this.readTrimmedString(user.profileUrl),
+      },
+    });
+
+    return dialogBrowserHandoffResponseSchema.parse({
+      browserUrl,
+    });
+  }
+
+  private async resolveDialogBrowserHandoffReplyPreview(
+    session: DialogBrowserHandoffSession,
+  ): Promise<ChannelDialogReplyPreview | null> {
+    try {
+      return await this.resolveDialogReplyPreview({
+        chatId: session.chatId,
+        entityType: session.entityType,
+        dialogType: session.dialogType,
+        threadId: session.threadId,
+        replyToMessageId: session.replyToMessageId,
+      });
+    } catch (error: unknown) {
+      const details =
+        error instanceof BadRequestException
+          ? (() => {
+              const response = error.getResponse();
+              if (typeof response === 'string') {
+                return response.trim();
+              }
+              if (
+                response &&
+                typeof response === 'object' &&
+                typeof (response as { message?: unknown }).message === 'string'
+              ) {
+                return ((response as { message: string }).message ?? '').trim();
+              }
+              return null;
+            })()
+          : error instanceof Error
+            ? error.message.trim()
+            : null;
+      if (details === 'Сообщение для ответа не найдено.') {
+        return null;
+      }
+
+      throw error;
+    }
+  }
+
+  private buildDialogBrowserHandoffUrl(handoffId: string): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const normalizedHandoffId = handoffId.trim();
+    if (!normalizedHandoffId) {
+      return null;
+    }
+
+    return `${this.appBaseUrl}/app/browser-dialog-compose?handoff=${encodeURIComponent(normalizedHandoffId)}`;
+  }
+
+  private dialogBrowserHandoffStorageKey(handoffId: string): string {
+    return `dialog-browser-handoff:v1:${handoffId}`;
+  }
+
+  private dialogBrowserHandoffConsumedKey(handoffId: string): string {
+    return `dialog-browser-handoff-consumed:v1:${handoffId}`;
+  }
+
+  private pruneDialogBrowserHandoffMemory(): void {
+    const now = Date.now();
+
+    for (const [key, entry] of this.dialogBrowserHandoffMemory.entries()) {
+      if (entry.expiresAt <= now) {
+        this.dialogBrowserHandoffMemory.delete(key);
+      }
+    }
+
+    for (const [key, expiresAt] of this.dialogBrowserHandoffConsumedMemory.entries()) {
+      if (expiresAt <= now) {
+        this.dialogBrowserHandoffConsumedMemory.delete(key);
+      }
+    }
+  }
+
+  private normalizeDialogBrowserHandoffSession(value: unknown): DialogBrowserHandoffSession | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const userRow =
+      row.user && typeof row.user === 'object' ? (row.user as Record<string, unknown>) : null;
+    const handoffId = this.readTrimmedString(row.handoffId);
+    const entityType = row.entityType === 'channel' ? 'channel' : row.entityType === 'chat' ? 'chat' : null;
+    const chatId = this.readTrimmedString(row.chatId);
+    const token = this.readTrimmedString(row.token);
+    const userId = this.readTrimmedString(userRow?.userId);
+    if (row.v !== 1 || !handoffId || !entityType || !chatId || !token || !userId) {
+      return null;
+    }
+
+    return {
+      v: 1,
+      handoffId,
+      entityType,
+      chatId,
+      dialogType: 'comments',
+      token,
+      threadId: this.readTrimmedString(row.threadId),
+      draftText: typeof row.draftText === 'string' ? row.draftText.slice(0, 2_000) : '',
+      replyToMessageId: this.readTrimmedString(row.replyToMessageId),
+      returnUrl: this.readTrimmedString(row.returnUrl),
+      createdAt: this.readTrimmedString(row.createdAt) ?? new Date().toISOString(),
+      user: {
+        userId,
+        username: this.readTrimmedString(userRow?.username),
+        displayName: this.readTrimmedString(userRow?.displayName),
+        avatarUrl: this.readTrimmedString(userRow?.avatarUrl),
+        profileUrl: this.readTrimmedString(userRow?.profileUrl),
+      },
+    };
+  }
+
+  private async isDialogBrowserHandoffConsumed(handoffId: string): Promise<boolean> {
+    const normalizedHandoffId = handoffId.trim();
+    if (!normalizedHandoffId) {
+      return true;
+    }
+
+    if (this.redisCounter) {
+      return (
+        (await this.redisCounter.getString(
+          this.dialogBrowserHandoffConsumedKey(normalizedHandoffId),
+        )) === '1'
+      );
+    }
+
+    this.pruneDialogBrowserHandoffMemory();
+    return this.dialogBrowserHandoffConsumedMemory.has(normalizedHandoffId);
+  }
+
+  private async loadDialogBrowserHandoffSession(
+    handoffId: string,
+  ): Promise<DialogBrowserHandoffSession | null> {
+    const normalizedHandoffId = handoffId.trim();
+    if (!normalizedHandoffId || (await this.isDialogBrowserHandoffConsumed(normalizedHandoffId))) {
+      return null;
+    }
+
+    const storageKey = this.dialogBrowserHandoffStorageKey(normalizedHandoffId);
+    if (this.redisCounter) {
+      const raw = await this.redisCounter.getString(storageKey);
+      if (!raw) {
+        return null;
+      }
+
+      try {
+        return this.normalizeDialogBrowserHandoffSession(JSON.parse(raw));
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            handoffId: normalizedHandoffId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to parse dialog browser handoff session from redis',
+        );
+        return null;
+      }
+    }
+
+    this.pruneDialogBrowserHandoffMemory();
+    const memory = this.dialogBrowserHandoffMemory.get(storageKey);
+    return memory ? memory.session : null;
+  }
+
+  private async saveDialogBrowserHandoffSession(session: DialogBrowserHandoffSession): Promise<void> {
+    const normalized = this.normalizeDialogBrowserHandoffSession(session);
+    if (!normalized) {
+      throw new BadRequestException('Не удалось подготовить браузерный загрузчик.');
+    }
+
+    const storageKey = this.dialogBrowserHandoffStorageKey(normalized.handoffId);
+    if (this.redisCounter) {
+      await this.redisCounter.setStringWithTtl(
+        storageKey,
+        JSON.stringify(normalized),
+        DIALOG_BROWSER_HANDOFF_TTL_SEC,
+      );
+      return;
+    }
+
+    this.pruneDialogBrowserHandoffMemory();
+    this.dialogBrowserHandoffMemory.set(storageKey, {
+      expiresAt: Date.now() + DIALOG_BROWSER_HANDOFF_TTL_SEC * 1_000,
+      session: normalized,
+    });
+  }
+
+  private async markDialogBrowserHandoffConsumed(handoffId: string): Promise<void> {
+    const normalizedHandoffId = handoffId.trim();
+    if (!normalizedHandoffId) {
+      return;
+    }
+
+    if (this.redisCounter) {
+      await this.redisCounter.setStringWithTtl(
+        this.dialogBrowserHandoffConsumedKey(normalizedHandoffId),
+        '1',
+        DIALOG_BROWSER_HANDOFF_TTL_SEC,
+      );
+      return;
+    }
+
+    this.pruneDialogBrowserHandoffMemory();
+    this.dialogBrowserHandoffConsumedMemory.set(
+      normalizedHandoffId,
+      Date.now() + DIALOG_BROWSER_HANDOFF_TTL_SEC * 1_000,
+    );
   }
 
   async updateChannelDialogMessage(

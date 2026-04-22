@@ -59,6 +59,7 @@ import {
   toggleChannelDialogReaction,
   toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
+import { createDialogBrowserHandoff } from '../lib/api/dialog-browser-handoff-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
@@ -1565,6 +1566,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
       : draftAttachmentSummary;
+  const showBrowserUploadFallback =
+    dialogType === 'comments' && useNativeTapFileInputs && !editingMessage && draftAttachments.length === 0;
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -2338,6 +2341,34 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Ошибка',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
+  const browserHandoffMutation = useMutation({
+    mutationFn: () =>
+      createDialogBrowserHandoff(api, entityType, chatId, dialogType, {
+        token,
+        text: draft,
+        replyToMessageId,
+      }),
+    onSuccess: (result) => {
+      if (!result.browserUrl.trim()) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть браузер',
+          description: 'Ссылка на браузерную загрузку вернулась пустой.',
+        });
+        return;
+      }
+
+      openMaxBotLinkAndClose(result.browserUrl);
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть браузер',
         description: normalizeApiError(error),
       });
     },
@@ -3381,6 +3412,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     </>
                   )}
                 </div>
+              ) : null}
+
+              {showBrowserUploadFallback ? (
+                <button
+                  type="button"
+                  className="channel-dialog-compose__browser-fallback"
+                  disabled={isComposePending || isPreparingAttachment || browserHandoffMutation.isPending}
+                  onClick={() => browserHandoffMutation.mutate()}
+                >
+                  {browserHandoffMutation.isPending
+                    ? 'Открываем браузер...'
+                    : 'Если фото не подхватывается, загрузить через браузер'}
+                </button>
               ) : null}
 
               <label className="channel-dialog-compose__field">

@@ -433,6 +433,16 @@ export class AdminController {
     return this.adminService.createChannelDialogMessage(chatId, user, dialogType, body);
   }
 
+  @Post('channels/:chatId/dialog/:dialogType/browser-handoff')
+  createChannelDialogBrowserHandoff(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.createChannelDialogBrowserHandoff(chatId, user, dialogType, body);
+  }
+
   @Patch('channels/:chatId/dialog/:dialogType/messages/:messageId')
   updateChannelDialogMessage(
     @Param('chatId') chatId: string,
@@ -484,6 +494,16 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.createChatDialogMessage(chatId, user, dialogType, body);
+  }
+
+  @Post('chats/:chatId/dialog/:dialogType/browser-handoff')
+  createChatDialogBrowserHandoff(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.createChatDialogBrowserHandoff(chatId, user, dialogType, body);
   }
 
   @Patch('chats/:chatId/dialog/:dialogType/messages/:messageId')

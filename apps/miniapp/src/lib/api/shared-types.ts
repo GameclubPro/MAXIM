@@ -71,6 +71,24 @@ export type CreateChannelDialogMessagePayload = {
   imageFileName?: string;
 };
 
+export type CreateDialogBrowserHandoffPayload = {
+  token: string;
+  text: string;
+  replyToMessageId?: string | null;
+};
+
+export type SubmitDialogBrowserHandoffMessagePayload = {
+  text: string;
+  attachments?: Array<{
+    type: 'image' | 'file';
+    base64: string;
+    mimeType: string;
+    fileName: string;
+    width?: number;
+    height?: number;
+  }>;
+};
+
 export type ToggleChannelDialogReactionPayload = {
   token: string;
   emoji: string;

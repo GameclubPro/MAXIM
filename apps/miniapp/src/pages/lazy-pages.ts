@@ -20,6 +20,7 @@ export const preloadSettingsPage = () => import('./settings-page');
 export const preloadChannelSettingsPage = () => import('./channel-settings-page');
 export const preloadChannelStatsPage = () => import('./channel-stats-page');
 export const preloadChannelDialogPage = () => import('./channel-dialog-page');
+export const preloadBrowserDialogComposePage = () => import('./browser-dialog-compose-page');
 export const preloadChannelSuggestDialogPage = () => import('./channel-suggest-dialog-page');
 export const preloadEventsPage = () => import('./events-page');
 export const preloadGiveawayPage = () => import('./giveaway-page');
@@ -38,6 +39,10 @@ export const LazyChannelStatsPage = lazyPage<RoutedPageProps>(
 export const LazyChannelDialogPage = lazyPage<RoutedPageProps>(
   preloadChannelDialogPage,
   'ChannelDialogPage',
+);
+export const LazyBrowserDialogComposePage = lazyPage<RoutedPageProps>(
+  preloadBrowserDialogComposePage,
+  'BrowserDialogComposePage',
 );
 export const LazyChannelSuggestDialogPage = lazyPage<RoutedPageProps>(
   preloadChannelSuggestDialogPage,

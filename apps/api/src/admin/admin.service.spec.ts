@@ -19939,6 +19939,113 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('creates, loads, submits, and consumes a browser handoff for channel comments', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'MAX Новости',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-browser-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-04-22T10:15:00.000Z'),
+    });
+
+    const redisStore = new Map<string, string>();
+    const redisCounter = {
+      getString: jest.fn(async (key: string) => redisStore.get(key) ?? null),
+      setStringWithTtl: jest.fn(async (key: string, value: string) => {
+        redisStore.set(key, value);
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      redisCounter as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-browser',
+    ) as string;
+
+    const handoff = await service.createChannelDialogBrowserHandoff(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Черновик из миниаппа',
+      },
+    );
+
+    const handoffId = new URL(handoff.browserUrl).searchParams.get('handoff');
+    expect(handoff.browserUrl).toMatch(
+      /^https:\/\/maxim\.play-team\.ru\/app\/browser-dialog-compose\?handoff=/u,
+    );
+    expect(handoffId).toBeTruthy();
+
+    const loaded = await service.getDialogBrowserHandoffSession(handoffId ?? '');
+    expect(loaded).toMatchObject({
+      handoffId,
+      entityType: 'channel',
+      chatId: 'channel-1',
+      dialogType: 'comments',
+      title: 'MAX Новости',
+      draftText: 'Черновик из миниаппа',
+    });
+    expect(loaded.returnUrl).toContain('https://max.ru/');
+    expect(loaded.returnUrl).toContain('startapp=');
+
+    const submitted = await service.submitDialogBrowserHandoffMessage(handoffId ?? '', {
+      text: 'Текст из браузера',
+      attachments: [],
+    });
+
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            text: 'Текст из браузера',
+            source: 'browser_handoff',
+          }),
+        }),
+      }),
+    );
+    expect(submitted.message.text).toBe('Текст из браузера');
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      `dialog-browser-handoff-consumed:v1:${handoffId}`,
+      '1',
+      1800,
+    );
+
+    await expect(service.getDialogBrowserHandoffSession(handoffId ?? '')).rejects.toThrow(
+      BadRequestException,
+    );
+  });
+
   it('loads channel dialog admin accents from the persisted allowlist without remote MAX reads', async () => {
     const prisma = createPrismaMock();
     prisma.channelSettings.findUnique.mockResolvedValue(
