@@ -12612,7 +12612,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
-  it('does not treat file attachments with image mime as photos', async () => {
+  it('treats file attachments with image mime as photos', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -12664,8 +12664,8 @@ describe('ModerationService', () => {
       hasPhotoAttachment?: boolean;
       hasFileAttachment?: boolean;
     };
-    expect(detectionArgs.hasFileAttachment).toBe(true);
-    expect(detectionArgs.hasPhotoAttachment).toBe(false);
+    expect(detectionArgs.hasPhotoAttachment).toBe(true);
+    expect(detectionArgs.hasFileAttachment).toBe(false);
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 

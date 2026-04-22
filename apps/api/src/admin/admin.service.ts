@@ -18498,8 +18498,10 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
-    const kind = this.readLowerString(row.kind ?? row.type);
-    if (kind !== 'image' && kind !== 'file') {
+    const mimeType = this.readTrimmedString(row.mimeType ?? row.mime_type);
+    const fileName = this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename);
+    const kind = this.resolveChannelDialogAttachmentKind(row.kind ?? row.type, mimeType, fileName);
+    if (!kind) {
       return null;
     }
 
@@ -18508,8 +18510,8 @@ export class AdminService implements OnModuleDestroy {
       return {
         kind,
         payload,
-        mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
-        fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+        mimeType,
+        fileName,
         previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
         width: this.toSafeInteger(row.width ?? row.w),
         height: this.toSafeInteger(row.height ?? row.h),
@@ -18524,8 +18526,8 @@ export class AdminService implements OnModuleDestroy {
     return {
       kind,
       base64,
-      mimeType: this.readTrimmedString(row.mimeType ?? row.mime_type),
-      fileName: this.readTrimmedString(row.fileName ?? row.file_name ?? row.filename),
+      mimeType,
+      fileName,
       previewBase64: this.readTrimmedString(row.previewBase64 ?? row.preview_base64),
       width: this.toSafeInteger(row.width ?? row.w),
       height: this.toSafeInteger(row.height ?? row.h),
@@ -18558,6 +18560,10 @@ export class AdminService implements OnModuleDestroy {
       ) ?? null;
     const mimeType =
       this.readTrimmedString(attachment.mimeType ?? payload.mime_type ?? payload.mimeType) ?? null;
+    const kind = this.resolveChannelDialogAttachmentKind(attachment.kind, mimeType, fileName);
+    if (!kind) {
+      return null;
+    }
     const width = this.toSafeInteger(attachment.width ?? payload.width ?? payload.w);
     const height = this.toSafeInteger(attachment.height ?? payload.height ?? payload.h);
     const size = this.toSafeInteger(payload.size);
@@ -18565,14 +18571,14 @@ export class AdminService implements OnModuleDestroy {
     const previewBase64 = this.readTrimmedString(attachment.previewBase64 ?? payload.previewBase64);
     const previewUrl =
       url ||
-      (attachment.kind === 'image' &&
+      (kind === 'image' &&
       previewBase64 &&
       this.canBuildChannelDialogImagePreview(mimeType)
         ? `data:${mimeType};base64,${previewBase64}`
         : null);
 
     return {
-      kind: attachment.kind,
+      kind,
       url,
       previewUrl,
       fileName,
@@ -20550,14 +20556,22 @@ export class AdminService implements OnModuleDestroy {
     }>,
   ): ChannelDialogAttachmentAsset[] {
     return attachments
-      .map((attachment) => ({
-        kind: attachment.type,
-        base64: attachment.base64.trim(),
-        mimeType: attachment.mimeType.trim(),
-        fileName: attachment.fileName.trim(),
-        width: this.toSafeInteger(attachment.width),
-        height: this.toSafeInteger(attachment.height),
-      }))
+      .map((attachment) => {
+        const mimeType = attachment.mimeType.trim();
+        const fileName = attachment.fileName.trim();
+        const kind =
+          this.resolveChannelDialogAttachmentKind(attachment.type, mimeType, fileName) ??
+          attachment.type;
+
+        return {
+          kind,
+          base64: attachment.base64.trim(),
+          mimeType,
+          fileName,
+          width: this.toSafeInteger(attachment.width),
+          height: this.toSafeInteger(attachment.height),
+        };
+      })
       .filter((attachment) => attachment.base64)
       .slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS);
   }
@@ -20592,14 +20606,20 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
+    const kind =
+      this.resolveChannelDialogAttachmentKind(
+        attachment.kind,
+        attachment.mimeType,
+        attachment.fileName,
+      ) ?? attachment.kind;
     const mimeType =
-      attachment.kind === 'image'
+      kind === 'image'
         ? this.normalizeMaxUploadImageMimeType(attachment.mimeType) || 'image/jpeg'
         : attachment.mimeType?.trim().toLowerCase() || 'application/octet-stream';
-    if (attachment.kind === 'image' && !mimeType.startsWith('image/')) {
+    if (kind === 'image' && !mimeType.startsWith('image/')) {
       throw new BadRequestException('Фото комментария передано в неверном формате.');
     }
-    if (attachment.kind === 'image' && !this.isSupportedMaxUploadImageMimeType(mimeType)) {
+    if (kind === 'image' && !this.isSupportedMaxUploadImageMimeType(mimeType)) {
       throw new BadRequestException(
         'MAX пока не принимает этот формат фото. Используйте JPG, PNG, GIF, TIFF, BMP или HEIC.',
       );
@@ -20610,7 +20630,7 @@ export class AdminService implements OnModuleDestroy {
       buffer = Buffer.from(base64, 'base64');
     } catch {
       throw new BadRequestException(
-        attachment.kind === 'image'
+        kind === 'image'
           ? 'Не удалось прочитать фото комментария.'
           : 'Не удалось прочитать файл комментария.',
       );
@@ -20618,7 +20638,7 @@ export class AdminService implements OnModuleDestroy {
 
     if (buffer.length === 0) {
       throw new BadRequestException(
-        attachment.kind === 'image'
+        kind === 'image'
           ? 'Фото комментария оказалось пустым.'
           : 'Файл комментария оказался пустым.',
       );
@@ -20626,13 +20646,13 @@ export class AdminService implements OnModuleDestroy {
 
     const fileName =
       this.readTrimmedString(attachment.fileName) ||
-      (attachment.kind === 'image'
+      (kind === 'image'
         ? this.resolveBroadcastImageFileName('', mimeType)
         : 'comment-attachment.bin');
 
     try {
       const payload =
-        attachment.kind === 'image'
+        kind === 'image'
           ? botId
             ? await this.maxClient.uploadImage(buffer, fileName, mimeType, { botId })
             : await this.maxClient.uploadImage(buffer, fileName, mimeType)
@@ -20641,12 +20661,12 @@ export class AdminService implements OnModuleDestroy {
             : await this.maxClient.uploadFile(buffer, fileName, mimeType);
 
       return {
-        kind: attachment.kind,
+        kind,
         payload,
         mimeType,
         fileName,
         previewBase64:
-          attachment.kind === 'image' &&
+          kind === 'image' &&
           this.canBuildChannelDialogImagePreview(mimeType) &&
           !this.readTrimmedString(payload.url)
             ? base64
@@ -20657,7 +20677,7 @@ export class AdminService implements OnModuleDestroy {
     } catch (error: unknown) {
       this.logger.warn(
         {
-          kind: attachment.kind,
+          kind,
           mimeType,
           fileName,
           err: error instanceof Error ? error.message : String(error),
@@ -20665,11 +20685,53 @@ export class AdminService implements OnModuleDestroy {
         'Failed to upload channel dialog attachment',
       );
       throw new BadRequestException(
-        attachment.kind === 'image'
+        kind === 'image'
           ? 'Не удалось загрузить фото комментария.'
           : 'Не удалось загрузить файл комментария.',
       );
     }
+  }
+
+  private resolveChannelDialogAttachmentKind(
+    kind: unknown,
+    mimeType?: string | null,
+    fileName?: string | null,
+  ): 'image' | 'file' | null {
+    const normalizedKind = this.readLowerString(kind);
+    if (
+      normalizedKind === 'image' ||
+      normalizedKind === 'photo' ||
+      normalizedKind === 'picture' ||
+      this.isChannelDialogImageLikeAttachment(mimeType, fileName)
+    ) {
+      return 'image';
+    }
+
+    if (
+      normalizedKind === 'file' ||
+      normalizedKind === 'document' ||
+      normalizedKind === 'doc'
+    ) {
+      return 'file';
+    }
+
+    return null;
+  }
+
+  private isChannelDialogImageLikeAttachment(
+    mimeType?: string | null,
+    fileName?: string | null,
+  ): boolean {
+    return this.isChannelDialogImageMimeType(mimeType) || this.isLikelyImageFileName(fileName);
+  }
+
+  private isChannelDialogImageMimeType(value?: string | null): boolean {
+    const normalized = this.readLowerString(value);
+    return Boolean(normalized && normalized.startsWith('image/') && normalized !== 'image/svg+xml');
+  }
+
+  private isLikelyImageFileName(value?: string | null): boolean {
+    return Boolean(value && /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(value));
   }
 
   private async uploadChannelSuggestionImage(

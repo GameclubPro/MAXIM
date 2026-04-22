@@ -3490,32 +3490,45 @@
 
 .channel-dialog-message__attachments {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .channel-dialog-message__image-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
+}
+
+.channel-dialog-message__image-grid.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: min(100%, 248px);
 }
 
 .channel-dialog-message__image-tile {
+  position: relative;
   width: 100%;
-  min-height: 92px;
+  min-height: 108px;
   padding: 0;
-  border: 0;
-  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  border-radius: 22px;
   overflow: hidden;
-  background: rgba(214, 229, 242, 0.74);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(210, 226, 240, 0.18)),
+    rgba(214, 229, 242, 0.82);
   display: grid;
   place-items: center;
   aspect-ratio: 1 / 1;
   color: rgba(34, 59, 82, 0.66);
   cursor: pointer;
+  isolation: isolate;
+  box-shadow:
+    0 12px 24px rgba(28, 61, 92, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
 .channel-dialog-message__image-tile:disabled {
   cursor: default;
+  opacity: 0.92;
 }
 
 .channel-dialog-message__image-tile img {
@@ -3523,33 +3536,51 @@
   height: 100%;
   display: block;
   object-fit: cover;
+  transform: scale(1.001);
+}
+
+.channel-dialog-message__image-tile:not(:disabled):active img {
+  transform: scale(1.04);
+}
+
+.channel-dialog-message__image-tile-glow {
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 44%;
+  background: linear-gradient(180deg, rgba(11, 28, 44, 0), rgba(11, 28, 44, 0.16));
+  pointer-events: none;
 }
 
 .channel-dialog-message__image-tile svg,
 .channel-dialog-message__file-pill-icon svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
 .channel-dialog-message__file-list {
   display: grid;
-  gap: 6px;
+  gap: 8px;
 }
 
 .channel-dialog-message__file-pill {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(242, 248, 253, 0.9)),
+    rgba(255, 255, 255, 0.82);
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font: inherit;
   color: inherit;
   text-align: left;
   cursor: pointer;
+  box-shadow:
+    0 12px 24px rgba(28, 61, 92, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .channel-dialog-message__file-pill:disabled {
@@ -3558,24 +3589,27 @@
 }
 
 .channel-dialog-message__file-pill-icon {
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  background: rgba(241, 247, 252, 0.92);
-  color: rgba(34, 59, 82, 0.7);
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(232, 242, 251, 0.92)),
+    rgba(241, 247, 252, 0.96);
+  color: rgba(34, 59, 82, 0.74);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .channel-dialog-message__file-pill-copy {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 4px;
 }
 
 .channel-dialog-message__file-pill-copy strong,
-.channel-dialog-message__file-pill-copy span {
+.channel-dialog-message__file-pill-meta span {
   display: block;
   min-width: 0;
   white-space: nowrap;
@@ -3585,14 +3619,49 @@
 
 .channel-dialog-message__file-pill-copy strong {
   color: rgba(30, 49, 64, 0.86);
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   line-height: 1.2;
 }
 
-.channel-dialog-message__file-pill-copy span {
+.channel-dialog-message__file-pill-meta {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.channel-dialog-message__file-pill-meta b {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 999px;
+  background: rgba(223, 235, 246, 0.92);
+  color: rgba(47, 74, 96, 0.78);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+}
+
+.channel-dialog-message__file-pill-meta span {
   color: rgba(30, 49, 64, 0.56);
   font-size: 0.72rem;
   line-height: 1.2;
+}
+
+.channel-dialog-message__file-pill-arrow {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.74);
+  color: rgba(34, 59, 82, 0.54);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
+.channel-dialog-message__file-pill-arrow svg {
+  width: 15px;
+  height: 15px;
 }
 
 .channel-dialog-message__footer {
@@ -3884,52 +3953,70 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: 18px;
-  border: 1px solid rgba(236, 194, 162, 0.6);
-  background: rgba(255, 247, 240, 0.88);
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 22px;
+  border: 1px solid rgba(255, 255, 255, 0.58);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 255, 0.88)),
+    rgba(255, 255, 255, 0.84);
+  box-shadow:
+    0 12px 28px rgba(28, 61, 92, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.channel-dialog-compose__attachment.is-image {
+  border-color: color-mix(in srgb, var(--dialog-accent) 18%, white);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--dialog-accent) 12%, white),
+      rgba(255, 255, 255, 0.88)
+    ),
+    rgba(255, 255, 255, 0.86);
 }
 
 .channel-dialog-compose__attachment-preview {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
+  width: 54px;
+  height: 54px;
+  border-radius: 16px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.86);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(232, 242, 251, 0.92)),
+    rgba(255, 255, 255, 0.9);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: rgba(96, 64, 43, 0.72);
+  color: rgba(47, 74, 96, 0.72);
 }
 
 .channel-dialog-compose__attachment-preview img {
   width: 100%;
   height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
 }
 
 .channel-dialog-compose__attachment-preview svg {
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
 }
 
 .channel-dialog-compose__attachment-copy {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: 3px;
 }
 
 .channel-dialog-compose__attachment-copy strong {
-  color: rgba(41, 28, 18, 0.9);
-  font-size: 0.8rem;
+  color: rgba(26, 44, 59, 0.88);
+  font-size: 0.82rem;
   line-height: 1.2;
 }
 
 .channel-dialog-compose__attachment-copy span {
-  color: rgba(96, 64, 43, 0.66);
+  color: rgba(47, 74, 96, 0.62);
   font-size: 0.74rem;
   white-space: nowrap;
   overflow: hidden;
@@ -3943,12 +4030,13 @@
   padding: 0;
   border: 0;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.86);
-  color: rgba(96, 64, 43, 0.72);
+  background: rgba(255, 255, 255, 0.9);
+  color: rgba(47, 74, 96, 0.68);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.76);
 }
 
 .channel-dialog-compose__attachment-dismiss svg {

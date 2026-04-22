@@ -4014,29 +4014,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const row = node as Record<string, unknown>;
+    const payload =
+      row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+        ? (row.payload as Record<string, unknown>)
+        : null;
     const type = this.readLowerString(row.type);
-    const mimeType = this.readLowerString(row.mime_type ?? row.mimeType);
-    const fileName = this.readLowerString(row.file_name ?? row.fileName ?? row.filename);
+    const mimeType = this.readLowerString(
+      row.mime_type ?? row.mimeType ?? payload?.mime_type ?? payload?.mimeType,
+    );
+    const fileName = this.readLowerString(
+      row.file_name ??
+        row.fileName ??
+        row.filename ??
+        payload?.file_name ??
+        payload?.fileName ??
+        payload?.filename ??
+        payload?.url,
+    );
     const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
     const stickerContext = inStickerContext || type === 'sticker' || mediaType === 'sticker';
-    const fileContext =
-      inFileContext ||
-      type === 'file' ||
-      type === 'document' ||
-      type === 'doc' ||
-      mediaType === 'file' ||
-      mediaType === 'document';
-
-    if (
+    const imageLike =
       !stickerContext &&
-      !fileContext &&
       (type === 'photo' ||
         type === 'image' ||
         type === 'picture' ||
         mimeType?.startsWith('image/') ||
         mediaType === 'photo' ||
-        mediaType === 'image')
-    ) {
+        mediaType === 'image' ||
+        this.isLikelyImageFileName(fileName));
+    const fileContext =
+      !imageLike &&
+      (inFileContext ||
+        type === 'file' ||
+        type === 'document' ||
+        type === 'doc' ||
+        mediaType === 'file' ||
+        mediaType === 'document');
+
+    if (imageLike) {
       flags.hasPhotoAttachment = true;
     }
 
@@ -4100,10 +4115,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         flags.hasVoiceAttachment = true;
       }
 
-      if (keyLower === 'file' || keyLower === 'files' || keyLower === 'document') {
-        flags.hasFileAttachment = true;
-      }
-
       if (value && (typeof value === 'object' || Array.isArray(value))) {
         const childStickerContext =
           stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
@@ -4124,6 +4135,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value);
+  }
+
+  private isLikelyImageFileName(value: string | null): boolean {
+    if (!value) {
+      return false;
+    }
+
+    return /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/i.test(value);
   }
 
   private isLikelyVoiceFileName(value: string | null): boolean {

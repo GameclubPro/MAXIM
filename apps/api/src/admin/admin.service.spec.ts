@@ -23559,6 +23559,98 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     ]);
   });
 
+  it('uploads image-like file attachments in channel comments as photos', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-image-file-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T10:14:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-10', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({
+        token: 'comment-image-file-1',
+        url: 'https://cdn.max.ru/gallery-shot.jpg',
+      }),
+      uploadFile: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = await publishCommentsDialogToken(service, maxClient);
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: '',
+        attachments: [
+          {
+            type: 'file',
+            base64: 'YQ==',
+            mimeType: 'image/jpeg',
+            fileName: 'gallery-shot.jpg',
+          },
+        ],
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from('a'),
+      'gallery-shot.jpg',
+      'image/jpeg',
+    );
+    expect(maxClient.uploadFile).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            attachments: [
+              expect.objectContaining({
+                kind: 'image',
+                mimeType: 'image/jpeg',
+                fileName: 'gallery-shot.jpg',
+              }),
+            ],
+          }),
+        }),
+      }),
+    );
+    expect(result.message.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        mimeType: 'image/jpeg',
+        fileName: 'gallery-shot.jpg',
+        url: 'https://cdn.max.ru/gallery-shot.jpg',
+      }),
+    ]);
+  });
+
   it('rejects channel comment photos in formats unsupported by MAX uploads', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -23694,6 +23786,79 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         previewUrl: 'data:image/webp;base64,YQ==',
         width: 720,
         height: 1280,
+      }),
+    ]);
+  });
+
+  it('normalizes persisted image file attachments in channel comments back to photos', async () => {
+    const prisma = createPrismaMock();
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-comment-image-file-persisted-1',
+        actorUserId: 'user-2',
+        payload: {
+          type: 'comments',
+          text: '',
+          authorDisplayName: 'Марина',
+          attachments: [
+            {
+              kind: 'file',
+              mimeType: 'image/jpeg',
+              fileName: 'gallery-shot.jpg',
+              payload: {
+                url: 'https://cdn.max.ru/gallery-shot.jpg',
+              },
+            },
+          ],
+        },
+        createdAt: new Date('2026-03-20T09:00:00.000Z'),
+      },
+    ]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn(),
+        getChatMemberProfiles: jest.fn(),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as Pick<AdminServicePrivateAccess, 'buildEntityDialogToken'>
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-preview',
+    ) as string;
+
+    const result = await service.getChannelDialog(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    expect(result.messages[0]?.attachments).toEqual([
+      expect.objectContaining({
+        kind: 'image',
+        mimeType: 'image/jpeg',
+        fileName: 'gallery-shot.jpg',
+        url: 'https://cdn.max.ru/gallery-shot.jpg',
+        previewUrl: 'https://cdn.max.ru/gallery-shot.jpg',
       }),
     ]);
   });

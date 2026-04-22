@@ -332,29 +332,107 @@ function hasCommentAttachments(
   return Array.isArray(attachments) && attachments.length > 0;
 }
 
+const COMMENT_IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/iu;
+
+function isCommentAttachmentImageLike(
+  attachment:
+    | Pick<ChannelDialogAttachment, 'kind' | 'mimeType' | 'fileName'>
+    | Pick<PreparedCommentDialogAttachment, 'type' | 'mimeType' | 'fileName'>
+    | null
+    | undefined,
+): boolean {
+  if (!attachment) {
+    return false;
+  }
+
+  const explicitKind =
+    'kind' in attachment ? attachment.kind : 'type' in attachment ? attachment.type : null;
+  if (explicitKind === 'image') {
+    return true;
+  }
+
+  const mimeType = attachment.mimeType?.trim().toLowerCase() ?? '';
+  if (mimeType.startsWith('image/') && mimeType !== 'image/svg+xml') {
+    return true;
+  }
+
+  const fileName = attachment.fileName?.trim() ?? '';
+  return COMMENT_IMAGE_FILE_NAME_RE.test(fileName);
+}
+
+function resolveCommentAttachmentKind(
+  attachment:
+    | Pick<ChannelDialogAttachment, 'kind' | 'mimeType' | 'fileName'>
+    | Pick<PreparedCommentDialogAttachment, 'type' | 'mimeType' | 'fileName'>,
+): 'image' | 'file' {
+  return isCommentAttachmentImageLike(attachment) ? 'image' : 'file';
+}
+
+function resolveCommentAttachmentTitle(
+  attachment:
+    | Pick<ChannelDialogAttachment, 'kind' | 'mimeType' | 'fileName'>
+    | Pick<PreparedCommentDialogAttachment, 'type' | 'mimeType' | 'fileName'>,
+): 'Фото' | 'Файл' {
+  return resolveCommentAttachmentKind(attachment) === 'image' ? 'Фото' : 'Файл';
+}
+
+function resolveCommentAttachmentBadge(
+  attachment:
+    | Pick<ChannelDialogAttachment, 'mimeType' | 'fileName'>
+    | Pick<PreparedCommentDialogAttachment, 'mimeType' | 'fileName'>,
+): string {
+  const fileName = attachment.fileName?.trim().toLowerCase() ?? '';
+  const extensionMatch = fileName.match(/\.([a-z0-9]{1,8})$/iu);
+  if (extensionMatch?.[1]) {
+    return extensionMatch[1].slice(0, 5).toUpperCase();
+  }
+
+  const mimeType = attachment.mimeType?.trim().toLowerCase() ?? '';
+  if (mimeType.startsWith('application/')) {
+    return mimeType.slice('application/'.length).split(/[.+-]/u)[0]?.slice(0, 5).toUpperCase() || 'FILE';
+  }
+  if (mimeType.startsWith('text/')) {
+    return 'TEXT';
+  }
+  if (mimeType.startsWith('audio/')) {
+    return 'AUDIO';
+  }
+
+  return 'FILE';
+}
+
 function resolveCommentAttachmentSummary(
-  attachments: Pick<ChannelDialogAttachment, 'kind' | 'fileName'>[] | null | undefined,
+  attachments:
+    | Pick<ChannelDialogAttachment, 'kind' | 'mimeType' | 'fileName'>[]
+    | Pick<PreparedCommentDialogAttachment, 'type' | 'mimeType' | 'fileName'>[]
+    | null
+    | undefined,
 ): string {
   if (!attachments?.length) {
     return '';
   }
 
-  const imageCount = attachments.filter((attachment) => attachment.kind === 'image').length;
-  const files = attachments.filter((attachment) => attachment.kind === 'file');
+  const imageAttachments = attachments.filter(
+    (attachment) => resolveCommentAttachmentKind(attachment) === 'image',
+  );
+  const fileAttachments = attachments.filter(
+    (attachment) => resolveCommentAttachmentKind(attachment) === 'file',
+  );
+  const imageCount = imageAttachments.length;
 
-  if (imageCount > 0 && files.length === 0) {
+  if (imageCount > 0 && fileAttachments.length === 0) {
     if (imageCount > 1) {
       return `Фото · ${imageCount}`;
     }
-    const fileName = attachments.find((attachment) => attachment.kind === 'image')?.fileName?.trim();
+    const fileName = imageAttachments[0]?.fileName?.trim();
     return fileName ? `Фото · ${fileName}` : 'Фото';
   }
 
-  if (files.length > 0 && imageCount === 0) {
-    if (files.length > 1) {
-      return `Файлы · ${files.length}`;
+  if (fileAttachments.length > 0 && imageCount === 0) {
+    if (fileAttachments.length > 1) {
+      return `Файлы · ${fileAttachments.length}`;
     }
-    const fileName = files[0]?.fileName?.trim();
+    const fileName = fileAttachments[0]?.fileName?.trim();
     return fileName ? `Файл · ${fileName}` : 'Файл';
   }
 
@@ -367,7 +445,7 @@ function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): strin
     return remoteUrl;
   }
 
-  return attachment.kind === 'image' ? attachment.previewUrl?.trim() ?? '' : '';
+  return isCommentAttachmentImageLike(attachment) ? attachment.previewUrl?.trim() ?? '' : '';
 }
 
 function getCommentAttachmentPreviewUrl(attachment: ChannelDialogAttachment): string {
@@ -969,13 +1047,22 @@ function CommentMessageAttachments({
     return null;
   }
 
-  const imageAttachments = attachments.filter((attachment) => attachment.kind === 'image');
-  const fileAttachments = attachments.filter((attachment) => attachment.kind === 'file');
+  const imageAttachments = attachments.filter(
+    (attachment) => resolveCommentAttachmentKind(attachment) === 'image',
+  );
+  const fileAttachments = attachments.filter(
+    (attachment) => resolveCommentAttachmentKind(attachment) === 'file',
+  );
 
   return (
     <div className="channel-dialog-message__attachments">
       {imageAttachments.length > 0 ? (
-        <div className="channel-dialog-message__image-grid">
+        <div
+          className={cn(
+            'channel-dialog-message__image-grid',
+            imageAttachments.length === 1 && 'is-single',
+          )}
+        >
           {imageAttachments.map((attachment, attachmentIndex) => {
             const url = getCommentAttachmentOpenUrl(attachment);
             const previewUrl = getCommentAttachmentPreviewUrl(attachment);
@@ -1002,6 +1089,7 @@ function CommentMessageAttachments({
                 ) : (
                   <CommentAttachmentGlyph kind="image" />
                 )}
+                <span className="channel-dialog-message__image-tile-glow" aria-hidden />
               </button>
             );
           })}
@@ -1013,7 +1101,13 @@ function CommentMessageAttachments({
           {fileAttachments.map((attachment, attachmentIndex) => {
             const url = getCommentAttachmentOpenUrl(attachment);
             const fileName = attachment.fileName?.trim() || `Файл ${attachmentIndex + 1}`;
-            const meta = attachment.size ? formatDialogAttachmentSize(attachment.size) : 'Открыть';
+            const badge = resolveCommentAttachmentBadge(attachment);
+            const meta = [
+              attachment.size ? formatDialogAttachmentSize(attachment.size) : null,
+              url ? 'Открыть' : null,
+            ]
+              .filter(Boolean)
+              .join(' · ');
 
             return (
               <button
@@ -1035,7 +1129,13 @@ function CommentMessageAttachments({
                 </span>
                 <span className="channel-dialog-message__file-pill-copy">
                   <strong>{fileName}</strong>
-                  <span>{meta}</span>
+                  <span className="channel-dialog-message__file-pill-meta">
+                    <b>{badge}</b>
+                    <span>{meta || 'Файл'}</span>
+                  </span>
+                </span>
+                <span className="channel-dialog-message__file-pill-arrow" aria-hidden>
+                  <SendArrowIcon />
                 </span>
               </button>
             );
@@ -1550,6 +1650,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       resolveCommentAttachmentSummary(
         draftAttachments.map((attachment) => ({
           kind: attachment.type,
+          mimeType: attachment.mimeType,
           fileName: attachment.fileName,
         })),
       ),
@@ -3174,59 +3275,73 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             ) : null}
 
             {editingMessage?.attachments.length ? (
-              editingMessage.attachments.map((attachment, attachmentIndex) => (
-                <div
-                  key={`editing-attachment-${attachmentIndex}`}
-                  className="channel-dialog-compose__attachment"
-                >
-                  <div className="channel-dialog-compose__attachment-preview" aria-hidden>
-                    {attachment.kind === 'image' && getCommentAttachmentPreviewUrl(attachment) ? (
-                      <img src={getCommentAttachmentPreviewUrl(attachment)} alt="" loading="lazy" />
-                    ) : (
-                      <CommentAttachmentGlyph kind={attachment.kind} />
+              editingMessage.attachments.map((attachment, attachmentIndex) => {
+                const visualKind = resolveCommentAttachmentKind(attachment);
+
+                return (
+                  <div
+                    key={`editing-attachment-${attachmentIndex}`}
+                    className={cn(
+                      'channel-dialog-compose__attachment',
+                      visualKind === 'image' ? 'is-image' : 'is-file',
                     )}
-                  </div>
-                  <div className="channel-dialog-compose__attachment-copy">
-                    <strong>{attachment.kind === 'image' ? 'Фото' : 'Файл'}</strong>
-                    <span>
-                      {attachment.fileName?.trim() ||
-                        resolveCommentAttachmentSummary([attachment]) ||
-                        'Вложение'}
-                    </span>
-                  </div>
-                </div>
-              ))
-            ) : !editingMessage && draftAttachments.length > 0 ? (
-              draftAttachments.map((attachment, attachmentIndex) => (
-                <div
-                  key={`draft-attachment-${attachmentIndex}`}
-                  className="channel-dialog-compose__attachment"
-                >
-                  <div className="channel-dialog-compose__attachment-preview" aria-hidden>
-                    {attachment.type === 'image' && attachment.previewUrl ? (
-                      <img src={attachment.previewUrl} alt="" loading="lazy" />
-                    ) : (
-                      <CommentAttachmentGlyph kind={attachment.type} />
-                    )}
-                  </div>
-                  <div className="channel-dialog-compose__attachment-copy">
-                    <strong>{attachment.type === 'image' ? 'Фото' : 'Файл'}</strong>
-                    <span>
-                      {[attachment.fileName, formatDialogAttachmentSize(attachment.size)]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </span>
-                  </div>
-                  <button
-                    type="button"
-                    className="channel-dialog-compose__attachment-dismiss"
-                    onClick={() => handleDraftAttachmentRemove(attachmentIndex)}
-                    aria-label={`Убрать ${attachment.fileName || 'вложение'}`}
                   >
-                    <CloseIcon />
-                  </button>
-                </div>
-              ))
+                    <div className="channel-dialog-compose__attachment-preview" aria-hidden>
+                      {visualKind === 'image' && getCommentAttachmentPreviewUrl(attachment) ? (
+                        <img src={getCommentAttachmentPreviewUrl(attachment)} alt="" loading="lazy" />
+                      ) : (
+                        <CommentAttachmentGlyph kind={visualKind} />
+                      )}
+                    </div>
+                    <div className="channel-dialog-compose__attachment-copy">
+                      <strong>{resolveCommentAttachmentTitle(attachment)}</strong>
+                      <span>
+                        {attachment.fileName?.trim() ||
+                          resolveCommentAttachmentSummary([attachment]) ||
+                          'Вложение'}
+                      </span>
+                    </div>
+                  </div>
+                );
+              })
+            ) : !editingMessage && draftAttachments.length > 0 ? (
+              draftAttachments.map((attachment, attachmentIndex) => {
+                const visualKind = resolveCommentAttachmentKind(attachment);
+
+                return (
+                  <div
+                    key={`draft-attachment-${attachmentIndex}`}
+                    className={cn(
+                      'channel-dialog-compose__attachment',
+                      visualKind === 'image' ? 'is-image' : 'is-file',
+                    )}
+                  >
+                    <div className="channel-dialog-compose__attachment-preview" aria-hidden>
+                      {visualKind === 'image' && attachment.previewUrl ? (
+                        <img src={attachment.previewUrl} alt="" loading="lazy" />
+                      ) : (
+                        <CommentAttachmentGlyph kind={visualKind} />
+                      )}
+                    </div>
+                    <div className="channel-dialog-compose__attachment-copy">
+                      <strong>{resolveCommentAttachmentTitle(attachment)}</strong>
+                      <span>
+                        {[attachment.fileName, formatDialogAttachmentSize(attachment.size)]
+                          .filter(Boolean)
+                          .join(' · ')}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="channel-dialog-compose__attachment-dismiss"
+                      onClick={() => handleDraftAttachmentRemove(attachmentIndex)}
+                      aria-label={`Убрать ${attachment.fileName || 'вложение'}`}
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                );
+              })
             ) : null}
 
             {showComposeMeta ? (

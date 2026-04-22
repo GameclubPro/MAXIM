@@ -57,6 +57,11 @@ function canRenderImagePreview(mimeType: string): boolean {
   return PREVIEWABLE_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
 }
 
+function isPreparedDialogImageMimeType(mimeType: string): boolean {
+  const normalized = normalizeMimeType(mimeType);
+  return normalized.startsWith('image/') && normalized !== 'image/svg+xml';
+}
+
 function normalizeMimeType(mimeType: string): string {
   const normalized = mimeType.trim().toLowerCase();
   if (!normalized || normalized === 'application/octet-stream') {
@@ -164,7 +169,7 @@ export async function prepareCommentDialogImageAttachment(
       normalizeMimeType(file.type) ||
       parsed.mimeType ||
       inferMimeTypeFromName(file.name, IMAGE_MIME_BY_EXTENSION);
-    if (!mimeType.startsWith('image/')) {
+    if (!isPreparedDialogImageMimeType(mimeType)) {
       throw new Error('Нужен файл изображения.');
     }
 
@@ -201,13 +206,18 @@ export async function prepareCommentDialogFileAttachment(
   if (!base64) {
     throw new Error('Не удалось прочитать файл.');
   }
+  const isImageAttachment = isPreparedDialogImageMimeType(mimeType);
 
   return {
-    type: 'file',
+    type: isImageAttachment ? 'image' : 'file',
     base64,
     mimeType,
-    fileName: normalizeFileNameWithExtension(file.name, 'attachment', mimeType),
-    previewUrl: null,
+    fileName: normalizeFileNameWithExtension(
+      file.name,
+      isImageAttachment ? 'comment-image' : 'attachment',
+      mimeType,
+    ),
+    previewUrl: isImageAttachment && canRenderImagePreview(mimeType) ? dataUrl : null,
     size: file.size || Math.max(1, Math.floor((base64.length * 3) / 4)),
   };
 }
