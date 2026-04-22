@@ -4043,6 +4043,18 @@
   background: color-mix(in srgb, var(--dialog-accent) 14%, white);
 }
 
+.channel-dialog-compose__attach-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+  font-size: 0;
+  z-index: 2;
+}
+
 .channel-dialog-compose__picker-input {
   position: absolute;
   width: 1px;

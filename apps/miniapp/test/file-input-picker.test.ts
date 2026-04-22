@@ -1,6 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openFileInputPicker } from '../src/lib/file-input-picker';
+import {
+  openFileInputPicker,
+  resolveFileInputActivationMode,
+} from '../src/lib/file-input-picker';
+
+test('resolveFileInputActivationMode keeps direct native tap for Android webviews', () => {
+  assert.equal(resolveFileInputActivationMode('android'), 'native-tap');
+  assert.equal(resolveFileInputActivationMode(' Android '), 'native-tap');
+});
+
+test('resolveFileInputActivationMode uses programmatic picker outside Android', () => {
+  assert.equal(resolveFileInputActivationMode('ios'), 'programmatic');
+  assert.equal(resolveFileInputActivationMode('desktop'), 'programmatic');
+  assert.equal(resolveFileInputActivationMode(undefined), 'programmatic');
+});
 
 test('openFileInputPicker prefers showPicker when it is available', () => {
   const calls: string[] = [];

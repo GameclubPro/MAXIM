@@ -1,3 +1,11 @@
+export type FileInputActivationMode = 'native-tap' | 'programmatic';
+
+export function resolveFileInputActivationMode(
+  platform: string | null | undefined,
+): FileInputActivationMode {
+  return platform?.trim().toLowerCase() === 'android' ? 'native-tap' : 'programmatic';
+}
+
 export function openFileInputPicker(input: HTMLInputElement | null): 'shown' | 'clicked' | 'noop' {
   if (!input || input.disabled) {
     return 'noop';

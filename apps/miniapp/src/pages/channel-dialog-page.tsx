@@ -73,7 +73,7 @@ import {
   type PreparedCommentDialogAttachment,
 } from '../lib/dialog-attachments';
 import { readChatTitle } from '../lib/chat-titles';
-import { openFileInputPicker } from '../lib/file-input-picker';
+import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import {
@@ -1424,6 +1424,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const fileInputActivationMode = resolveFileInputActivationMode(
+    typeof document === 'undefined' ? undefined : document.documentElement.dataset.maxPlatform,
+  );
+  const useNativeTapFileInputs = fileInputActivationMode === 'native-tap';
 
   const currentUserId = useMemo(() => getInitDataUserId(), []);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
@@ -3170,59 +3174,131 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <div className="channel-dialog-compose__row">
               {!editingMessage ? (
                 <div className="channel-dialog-compose__quick-actions">
-                  <button
-                    type="button"
-                    className={cn(
-                      'channel-dialog-compose__attach',
-                      'channel-dialog-compose__attach--icon',
-                      (isComposePending || isPreparingAttachment) &&
-                        'channel-dialog-compose__attach--disabled',
-                      draftAttachments.some((attachment) => attachment.type === 'image') && 'is-active',
-                    )}
-                    aria-label="Добавить фото"
-                    aria-disabled={isComposePending || isPreparingAttachment}
-                    disabled={isComposePending || isPreparingAttachment}
-                    onClick={() => {
-                      openFileInputPicker(imageInputRef.current);
-                    }}
-                  >
-                    <IconoirCamera aria-hidden focusable="false" />
-                  </button>
-                  <input
-                    ref={imageInputRef}
-                    className="channel-dialog-compose__picker-input"
-                    type="file"
-                    accept="image/*"
-                    disabled={isComposePending || isPreparingAttachment}
-                    onChange={handleDraftImagesChange}
-                    tabIndex={-1}
-                  />
-                  <button
-                    type="button"
-                    className={cn(
-                      'channel-dialog-compose__attach',
-                      'channel-dialog-compose__attach--icon',
-                      (isComposePending || isPreparingAttachment) &&
-                        'channel-dialog-compose__attach--disabled',
-                      draftAttachments.some((attachment) => attachment.type === 'file') && 'is-active',
-                    )}
-                    aria-label="Прикрепить файл"
-                    aria-disabled={isComposePending || isPreparingAttachment}
-                    disabled={isComposePending || isPreparingAttachment}
-                    onClick={() => {
-                      openFileInputPicker(fileInputRef.current);
-                    }}
-                  >
-                    <IconoirAttachment aria-hidden focusable="false" />
-                  </button>
-                  <input
-                    ref={fileInputRef}
-                    className="channel-dialog-compose__picker-input"
-                    type="file"
-                    disabled={isComposePending || isPreparingAttachment}
-                    onChange={handleDraftFilesChange}
-                    tabIndex={-1}
-                  />
+                  {useNativeTapFileInputs ? (
+                    <>
+                      <label
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'image') &&
+                            'is-active',
+                        )}
+                        aria-label="Добавить фото"
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        role="button"
+                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          imageInputRef.current?.click();
+                        }}
+                      >
+                        <input
+                          ref={imageInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          accept="image/*"
+                          disabled={isComposePending || isPreparingAttachment}
+                          onChange={handleDraftImagesChange}
+                          tabIndex={-1}
+                        />
+                        <IconoirCamera aria-hidden focusable="false" />
+                      </label>
+                      <label
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'file') &&
+                            'is-active',
+                        )}
+                        aria-label="Прикрепить файл"
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        role="button"
+                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                        onKeyDown={(event) => {
+                          if (event.key !== 'Enter' && event.key !== ' ') {
+                            return;
+                          }
+                          event.preventDefault();
+                          fileInputRef.current?.click();
+                        }}
+                      >
+                        <input
+                          ref={fileInputRef}
+                          className="channel-dialog-compose__attach-input"
+                          type="file"
+                          disabled={isComposePending || isPreparingAttachment}
+                          onChange={handleDraftFilesChange}
+                          tabIndex={-1}
+                        />
+                        <IconoirAttachment aria-hidden focusable="false" />
+                      </label>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'image') &&
+                            'is-active',
+                        )}
+                        aria-label="Добавить фото"
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        disabled={isComposePending || isPreparingAttachment}
+                        onClick={() => {
+                          openFileInputPicker(imageInputRef.current);
+                        }}
+                      >
+                        <IconoirCamera aria-hidden focusable="false" />
+                      </button>
+                      <input
+                        ref={imageInputRef}
+                        className="channel-dialog-compose__picker-input"
+                        type="file"
+                        accept="image/*"
+                        disabled={isComposePending || isPreparingAttachment}
+                        onChange={handleDraftImagesChange}
+                        tabIndex={-1}
+                      />
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-compose__attach',
+                          'channel-dialog-compose__attach--icon',
+                          (isComposePending || isPreparingAttachment) &&
+                            'channel-dialog-compose__attach--disabled',
+                          draftAttachments.some((attachment) => attachment.type === 'file') &&
+                            'is-active',
+                        )}
+                        aria-label="Прикрепить файл"
+                        aria-disabled={isComposePending || isPreparingAttachment}
+                        disabled={isComposePending || isPreparingAttachment}
+                        onClick={() => {
+                          openFileInputPicker(fileInputRef.current);
+                        }}
+                      >
+                        <IconoirAttachment aria-hidden focusable="false" />
+                      </button>
+                      <input
+                        ref={fileInputRef}
+                        className="channel-dialog-compose__picker-input"
+                        type="file"
+                        disabled={isComposePending || isPreparingAttachment}
+                        onChange={handleDraftFilesChange}
+                        tabIndex={-1}
+                      />
+                    </>
+                  )}
                 </div>
               ) : null}
 
