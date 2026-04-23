@@ -7703,6 +7703,92 @@ describe('ModerationService', () => {
     ).toBe(true);
   });
 
+  it('queues group forwarded moderation commands when async admin command handling is available', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            muteDurationHours: 12,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedBanUpdate());
+
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-forward-ban-1',
+        commandMessageId: 'msg-admin-forward-ban-1',
+        action: 'BAN',
+        muteDurationHours: null,
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
+      }),
+    );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('lets chat admins mute a replied sender with the default duration', async () => {
     const prisma = {
       chat: {

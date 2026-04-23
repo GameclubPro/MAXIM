@@ -31,4 +31,22 @@ export type AdminManualBanFanoutJob = {
   source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
 };
 
-export type AdminManualFanoutJob = AdminManualMuteFanoutJob | AdminManualBanFanoutJob;
+export type AdminManualGroupModerationCommandJob = {
+  kind: 'manual_group_moderation_command';
+  jobId: string;
+  sourceChatId: string;
+  targetUserId: string;
+  targetSenderName?: string | null;
+  targetMessageId?: string | null;
+  commandMessageId: string;
+  actor: AdminManualFanoutActor;
+  action: 'BAN' | 'MUTE';
+  muteDurationHours?: number | null;
+  deleteBotMessagesEnabled: boolean;
+  deleteBotMessagesDelayMinutes: number;
+};
+
+export type AdminManualFanoutJob =
+  | AdminManualMuteFanoutJob
+  | AdminManualBanFanoutJob
+  | AdminManualGroupModerationCommandJob;

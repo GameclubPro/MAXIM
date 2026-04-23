@@ -122,6 +122,7 @@ import {
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
+  normalizeDeleteBotMessagesDelayMinutes,
 } from '@maxim/contracts';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
@@ -169,6 +170,7 @@ import {
 import {
   MAX_API_SOURCE_TAGS,
   MaxClientService,
+  type MaxActionDispatchOptions,
   type MaxAttachmentPayload,
   type MaxBotChat,
   type MaxChatMemberAccess,
@@ -229,6 +231,7 @@ import {
   ADMIN_MANUAL_FANOUT_QUEUE,
   type AdminManualFanoutJob,
   type AdminManualBanFanoutJob,
+  type AdminManualGroupModerationCommandJob,
   type AdminManualMuteFanoutJob,
 } from './admin-manual-fanout.queue';
 import {
@@ -277,6 +280,8 @@ type ManagedEntitiesPublishedDiffReadResult = {
   removedIds: string[];
   orderedIds: string[];
 };
+
+const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
 
 type ManagedEntitiesListOptions = {
   refresh?: boolean;
@@ -14812,6 +14817,22 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
+  async enqueueManualGroupModerationCommand(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    targetSenderName?: string | null;
+    targetMessageId?: string | null;
+    commandMessageId: string;
+    actor: AuthUser;
+    action: 'BAN' | 'MUTE';
+    muteDurationHours?: number | null;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): Promise<boolean> {
+    const job = this.buildManualGroupModerationCommandJob(params);
+    return this.enqueueManualModerationFanout(job);
+  }
+
   private async sendManualBanChatNotice(params: {
     chatId: string;
     targetUserId: string;
@@ -14859,6 +14880,11 @@ export class AdminService implements OnModuleDestroy {
   }
 
   async processManualModerationFanoutJob(job: AdminManualFanoutJob): Promise<void> {
+    if (job.kind === 'manual_group_moderation_command') {
+      await this.processManualGroupModerationCommandJob(job);
+      return;
+    }
+
     if (job.kind === 'manual_mute_fanout') {
       if (job.cleanupSourceChatMessages) {
         await this.runDeferredManualModerationSourceCleanup(
@@ -14900,6 +14926,203 @@ export class AdminService implements OnModuleDestroy {
         chatTitle: job.actor.chatTitle ?? undefined,
       },
     });
+  }
+
+  private async processManualGroupModerationCommandJob(
+    job: AdminManualGroupModerationCommandJob,
+  ): Promise<void> {
+    const actor = this.buildManualFanoutActor(job.actor);
+    try {
+      const result =
+        job.action === 'BAN'
+          ? await this.applyManualSystemBan(
+              job.sourceChatId,
+              job.targetUserId,
+              actor,
+              'group_command',
+            )
+          : await this.applyManualModerationAction(
+              job.sourceChatId,
+              job.targetUserId,
+              actor,
+              {
+                action: 'MUTE',
+                muteDurationHours:
+                  job.muteDurationHours ?? DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
+              },
+              'group_command',
+            );
+
+      await this.deleteManualGroupCommandTargetMessage(job);
+      await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId);
+
+      const targetLabel = this.formatManualGroupCommandUserLabel(
+        job.targetSenderName,
+        job.targetUserId,
+      );
+      await this.sendManualGroupCommandNotice({
+        chatId: job.sourceChatId,
+        text:
+          job.action === 'BAN'
+            ? `Пользователь ${targetLabel} забанен.`
+            : `${result.message}\nПользователь: ${targetLabel}`,
+        deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          jobId: job.jobId,
+          chatId: job.sourceChatId,
+          actorUserId: job.actor.userId,
+          targetUserId: job.targetUserId,
+          err: this.extractManualGroupCommandErrorMessage(error),
+        },
+        'Failed to apply queued group admin moderation command',
+      );
+
+      await this.sendManualGroupCommandNotice({
+        chatId: job.sourceChatId,
+        text: `Не удалось применить ${job.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMarkdownPlainText(
+          this.extractManualGroupCommandErrorMessage(error),
+        )}`,
+        deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
+      });
+    }
+  }
+
+  private buildManualFanoutActor(actor: {
+    userId: string;
+    username: string | null;
+    displayName: string | null;
+    chatId?: string | null;
+    chatTitle?: string | null;
+  }): AuthUser {
+    return {
+      userId: actor.userId,
+      username: actor.username,
+      displayName: actor.displayName,
+      chatId: actor.chatId ?? undefined,
+      chatTitle: actor.chatTitle ?? undefined,
+    };
+  }
+
+  private async deleteManualGroupCommandMessage(
+    chatId: string,
+    messageId: string,
+  ): Promise<void> {
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId, {
+        immediate: true,
+        trafficClass: 'interactive',
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          messageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to delete handled queued group admin command message',
+      );
+    }
+  }
+
+  private async deleteManualGroupCommandTargetMessage(
+    job: AdminManualGroupModerationCommandJob,
+  ): Promise<void> {
+    if (!job.targetMessageId) {
+      return;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(job.sourceChatId, job.targetMessageId, {
+        immediate: true,
+        trafficClass: 'interactive',
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: job.sourceChatId,
+          targetUserId: job.targetUserId,
+          targetMessageId: job.targetMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to delete handled queued group admin command target message',
+      );
+    }
+  }
+
+  private async sendManualGroupCommandNotice(params: {
+    chatId: string;
+    text: string;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): Promise<void> {
+    const dispatchOptions = this.buildManualGroupCommandNoticeDispatchOptions({
+      deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
+    });
+
+    await this.maxClient.sendMessage(
+      params.chatId,
+      params.text,
+      { textFormat: 'markdown' },
+      dispatchOptions,
+    );
+  }
+
+  private buildManualGroupCommandNoticeDispatchOptions(params: {
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): MaxActionDispatchOptions {
+    const options: MaxActionDispatchOptions = {
+      immediate: true,
+      trafficClass: 'interactive',
+    };
+    if (params.deleteBotMessagesEnabled) {
+      options.autoDeleteDelayMs =
+        normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) *
+        60 *
+        1_000;
+    }
+    return options;
+  }
+
+  private formatManualGroupCommandUserLabel(
+    senderName: string | null | undefined,
+    userId: string,
+  ): string {
+    const normalizedName =
+      typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
+    const safeName = normalizedName ? this.escapeMarkdownPlainText(normalizedName) : 'Пользователь';
+    const normalizedUserId = userId.trim();
+    if (normalizedUserId) {
+      return `[${safeName}](max://user/${encodeURIComponent(normalizedUserId)})`;
+    }
+    return `**${safeName}**`;
+  }
+
+  private extractManualGroupCommandErrorMessage(error: unknown): string {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'string' && response.trim()) {
+        return response.trim();
+      }
+      if (response && typeof response === 'object') {
+        const message = (response as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim()) {
+          return message.trim();
+        }
+      }
+    }
+
+    return (
+      this.extractMaxApiErrorMessage(error) ||
+      this.extractHttpErrorMessage(error) ||
+      (error instanceof Error ? error.message : 'Unknown error')
+    );
   }
 
   private async resolveManualMuteCommandFollowUpSummaries(params: {
@@ -15046,6 +15269,45 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private buildManualGroupModerationCommandJob(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    targetSenderName?: string | null;
+    targetMessageId?: string | null;
+    commandMessageId: string;
+    actor: AuthUser;
+    action: 'BAN' | 'MUTE';
+    muteDurationHours?: number | null;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+  }): AdminManualGroupModerationCommandJob {
+    return {
+      kind: 'manual_group_moderation_command',
+      jobId: this.buildManualGroupModerationCommandJobId(
+        params.sourceChatId,
+        params.commandMessageId,
+        params.targetUserId,
+        params.action,
+      ),
+      sourceChatId: params.sourceChatId,
+      targetUserId: params.targetUserId,
+      targetSenderName: params.targetSenderName ?? null,
+      targetMessageId: params.targetMessageId ?? null,
+      commandMessageId: params.commandMessageId,
+      actor: {
+        userId: params.actor.userId,
+        username: params.actor.username ?? null,
+        displayName: params.actor.displayName ?? null,
+        chatId: params.actor.chatId ?? null,
+        chatTitle: params.actor.chatTitle ?? null,
+      },
+      action: params.action,
+      muteDurationHours: params.muteDurationHours ?? null,
+      deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
+    };
+  }
+
   private buildManualMuteFanoutJob(params: {
     sourceChatId: string;
     targetUserId: string;
@@ -15077,6 +15339,19 @@ export class AdminService implements OnModuleDestroy {
       muteExpiresAt: params.muteExpiresAt.toISOString(),
       source: params.source,
     };
+  }
+
+  private buildManualGroupModerationCommandJobId(
+    sourceChatId: string,
+    commandMessageId: string,
+    targetUserId: string,
+    action: 'BAN' | 'MUTE',
+  ): string {
+    const digest = createHash('sha256')
+      .update(`${sourceChatId}\n${commandMessageId}\n${targetUserId}\n${action}`)
+      .digest('hex')
+      .slice(0, 32);
+    return `manual_group_moderation_command__${digest}`;
   }
 
   private buildQueuedManualModerationCleanupSummary(jobId: string) {

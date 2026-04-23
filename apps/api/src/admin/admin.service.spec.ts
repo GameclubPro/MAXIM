@@ -6172,6 +6172,147 @@ describe('AdminService.applyManualSystemBan', () => {
     });
   });
 
+  it('queues the primary group command action before leaving the moderation hot path', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    const queued = await service.enqueueManualGroupModerationCommand({
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: 'Админ',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'MUTE',
+      muteDurationHours: 6,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(queued).toBe(true);
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_group_moderation_command',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-target-1',
+        commandMessageId: 'mid-command-1',
+        action: 'MUTE',
+        muteDurationHours: 6,
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
+      }),
+      expect.objectContaining({
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+      }),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('processes queued primary group ban commands outside the webhook hot path', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'applyManualSystemBan').mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Пользователь забанен.',
+    });
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_group_moderation_command',
+      jobId: 'job-command-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'BAN',
+      muteDurationHours: null,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(service.applyManualSystemBan).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      }),
+      'group_command',
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-command-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь [Нарушитель](max://user/user-2) забанен.',
+      { textFormat: 'markdown' },
+      {
+        immediate: true,
+        trafficClass: 'interactive',
+        autoDeleteDelayMs: 3 * 60 * 1000,
+      },
+    );
+  });
+
   it('deletes source chat messages during queued manual mute fanout processing', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
