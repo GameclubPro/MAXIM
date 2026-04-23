@@ -449,6 +449,7 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
       ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
       : null,
     broadcast.hasImage ? 'Фото' : null,
+    broadcast.hasVideo ? 'Видео' : null,
   ]
     .filter((item): item is string => Boolean(item))
     .join(' · ');
@@ -1375,8 +1376,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     'слотов',
   );
   const normalizedBroadcastText = broadcastText.trim();
+  const editingBroadcastHasVideo =
+    editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
   const broadcastContentReady = editingManagedBroadcast
-    ? normalizedBroadcastText.length > 0 || broadcastImageEnabled
+    ? normalizedBroadcastText.length > 0 || broadcastImageEnabled || editingBroadcastHasVideo
     : broadcastBotHasContent;
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
@@ -1386,6 +1389,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : null;
   const broadcastMessageFacts = [
     broadcastImageEnabled ? 'Фото' : null,
+    editingBroadcastHasVideo ? 'Видео' : null,
     broadcastHasButton
       ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
       : null,
@@ -1461,6 +1465,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     'Текущий канал',
     !editingManagedBroadcast && broadcastBotHasContent ? 'В боте' : null,
     broadcastImageEnabled ? 'Фото' : null,
+    editingBroadcastHasVideo ? 'Видео' : null,
     broadcastHasButton
       ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
       : null,
@@ -1690,6 +1695,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     const handoffPayload = buildBroadcastHandoffPayload();
 
     if (editingManagedBroadcast) {
+      const keepVideoMedia =
+        !broadcastImageEnabled &&
+        editingManagedBroadcast.mediaType === 'video' &&
+        editingManagedBroadcast.mediaPayload;
       const payload: SendBroadcastPayload = {
         text: normalizedBroadcastText,
         textFormat: editingManagedBroadcast.textFormat,
@@ -1698,6 +1707,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
         imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
         imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+        mediaType: keepVideoMedia ? 'video' : null,
+        mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
+        mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
+        mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
       };
       updateManagedBroadcastMutation.mutate({
         broadcastId: editingManagedBroadcast.id,
@@ -2074,7 +2087,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 value={broadcastText}
                                 className="broadcast-message-card__preview max-markdown-preview--clamp-3"
                                 normalizeWhitespace
-                                fallback={broadcastImageEnabled ? 'Фото без текста' : 'Пусто'}
+                                fallback={
+                                  broadcastImageEnabled
+                                    ? 'Фото без текста'
+                                    : editingBroadcastHasVideo
+                                      ? 'Видео без текста'
+                                      : 'Пусто'
+                                }
                               />
                             ) : (
                               <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">

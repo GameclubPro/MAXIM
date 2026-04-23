@@ -1467,6 +1467,7 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
       ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
       : null,
     broadcast.hasImage ? 'Фото' : null,
+    broadcast.hasVideo ? 'Видео' : null,
   ]
     .filter((item): item is string => Boolean(item))
     .join(' · ');
@@ -4300,8 +4301,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     let hasError = false;
     if (editingManagedBroadcast) {
-      if (!normalizedText && !mailingImageEnabled) {
-        setMailingTextError('В сохранённой рассылке нет текста или фото.');
+      const keepVideoMedia =
+        !mailingImageEnabled &&
+        editingManagedBroadcast.mediaType === 'video' &&
+        editingManagedBroadcast.mediaPayload;
+      if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
+        setMailingTextError('В сохранённой рассылке нет текста, фото или видео.');
         hasError = true;
       } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
         setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
@@ -4359,6 +4364,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
 
     if (editingManagedBroadcast) {
+      const keepVideoMedia =
+        !mailingImageEnabled &&
+        editingManagedBroadcast.mediaType === 'video' &&
+        editingManagedBroadcast.mediaPayload;
       const payload: SendBroadcastPayload = {
         text: normalizedText,
         textFormat: editingManagedBroadcast.textFormat,
@@ -4367,6 +4376,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
         imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
         imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+        mediaType: keepVideoMedia ? 'video' : null,
+        mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
+        mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
+        mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
       };
       updateManagedBroadcastMutation.mutate({
         broadcastId: editingManagedBroadcast.id,
@@ -5071,14 +5084,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const normalizedMailingText = mailingText.trim();
   const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
   const mailingButtonEnabled = normalizedMailingButtons.length > 0;
+  const editingMailingHasVideo =
+    editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
   const mailingContentReady = editingManagedBroadcast
-    ? normalizedMailingText.length > 0 || mailingImageEnabled
+    ? normalizedMailingText.length > 0 || mailingImageEnabled || editingMailingHasVideo
     : mailingBotHasContent;
   const mailingQuickSchedule = mailingQuickPreset
     ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
     : null;
   const mailingMessageFacts = [
     mailingImageEnabled ? 'Фото' : null,
+    editingMailingHasVideo ? 'Видео' : null,
     mailingButtonEnabled
       ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
       : null,
@@ -5139,6 +5155,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingHeaderTargetLabel,
     !editingManagedBroadcast && mailingBotHasContent ? 'В боте' : null,
     mailingImageEnabled ? 'Фото' : null,
+    editingMailingHasVideo ? 'Видео' : null,
     mailingButtonEnabled
       ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
       : null,
@@ -10081,7 +10098,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         value={mailingText}
                                         className="broadcast-message-card__preview max-markdown-preview--clamp-3"
                                         normalizeWhitespace
-                                        fallback={mailingImageEnabled ? 'Фото без текста' : 'Пусто'}
+                                        fallback={
+                                          mailingImageEnabled
+                                            ? 'Фото без текста'
+                                            : editingMailingHasVideo
+                                              ? 'Видео без текста'
+                                              : 'Пусто'
+                                        }
                                       />
                                     ) : (
                                       <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">

@@ -437,6 +437,11 @@ type PreparedManagedBroadcastRequest = {
   normalizedSourceText: string;
 };
 
+type ManagedBroadcastResolvedMedia = {
+  imagePayload?: Record<string, unknown>;
+  attachments?: MaxAttachmentPayload[];
+};
+
 type ManagedBroadcastSchedulePlan = {
   scheduleMode: BroadcastScheduleMode;
   scheduleTimezone: string;
@@ -9527,6 +9532,12 @@ export class AdminService implements OnModuleDestroy {
           imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
           imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
           imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+          mediaType: request.payload.mediaType,
+          mediaPayload: request.payload.mediaPayload
+            ? (request.payload.mediaPayload as Prisma.InputJsonValue)
+            : Prisma.DbNull,
+          mediaMimeType: request.payload.mediaMimeType,
+          mediaFileName: request.payload.mediaFileName,
           scheduleMode: schedulePlan.scheduleMode,
           scheduleTimezone: schedulePlan.scheduleTimezone,
           nextSendAt: schedulePlan.nextSendAt,
@@ -9968,25 +9979,21 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const resolvedBotIdsByChatId = new Map<string, string | undefined>();
-    const imagePayloadByBotId = new Map<string, Record<string, unknown> | undefined>();
+    const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
     const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
       if (!resolvedBotIdsByChatId.has(chatId)) {
         resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
       }
       return resolvedBotIdsByChatId.get(chatId);
     };
-    const resolveImagePayload = async (
+    const resolveMedia = async (
       botId: string | undefined,
-    ): Promise<Record<string, unknown> | undefined> => {
-      if (!request.payload.imageEnabled) {
-        return undefined;
-      }
-
+    ): Promise<ManagedBroadcastResolvedMedia> => {
       const cacheKey = botId ?? '__default__';
-      if (!imagePayloadByBotId.has(cacheKey)) {
-        imagePayloadByBotId.set(
+      if (!mediaByBotId.has(cacheKey)) {
+        mediaByBotId.set(
           cacheKey,
-          await this.uploadManagedBroadcastImage(
+          await this.resolveManagedBroadcastMedia(
             request.payload,
             entityType,
             sourceChatId,
@@ -9996,7 +10003,7 @@ export class AdminService implements OnModuleDestroy {
         );
       }
 
-      return imagePayloadByBotId.get(cacheKey);
+      return mediaByBotId.get(cacheKey) ?? {};
     };
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
@@ -10004,7 +10011,7 @@ export class AdminService implements OnModuleDestroy {
 
     for (const chatId of request.targetChatIds) {
       const resolvedBotId = await resolveTargetBotId(chatId);
-      const imagePayload = await resolveImagePayload(resolvedBotId);
+      const media = await resolveMedia(resolvedBotId);
       let chatFailed = false;
       for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
         const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
@@ -10014,10 +10021,10 @@ export class AdminService implements OnModuleDestroy {
             entityType,
             request.payload,
             request.normalizedSourceText,
-            imagePayload,
+            media,
             resolvedBotId,
           );
-          if (occurrenceDelayMs === 0 && imagePayload) {
+          if (occurrenceDelayMs === 0 && this.hasRetriableMaxAttachment(message.messageOptions)) {
             await this.sendBroadcastImageMessageWithRetry(
               chatId,
               message.messageText,
@@ -10164,6 +10171,12 @@ export class AdminService implements OnModuleDestroy {
           imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
           imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
           imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+          mediaType: request.payload.mediaType,
+          mediaPayload: request.payload.mediaPayload
+            ? (request.payload.mediaPayload as Prisma.InputJsonValue)
+            : Prisma.DbNull,
+          mediaMimeType: request.payload.mediaMimeType,
+          mediaFileName: request.payload.mediaFileName,
           scheduleMode: schedulePlan.scheduleMode,
           scheduleTimezone: schedulePlan.scheduleTimezone,
           nextSendAt: schedulePlan.nextSendAt,
@@ -10362,6 +10375,10 @@ export class AdminService implements OnModuleDestroy {
           imageBase64: row.imageBase64,
           imageMimeType: row.imageMimeType,
           imageFileName: row.imageFileName,
+          mediaType: this.readManagedBroadcastMediaType(row.mediaType),
+          mediaPayload: this.readObjectPayloadOrNull(row.mediaPayload),
+          mediaMimeType: row.mediaMimeType,
+          mediaFileName: row.mediaFileName,
           scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
           scheduleTimezone: row.scheduleTimezone,
           scheduledSlots: [],
@@ -10432,25 +10449,21 @@ export class AdminService implements OnModuleDestroy {
       }
 
       const resolvedBotIdsByChatId = new Map<string, string | undefined>();
-      const imagePayloadByBotId = new Map<string, Record<string, unknown> | undefined>();
+      const mediaByBotId = new Map<string, ManagedBroadcastResolvedMedia>();
       const resolveTargetBotId = async (chatId: string): Promise<string | undefined> => {
         if (!resolvedBotIdsByChatId.has(chatId)) {
           resolvedBotIdsByChatId.set(chatId, await this.resolveDeliveryBotAssignment(chatId));
         }
         return resolvedBotIdsByChatId.get(chatId);
       };
-      const resolveImagePayload = async (
+      const resolveMedia = async (
         botId: string | undefined,
-      ): Promise<Record<string, unknown> | undefined> => {
-        if (!request.payload.imageEnabled) {
-          return undefined;
-        }
-
+      ): Promise<ManagedBroadcastResolvedMedia> => {
         const cacheKey = botId ?? '__default__';
-        if (!imagePayloadByBotId.has(cacheKey)) {
-          imagePayloadByBotId.set(
+        if (!mediaByBotId.has(cacheKey)) {
+          mediaByBotId.set(
             cacheKey,
-            await this.uploadManagedBroadcastImage(
+            await this.resolveManagedBroadcastMedia(
               request.payload,
               row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
               row.sourceChatId,
@@ -10460,7 +10473,7 @@ export class AdminService implements OnModuleDestroy {
           );
         }
 
-        return imagePayloadByBotId.get(cacheKey);
+        return mediaByBotId.get(cacheKey) ?? {};
       };
 
       for (const delivery of initialDeliveries) {
@@ -10486,13 +10499,13 @@ export class AdminService implements OnModuleDestroy {
         let sentMessageId: string;
         try {
           const resolvedBotId = await resolveTargetBotId(delivery.targetChatId);
-          const imagePayload = await resolveImagePayload(resolvedBotId);
+          const media = await resolveMedia(resolvedBotId);
           const message = await this.buildManagedBroadcastMessage(
             delivery.targetChatId,
             row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
             request.payload,
             request.normalizedSourceText,
-            imagePayload,
+            media,
             resolvedBotId,
           );
           sentMessageId = await this.sendManagedBroadcastMessageImmediateWithId(
@@ -10730,12 +10743,12 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     payload: SendBroadcastRequest,
     normalizedSourceText: string,
-    imagePayload?: Record<string, unknown>,
+    media: ManagedBroadcastResolvedMedia,
     botId?: string,
   ): Promise<{
     messageText: string;
     messageOptions:
-      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'>
+      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
       | undefined;
   }> {
     const broadcastButtons = await this.resolveBroadcastButtons(
@@ -10749,22 +10762,24 @@ export class AdminService implements OnModuleDestroy {
       },
       botId,
     );
+    const hasMedia = Boolean(media.imagePayload) || Boolean(media.attachments?.length);
     const hasMeaningfulText = normalizedSourceText.trim().length > 0;
     const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
     const messageText = shouldUseRichText
       ? renderSupportedMarkdownAsHtml(normalizedSourceText)
       : hasMeaningfulText
         ? normalizedSourceText
-        : payload.imageEnabled
+        : hasMedia
           ? ' '
           : '';
     const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
-      broadcastButtons.length > 0 || imagePayload || textFormat
+      broadcastButtons.length > 0 || hasMedia || textFormat
         ? {
             ...(textFormat ? { textFormat } : {}),
             ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
-            ...(imagePayload ? { imagePayload } : {}),
+            ...(media.imagePayload ? { imagePayload: media.imagePayload } : {}),
+            ...(media.attachments?.length ? { attachments: media.attachments } : {}),
           }
         : undefined;
 
@@ -10772,6 +10787,38 @@ export class AdminService implements OnModuleDestroy {
       messageText,
       messageOptions,
     };
+  }
+
+  private async resolveManagedBroadcastMedia(
+    payload: SendBroadcastRequest,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+    actorUserId: string,
+    botId?: string,
+  ): Promise<ManagedBroadcastResolvedMedia> {
+    if (payload.imageEnabled) {
+      const imagePayload = await this.uploadManagedBroadcastImage(
+        payload,
+        entityType,
+        sourceChatId,
+        actorUserId,
+        botId,
+      );
+      return imagePayload ? { imagePayload } : {};
+    }
+
+    if (payload.mediaType === 'video' && payload.mediaPayload) {
+      return {
+        attachments: [
+          {
+            type: 'video',
+            payload: payload.mediaPayload,
+          },
+        ],
+      };
+    }
+
+    return {};
   }
 
   private async uploadManagedBroadcastImage(
@@ -10855,6 +10902,10 @@ export class AdminService implements OnModuleDestroy {
 
   private normalizeBroadcastScheduleMode(value: string): BroadcastScheduleMode {
     return value === 'calendar' ? 'calendar' : 'legacy';
+  }
+
+  private readManagedBroadcastMediaType(value: unknown): SendBroadcastRequest['mediaType'] {
+    return this.readLowerString(value) === 'video' ? 'video' : null;
   }
 
   private async planManagedBroadcastSchedule(
@@ -12266,6 +12317,7 @@ export class AdminService implements OnModuleDestroy {
       buttonUrl: row.buttonUrl,
       buttonText: row.buttonText,
     });
+    const hasVideo = this.readManagedBroadcastMediaType(row.mediaType) === 'video';
 
     return {
       id: row.id,
@@ -12274,12 +12326,15 @@ export class AdminService implements OnModuleDestroy {
         ? normalizedText.slice(0, 160)
         : row.imageEnabled
           ? 'Фото без текста'
-          : 'Пустая рассылка',
+          : hasVideo
+            ? 'Видео без текста'
+            : 'Пустая рассылка',
       textLength: row.text.length,
       targetMode,
       applyToAllChats: row.applyToAllChats,
       targetChats: targetChatIds.length,
       hasImage: row.imageEnabled,
+      hasVideo,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,
       scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
@@ -12316,6 +12371,7 @@ export class AdminService implements OnModuleDestroy {
       buttonUrl: row.buttonUrl,
       buttonText: row.buttonText,
     });
+    const mediaType = this.readManagedBroadcastMediaType(row.mediaType);
 
     return {
       id: row.id,
@@ -12333,6 +12389,10 @@ export class AdminService implements OnModuleDestroy {
       imageBase64: row.imageBase64,
       imageMimeType: row.imageMimeType,
       imageFileName: row.imageFileName,
+      mediaType,
+      mediaPayload: mediaType ? this.readObjectPayloadOrNull(row.mediaPayload) : null,
+      mediaMimeType: mediaType ? row.mediaMimeType : '',
+      mediaFileName: mediaType ? row.mediaFileName : '',
       scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
       scheduleTimezone: row.scheduleTimezone,
       scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),

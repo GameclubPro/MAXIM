@@ -1553,13 +1553,11 @@ describe('PrivateControlService', () => {
   it('acknowledges slow private callbacks and continues them in background', async () => {
     const { service, maxClient } = createHarness();
 
-    (service as unknown as { privateCallbackInlineBudgetMs: number }).privateCallbackInlineBudgetMs =
-      1;
+    (
+      service as unknown as { privateCallbackInlineBudgetMs: number }
+    ).privateCallbackInlineBudgetMs = 1;
     maxClient.answerCallback
-      .mockImplementationOnce(
-        () =>
-          new Promise<void>(() => undefined),
-      )
+      .mockImplementationOnce(() => new Promise<void>(() => undefined))
       .mockResolvedValueOnce(undefined);
 
     await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
@@ -2290,7 +2288,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('**Рассылка**');
     expect(getLastSentText(maxClient)).toContain('**Контент**');
     expect(getLastSentText(maxClient)).toContain('**Важный** анонс\n\n  Второй абзац с  пробелом');
-    expect(getLastSentText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
+    expect(getLastSentText(maxClient)).toContain('Дальше: Пришлите новый текст, фото или видео.');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
@@ -2351,7 +2349,7 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Контент:');
     expect(getLastUiText(maxClient)).toContain('Промо блок');
     expect(getLastUiText(maxClient)).toContain('Статус: Контент сохранён.');
-    expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
+    expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст, фото или видео.');
   });
 
   it('renders bold hyperlink preview as markdown in private bot', async () => {
@@ -2534,7 +2532,7 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
 
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
@@ -3091,7 +3089,7 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(getLastSentText(maxClient)).toContain(`Канал: ${channels[0].title}`);
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
     expect(getLastSentText(maxClient)).not.toContain('Комменты:');
     expect(getLastSentText(maxClient)).not.toContain('Предложка:');
     expect(getLastSentText(maxClient)).not.toContain('Кнопка предложки:');
@@ -3418,6 +3416,75 @@ describe('PrivateControlService', () => {
     }
   });
 
+  it('allows adding video after text on the broadcast screen and sends it as media payload', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    const originalFetch = global.fetch;
+    const videoBuffer = Buffer.from('test-video');
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'video/mp4' : null),
+      },
+      arrayBuffer: async () =>
+        videoBuffer.buffer.slice(
+          videoBuffer.byteOffset,
+          videoBuffer.byteOffset + videoBuffer.byteLength,
+        ),
+    }) as typeof fetch;
+
+    try {
+      await service.handoffBroadcastFromMiniapp(
+        chats[0].id,
+        actor,
+        {
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+        'chat',
+      );
+
+      await service.handleBotStarted(createBotStartedPrivateUpdate());
+      await service.handleUpdate(createPrivateTextUpdate('Текст перед видео'));
+      await service.handleUpdate(createPrivateVideoUpdate());
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+      expect(maxClient.uploadVideo).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'channel-suggestion-video.mp4',
+        'video/mp4',
+      );
+      expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+        chats[0].id,
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          text: 'Текст перед видео',
+          imageEnabled: false,
+          mediaType: 'video',
+          mediaPayload: { token: 'upload-video-token-1' },
+          mediaMimeType: 'video/mp4',
+          mediaFileName: 'channel-suggestion-video.mp4',
+        }),
+        'private_bot',
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
   it('logs callback and session details for bad request errors in broadcast flow', async () => {
     const sendChannelBroadcast = jest.fn().mockRejectedValue(
       new BadRequestException({
@@ -3585,9 +3652,7 @@ describe('PrivateControlService', () => {
     );
 
     expect(getLastSentText(maxClient)).toContain('<p><strong>Профиль пользователя</strong></p>');
-    expect(getLastSentText(maxClient)).toContain(
-      '<a href="max://user/user-42">Юлия Максимова</a>',
-    );
+    expect(getLastSentText(maxClient)).toContain('<a href="max://user/user-42">Юлия Максимова</a>');
     expect(getLastSendOptions(maxClient)).toEqual(
       expect.objectContaining({
         textFormat: 'html',
@@ -3626,9 +3691,7 @@ describe('PrivateControlService', () => {
       createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
     );
 
-    expect(getLastSentText(maxClient)).toContain(
-      '<a href="max://user/user-99">Без username</a>',
-    );
+    expect(getLastSentText(maxClient)).toContain('<a href="max://user/user-99">Без username</a>');
   });
 
   it('proactively delivers profile mention handoff into a known private chat and skips duplicate bot_started reply', async () => {

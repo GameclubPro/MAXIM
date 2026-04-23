@@ -103,6 +103,10 @@ function createPrismaMock() {
     imageBase64: '',
     imageMimeType: '',
     imageFileName: '',
+    mediaType: null,
+    mediaPayload: null,
+    mediaMimeType: '',
+    mediaFileName: '',
     scheduleMode: 'legacy',
     scheduleTimezone: 'Europe/Moscow',
     nextSendAt: null,
@@ -16684,8 +16688,16 @@ describe('AdminService.sendBroadcast', () => {
     expect(baseRow).not.toBeNull();
 
     const currentSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(baseRow, []);
-    const currentSummary = (service as any).mapManagedBroadcastSummary(baseRow, currentSnapshot, []);
-    const currentDetails = (service as any).mapManagedBroadcastDetails(baseRow, currentSnapshot, []);
+    const currentSummary = (service as any).mapManagedBroadcastSummary(
+      baseRow,
+      currentSnapshot,
+      [],
+    );
+    const currentDetails = (service as any).mapManagedBroadcastDetails(
+      baseRow,
+      currentSnapshot,
+      [],
+    );
 
     expect(currentSummary.targetMode).toBe('current');
     expect(currentDetails.targetMode).toBe('current');
@@ -16725,6 +16737,23 @@ describe('AdminService.sendBroadcast', () => {
 
     expect(allSummary.targetMode).toBe('all');
     expect(allDetails.targetMode).toBe('all');
+
+    const videoRow = {
+      ...baseRow!,
+      mediaType: 'video',
+      mediaPayload: { token: 'video-token-1' },
+      mediaMimeType: 'video/mp4',
+      mediaFileName: 'announce.mp4',
+    };
+    const videoSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(videoRow, []);
+    const videoSummary = (service as any).mapManagedBroadcastSummary(videoRow, videoSnapshot, []);
+    const videoDetails = (service as any).mapManagedBroadcastDetails(videoRow, videoSnapshot, []);
+
+    expect(videoSummary.hasVideo).toBe(true);
+    expect(videoDetails.mediaType).toBe('video');
+    expect(videoDetails.mediaPayload).toEqual({ token: 'video-token-1' });
+    expect(videoDetails.mediaMimeType).toBe('video/mp4');
+    expect(videoDetails.mediaFileName).toBe('announce.mp4');
   });
 
   it('keeps selected target mode when updating a scheduled broadcast', async () => {
@@ -18349,6 +18378,83 @@ describe('AdminService.sendChannelBroadcast', () => {
         }),
       }),
     });
+  });
+
+  it('sends immediate broadcast to channel with a video attachment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: false,
+      postSuggestionsButtonText: 'Предложить пост',
+      commentsEnabled: false,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        mediaType: 'video',
+        mediaPayload: { token: 'video-token-1' },
+        mediaMimeType: 'video/mp4',
+        mediaFileName: 'announce.mp4',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'channel-1',
+      ' ',
+      {
+        attachments: [{ type: 'video', payload: { token: 'video-token-1' } }],
+      },
+      { immediate: true },
+    );
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
   });
 
   it('preserves markdown formatting when channel broadcast has no button', async () => {

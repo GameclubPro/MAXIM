@@ -787,6 +787,7 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     applyToAllChats: details.applyToAllChats,
     targetChats: details.targetChatIds.length || 1,
     hasImage: details.imageEnabled,
+    hasVideo: details.mediaType === 'video',
     buttons: details.buttons,
     buttonEnabled: details.buttonEnabled,
     scheduleMode: details.scheduleMode,
@@ -851,7 +852,9 @@ function buildBroadcastHandoffState(details: ManagedBroadcastDetails): Broadcast
     cycleEnabled: details.cycleEnabled,
     cycleEveryHours: details.cycleEveryHours,
     cycleCount: details.cycleCount,
-    hasContent: Boolean(details.text.trim() || details.imageEnabled),
+    hasContent: Boolean(
+      details.text.trim() || details.imageEnabled || details.mediaType === 'video',
+    ),
   });
 }
 
@@ -2934,7 +2937,8 @@ async function handleChatRequest(
               text: replyTarget.text,
             }
           : null,
-        attachments: dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
+        attachments:
+          dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
         reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {
@@ -3594,7 +3598,8 @@ async function handleChannelRequest(
               text: replyTarget.text,
             }
           : null,
-        attachments: dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
+        attachments:
+          dialogType === 'comments' ? buildPreviewDialogAttachments(payload.attachments) : [],
         reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {

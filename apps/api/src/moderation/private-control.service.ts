@@ -164,6 +164,10 @@ type PrivateBroadcastDraft = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  mediaType: 'video' | null;
+  mediaPayload: Record<string, unknown> | null;
+  mediaMimeType: string;
+  mediaFileName: string;
   scheduleMode: BroadcastScheduleMode;
   scheduleTimezone: string;
   scheduledSlots: string[];
@@ -1138,6 +1142,10 @@ const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   imageBase64: '',
   imageMimeType: '',
   imageFileName: '',
+  mediaType: null,
+  mediaPayload: null,
+  mediaMimeType: '',
+  mediaFileName: '',
   scheduleMode: 'legacy',
   scheduleTimezone: 'Europe/Moscow',
   scheduledSlots: [],
@@ -4379,6 +4387,10 @@ export class PrivateControlService {
         session.broadcastDraft.imageBase64 = '';
         session.broadcastDraft.imageMimeType = '';
         session.broadcastDraft.imageFileName = '';
+        session.broadcastDraft.mediaType = null;
+        session.broadcastDraft.mediaPayload = null;
+        session.broadcastDraft.mediaMimeType = '';
+        session.broadcastDraft.mediaFileName = '';
         session.pendingInput = null;
         const view = await this.renderBroadcastScreen(context, session, 'Черновик очищен.');
         await this.respond(context, session, view, {
@@ -4394,10 +4406,14 @@ export class PrivateControlService {
         session.broadcastDraft.imageBase64 = '';
         session.broadcastDraft.imageMimeType = '';
         session.broadcastDraft.imageFileName = '';
+        session.broadcastDraft.mediaType = null;
+        session.broadcastDraft.mediaPayload = null;
+        session.broadcastDraft.mediaMimeType = '';
+        session.broadcastDraft.mediaFileName = '';
         const view = await this.renderBroadcastScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Фото удалено',
+          notification: 'Медиа удалено',
         });
         return;
       }
@@ -4405,7 +4421,9 @@ export class PrivateControlService {
       case 'broadcast_send': {
         this.assertChatSelected(session);
         const hasContent =
-          session.broadcastDraft.text.trim().length > 0 || session.broadcastDraft.imageEnabled;
+          session.broadcastDraft.text.trim().length > 0 ||
+          session.broadcastDraft.imageEnabled ||
+          Boolean(session.broadcastDraft.mediaPayload);
         if (!hasContent) {
           session.pendingInput = { kind: 'broadcast_content' };
           const view = this.renderInputPrompt(session.pendingInput);
@@ -5434,24 +5452,49 @@ export class PrivateControlService {
 
       case 'broadcast_photo': {
         const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-        if (!imageSourceAttachment) {
+        const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
+        if (imageSourceAttachment && videoSourceAttachment) {
           throw new BadRequestException(
-            'Отправьте фото или PNG/WebP/JPG файлом отдельным сообщением.',
+            'В одну рассылку можно добавить либо фото, либо одно видео.',
+          );
+        }
+        if (!imageSourceAttachment && !videoSourceAttachment) {
+          throw new BadRequestException(
+            'Отправьте фото, PNG/WebP/JPG файлом или видео отдельным сообщением.',
           );
         }
 
-        const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
-        session.broadcastDraft.imageEnabled = true;
-        session.broadcastDraft.imageBase64 = downloaded.base64;
-        session.broadcastDraft.imageMimeType = downloaded.mimeType;
-        session.broadcastDraft.imageFileName = downloaded.fileName;
+        if (videoSourceAttachment) {
+          const video = await this.buildSuggestionMediaDraftFromVideo(
+            videoSourceAttachment,
+            'private-broadcast',
+          );
+          session.broadcastDraft.imageEnabled = false;
+          session.broadcastDraft.imageBase64 = '';
+          session.broadcastDraft.imageMimeType = '';
+          session.broadcastDraft.imageFileName = '';
+          session.broadcastDraft.mediaType = 'video';
+          session.broadcastDraft.mediaPayload = video.payload;
+          session.broadcastDraft.mediaMimeType = video.mimeType;
+          session.broadcastDraft.mediaFileName = video.fileName;
+        } else if (imageSourceAttachment) {
+          const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
+          session.broadcastDraft.imageEnabled = true;
+          session.broadcastDraft.imageBase64 = downloaded.base64;
+          session.broadcastDraft.imageMimeType = downloaded.mimeType;
+          session.broadcastDraft.imageFileName = downloaded.fileName;
+          session.broadcastDraft.mediaType = null;
+          session.broadcastDraft.mediaPayload = null;
+          session.broadcastDraft.mediaMimeType = '';
+          session.broadcastDraft.mediaFileName = '';
+        }
 
         session.pendingInput = null;
         session.screen = 'broadcast';
         const view = await this.renderBroadcastScreen(
           context,
           session,
-          'Фото добавлено в черновик.',
+          videoSourceAttachment ? 'Видео добавлено в черновик.' : 'Фото добавлено в черновик.',
         );
         await this.respond(context, session, view, {
           callbackId: null,
@@ -6043,14 +6086,14 @@ export class PrivateControlService {
     const formattedText = this.extractIncomingFormattedText(context.update, rawText);
     const normalizedText = formattedText.trim();
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+    const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
 
-    if (!normalizedText && !imageSourceAttachment) {
-      if (this.hasVideoAttachment(context.update)) {
-        throw new BadRequestException(
-          'Видео в рассылке пока не поддерживается. Отправьте текст или изображение.',
-        );
-      }
-      throw new BadRequestException('Отправьте текст или изображение отдельным сообщением.');
+    if (imageSourceAttachment && videoSourceAttachment) {
+      throw new BadRequestException('В одну рассылку можно добавить либо фото, либо одно видео.');
+    }
+
+    if (!normalizedText && !imageSourceAttachment && !videoSourceAttachment) {
+      throw new BadRequestException('Отправьте текст, изображение или видео отдельным сообщением.');
     }
 
     if (normalizedText) {
@@ -6066,6 +6109,25 @@ export class PrivateControlService {
       session.broadcastDraft.imageBase64 = downloaded.base64;
       session.broadcastDraft.imageMimeType = downloaded.mimeType;
       session.broadcastDraft.imageFileName = downloaded.fileName;
+      session.broadcastDraft.mediaType = null;
+      session.broadcastDraft.mediaPayload = null;
+      session.broadcastDraft.mediaMimeType = '';
+      session.broadcastDraft.mediaFileName = '';
+    }
+
+    if (videoSourceAttachment) {
+      const video = await this.buildSuggestionMediaDraftFromVideo(
+        videoSourceAttachment,
+        'private-broadcast',
+      );
+      session.broadcastDraft.imageEnabled = false;
+      session.broadcastDraft.imageBase64 = '';
+      session.broadcastDraft.imageMimeType = '';
+      session.broadcastDraft.imageFileName = '';
+      session.broadcastDraft.mediaType = 'video';
+      session.broadcastDraft.mediaPayload = video.payload;
+      session.broadcastDraft.mediaMimeType = video.mimeType;
+      session.broadcastDraft.mediaFileName = video.fileName;
     }
 
     session.pendingInput = null;
@@ -6150,6 +6212,7 @@ export class PrivateControlService {
       buttons: draft.buttons.map((button) => ({ ...button })),
       targetChatIds: [...draft.targetChatIds],
       scheduledSlots: [...draft.scheduledSlots],
+      mediaPayload: draft.mediaPayload ? { ...draft.mediaPayload } : null,
     };
   }
 
@@ -6238,7 +6301,7 @@ export class PrivateControlService {
       cycleEnabled: draft.cycleEnabled,
       cycleEveryHours: draft.cycleEveryHours,
       cycleCount: draft.cycleCount,
-      hasContent: Boolean(draft.text.trim() || draft.imageEnabled),
+      hasContent: Boolean(draft.text.trim() || draft.imageEnabled || draft.mediaPayload),
     });
   }
 
@@ -6421,6 +6484,10 @@ export class PrivateControlService {
       imageBase64: draft.imageBase64,
       imageMimeType: draft.imageMimeType,
       imageFileName: draft.imageFileName,
+      mediaType: draft.mediaType,
+      mediaPayload: draft.mediaPayload,
+      mediaMimeType: draft.mediaMimeType,
+      mediaFileName: draft.mediaFileName,
       scheduleMode: draft.scheduleMode,
       scheduleTimezone: draft.scheduleTimezone,
       scheduledSlots: [...draft.scheduledSlots].sort((left, right) => left.localeCompare(right)),
@@ -7426,7 +7493,8 @@ export class PrivateControlService {
       entityType,
     );
     const hasText = draft.text.trim().length > 0;
-    const hasContent = hasText || draft.imageEnabled;
+    const hasVideo = draft.mediaType === 'video' && Boolean(draft.mediaPayload);
+    const hasContent = hasText || draft.imageEnabled || hasVideo;
     const usesMarkdown = hasText && draft.textFormat === 'markdown';
     const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
     const imagePayload = hasContent
@@ -7442,13 +7510,14 @@ export class PrivateControlService {
       : undefined;
     const promptText =
       waitingForContent || !hasContent
-        ? 'Пришлите текст или фото.'
-        : 'Пришлите новый текст или фото.';
+        ? 'Пришлите текст, фото или видео.'
+        : 'Пришлите новый текст, фото или видео.';
     const textPayload = usesMarkdown
       ? this.buildBroadcastMarkdownPreviewText({
           entityLead,
           contentText: hasText ? draft.text : null,
           hasImage: draft.imageEnabled,
+          hasVideo,
           promptText,
           notice,
         })
@@ -7456,6 +7525,7 @@ export class PrivateControlService {
           entityLead,
           contentText: hasText ? draft.text : null,
           hasImage: draft.imageEnabled,
+          hasVideo,
           promptText,
           notice,
         });
@@ -7475,6 +7545,10 @@ export class PrivateControlService {
     }
 
     if (hasContent && draft.imageEnabled) {
+      rows.push([this.callbackButton('🗑️ Убрать', this.cb('broadcast_clear_photo'), 'negative')]);
+    }
+
+    if (hasContent && hasVideo) {
       rows.push([this.callbackButton('🗑️ Убрать', this.cb('broadcast_clear_photo'), 'negative')]);
     }
 
@@ -7796,6 +7870,7 @@ export class PrivateControlService {
     entityLead: string | null;
     contentText: string | null;
     hasImage: boolean;
+    hasVideo: boolean;
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat?: MaxSendMessageOptions['textFormat'] } {
@@ -7805,9 +7880,11 @@ export class PrivateControlService {
       lines.push('', payload.entityLead);
     }
 
-    if (payload.contentText || payload.hasImage) {
+    if (payload.contentText || payload.hasImage || payload.hasVideo) {
       lines.push('', 'Контент:');
-      lines.push(payload.contentText ?? 'Фото без текста.');
+      lines.push(
+        payload.contentText ?? (payload.hasVideo ? 'Видео без текста.' : 'Фото без текста.'),
+      );
     }
 
     if (payload.notice) {
@@ -7825,6 +7902,7 @@ export class PrivateControlService {
     entityLead: string | null;
     contentText: string | null;
     hasImage: boolean;
+    hasVideo: boolean;
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
@@ -7834,8 +7912,13 @@ export class PrivateControlService {
       lines.push('', payload.entityLead);
     }
 
-    if (payload.contentText || payload.hasImage) {
-      lines.push('', this.markdownTitle('Контент'), '', payload.contentText ?? 'Фото без текста.');
+    if (payload.contentText || payload.hasImage || payload.hasVideo) {
+      lines.push(
+        '',
+        this.markdownTitle('Контент'),
+        '',
+        payload.contentText ?? (payload.hasVideo ? 'Видео без текста.' : 'Фото без текста.'),
+      );
     }
 
     if (payload.notice) {
@@ -9253,7 +9336,7 @@ export class PrivateControlService {
         return {
           title: 'Контент рассылки',
           description:
-            'Отправьте следующим сообщением текст, фото или подпись с фото. Бот добавит это в черновик.',
+            'Отправьте следующим сообщением текст, фото, видео или подпись к медиа. Бот добавит это в черновик.',
         };
       case 'search_settings':
         return {
@@ -9305,8 +9388,8 @@ export class PrivateControlService {
         };
       case 'broadcast_photo':
         return {
-          title: 'Фото для рассылки',
-          description: 'Отправьте фото следующим сообщением. Бот добавит его в черновик.',
+          title: 'Медиа для рассылки',
+          description: 'Отправьте фото или видео следующим сообщением. Бот добавит его в черновик.',
         };
       case 'rules_text':
         return {
@@ -9736,6 +9819,12 @@ export class PrivateControlService {
         session.broadcastDraft.imageBase64 = '';
         session.broadcastDraft.imageMimeType = '';
         session.broadcastDraft.imageFileName = '';
+      }
+      if (next) {
+        session.broadcastDraft.mediaType = null;
+        session.broadcastDraft.mediaPayload = null;
+        session.broadcastDraft.mediaMimeType = '';
+        session.broadcastDraft.mediaFileName = '';
       }
       return;
     }
@@ -12951,6 +13040,11 @@ export class PrivateControlService {
         : [],
       applyToAllChats: row.applyToAllChats === true,
     });
+    const mediaPayload =
+      row.mediaPayload && typeof row.mediaPayload === 'object' && !Array.isArray(row.mediaPayload)
+        ? (row.mediaPayload as Record<string, unknown>)
+        : null;
+    const mediaType = row.mediaType === 'video' && mediaPayload ? 'video' : null;
 
     return {
       text: typeof row.text === 'string' ? row.text : '',
@@ -12962,10 +13056,22 @@ export class PrivateControlService {
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
       buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
-      imageEnabled: row.imageEnabled === true,
-      imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
-      imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
-      imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
+      imageEnabled: mediaType ? false : row.imageEnabled === true,
+      imageBase64: mediaType ? '' : typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
+      imageMimeType: mediaType
+        ? ''
+        : typeof row.imageMimeType === 'string'
+          ? row.imageMimeType
+          : '',
+      imageFileName: mediaType
+        ? ''
+        : typeof row.imageFileName === 'string'
+          ? row.imageFileName
+          : '',
+      mediaType,
+      mediaPayload: mediaType ? mediaPayload : null,
+      mediaMimeType: mediaType && typeof row.mediaMimeType === 'string' ? row.mediaMimeType : '',
+      mediaFileName: mediaType && typeof row.mediaFileName === 'string' ? row.mediaFileName : '',
       scheduleMode: row.scheduleMode === 'calendar' ? 'calendar' : 'legacy',
       scheduleTimezone:
         typeof row.scheduleTimezone === 'string' && row.scheduleTimezone.trim().length > 0

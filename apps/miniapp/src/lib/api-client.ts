@@ -100,6 +100,10 @@ export type SendBroadcastPayload = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  mediaType?: 'video' | null;
+  mediaPayload?: Record<string, unknown> | null;
+  mediaMimeType?: string;
+  mediaFileName?: string;
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;

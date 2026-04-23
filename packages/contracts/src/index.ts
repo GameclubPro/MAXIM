@@ -89,6 +89,7 @@ export const managedGiveawayWinnerStatusSchema = z.enum([
 ]);
 export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
 export const broadcastTargetModeSchema = z.enum(['current', 'selected', 'all']);
+export const broadcastMediaTypeSchema = z.enum(['video']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
@@ -105,6 +106,7 @@ export type GiveawayEligibilityState = z.infer<typeof giveawayEligibilityStateSc
 export type ManagedGiveawayWinnerStatus = z.infer<typeof managedGiveawayWinnerStatusSchema>;
 export type BroadcastTextFormat = z.infer<typeof broadcastTextFormatSchema>;
 export type BroadcastTargetMode = z.infer<typeof broadcastTargetModeSchema>;
+export type BroadcastMediaType = z.infer<typeof broadcastMediaTypeSchema>;
 
 export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;
@@ -2806,6 +2808,10 @@ export const sendBroadcastRequestSchema = z
     imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
+    mediaType: broadcastMediaTypeSchema.nullable().default(null),
+    mediaPayload: z.record(z.unknown()).nullable().default(null),
+    mediaMimeType: z.string().trim().max(128).default(''),
+    mediaFileName: z.string().trim().max(128).default(''),
     scheduleMode: broadcastScheduleModeSchema.default('legacy'),
     scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
@@ -2831,11 +2837,32 @@ export const sendBroadcastRequestSchema = z
       });
     }
 
-    if (value.text.trim().length === 0 && !value.imageEnabled) {
+    const hasMediaPayload =
+      value.mediaType === 'video' &&
+      value.mediaPayload !== null &&
+      Object.keys(value.mediaPayload).length > 0;
+
+    if (value.text.trim().length === 0 && !value.imageEnabled && !hasMediaPayload) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['text'],
-        message: 'Введите текст или добавьте фото.',
+        message: 'Введите текст, добавьте фото или видео.',
+      });
+    }
+
+    if (value.imageEnabled && hasMediaPayload) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mediaType'],
+        message: 'В одной рассылке можно добавить либо фото, либо видео.',
+      });
+    }
+
+    if ((value.mediaType && !hasMediaPayload) || (!value.mediaType && value.mediaPayload)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mediaPayload'],
+        message: 'Видео рассылки не загружено.',
       });
     }
 
@@ -2911,6 +2938,10 @@ export const sendBroadcastRequestSchema = z
     const buttons = resolveBroadcastLinkButtons(value);
     const primaryButton = buttons[0];
     const targetMode = resolveBroadcastTargetMode(value);
+    const hasMediaPayload =
+      value.mediaType === 'video' &&
+      value.mediaPayload !== null &&
+      Object.keys(value.mediaPayload).length > 0;
 
     return {
       ...value,
@@ -2921,6 +2952,14 @@ export const sendBroadcastRequestSchema = z
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
       buttonText: primaryButton?.text ?? DEFAULT_BROADCAST_BUTTON_TEXT,
+      imageEnabled: hasMediaPayload ? false : value.imageEnabled,
+      imageBase64: hasMediaPayload || !value.imageEnabled ? '' : value.imageBase64,
+      imageMimeType: hasMediaPayload || !value.imageEnabled ? '' : value.imageMimeType,
+      imageFileName: hasMediaPayload || !value.imageEnabled ? '' : value.imageFileName,
+      mediaType: hasMediaPayload ? value.mediaType : null,
+      mediaPayload: hasMediaPayload ? value.mediaPayload : null,
+      mediaMimeType: hasMediaPayload ? value.mediaMimeType.trim() : '',
+      mediaFileName: hasMediaPayload ? value.mediaFileName.trim() : '',
       cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
       scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
     };
@@ -3109,6 +3148,7 @@ export const managedBroadcastSummarySchema = z.object({
   applyToAllChats: z.boolean(),
   targetChats: z.number().int().min(1),
   hasImage: z.boolean(),
+  hasVideo: z.boolean().default(false),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
@@ -3149,6 +3189,10 @@ export const managedBroadcastDetailsSchema = z.object({
   imageBase64: z.string(),
   imageMimeType: z.string(),
   imageFileName: z.string(),
+  mediaType: broadcastMediaTypeSchema.nullable().default(null),
+  mediaPayload: z.record(z.unknown()).nullable().default(null),
+  mediaMimeType: z.string().default(''),
+  mediaFileName: z.string().default(''),
   scheduleMode: broadcastScheduleModeSchema.default('legacy'),
   scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
   scheduledSlots: z.array(z.string().datetime()).default([]),
