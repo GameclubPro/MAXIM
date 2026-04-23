@@ -6,7 +6,7 @@
     "outputDirName": "android",
     "frameWidth": 430,
     "screenHeight": 852,
-    "safeTop": 0,
+    "safeTop": 24,
     "safeBottom": 0,
     "platform": "android"
   },

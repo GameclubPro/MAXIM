@@ -49,7 +49,7 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
     >
       <GlassCard className="system-root-card" elevated>
         <div className="system-root-card__eyebrow">
-          <span className="chip">Operations</span>
+          <span className="chip">Система</span>
           <span className={systemChipClassName}>{systemChipLabel}</span>
         </div>
         <div className="system-root-card__content">
@@ -62,7 +62,7 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
           </div>
           <div className="system-root-card__stats" aria-label="Ключевые метрики">
             <div className="system-root-card__stat">
-              <span>Lag</span>
+              <span>Задержка</span>
               <strong>
                 {systemPreviewQuery.data
                   ? `${systemPreviewQuery.data.queues.effectiveLagSec.toFixed(1)}с`
@@ -70,11 +70,11 @@ export function SystemEntryCard({ api }: { api: ApiTransport }) {
               </strong>
             </div>
             <div className="system-root-card__stat">
-              <span>Failed</span>
+              <span>Ошибки</span>
               <strong>{systemPreviewQuery.data?.queues.webhookEvents.failed.count ?? '...'}</strong>
             </div>
             <div className="system-root-card__stat">
-              <span>Critical</span>
+              <span>Критично</span>
               <strong>
                 {systemPreviewQuery.data
                   ? `${(systemPreviewQuery.data.mode.action.criticalRate * 100).toFixed(1)}%`

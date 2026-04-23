@@ -1204,8 +1204,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           <div className="channel-insights__summary-head">
             <div className="channel-insights__summary-copy">
               <span className="channel-insights__eyebrow">Статистика канала</span>
-              <h2>{resolvedTitle}</h2>
-              <p>{`${resolveChannelStateLabel(stats)} · ${periodCaption}`}</p>
+              <h2>Обзор</h2>
+              <p>{resolveChannelStateLabel(stats)}</p>
             </div>
 
             <SegmentedControl

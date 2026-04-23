@@ -570,7 +570,89 @@ async function waitForPreviewApp(page) {
   await page.waitForLoadState('networkidle');
 }
 
+async function applyNativeScreenshotMode(page, profile) {
+  if (screenshotTarget !== 'native') {
+    return;
+  }
+
+  await page.addStyleTag({
+    content: `
+      .design-preview {
+        display: block !important;
+        min-height: 100dvh !important;
+        padding: 0 !important;
+        background: transparent !important;
+      }
+
+      .design-preview__dock {
+        display: none !important;
+      }
+
+      .design-preview__stage,
+      .design-preview__device,
+      .design-preview__device-screen {
+        display: block !important;
+        width: 100% !important;
+        min-width: 0 !important;
+        max-width: none !important;
+        min-height: 100dvh !important;
+        height: auto !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        overflow: visible !important;
+        border-radius: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+      }
+
+      .design-preview .app-shell {
+        min-height: var(--app-viewport-height) !important;
+        height: auto !important;
+        width: min(100%, var(--app-shell-max-width)) !important;
+        max-width: var(--app-shell-max-width) !important;
+        padding: calc(var(--app-safe-top) + 10px) var(--app-page-gutter) 0 !important;
+        padding-bottom: calc(
+          var(--app-bottom-nav-height) + var(--app-safe-bottom) + 8px + 12px
+        ) !important;
+        overflow: visible !important;
+      }
+
+      .design-preview .app-shell--immersive {
+        width: 100% !important;
+        max-width: none !important;
+        height: var(--app-viewport-height) !important;
+        min-height: var(--app-viewport-height) !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+      }
+
+      .design-preview .bottom-nav {
+        width: min(calc(100% - 24px), var(--app-shell-max-width)) !important;
+      }
+
+      .design-preview .compact-page-header {
+        max-width: none !important;
+      }
+    `,
+  });
+
+  await page.evaluate(({ safeTop, safeBottom }) => {
+    const root = document.documentElement;
+    root.style.setProperty('--safe-top', `${safeTop}px`);
+    root.style.setProperty('--safe-bottom', `${safeBottom}px`);
+    root.style.setProperty('--app-safe-top', `${safeTop}px`);
+    root.style.setProperty('--app-safe-bottom', `${safeBottom}px`);
+    root.style.setProperty('--app-viewport-height', `${window.innerHeight}px`);
+    window.dispatchEvent(new Event('resize'));
+  }, profile);
+  await page.waitForTimeout(120);
+}
+
 function resolveScreenshotLocator(page) {
+  if (screenshotTarget === 'native') {
+    return null;
+  }
+
   if (screenshotTarget === 'page') {
     return null;
   }
@@ -603,6 +685,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
     const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice, scenario.searchParams);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
+    await applyNativeScreenshotMode(page, profile);
 
     if (scenario.beforeShot) {
       await scenario.beforeShot(page);
@@ -624,7 +707,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
       path: screenshotPath,
       animations: 'disabled',
       timeout: 120_000,
-      fullPage: true,
+      fullPage: screenshotTarget === 'page',
     });
   }
 
