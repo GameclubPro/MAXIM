@@ -18,15 +18,17 @@ test('returns all home entities when the query is empty', () => {
   assert.equal(visibleCount, 2);
 });
 
-test('filters home entities by title and id', () => {
+test('filters home entities by title id and link', () => {
   const [listEntities, visibleCount] = buildHomeView({
     entities: [
-      { id: 'chat-1', title: 'Первый чат' },
-      { id: 'channel-1', title: 'Канал MAX' },
+      { id: 'chat-1', title: 'Первый чат', link: 'https://max.ru/first-chat' },
+      { id: 'channel-1', title: 'Канал MAX', link: 'https://max.ru/channel-max' },
     ],
-    query: 'channel-1',
+    query: 'channel-max',
   });
 
-  assert.deepEqual(listEntities, [{ id: 'channel-1', title: 'Канал MAX' }]);
+  assert.deepEqual(listEntities, [
+    { id: 'channel-1', title: 'Канал MAX', link: 'https://max.ru/channel-max' },
+  ]);
   assert.equal(visibleCount, 1);
 });

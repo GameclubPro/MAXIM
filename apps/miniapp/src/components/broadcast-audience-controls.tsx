@@ -48,7 +48,11 @@ export function BroadcastAudienceControls({
     targetMode: 'selected',
     targetChatIds,
   });
-  const triggerLabel = loading ? 'Собираем чаты' : remoteError ? 'Обновить список' : selectedAudienceLabel;
+  const triggerLabel = loading
+    ? 'Собираем список'
+    : remoteError
+      ? 'Обновить список'
+      : selectedAudienceLabel;
 
   useEffect(() => {
     if (targetMode !== 'selected') {
@@ -95,7 +99,7 @@ export function BroadcastAudienceControls({
               }
               options={[
                 { value: 'current', label: 'Текущий' },
-                { value: 'selected', label: 'Выбрано' },
+                { value: 'selected', label: 'Выбрать' },
               ]}
             />
 
@@ -110,7 +114,7 @@ export function BroadcastAudienceControls({
                 disabled={disabled}
               >
                 <span className="broadcast-audience-card__trigger-copy">
-                  <strong>Чаты</strong>
+                  <strong>Активные чаты</strong>
                   <small>{triggerLabel}</small>
                 </span>
                 <span className="broadcast-audience-card__trigger-badge">{targetChatIds.length}</span>

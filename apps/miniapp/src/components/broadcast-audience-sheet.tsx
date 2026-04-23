@@ -86,7 +86,7 @@ export function BroadcastAudienceSheet({
       <button
         type="button"
         className="broadcast-audience-sheet__backdrop"
-        aria-label="Закрыть выбор чатов"
+        aria-label="Закрыть выбор активных чатов"
         onClick={onClose}
       />
 
@@ -102,17 +102,20 @@ export function BroadcastAudienceSheet({
           <div className="broadcast-audience-sheet__sticky">
             <div className="broadcast-audience-sheet__head">
               <div>
-                <strong id="broadcast-audience-sheet-title">Чаты</strong>
+                <strong id="broadcast-audience-sheet-title">Активные чаты</strong>
               </div>
               <span className="broadcast-audience-sheet__badge">{draftSelection.length}</span>
             </div>
 
-            <label className="field field--search broadcast-audience-sheet__search" htmlFor="broadcast-audience-search">
-              <span className="field__label">Поиск</span>
+            <label
+              className="field field--search broadcast-audience-sheet__search"
+              htmlFor="broadcast-audience-search"
+            >
+              <span className="field__label">Поиск чата</span>
               <input
                 id="broadcast-audience-search"
                 type="search"
-                placeholder="Название, ссылка или ID"
+                placeholder="Поиск чата"
                 value={searchValue}
                 onChange={(event) => setSearchValue(event.target.value)}
                 autoComplete="off"
@@ -133,12 +136,12 @@ export function BroadcastAudienceSheet({
 
           {!loading && !error && filteredChoices.length === 0 ? (
             <div className="broadcast-audience-sheet__state">
-              <strong>{searchValue.trim() ? 'Ничего не найдено' : 'Чатов нет'}</strong>
+              <strong>{searchValue.trim() ? 'Ничего не найдено' : 'Активных чатов нет'}</strong>
             </div>
           ) : null}
 
           {!loading && !error && filteredChoices.length > 0 ? (
-            <div className="broadcast-audience-sheet__list" aria-label="Список чатов">
+            <div className="broadcast-audience-sheet__list" aria-label="Список активных чатов">
               {filteredChoices.map((chat) => {
                 const checked = draftSelection.includes(chat.id);
                 return (

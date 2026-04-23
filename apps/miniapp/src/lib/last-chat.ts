@@ -7,6 +7,7 @@ export type LastEntityType = 'chat' | 'channel';
 type ManagedEntityListItem = {
   id: string;
   title: string;
+  link?: string | null;
 };
 
 export function readLastChatId(): string {
@@ -107,7 +108,9 @@ export function buildHomeView<T extends ManagedEntityListItem>(options: {
     : !normalizedQuery
       ? options.entities
       : options.entities.filter((entity) =>
-          `${entity.title} ${entity.id}`.toLowerCase().includes(normalizedQuery),
+          `${entity.title} ${entity.id} ${entity.link?.trim() ?? ''}`
+            .toLowerCase()
+            .includes(normalizedQuery),
         );
 
   return [matchingEntities, matchingEntities.length] as const;

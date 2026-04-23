@@ -1,4 +1,5 @@
 import type { BroadcastTargetMode } from '@maxim/contracts';
+import { buildHomeView } from './last-chat';
 
 export type BroadcastScopedTargetMode = Exclude<BroadcastTargetMode, 'all'>;
 
@@ -135,19 +136,8 @@ export function resolveBroadcastAudienceTargetLabel(params: {
 export function filterBroadcastAudienceChoices<
   T extends { id: string; title: string; link?: string | null },
 >(items: readonly T[], query: string): T[] {
-  const normalizedQuery = query.trim().toLowerCase();
-  if (!normalizedQuery) {
-    return [...items];
-  }
-
-  return items.filter((item) => {
-    const id = item.id.trim().toLowerCase();
-    const title = item.title.trim().toLowerCase();
-    const link = item.link?.trim().toLowerCase() ?? '';
-    return (
-      id.includes(normalizedQuery) ||
-      title.includes(normalizedQuery) ||
-      link.includes(normalizedQuery)
-    );
-  });
+  return buildHomeView({
+    entities: items,
+    query,
+  })[0];
 }
