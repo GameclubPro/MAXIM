@@ -9120,7 +9120,7 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   padding: 14px;
-  max-height: min(84dvh, 780px);
+  max-height: min(90dvh, 840px);
   overflow: hidden;
   border-radius: 30px;
   border: 1px solid rgba(116, 149, 181, 0.16);
@@ -9334,17 +9334,17 @@
 
 .broadcast-audience-sheet__list {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .broadcast-audience-sheet__option {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 14px;
+  gap: 12px;
   align-items: center;
   width: 100%;
-  padding: 16px;
-  border-radius: 24px;
+  padding: 13px 14px;
+  border-radius: 22px;
   border: 1px solid rgba(95, 128, 161, 0.12);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(244, 248, 253, 0.95));
@@ -9385,16 +9385,25 @@
 }
 
 .broadcast-audience-sheet__avatar {
-  width: 54px;
-  height: 54px;
-  font-size: 1rem;
+  width: 48px;
+  height: 48px;
+  font-size: 0.92rem;
   position: relative;
   z-index: 1;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.56);
+  box-shadow:
+    0 12px 24px rgba(25, 61, 96, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.34);
+}
+
+.broadcast-audience-sheet__avatar img {
+  border-radius: inherit;
 }
 
 .broadcast-audience-sheet__option-copy {
   display: grid;
-  gap: 9px;
+  gap: 7px;
   min-width: 0;
   position: relative;
   z-index: 1;
@@ -9404,7 +9413,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 10px;
   min-width: 0;
 }
 
@@ -9414,7 +9423,7 @@
 
 .broadcast-audience-sheet__option-row strong {
   color: #10273d;
-  font-size: 1.02rem;
+  font-size: 0.98rem;
   font-weight: 820;
   line-height: 1.12;
   overflow: hidden;
@@ -9424,7 +9433,7 @@
 
 .broadcast-audience-sheet__option-row small {
   color: #607890;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   line-height: 1.2;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -9439,8 +9448,8 @@
 }
 
 .broadcast-audience-sheet__option-chip {
-  min-height: 28px;
-  padding: 0 11px;
+  min-height: 26px;
+  padding: 0 10px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -9448,15 +9457,15 @@
   background: rgba(244, 248, 253, 0.96);
   border: 1px solid rgba(96, 126, 156, 0.12);
   color: #667f98;
-  font-size: 0.72rem;
+  font-size: 0.68rem;
   font-weight: 780;
   letter-spacing: -0.02em;
 }
 
 .broadcast-audience-sheet__checkbox {
-  width: 36px;
-  min-width: 36px;
-  height: 36px;
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -9464,7 +9473,7 @@
   border: 1px solid rgba(96, 126, 156, 0.16);
   background: rgba(255, 255, 255, 0.96);
   color: transparent;
-  font-size: 0.94rem;
+  font-size: 0.88rem;
   font-weight: 820;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.96);
   transition:
@@ -9625,14 +9634,15 @@
   }
 
   .broadcast-audience-sheet__option {
-    padding: 14px;
-    gap: 12px;
-    border-radius: 22px;
+    padding: 12px 13px;
+    gap: 11px;
+    border-radius: 20px;
   }
 
   .broadcast-audience-sheet__avatar {
-    width: 50px;
-    height: 50px;
+    width: 44px;
+    height: 44px;
+    border-radius: 16px;
   }
 
   .broadcast-audience-sheet__option-row {
