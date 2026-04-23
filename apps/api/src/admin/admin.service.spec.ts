@@ -284,19 +284,27 @@ function createPrismaMock() {
         managedBroadcastState = null;
         return deleted;
       }),
-      updateMany: jest.fn().mockImplementation(
-        async ({ where, data }: { where?: Record<string, unknown>; data: Record<string, unknown> }) => {
-          if (!matchesManagedBroadcastWhere(where)) {
-            return { count: 0 };
-          }
+      updateMany: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            where,
+            data,
+          }: {
+            where?: Record<string, unknown>;
+            data: Record<string, unknown>;
+          }) => {
+            if (!matchesManagedBroadcastWhere(where)) {
+              return { count: 0 };
+            }
 
-          managedBroadcastState = {
-            ...managedBroadcastState,
-            ...data,
-          };
-          return { count: 1 };
-        },
-      ),
+            managedBroadcastState = {
+              ...managedBroadcastState,
+              ...data,
+            };
+            return { count: 1 };
+          },
+        ),
     },
     managedBroadcastDelivery: {
       count: jest.fn().mockResolvedValue(0),
@@ -936,7 +944,8 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
       .mockImplementation(async (chatId: string, entityType: string | null) => {
         const entityTypes = entityType ? [entityType] : ['chat', 'channel'];
         for (const currentEntityType of entityTypes) {
-          const current = (recentBootstrapByEntityType.get(currentEntityType) ?? []) as ChatSummary[];
+          const current = (recentBootstrapByEntityType.get(currentEntityType) ??
+            []) as ChatSummary[];
           recentBootstrapByEntityType.set(
             currentEntityType,
             current.filter((entry) => entry.id !== chatId),
@@ -994,7 +1003,9 @@ function readButtonUrl(button: { url?: string; webApp?: string } | null | undefi
   return url;
 }
 
-function readDialogButtonToken(button: { url?: string; webApp?: string } | null | undefined): string {
+function readDialogButtonToken(
+  button: { url?: string; webApp?: string } | null | undefined,
+): string {
   const url = new URL(readButtonUrl(button));
   const directToken = url.searchParams.get('token');
   if (directToken) {
@@ -3783,13 +3794,15 @@ describe('AdminService.getLogsDashboard', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -3943,13 +3956,15 @@ describe('AdminService.getLogsDashboard', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -4253,13 +4268,15 @@ describe('AdminService.getChatActivityFeed', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -4603,6 +4620,72 @@ describe('AdminService.getChatModerationFeed', () => {
       }),
     );
   });
+
+  it('prefers stored target display names from moderation event metadata when profile lookup is empty', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findMany.mockResolvedValue([
+      {
+        id: 'evt-ban-4',
+        action: 'BAN',
+        ruleCode: 'MANUAL_BAN',
+        userId: 'user-4',
+        createdAt: new Date('2026-03-02T11:15:00.000Z'),
+        maskedExcerpt: null,
+        metadata: {
+          permanent: true,
+          targetDisplayName: 'Людмила',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChatModerationFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'BAN', limit: 50 },
+    );
+
+    expect(result).toEqual({
+      items: [
+        {
+          id: 'evt-ban-4',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-4',
+          userDisplayName: 'Людмила',
+          avatarUrl: null,
+          profileUrl: null,
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pm2_'),
+          createdAt: '2026-03-02T11:15:00.000Z',
+          maskedExcerpt: null,
+          metadata: {
+            permanent: true,
+            targetDisplayName: 'Людмила',
+          },
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+  });
 });
 
 describe('AdminService.applyManualModerationAction', () => {
@@ -4689,6 +4772,45 @@ describe('AdminService.applyManualModerationAction', () => {
       muteExpiresAt: expect.any(String),
       message: 'Мут на 6ч.',
     });
+  });
+
+  it('stores resolved target display name in manual moderation metadata', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValueOnce([{ user_id: 'user-2', sender_name: 'Мария' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'MUTE', muteDurationHours: 6 },
+    );
+
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            targetDisplayName: 'Мария',
+          }),
+        }),
+      }),
+    );
   });
 
   it('fans out manual mute from command to other chats of the admin and clears recent messages in source chat', async () => {
@@ -6082,9 +6204,7 @@ describe('AdminService.applyManualSystemBan', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('bot-1');
+    jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('bot-1');
 
     await service.processManualModerationFanoutJob({
       kind: 'manual_mute_fanout',
@@ -8797,7 +8917,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     const result = await service.listChats({
       userId: 'admin-1',
       username: null,
@@ -8884,7 +9003,6 @@ describe('AdminService.listChats', () => {
       }) as never,
       createConfigMock({ botId: '777000_bot' }) as never,
     );
-
 
     await expect(
       service.listChats({
@@ -8983,7 +9101,6 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-
 
     await expect(
       service.listChats({
@@ -9396,7 +9513,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     await expect(
       service.listChats({
         userId: 'admin-1',
@@ -9457,7 +9573,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     await expect(
       service.listChats({
         userId: 'admin-1',
@@ -9510,7 +9625,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     await expect(
       service.listChats({
         userId: 'admin-1',
@@ -9549,7 +9663,6 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-
 
     await expect(
       service.listChats({
@@ -9692,7 +9805,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     await expect(
       service.listChats({
         userId: 'admin-1',
@@ -9767,7 +9879,6 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
-
     await expect(
       service.listChats({
         userId: 'admin-1',
@@ -9838,7 +9949,6 @@ describe('AdminService.listChats', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-
 
     await expect(
       service.listChats({
@@ -12943,16 +13053,14 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
     jest.spyOn(service as any, 'resolveBotAssignment').mockResolvedValue('777000_bot');
-    const upsertSpy = jest
-      .spyOn(service as any, 'upsertUserChatAccess')
-      .mockResolvedValue({
-        id: '-100501',
-        title: 'Приватный канал MAX',
-        entityType: 'CHANNEL',
-        createdAt: new Date('2026-04-21T10:20:00.000Z'),
-        primaryBotId: '777000_bot',
-        botId: '777000_bot',
-      });
+    const upsertSpy = jest.spyOn(service as any, 'upsertUserChatAccess').mockResolvedValue({
+      id: '-100501',
+      title: 'Приватный канал MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-04-21T10:20:00.000Z'),
+      primaryBotId: '777000_bot',
+      botId: '777000_bot',
+    });
 
     await expect((service as any).ensureEntityType('-100501', 'admin-1', 'channel')).resolves.toBe(
       undefined,
@@ -15384,11 +15492,7 @@ describe('AdminService.sendBroadcast', () => {
     const prisma = createPrismaMock();
     let activeCalls = 0;
     prisma.managedBroadcast.findMany.mockImplementation(
-      async ({
-        where,
-      }: {
-        where?: { status?: string | { in?: string[] } };
-      }) => {
+      async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
         if (where?.status === 'ACTIVE') {
           activeCalls += 1;
           return activeCalls < 3 ? [{ id: 'broadcast-1' }] : [];
@@ -15428,11 +15532,7 @@ describe('AdminService.sendBroadcast', () => {
     let activeCalls = 0;
     let retryableCalls = 0;
     prisma.managedBroadcast.findMany.mockImplementation(
-      async ({
-        where,
-      }: {
-        where?: { status?: string | { in?: string[] } };
-      }) => {
+      async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
         if (where?.status === 'ACTIVE') {
           activeCalls += 1;
           return activeCalls === 1
@@ -15488,11 +15588,7 @@ describe('AdminService.sendBroadcast', () => {
     const prisma = createPrismaMock();
     let retryableCalls = 0;
     prisma.managedBroadcast.findMany.mockImplementation(
-      async ({
-        where,
-      }: {
-        where?: { status?: string | { in?: string[] } };
-      }) => {
+      async ({ where }: { where?: { status?: string | { in?: string[] } } }) => {
         if (where?.status === 'ACTIVE') {
           return [];
         }
@@ -15807,14 +15903,15 @@ describe('AdminService.sendBroadcast', () => {
         }),
       }),
     );
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          nextSendAt: new Date('2026-03-03T12:00:00.000Z'),
-          sentCount: 1,
-          status: 'ACTIVE',
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        nextSendAt: new Date('2026-03-03T12:00:00.000Z'),
+        sentCount: 1,
+        status: 'ACTIVE',
+      }),
+    );
     expect(result.cycleEveryHours).toBe(2);
     expect(result.cycleCount).toBe(3);
     expect(result.nextSendAt).toBe('2026-03-03T12:00:00.000Z');
@@ -15890,12 +15987,13 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.scheduleId).toBe('broadcast-1');
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(1);
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'PARTIAL',
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'PARTIAL',
+      }),
+    );
   });
 
   it('retries managed broadcast sends after transient MAX API throttling', async () => {
@@ -16047,14 +16145,15 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
     expect(result.status).toBe('COMPLETED');
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'COMPLETED',
-          sentCount: 1,
-          nextSendAt: null,
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'COMPLETED',
+        sentCount: 1,
+        nextSendAt: null,
+      }),
+    );
   });
 
   it('drops permanently unavailable targets from future managed broadcast deliveries', async () => {
@@ -16186,15 +16285,16 @@ describe('AdminService.sendBroadcast', () => {
         }),
       ]),
     );
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'ACTIVE',
-          sentCount: 1,
-          nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
-          lastError: null,
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'ACTIVE',
+        sentCount: 1,
+        nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
+        lastError: null,
+      }),
+    );
   });
 
   it('quarantines chronically timing out targets from current and future managed broadcast deliveries', async () => {
@@ -16332,15 +16432,16 @@ describe('AdminService.sendBroadcast', () => {
         }),
       ]),
     );
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'ACTIVE',
-          sentCount: 1,
-          nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
-          lastError: null,
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'ACTIVE',
+        sentCount: 1,
+        nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
+        lastError: null,
+      }),
+    );
   });
 
   it('reports blocked and quarantined deliveries in managed broadcast snapshots', () => {
@@ -16542,14 +16643,15 @@ describe('AdminService.sendBroadcast', () => {
         }),
       ]),
     );
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'FAILED',
-          nextSendAt: null,
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        nextSendAt: null,
+        lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+      }),
+    );
   });
 
   it('stops future managed broadcast deliveries when automatic recovery sees a fatal image failure', async () => {
@@ -16663,14 +16765,15 @@ describe('AdminService.sendBroadcast', () => {
         }),
       ]),
     );
-    await expect(prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } })).resolves
-      .toEqual(
-        expect.objectContaining({
-          status: 'FAILED',
-          nextSendAt: null,
-          lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
-        }),
-      );
+    await expect(
+      prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        status: 'FAILED',
+        nextSendAt: null,
+        lastError: 'Не удалось загрузить фото. Попробуйте другое изображение.',
+      }),
+    );
   });
 
   it('retries failed deliveries and completes the broadcast', async () => {
@@ -17590,7 +17693,10 @@ describe('AdminService.sendBroadcast', () => {
         createdAt: new Date('2026-03-06T07:54:00.000Z'),
       },
     ]);
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'admin-1' }, { userId: 'user-1' }]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      { userId: 'admin-1' },
+      { userId: 'user-1' },
+    ]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1', 'user-1']),
@@ -18130,8 +18236,9 @@ describe('AdminService.sendChannelBroadcast', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -19111,8 +19218,7 @@ describe('AdminService chat rules', () => {
     prisma.chatRules.upsert.mockResolvedValue({
       id: 'rules-1',
       chatId: 'chat-1',
-      text:
-        '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
+      text: '🔥[**_++MAX Docs++_**](https://dev.max.ru/docs-api)\n\n~~Зачеркнутый~~\n\n  Второй абзац с  пробелами',
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
@@ -19205,9 +19311,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('chat-bot-2');
+    jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -19274,9 +19378,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('chat-bot-2');
+    jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -19345,9 +19447,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('chat-bot-2');
+    jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     await service.publishRules('chat-1', {
       userId: 'admin-1',
@@ -19539,9 +19639,7 @@ describe('AdminService chat rules', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
-    jest
-      .spyOn(service as any, 'resolveManualActionBotAssignment')
-      .mockResolvedValue('chat-bot-2');
+    jest.spyOn(service as any, 'resolveManualActionBotAssignment').mockResolvedValue('chat-bot-2');
 
     const result = await service.resetPublishedRules('chat-1', {
       userId: 'admin-1',
@@ -20611,13 +20709,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -20681,9 +20781,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'channel-bot-2',
     );
     const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
-    const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as
-      | { url?: string }
-      | undefined;
+    const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
     expect(commentsButton).toMatchObject({
       url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
     });
@@ -20978,13 +21076,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,
@@ -22570,13 +22670,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?startapp=${encodeURIComponent(startParam)}`,
         ),
       buildBotStartUrlSync: jest
         .fn()
-        .mockImplementation((startPayload: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
+        .mockImplementation(
+          (startPayload: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || '777000_bot')}?start=${encodeURIComponent(startPayload)}`,
         ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'channel-bot-2' ? '990002' : null,

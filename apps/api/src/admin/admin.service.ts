@@ -343,7 +343,10 @@ type AdminAccessResolution =
     };
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
-type ManualBanFollowUpSource = Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>;
+type ManualBanFollowUpSource = Extract<
+  AdminActionSource,
+  'miniapp' | 'group_command' | 'private_command'
+>;
 
 type AdoptChatRulesFromMessageInput = {
   sourceMessageId?: string | null;
@@ -496,8 +499,7 @@ const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS = 5 * 60 * 1000;
 const MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS = 6;
 const MANAGED_BROADCAST_TARGET_QUARANTINE_FAILURE_OCCURRENCES = 3;
-const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS =
-  MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
+const MANAGED_BROADCAST_TARGET_QUARANTINE_ATTEMPTS = MANAGED_BROADCAST_MAX_AUTO_RETRY_ATTEMPTS;
 const MANAGED_BROADCAST_TRANSIENT_QUARANTINE_REASON_PREFIX =
   'Чат временно исключен из оставшихся доставок после повторяющихся ошибок отправки';
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 50;
@@ -811,6 +813,11 @@ const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
   'message_callback',
   'bot_started',
   'bot_added',
+] as const;
+const LOCAL_USER_DISPLAY_NAME_EVENT_TYPES = [
+  ...MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES,
+  'user_added',
+  'user_removed',
 ] as const;
 type ChannelDialogTokenPayload = {
   v: 1;
@@ -1427,7 +1434,10 @@ export class AdminService implements OnModuleDestroy {
     const mergeWithLightweightBootstrap = async (
       items: readonly ChatSummary[],
     ): Promise<ChatSummary[]> => {
-      return this.mergeManagedEntitiesWithLightweightBootstrap(items, await loadLightweightBootstrap());
+      return this.mergeManagedEntitiesWithLightweightBootstrap(
+        items,
+        await loadLightweightBootstrap(),
+      );
     };
     const mergePublishedSnapshotWithLightweightBootstrap = async (
       items: readonly ChatSummary[],
@@ -1929,7 +1939,8 @@ export class AdminService implements OnModuleDestroy {
     } else {
       const existing = nextItems[existingIndex];
       const mergedTitle =
-        this.isFallbackTitle(summary.id, existing.title) && !this.isFallbackTitle(summary.id, summary.title)
+        this.isFallbackTitle(summary.id, existing.title) &&
+        !this.isFallbackTitle(summary.id, summary.title)
           ? summary.title
           : existing.title;
       const mergedLink = existing.link ?? summary.link ?? null;
@@ -1980,7 +1991,10 @@ export class AdminService implements OnModuleDestroy {
       builtAt: new Date().toISOString(),
       lastSyncedAt: currentSnapshot.lastSyncedAt,
       itemCount: items.length,
-      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(items, currentSnapshot.lastSyncedAt),
+      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(
+        items,
+        currentSnapshot.lastSyncedAt,
+      ),
       items: items.map((item) => this.cloneManagedEntitySummary(item)),
     };
 
@@ -2819,10 +2833,7 @@ export class AdminService implements OnModuleDestroy {
       recentBotAdded: ChatSummary[];
     },
   ): ChatSummary[] {
-    return this.mergeManagedEntityGroups(
-      bootstrap.recentBotAdded,
-      [...items],
-    );
+    return this.mergeManagedEntityGroups(bootstrap.recentBotAdded, [...items]);
   }
 
   private async loadManagedEntitiesLightweightBootstrap(
@@ -2942,15 +2953,13 @@ export class AdminService implements OnModuleDestroy {
     return `${userId}:${entityType}:last-success`;
   }
 
-  private buildManagedEntitiesRuntimeChatScopeFilter():
-    | {
-        OR: Array<{
-          primaryBotId?: { in: string[] };
-          botId?: { in: string[] };
-          botMemberships?: { some: { botId: { in: string[] } } };
-        }>;
-      }
-    | null {
+  private buildManagedEntitiesRuntimeChatScopeFilter(): {
+    OR: Array<{
+      primaryBotId?: { in: string[] };
+      botId?: { in: string[] };
+      botMemberships?: { some: { botId: { in: string[] } } };
+    }>;
+  } | null {
     const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
     if (runtimeBotIds.length === 0) {
       return null;
@@ -3995,10 +4004,7 @@ export class AdminService implements OnModuleDestroy {
     createdAtFallback?: string | null;
     preferredBotId?: string | null;
     observedBotIds?: readonly string[] | null;
-    source:
-      | 'remote_discovery'
-      | 'local_discovery'
-      | 'recent_bot_added_bootstrap';
+    source: 'remote_discovery' | 'local_discovery' | 'recent_bot_added_bootstrap';
   }): Promise<ChatSummary> {
     try {
       const persistedChat = await this.upsertUserChatAccess(
@@ -4011,9 +4017,7 @@ export class AdminService implements OnModuleDestroy {
           preferredBotId: params.preferredBotId ?? null,
           observedBotIds: params.observedBotIds ?? [],
           titleUpdateMode:
-            params.source === 'recent_bot_added_bootstrap'
-              ? 'fallback_only'
-              : 'always',
+            params.source === 'recent_bot_added_bootstrap' ? 'fallback_only' : 'always',
         },
       );
 
@@ -4384,9 +4388,10 @@ export class AdminService implements OnModuleDestroy {
     const entityTypes: ManagedEntityType[] =
       entityType === 'all' ? ['chat', 'channel'] : [entityType];
     const groups = await Promise.all(
-      entityTypes.map((currentEntityType) =>
-        this.chatContextCache.getManagedEntitiesRecentBootstrap?.(currentEntityType) ??
-        Promise.resolve([]),
+      entityTypes.map(
+        (currentEntityType) =>
+          this.chatContextCache.getManagedEntitiesRecentBootstrap?.(currentEntityType) ??
+          Promise.resolve([]),
       ),
     );
 
@@ -4544,8 +4549,7 @@ export class AdminService implements OnModuleDestroy {
         this.readTrimmedString(params.row.chat_title),
         this.readTrimmedString(cachedHeader?.title),
         this.readTrimmedString(existing?.title),
-      ) ??
-      (params.hintedEntityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
+      ) ?? (params.hintedEntityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
 
     const createdAtIso =
       existing?.createdAt instanceof Date
@@ -4994,9 +4998,7 @@ export class AdminService implements OnModuleDestroy {
         (entry) => entry.cachedAccess === 'user_denied' || entry.cachedAccess === 'bot_denied',
       )
       .map((entry) => this.toManagedEntitiesDiscoveryCandidate(entry.chat));
-    const prioritizedCandidateIds = new Set(
-      staleDeniedCachedCandidates.map((chat) => chat.chatId),
-    );
+    const prioritizedCandidateIds = new Set(staleDeniedCachedCandidates.map((chat) => chat.chatId));
     const candidateChats = this.mergeManagedEntitiesDiscoverySnapshots(
       staleDeniedCachedCandidates,
       await this.loadManagedEntitiesLocalDiscoverySnapshot(user, entityType, {
@@ -6453,9 +6455,8 @@ export class AdminService implements OnModuleDestroy {
       typeof maxClientWithMessageMarkdown.getMessageTextAsMarkdown === 'function'
     ) {
       try {
-        const formattedSourceText = await maxClientWithMessageMarkdown.getMessageTextAsMarkdown(
-          sourceMessageId,
-        );
+        const formattedSourceText =
+          await maxClientWithMessageMarkdown.getMessageTextAsMarkdown(sourceMessageId);
         const normalizedFormattedSourceText = this.normalizeImportedRulesText(formattedSourceText);
         if (normalizedFormattedSourceText) {
           normalizedSourceText = normalizedFormattedSourceText;
@@ -7182,11 +7183,10 @@ export class AdminService implements OnModuleDestroy {
         : Promise.resolve(new Set<string>()),
     ]);
 
-    const messages =
-      rows
-        .slice()
-        .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
+    const messages = rows
+      .slice()
+      .reverse()
+      .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -7503,7 +7503,9 @@ export class AdminService implements OnModuleDestroy {
         mimeType: image.mimeType?.trim() ?? '',
         fileName: image.fileName?.trim() ?? '',
       }));
-    const fileAttachments = normalizedAttachments.filter((attachment) => attachment.kind === 'file');
+    const fileAttachments = normalizedAttachments.filter(
+      (attachment) => attachment.kind === 'file',
+    );
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -7612,11 +7614,10 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    const messages =
-      rows
-        .slice()
-        .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
+    const messages = rows
+      .slice()
+      .reverse()
+      .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds));
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -7632,7 +7633,13 @@ export class AdminService implements OnModuleDestroy {
     dialogTypeRaw: string,
     body: unknown,
   ) {
-    return this.createChatDialogMessageInternal(chatId, user, dialogTypeRaw, body, 'miniapp_dialog');
+    return this.createChatDialogMessageInternal(
+      chatId,
+      user,
+      dialogTypeRaw,
+      body,
+      'miniapp_dialog',
+    );
   }
 
   private async createChatDialogMessageInternal(
@@ -8232,7 +8239,9 @@ export class AdminService implements OnModuleDestroy {
   private isRequiredSubscriptionCurrentlyActive(
     settings: Pick<
       ChatSettings,
-      'requiredSubscriptionEnabled' | 'requiredSubscriptionChannelIds' | 'requiredSubscriptionExpiresAt'
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionExpiresAt'
     >,
   ): boolean {
     return (
@@ -8243,7 +8252,9 @@ export class AdminService implements OnModuleDestroy {
   }
 
   private buildRequiredSubscriptionExpiresAt(durationDays: number): string {
-    return new Date(Date.now() + durationDays * REQUIRED_SUBSCRIPTION_DURATION_DAY_MS).toISOString();
+    return new Date(
+      Date.now() + durationDays * REQUIRED_SUBSCRIPTION_DURATION_DAY_MS,
+    ).toISOString();
   }
 
   private resolveRequiredSubscriptionExpiresAt(
@@ -8254,20 +8265,21 @@ export class AdminService implements OnModuleDestroy {
       | 'requiredSubscriptionDurationDays'
       | 'requiredSubscriptionExpiresAt'
     >,
-    currentState?:
-      | Pick<
-          ChatSettings,
-          | 'requiredSubscriptionEnabled'
-          | 'requiredSubscriptionChannelIds'
-          | 'requiredSubscriptionDurationDays'
-          | 'requiredSubscriptionExpiresAt'
-        >
-      | null,
+    currentState?: Pick<
+      ChatSettings,
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionDurationDays'
+      | 'requiredSubscriptionExpiresAt'
+    > | null,
     options?: {
       resetRequiredSubscriptionExpiration?: boolean;
     },
   ): string {
-    if (!settings.requiredSubscriptionEnabled || settings.requiredSubscriptionChannelIds.length === 0) {
+    if (
+      !settings.requiredSubscriptionEnabled ||
+      settings.requiredSubscriptionChannelIds.length === 0
+    ) {
       return '';
     }
 
@@ -8732,7 +8744,9 @@ export class AdminService implements OnModuleDestroy {
         },
         'Failed to load required subscription entity snapshot',
       );
-      throw new BadRequestException('Чат или канал не найден в MAX или бот не имеет к нему доступа.');
+      throw new BadRequestException(
+        'Чат или канал не найден в MAX или бот не имеет к нему доступа.',
+      );
     }
 
     const link = snapshot.link?.trim() || null;
@@ -8935,9 +8949,7 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
-  private async resolveRequiredSubscriptionEntityType(
-    chatId: string,
-  ): Promise<ManagedEntityType> {
+  private async resolveRequiredSubscriptionEntityType(chatId: string): Promise<ManagedEntityType> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       return 'channel';
@@ -8982,7 +8994,9 @@ export class AdminService implements OnModuleDestroy {
     reason: string,
   ): Promise<void> {
     const normalizedEntityIds = Array.from(
-      new Set(entityIds.map((entityId) => entityId.trim()).filter((entityId) => entityId.length > 0)),
+      new Set(
+        entityIds.map((entityId) => entityId.trim()).filter((entityId) => entityId.length > 0),
+      ),
     );
     await this.mapWithConcurrencyLimit(
       normalizedEntityIds,
@@ -9306,10 +9320,7 @@ export class AdminService implements OnModuleDestroy {
       const retryableDueRows = await this.prisma.managedBroadcast.findMany({
         where: {
           status: {
-            in: [
-              PrismaManagedBroadcastStatus.PARTIAL,
-              PrismaManagedBroadcastStatus.FAILED,
-            ],
+            in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
           },
           nextSendAt: { lte: now },
           updatedAt: { lte: autoRetryBefore },
@@ -9329,22 +9340,15 @@ export class AdminService implements OnModuleDestroy {
       ];
       if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
         const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
-        const activeOverflowOffset =
-          MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount;
+        const activeOverflowOffset = MANAGED_BROADCAST_DUE_BATCH_SIZE - reservedRecoveryCount;
         dueRows.push(
-          ...activeDueRows.slice(
-            activeOverflowOffset,
-            activeOverflowOffset + remainingSlots,
-          ),
+          ...activeDueRows.slice(activeOverflowOffset, activeOverflowOffset + remainingSlots),
         );
       }
       if (dueRows.length < MANAGED_BROADCAST_DUE_BATCH_SIZE) {
         const remainingSlots = MANAGED_BROADCAST_DUE_BATCH_SIZE - dueRows.length;
         dueRows.push(
-          ...retryableDueRows.slice(
-            reservedRecoveryCount,
-            reservedRecoveryCount + remainingSlots,
-          ),
+          ...retryableDueRows.slice(reservedRecoveryCount, reservedRecoveryCount + remainingSlots),
         );
       }
 
@@ -10766,8 +10770,10 @@ export class AdminService implements OnModuleDestroy {
 
     let lastError: unknown = null;
     const attempts =
-      Math.max(BROADCAST_THROTTLE_RETRY_DELAYS_MS.length, BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length) +
-      1;
+      Math.max(
+        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
+        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
+      ) + 1;
 
     try {
       for (let attempt = 1; attempt <= attempts; attempt += 1) {
@@ -11550,8 +11556,7 @@ export class AdminService implements OnModuleDestroy {
       return false;
     }
 
-    const retryAllowedAtMs =
-      delivery.updatedAt.getTime() + MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS;
+    const retryAllowedAtMs = delivery.updatedAt.getTime() + MANAGED_BROADCAST_AUTO_RETRY_BACKOFF_MS;
     if (retryAllowedAtMs > Date.now()) {
       return false;
     }
@@ -14263,6 +14268,14 @@ export class AdminService implements OnModuleDestroy {
       throw new BadRequestException(parsed.error.format());
     }
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
+      chatId,
+      targetUserId,
+      {
+        botId: resolvedBotId,
+        allowRemoteLookup: parsed.data.action !== 'UNBAN',
+      },
+    );
 
     const metadataBase = {
       source,
@@ -14308,6 +14321,7 @@ export class AdminService implements OnModuleDestroy {
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
+        targetDisplayName,
         actorUserId: user.userId,
         ruleCode: 'MANUAL_MUTE',
         sanctionAction: SanctionAction.MUTE,
@@ -14426,6 +14440,7 @@ export class AdminService implements OnModuleDestroy {
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
+        targetDisplayName,
         actorUserId: user.userId,
         ruleCode: 'MANUAL_BAN',
         sanctionAction: SanctionAction.BAN,
@@ -14480,6 +14495,7 @@ export class AdminService implements OnModuleDestroy {
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
+        targetDisplayName,
         actorUserId: user.userId,
         ruleCode: 'MANUAL_UNMUTE',
         sanctionAction: SanctionAction.NONE,
@@ -14545,6 +14561,7 @@ export class AdminService implements OnModuleDestroy {
     await this.recordManualModerationAction({
       chatId,
       targetUserId,
+      targetDisplayName,
       actorUserId: user.userId,
       ruleCode: 'MANUAL_UNBAN',
       sanctionAction: SanctionAction.NONE,
@@ -14595,6 +14612,13 @@ export class AdminService implements OnModuleDestroy {
   ): Promise<ManualModerationActionResult> {
     const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
+    const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
+      chatId,
+      targetUserId,
+      {
+        botId: resolvedBotId,
+      },
+    );
     await this.assertManualMemberModerationPreconditions(
       chatId,
       targetUserId,
@@ -14666,6 +14690,7 @@ export class AdminService implements OnModuleDestroy {
     await this.recordManualModerationAction({
       chatId,
       targetUserId,
+      targetDisplayName,
       actorUserId: user.userId,
       ruleCode: 'MANUAL_BAN',
       sanctionAction: SanctionAction.BAN,
@@ -15180,6 +15205,13 @@ export class AdminService implements OnModuleDestroy {
     failedChatIds: string[];
   }> {
     const { sourceChatId, targetUserId, actor, muteDurationHours, muteExpiresAt, source } = params;
+    const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
+      sourceChatId,
+      targetUserId,
+      {
+        allowRemoteLookup: false,
+      },
+    );
     const result = {
       mutedChatIds: [] as string[],
       skippedChatIds: [] as string[],
@@ -15204,6 +15236,7 @@ export class AdminService implements OnModuleDestroy {
         await this.recordManualModerationAction({
           chatId: chat.id,
           targetUserId,
+          targetDisplayName,
           actorUserId: actor.userId,
           ruleCode: 'MANUAL_MUTE',
           sanctionAction: SanctionAction.MUTE,
@@ -16060,6 +16093,7 @@ export class AdminService implements OnModuleDestroy {
   private async recordManualModerationAction(params: {
     chatId: string;
     targetUserId: string;
+    targetDisplayName?: string | null;
     actorUserId: string;
     ruleCode: 'MANUAL_MUTE' | 'MANUAL_UNMUTE' | 'MANUAL_BAN' | 'MANUAL_UNBAN';
     sanctionAction: SanctionAction;
@@ -16074,6 +16108,7 @@ export class AdminService implements OnModuleDestroy {
     const {
       chatId,
       targetUserId,
+      targetDisplayName,
       actorUserId,
       ruleCode,
       sanctionAction,
@@ -16081,6 +16116,12 @@ export class AdminService implements OnModuleDestroy {
       metadata,
       auditPayload,
     } = params;
+    const eventMetadata = {
+      ...metadata,
+      ...(this.readTrimmedString(targetDisplayName)
+        ? { targetDisplayName: this.readTrimmedString(targetDisplayName) }
+        : {}),
+    };
 
     await this.prisma.$transaction([
       this.prisma.moderationEvent.create({
@@ -16091,7 +16132,7 @@ export class AdminService implements OnModuleDestroy {
           ruleCode,
           action: sanctionAction,
           operator: Operator.ADMIN,
-          metadata: metadata as Prisma.InputJsonValue,
+          metadata: eventMetadata as Prisma.InputJsonValue,
         },
       }),
       this.prisma.auditLog.create({
@@ -16107,7 +16148,7 @@ export class AdminService implements OnModuleDestroy {
       chatId,
       targetUserId,
       ruleCode,
-      metadata,
+      metadata: eventMetadata,
     });
     this.invalidateLogsDashboardResponseCache(chatId);
     this.invalidateModerationFeedPageCache(chatId);
@@ -16630,6 +16671,12 @@ export class AdminService implements OnModuleDestroy {
     return normalized;
   }
 
+  private readStoredModerationTargetDisplayName(
+    metadata: Record<string, unknown> | null,
+  ): string | null {
+    return this.readTrimmedString(metadata?.targetDisplayName) ?? null;
+  }
+
   private normalizeModerationViolationAction(
     action: SanctionAction,
     metadata: Record<string, unknown> | null,
@@ -16672,11 +16719,12 @@ export class AdminService implements OnModuleDestroy {
     row: ModerationViolationRow,
     userProfiles: Map<string, ResolvedUserProfile>,
   ): LogsDashboardViolation {
-    const userProfile = userProfiles.get(row.userId);
     const metadata = this.normalizeModerationViolationMetadata(row.metadata);
+    const userProfile = userProfiles.get(row.userId);
     const action = this.normalizeModerationViolationAction(row.action, metadata);
     const ruleCode = this.normalizeModerationViolationRuleCode(row.ruleCode, row.action);
-    const userDisplayName = userProfile?.displayName ?? null;
+    const userDisplayName =
+      this.readStoredModerationTargetDisplayName(metadata) ?? userProfile?.displayName ?? null;
 
     return {
       id: row.id,
@@ -17609,10 +17657,30 @@ export class AdminService implements OnModuleDestroy {
       SELECT DISTINCT ON (user_id)
         user_id,
         sender_name
-      FROM chat_membership_activity_events
-      WHERE chat_id = ${chatId}
-        AND user_id IN (${Prisma.join(normalizedUserIds)})
-        AND sender_name IS NOT NULL
+      FROM (
+        SELECT
+          user_id,
+          sender_name,
+          event_at
+        FROM chat_membership_activity_events
+        WHERE chat_id = ${chatId}
+          AND user_id IN (${Prisma.join(normalizedUserIds)})
+          AND sender_name IS NOT NULL
+
+        UNION ALL
+
+        SELECT
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') AS user_id,
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name,
+          created_at AS event_at
+        FROM webhook_events
+        WHERE NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') = ${chatId}
+          AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') IN (${Prisma.join(
+            normalizedUserIds,
+          )})
+          AND NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') IS NOT NULL
+          AND normalized_payload->>'type' IN (${Prisma.join(LOCAL_USER_DISPLAY_NAME_EVENT_TYPES)})
+      ) local_name_events
       ORDER BY user_id, event_at DESC
     `;
 
@@ -17627,6 +17695,76 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return byUserId;
+  }
+
+  private async resolveManualModerationTargetDisplayName(
+    chatId: string,
+    targetUserId: string,
+    options: {
+      botId?: string | null;
+      allowRemoteLookup?: boolean;
+    } = {},
+  ): Promise<string | null> {
+    const normalizedChatId = chatId.trim();
+    const normalizedTargetUserId = targetUserId.trim();
+    if (!normalizedChatId || !normalizedTargetUserId) {
+      return null;
+    }
+
+    try {
+      const localDisplayNames = await this.resolveUserDisplayNames(normalizedChatId, [
+        normalizedTargetUserId,
+      ]);
+      const localDisplayName = localDisplayNames.get(normalizedTargetUserId)?.trim() ?? '';
+      if (localDisplayName) {
+        return localDisplayName;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: normalizedChatId,
+          userId: normalizedTargetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve local display name for manual moderation target',
+      );
+    }
+
+    if (options.allowRemoteLookup === false) {
+      return null;
+    }
+
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    if (typeof loadProfiles !== 'function') {
+      return null;
+    }
+
+    try {
+      const profiles = await loadProfiles(normalizedChatId, [normalizedTargetUserId], {
+        trafficClass: 'interactive',
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+        ...(options.botId ? { botId: options.botId } : {}),
+      });
+      const profile = profiles.get(normalizedTargetUserId);
+      const displayName = this.readTrimmedString(profile?.displayName);
+      if (displayName) {
+        return displayName;
+      }
+
+      const username = this.readTrimmedString(profile?.username);
+      return username ? `@${username.replace(/^@+/u, '')}` : null;
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: normalizedChatId,
+          userId: normalizedTargetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve remote display name for manual moderation target',
+      );
+      return null;
+    }
   }
 
   private async resolveUserProfiles(
@@ -18594,9 +18732,7 @@ export class AdminService implements OnModuleDestroy {
     const previewBase64 = this.readTrimmedString(attachment.previewBase64 ?? payload.previewBase64);
     const previewUrl =
       url ||
-      (kind === 'image' &&
-      previewBase64 &&
-      this.canBuildChannelDialogImagePreview(mimeType)
+      (kind === 'image' && previewBase64 && this.canBuildChannelDialogImagePreview(mimeType)
         ? `data:${mimeType};base64,${previewBase64}`
         : null);
 
@@ -18619,7 +18755,9 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return this.summarizeChannelDialogCommentAttachments(
-      this.buildChannelDialogCommentAttachments(this.readChannelDialogAttachmentAssets(payload.attachments)),
+      this.buildChannelDialogCommentAttachments(
+        this.readChannelDialogAttachmentAssets(payload.attachments),
+      ),
     );
   }
 
@@ -18637,7 +18775,9 @@ export class AdminService implements OnModuleDestroy {
       if (imageCount > 1) {
         return `Фото · ${imageCount} шт.`;
       }
-      const fileName = attachments.find((attachment) => attachment.kind === 'image')?.fileName?.trim();
+      const fileName = attachments
+        .find((attachment) => attachment.kind === 'image')
+        ?.fileName?.trim();
       return fileName ? `Фото · ${fileName}` : 'Фото';
     }
 
@@ -20730,11 +20870,7 @@ export class AdminService implements OnModuleDestroy {
       return 'image';
     }
 
-    if (
-      normalizedKind === 'file' ||
-      normalizedKind === 'document' ||
-      normalizedKind === 'doc'
-    ) {
+    if (normalizedKind === 'file' || normalizedKind === 'document' || normalizedKind === 'doc') {
       return 'file';
     }
 
@@ -20838,11 +20974,14 @@ export class AdminService implements OnModuleDestroy {
       const payload =
         image.payload && Object.keys(image.payload).length > 0
           ? image.payload
-          : await this.uploadChannelSuggestionImage({
-              imageBase64: image.base64 ?? null,
-              imageMimeType: image.mimeType ?? null,
-              imageFileName: image.fileName ?? null,
-            }, botId);
+          : await this.uploadChannelSuggestionImage(
+              {
+                imageBase64: image.base64 ?? null,
+                imageMimeType: image.mimeType ?? null,
+                imageFileName: image.fileName ?? null,
+              },
+              botId,
+            );
 
       return payload ? { imagePayload: payload } : {};
     }
@@ -20854,11 +20993,14 @@ export class AdminService implements OnModuleDestroy {
         const payload =
           image.payload && Object.keys(image.payload).length > 0
             ? image.payload
-            : await this.uploadChannelSuggestionImage({
-                imageBase64: image.base64 ?? null,
-                imageMimeType: image.mimeType ?? null,
-                imageFileName: image.fileName ?? null,
-              }, botId);
+            : await this.uploadChannelSuggestionImage(
+                {
+                  imageBase64: image.base64 ?? null,
+                  imageMimeType: image.mimeType ?? null,
+                  imageFileName: image.fileName ?? null,
+                },
+                botId,
+              );
 
         if (!payload) {
           continue;
@@ -20888,11 +21030,14 @@ export class AdminService implements OnModuleDestroy {
           };
     }
 
-    const uploadedImagePayload = await this.uploadChannelSuggestionImage({
-      imageBase64: suggestion.imageBase64,
-      imageMimeType: suggestion.imageMimeType,
-      imageFileName: suggestion.imageFileName,
-    }, botId);
+    const uploadedImagePayload = await this.uploadChannelSuggestionImage(
+      {
+        imageBase64: suggestion.imageBase64,
+        imageMimeType: suggestion.imageMimeType,
+        imageFileName: suggestion.imageFileName,
+      },
+      botId,
+    );
 
     return uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {};
   }
@@ -21133,11 +21278,11 @@ export class AdminService implements OnModuleDestroy {
         }
       : webAppUrl && botContactId
         ? {
-          type: 'open_app',
-          text,
-          webApp: webAppUrl,
-          contactId: botContactId,
-        }
+            type: 'open_app',
+            text,
+            webApp: webAppUrl,
+            contactId: botContactId,
+          }
         : {
             type: 'link',
             text,
@@ -21638,9 +21783,7 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private async resolveUnifiedBotRoute(
-    request: MaxBotRouteRequest,
-  ): Promise<MaxBotRoute | null> {
+  private async resolveUnifiedBotRoute(request: MaxBotRouteRequest): Promise<MaxBotRoute | null> {
     const routeResolver = this.maxBotLinkService as unknown as {
       resolveBotRoute?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
       resolveBotRoutes?: (request: MaxBotRouteRequest) => Promise<MaxBotRoute>;
