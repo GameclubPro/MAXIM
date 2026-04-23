@@ -16530,6 +16530,164 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
+  it('derives target mode for managed broadcast summary and details from persisted rows', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const baseRow = await prisma.managedBroadcast.findUnique({ where: { id: 'broadcast-1' } });
+
+    expect(baseRow).not.toBeNull();
+
+    const currentSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(baseRow, []);
+    const currentSummary = (service as any).mapManagedBroadcastSummary(baseRow, currentSnapshot, []);
+    const currentDetails = (service as any).mapManagedBroadcastDetails(baseRow, currentSnapshot, []);
+
+    expect(currentSummary.targetMode).toBe('current');
+    expect(currentDetails.targetMode).toBe('current');
+
+    const selectedRow = {
+      ...baseRow!,
+      applyToAllChats: false,
+      targetChatIds: ['chat-2'],
+    };
+    const selectedSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(
+      selectedRow,
+      [],
+    );
+    const selectedSummary = (service as any).mapManagedBroadcastSummary(
+      selectedRow,
+      selectedSnapshot,
+      [],
+    );
+    const selectedDetails = (service as any).mapManagedBroadcastDetails(
+      selectedRow,
+      selectedSnapshot,
+      [],
+    );
+
+    expect(selectedSummary.targetMode).toBe('selected');
+    expect(selectedDetails.targetMode).toBe('selected');
+    expect(selectedDetails.targetChatIds).toEqual(['chat-2']);
+
+    const allRow = {
+      ...baseRow!,
+      applyToAllChats: true,
+      targetChatIds: ['chat-1', 'chat-2'],
+    };
+    const allSnapshot = (service as any).createManagedBroadcastDeliverySnapshot(allRow, []);
+    const allSummary = (service as any).mapManagedBroadcastSummary(allRow, allSnapshot, []);
+    const allDetails = (service as any).mapManagedBroadcastDetails(allRow, allSnapshot, []);
+
+    expect(allSummary.targetMode).toBe('all');
+    expect(allDetails.targetMode).toBe('all');
+  });
+
+  it('keeps selected target mode when updating a scheduled broadcast', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    wireManagedBroadcastOccurrenceStore(prisma, [
+      {
+        id: 'occurrence-1',
+        broadcastId: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        occurrenceIndex: 1,
+        scheduledAt: new Date('2026-03-03T12:00:00.000Z'),
+        status: 'ACTIVE',
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      },
+    ]);
+    await prisma.managedBroadcast.update({
+      where: { id: 'broadcast-1' },
+      data: {
+        nextSendAt: new Date('2026-03-03T12:00:00.000Z'),
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'ACTIVE',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    const result = await service.updateManagedBroadcast(
+      'chat-1',
+      'broadcast-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Обновлённая рассылка',
+        textFormat: 'plain',
+        targetMode: 'selected',
+        targetChatIds: ['chat-2'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(prisma.managedBroadcast.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'broadcast-1' },
+        data: expect.objectContaining({
+          applyToAllChats: false,
+          targetChatIds: ['chat-2'],
+        }),
+      }),
+    );
+    expect(result.targetMode).toBe('selected');
+    expect(result.targetChatIds).toEqual(['chat-2']);
+  });
+
   it('stops future managed broadcast deliveries after a fatal image processing error', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:10:00.000Z'));
 
@@ -17120,8 +17278,144 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
     );
     expect(result.targetChats).toBe(2);
-    expect(result.sentChats).toBe(2);
+    expect(result.sentChats).toBe(0);
     expect(result.failedChats).toBe(0);
+    expect(result.scheduleId).toBe('broadcast-1');
+  });
+
+  it('sends a chat broadcast only to selected chats and dedupes target ids', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+      clearManagedEntitiesRefreshCursor: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+      createChatSummaryFixture({
+        id: 'chat-3',
+        title: 'Чат 3',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Точный охват',
+        textFormat: 'plain',
+        targetMode: 'selected',
+        targetChatIds: ['chat-2', 'chat-2', 'chat-3'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          applyToAllChats: false,
+          targetChatIds: ['chat-2', 'chat-3'],
+        }),
+      }),
+    );
+    expect(result.targetChats).toBe(2);
+    expect(result.sentChats).toBe(0);
+    expect(result.failedChats).toBe(0);
+    expect(result.scheduleId).toBe('broadcast-1');
+  });
+
+  it('rejects selected chat broadcasts with unavailable target ids', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+      clearManagedEntitiesRefreshCursor: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
+
+    await expect(
+      service.sendBroadcast(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Точный охват',
+          textFormat: 'plain',
+          targetMode: 'selected',
+          targetChatIds: ['chat-404'],
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      ),
+    ).rejects.toThrow('Некоторые выбранные чаты больше недоступны. Откройте список заново.');
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('finalizes interrupted deliveries with stored message ids without duplicate resend', async () => {

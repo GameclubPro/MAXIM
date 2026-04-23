@@ -172,10 +172,14 @@ function buildAgendaFacts(
   broadcast: ManagedBroadcastSummary,
   currentTargetLabel: string,
 ): string[] {
-  return [
-    broadcast.applyToAllChats
+  const audienceLabel =
+    broadcast.targetMode === 'all'
       ? formatCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
-      : currentTargetLabel,
+      : broadcast.targetMode === 'selected'
+        ? formatCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
+        : currentTargetLabel;
+  return [
+    audienceLabel,
     broadcast.hasImage ? 'Фото' : null,
     broadcast.buttonEnabled
       ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()

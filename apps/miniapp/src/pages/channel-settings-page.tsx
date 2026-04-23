@@ -1639,6 +1639,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : null;
 
     return {
+      targetMode: 'current',
+      targetChatIds: chatId ? [chatId] : [],
       applyToAllChats: false,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,

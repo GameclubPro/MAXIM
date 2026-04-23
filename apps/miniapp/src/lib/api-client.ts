@@ -65,6 +65,7 @@ import {
   type ResolveRequiredSubscriptionChannelResponse,
   type UpdateManagedGiveawayRequest,
   type BroadcastLinkButton,
+  type BroadcastTargetMode,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
   type SendBroadcastResult,
@@ -88,6 +89,8 @@ export type ApplySettingsToAllChatsResult = {
 export type SendBroadcastPayload = {
   text: string;
   textFormat: BroadcastTextFormat;
+  targetMode: BroadcastTargetMode;
+  targetChatIds: string[];
   applyToAllChats: boolean;
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
@@ -110,6 +113,8 @@ export type ManagedGiveawayHandoffPayload = {
 };
 
 export type BroadcastHandoffPayload = {
+  targetMode: BroadcastTargetMode;
+  targetChatIds: string[];
   applyToAllChats: boolean;
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;

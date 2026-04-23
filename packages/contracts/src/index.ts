@@ -88,6 +88,7 @@ export const managedGiveawayWinnerStatusSchema = z.enum([
   'REROLLED',
 ]);
 export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
+export const broadcastTargetModeSchema = z.enum(['current', 'selected', 'all']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ManagedEntityBotRole = z.infer<typeof managedEntityBotRoleSchema>;
 export type ManagedEntityBotMembershipStatus = z.infer<
@@ -103,6 +104,7 @@ export type ManagedGiveawayStatus = z.infer<typeof managedGiveawayStatusSchema>;
 export type GiveawayEligibilityState = z.infer<typeof giveawayEligibilityStateSchema>;
 export type ManagedGiveawayWinnerStatus = z.infer<typeof managedGiveawayWinnerStatusSchema>;
 export type BroadcastTextFormat = z.infer<typeof broadcastTextFormatSchema>;
+export type BroadcastTargetMode = z.infer<typeof broadcastTargetModeSchema>;
 
 export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;
@@ -2733,6 +2735,30 @@ function normalizeBroadcastScheduledSlots(values: string[]): string[] {
   );
 }
 
+function normalizeBroadcastTargetChatIds(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function resolveBroadcastTargetMode(value: {
+  targetMode?: BroadcastTargetMode;
+  applyToAllChats?: boolean;
+  targetChatIds?: string[];
+}): BroadcastTargetMode {
+  if (value.targetMode === 'all' || value.applyToAllChats) {
+    return 'all';
+  }
+
+  if (value.targetMode === 'selected') {
+    return 'selected';
+  }
+
+  if (normalizeBroadcastTargetChatIds(value.targetChatIds ?? []).length > 0) {
+    return 'selected';
+  }
+
+  return 'current';
+}
+
 function normalizeBroadcastLinkButtons(values: BroadcastLinkButton[]): BroadcastLinkButton[] {
   return values.map((value) => ({
     text: value.text.trim() || DEFAULT_BROADCAST_BUTTON_TEXT,
@@ -2769,6 +2795,8 @@ export const sendBroadcastRequestSchema = z
       .max(2_000, 'Текст рассылки слишком длинный. Максимум 2000 символов.')
       .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
+    targetMode: broadcastTargetModeSchema.optional(),
+    targetChatIds: z.array(z.string().trim().min(1)).default([]),
     applyToAllChats: z.boolean().default(false),
     buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
     buttonEnabled: z.boolean().default(false),
@@ -2793,6 +2821,16 @@ export const sendBroadcastRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
+    const targetMode = resolveBroadcastTargetMode(value);
+    const targetChatIds = normalizeBroadcastTargetChatIds(value.targetChatIds);
+    if (targetMode === 'selected' && targetChatIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['targetChatIds'],
+        message: 'Выберите хотя бы один чат.',
+      });
+    }
+
     if (value.text.trim().length === 0 && !value.imageEnabled) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -2872,9 +2910,13 @@ export const sendBroadcastRequestSchema = z
   .transform((value) => {
     const buttons = resolveBroadcastLinkButtons(value);
     const primaryButton = buttons[0];
+    const targetMode = resolveBroadcastTargetMode(value);
 
     return {
       ...value,
+      targetMode,
+      targetChatIds: normalizeBroadcastTargetChatIds(value.targetChatIds),
+      applyToAllChats: targetMode === 'all',
       buttons,
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
@@ -2887,6 +2929,8 @@ export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
 export const broadcastHandoffRequestSchema = z
   .object({
+    targetMode: broadcastTargetModeSchema.optional(),
+    targetChatIds: z.array(z.string().trim().min(1)).default([]),
     applyToAllChats: z.boolean().default(false),
     buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
     buttonEnabled: z.boolean().default(false),
@@ -2907,6 +2951,16 @@ export const broadcastHandoffRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
+    const targetMode = resolveBroadcastTargetMode(value);
+    const targetChatIds = normalizeBroadcastTargetChatIds(value.targetChatIds);
+    if (targetMode === 'selected' && targetChatIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['targetChatIds'],
+        message: 'Выберите хотя бы один чат.',
+      });
+    }
+
     if (
       value.buttons.length === 0 &&
       value.buttonEnabled &&
@@ -2960,9 +3014,13 @@ export const broadcastHandoffRequestSchema = z
   .transform((value) => {
     const buttons = resolveBroadcastLinkButtons(value);
     const primaryButton = buttons[0];
+    const targetMode = resolveBroadcastTargetMode(value);
 
     return {
       ...value,
+      targetMode,
+      targetChatIds: normalizeBroadcastTargetChatIds(value.targetChatIds),
+      applyToAllChats: targetMode === 'all',
       buttons,
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
@@ -2984,6 +3042,8 @@ export const profileMentionHandoffRequestSchema = z.object({
 export type ProfileMentionHandoffRequest = z.infer<typeof profileMentionHandoffRequestSchema>;
 
 export const broadcastHandoffStateSchema = z.object({
+  targetMode: broadcastTargetModeSchema.default('current'),
+  targetChatIds: z.array(z.string().trim().min(1)).default([]),
   applyToAllChats: z.boolean(),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),
   buttonEnabled: z.boolean(),
@@ -3045,6 +3105,7 @@ export const managedBroadcastSummarySchema = z.object({
   status: managedBroadcastStatusSchema,
   textPreview: z.string(),
   textLength: z.number().int().min(0),
+  targetMode: broadcastTargetModeSchema.default('current'),
   applyToAllChats: z.boolean(),
   targetChats: z.number().int().min(1),
   hasImage: z.boolean(),
@@ -3077,6 +3138,7 @@ export const managedBroadcastDetailsSchema = z.object({
   status: managedBroadcastStatusSchema,
   text: z.string(),
   textFormat: broadcastTextFormatSchema,
+  targetMode: broadcastTargetModeSchema.default('current'),
   applyToAllChats: z.boolean(),
   targetChatIds: z.array(z.string()),
   buttons: z.array(broadcastLinkButtonSchema).max(MAX_BROADCAST_LINK_BUTTONS).default([]),

@@ -1,6 +1,7 @@
 import type {
   BroadcastLinkButton,
   BroadcastScheduleMode,
+  BroadcastTargetMode,
   BroadcastTextFormat,
   ChatRules,
   UpdateManagedGiveawayRequest,
@@ -9,6 +10,8 @@ import type {
 export type SendBroadcastPayload = {
   text: string;
   textFormat: BroadcastTextFormat;
+  targetMode: BroadcastTargetMode;
+  targetChatIds: string[];
   applyToAllChats: boolean;
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
@@ -35,6 +38,8 @@ export type ManagedGiveawayHandoffPayload = {
 };
 
 export type BroadcastHandoffPayload = {
+  targetMode: BroadcastTargetMode;
+  targetChatIds: string[];
   applyToAllChats: boolean;
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;

@@ -10,6 +10,7 @@ import {
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
   type BroadcastLinkButton,
+  type BroadcastTargetMode,
   chatRulesSchema,
   chatSettingsSchema,
   formatDeleteBotMessagesDelayLabel,
@@ -27,6 +28,7 @@ import {
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
+  type ChatSummary,
   type DomainAllowlistEntry,
   type ManagedEntityAssignedBot,
   type ManagedBroadcastDetails,
@@ -54,6 +56,7 @@ import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
+import { BroadcastAudienceSheet } from '../components/broadcast-audience-sheet';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -115,6 +118,14 @@ import {
   type BroadcastQuickPreset,
 } from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
+import {
+  normalizeBroadcastAudienceTargetChatIds,
+  resolveBroadcastAudienceLastScopedMode,
+  resolveBroadcastAudiencePayload,
+  resolveBroadcastAudienceTargetLabel,
+  restoreBroadcastAudienceModeFromAll,
+  type BroadcastScopedTargetMode,
+} from '../lib/broadcast-audience';
 import {
   applyMessageLimitsBlockedWordsInput,
   splitMessageLimitsBlockedWordsInput,
@@ -1385,6 +1396,18 @@ function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): 
   return broadcast.nextSendAt ? 'Следующая отправка' : 'Активная рассылка';
 }
 
+function resolveManagedBroadcastScopeLabel(broadcast: ManagedBroadcastListItem): string {
+  if (broadcast.targetMode === 'all') {
+    return 'Все чаты';
+  }
+
+  if (broadcast.targetMode === 'selected') {
+    return formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов');
+  }
+
+  return 'Текущий чат';
+}
+
 function resolveManagedBroadcastMetric(
   broadcast: ManagedBroadcastListItem,
   nowMs: number,
@@ -1422,15 +1445,13 @@ function resolveManagedBroadcastMetric(
   return {
     label: 'Доставлено',
     value: `${broadcast.deliveredChats}/${broadcast.targetChats}`,
-    caption: broadcast.applyToAllChats ? 'все чаты' : 'текущий чат',
+    caption: resolveManagedBroadcastScopeLabel(broadcast),
     tone: broadcast.status === 'COMPLETED' ? 'muted' : 'active',
   };
 }
 
 function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): string[] {
-  const scopeLabel = broadcast.applyToAllChats
-    ? formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
-    : 'Текущий чат';
+  const scopeLabel = resolveManagedBroadcastScopeLabel(broadcast);
   const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
       ? formatRussianCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
@@ -2022,7 +2043,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [scheduleTime, setScheduleTime] = useState('');
   const [scheduleError, setScheduleError] = useState('');
   const [mailingText, setMailingText] = useState('');
-  const [mailingApplyToAllChats, setMailingApplyToAllChats] = useState(false);
+  const [mailingTargetMode, setMailingTargetMode] = useState<BroadcastTargetMode>('current');
+  const [mailingTargetChatIds, setMailingTargetChatIds] = useState<string[]>([]);
+  const [mailingLastScopedTargetMode, setMailingLastScopedTargetMode] =
+    useState<BroadcastScopedTargetMode>('current');
+  const [mailingAudienceSheetOpen, setMailingAudienceSheetOpen] = useState(false);
+  const [mailingAudienceError, setMailingAudienceError] = useState('');
   const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
   const [mailingButtonRevealSignal, setMailingButtonRevealSignal] = useState(0);
   const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
@@ -2152,7 +2178,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesButtonRevealSignal(0);
     setRulesFailedSnapshot('');
     previousRulesServerSnapshotRef.current = '';
-    setMailingApplyToAllChats(false);
+    setMailingTargetMode('current');
+    setMailingTargetChatIds(chatId ? [chatId] : []);
+    setMailingLastScopedTargetMode('current');
+    setMailingAudienceSheetOpen(false);
+    setMailingAudienceError('');
     setMailingText('');
     setMailingButtons([]);
     setMailingImageEnabled(false);
@@ -2492,7 +2522,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     appliedBroadcastHandoffSignatureRef.current = signature;
     setEditingManagedBroadcast(null);
-    setMailingApplyToAllChats(broadcastHandoffStateQuery.data.applyToAllChats);
+    const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
+      broadcastHandoffStateQuery.data.targetChatIds,
+    );
+    setMailingTargetMode(broadcastHandoffStateQuery.data.targetMode);
+    setMailingTargetChatIds(
+      broadcastHandoffStateQuery.data.targetMode === 'selected' && handoffTargetChatIds.length === 0
+        ? chatId
+          ? [chatId]
+          : []
+        : handoffTargetChatIds,
+    );
+    setMailingLastScopedTargetMode(
+      resolveBroadcastAudienceLastScopedMode({
+        targetMode: broadcastHandoffStateQuery.data.targetMode,
+        targetChatIds: handoffTargetChatIds,
+        currentChatId: chatId ?? undefined,
+      }),
+    );
+    setMailingAudienceError('');
+    setMailingAudienceSheetOpen(false);
     setMailingButtons(broadcastHandoffStateQuery.data.buttons);
     setMailingQuickPreset(null);
     setMailingScheduledSlots(
@@ -2520,7 +2569,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         tone: 'success',
       });
     }
-  }, [broadcastHandoffStateQuery.data, handoffRequested, pushToast]);
+  }, [broadcastHandoffStateQuery.data, chatId, handoffRequested, pushToast]);
 
   useEffect(() => {
     if (!rulesQuery.data) {
@@ -2927,10 +2976,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
     },
     onError: (error) => {
+      const description = reportMailingAudienceApiError(error);
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть сбор контента',
-        description: formatApiError(error),
+        description,
       });
     },
   });
@@ -3058,10 +3108,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       });
     },
     onError: (error) => {
+      const description = reportMailingAudienceApiError(error);
       pushToast({
         tone: 'danger',
         title: 'Не удалось обновить рассылку',
-        description: formatApiError(error),
+        description,
       });
     },
   });
@@ -3120,7 +3171,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       setEditingManagedBroadcast(broadcast);
-      setMailingApplyToAllChats(broadcast.applyToAllChats);
+      const targetChatIds = normalizeBroadcastAudienceTargetChatIds(broadcast.targetChatIds);
+      setMailingTargetMode(broadcast.targetMode);
+      setMailingTargetChatIds(
+        broadcast.targetMode === 'selected' && targetChatIds.length === 0
+          ? chatId
+            ? [chatId]
+            : []
+          : targetChatIds,
+      );
+      setMailingLastScopedTargetMode(
+        resolveBroadcastAudienceLastScopedMode({
+          targetMode: broadcast.targetMode,
+          targetChatIds,
+          currentChatId: chatId ?? undefined,
+        }),
+      );
+      setMailingAudienceError('');
+      setMailingAudienceSheetOpen(false);
       setMailingText(broadcast.text);
       setMailingBotHasContent(false);
       setMailingButtons(broadcast.buttons);
@@ -4019,7 +4087,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function resetMailingComposer() {
     setEditingManagedBroadcast(null);
-    setMailingApplyToAllChats(false);
+    setMailingTargetMode('current');
+    setMailingTargetChatIds(chatId ? [chatId] : []);
+    setMailingLastScopedTargetMode('current');
+    setMailingAudienceSheetOpen(false);
+    setMailingAudienceError('');
     setMailingText('');
     setMailingBotHasContent(false);
     setMailingButtons([]);
@@ -4060,6 +4132,71 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     clearBroadcastHandoffMutation.mutate();
+  }
+
+  function handleMailingAllChatsToggle(enabled: boolean) {
+    setMailingAudienceError('');
+    setMailingAudienceSheetOpen(false);
+    if (enabled) {
+      setMailingTargetMode('all');
+      return;
+    }
+
+    const savedTargetChatIds = normalizeBroadcastAudienceTargetChatIds(mailingTargetChatIds);
+    if (savedTargetChatIds.length === 0) {
+      setMailingTargetChatIds(chatId ? [chatId] : []);
+      setMailingTargetMode('current');
+      setMailingLastScopedTargetMode('current');
+      return;
+    }
+
+    setMailingTargetChatIds(savedTargetChatIds);
+    setMailingTargetMode(
+      restoreBroadcastAudienceModeFromAll({
+        lastScopedMode: mailingLastScopedTargetMode,
+        targetChatIds: savedTargetChatIds,
+      }),
+    );
+  }
+
+  function handleMailingScopedTargetModeChange(value: string) {
+    const nextMode: BroadcastScopedTargetMode = value === 'selected' ? 'selected' : 'current';
+    setMailingAudienceError('');
+    setMailingLastScopedTargetMode(nextMode);
+    setMailingTargetMode(nextMode);
+    if (nextMode !== 'selected') {
+      setMailingAudienceSheetOpen(false);
+    }
+    if (nextMode === 'selected') {
+      setMailingTargetChatIds((current) => {
+        const normalized = normalizeBroadcastAudienceTargetChatIds(current);
+        if (normalized.length > 0) {
+          return normalized;
+        }
+
+        return chatId ? [chatId] : [];
+      });
+    }
+  }
+
+  function handleApplyMailingAudienceSelection(nextSelection: string[]) {
+    const normalizedSelection = normalizeBroadcastAudienceTargetChatIds(nextSelection);
+    setMailingTargetChatIds(normalizedSelection);
+    setMailingLastScopedTargetMode('selected');
+    setMailingTargetMode('selected');
+    setMailingAudienceError('');
+    setMailingAudienceSheetOpen(false);
+  }
+
+  function reportMailingAudienceApiError(error: unknown) {
+    const message = formatApiError(error);
+    if (
+      message.toLowerCase().includes('выбранные чаты') ||
+      message.toLowerCase().includes('выберите хотя бы один чат')
+    ) {
+      setMailingAudienceError('Обновите выбор чатов.');
+    }
+    return message;
   }
 
   function handleSelectMailingQuickPreset(preset: BroadcastQuickPreset) {
@@ -4127,9 +4264,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const quickSchedule = mailingQuickPreset
       ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
       : null;
+    const audiencePayload = resolveBroadcastAudiencePayload({
+      targetMode: mailingTargetMode,
+      targetChatIds: mailingTargetChatIds,
+      currentChatId: chatId ?? undefined,
+    });
 
     return {
-      applyToAllChats: mailingApplyToAllChats,
+      targetMode: audiencePayload.targetMode,
+      targetChatIds: audiencePayload.targetChatIds,
+      applyToAllChats: audiencePayload.applyToAllChats,
       buttons: buttonState.buttons,
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
@@ -4154,6 +4298,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const quickSchedule = mailingQuickPreset
       ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
       : null;
+    const audiencePayload = resolveBroadcastAudiencePayload({
+      targetMode: mailingTargetMode,
+      targetChatIds: mailingTargetChatIds,
+      currentChatId: chatId,
+    });
 
     let hasError = false;
     if (editingManagedBroadcast) {
@@ -4186,6 +4335,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       hasError = true;
     }
 
+    if (audiencePayload.targetMode === 'selected' && audiencePayload.targetChatIds.length === 0) {
+      setMailingAudienceError('Выберите хотя бы один чат.');
+      setMailingAudienceSheetOpen(true);
+      hasError = true;
+    } else {
+      setMailingAudienceError('');
+    }
+
     if (!quickSchedule && scheduledSlots.length === 0) {
       setMailingScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
@@ -4201,7 +4358,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const handoffPayload = buildMailingHandoffPayload();
+    const handoffPayload = {
+      ...buildMailingHandoffPayload(),
+      targetMode: audiencePayload.targetMode,
+      targetChatIds: audiencePayload.targetChatIds,
+      applyToAllChats: audiencePayload.applyToAllChats,
+    };
 
     if (editingManagedBroadcast) {
       const payload: SendBroadcastPayload = {
@@ -4774,6 +4936,59 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const chatsCount = chatsList.data?.length ?? 0;
   const canApplyToAllChats = !chatsList.isSyncComplete || chatsCount > 1;
+  const mailingAudienceChoices = useMemo(() => {
+    const choicesById = new Map<string, ChatSummary>();
+    for (const chat of chatsList.data ?? []) {
+      if (chat.entityType === 'chat') {
+        choicesById.set(chat.id, chat);
+      }
+    }
+
+    const currentChatId = chatId?.trim() ?? '';
+    if (currentChatId && !choicesById.has(currentChatId)) {
+      choicesById.set(currentChatId, {
+        id: currentChatId,
+        title: chatTitle || 'Текущий чат',
+        createdAt: new Date(0).toISOString(),
+        entityType: 'chat',
+        link: chatHeaderQuery.data?.link ?? null,
+        avatarUrl: chatHeaderQuery.data?.avatarUrl ?? null,
+        channelOverview: null,
+        primaryBotId: chatHeaderQuery.data?.primaryBotId ?? null,
+        assignedBots: chatHeaderQuery.data?.assignedBots ?? [],
+        sharedMode: chatHeaderQuery.data?.sharedMode ?? 'owned',
+      });
+    }
+
+    return [...choicesById.values()];
+  }, [
+    chatHeaderQuery.data?.assignedBots,
+    chatHeaderQuery.data?.avatarUrl,
+    chatHeaderQuery.data?.link,
+    chatHeaderQuery.data?.primaryBotId,
+    chatHeaderQuery.data?.sharedMode,
+    chatId,
+    chatTitle,
+    chatsList.data,
+  ]);
+  const mailingSelectedTargetChatIds = useMemo(
+    () => normalizeBroadcastAudienceTargetChatIds(mailingTargetChatIds),
+    [mailingTargetChatIds],
+  );
+  const mailingAudiencePayload = useMemo(
+    () =>
+      resolveBroadcastAudiencePayload({
+        targetMode: mailingTargetMode,
+        targetChatIds: mailingTargetChatIds,
+        currentChatId: chatId ?? undefined,
+      }),
+    [chatId, mailingTargetChatIds, mailingTargetMode],
+  );
+  const mailingAudienceChoicesLoading =
+    chatsList.isLoading && (chatsList.data?.length ?? 0) === 0;
+  const mailingAudienceChoicesError = chatsList.error
+    ? formatApiError(chatsList.error) || 'Не удалось загрузить список чатов.'
+    : null;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -4846,7 +5061,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingHeaderTargetLabel = mailingApplyToAllChats ? 'Все чаты' : 'Текущий чат';
+  const mailingHeaderTargetLabel = resolveBroadcastAudienceTargetLabel({
+    targetMode: mailingTargetMode,
+    targetChatIds:
+      mailingTargetMode === 'selected'
+        ? mailingAudiencePayload.targetChatIds
+        : mailingSelectedTargetChatIds,
+    currentLabel: 'Текущий чат',
+  });
+  const mailingScopedTargetMode: BroadcastScopedTargetMode =
+    mailingTargetMode === 'selected' ? 'selected' : 'current';
+  const mailingSelectedAudienceLabel = resolveBroadcastAudienceTargetLabel({
+    targetMode: 'selected',
+    targetChatIds: mailingAudiencePayload.targetChatIds,
+  });
+  const mailingAudienceTriggerLabel = mailingAudienceChoicesLoading
+    ? 'Собираем чаты'
+    : mailingAudienceChoicesError
+      ? 'Обновить список'
+      : mailingSelectedAudienceLabel;
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -4879,12 +5112,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     .filter(Boolean)
     .join(' · ');
   const mailingHeaderSummary = [
+    mailingHeaderTargetLabel,
     mailingQuickSchedule ? mailingQuickSchedule.summary : mailingSlotsLabel,
   ]
     .filter(Boolean)
     .join(' · ');
   const showMailingResetAction =
     editingManagedBroadcast !== null ||
+    mailingTargetMode !== 'current' ||
     mailingQuickPreset !== null ||
     mailingScheduledSlots.length > 0 ||
     mailingText.trim().length > 0 ||
@@ -9892,16 +10127,74 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <SegmentedControl
-                                  className="broadcast-scope-control"
-                                  ariaLabel="Охват рассылки"
-                                  value={mailingApplyToAllChats ? 'all' : 'current'}
-                                  onChange={(value) => setMailingApplyToAllChats(value === 'all')}
-                                  options={[
-                                    { value: 'current', label: 'Текущий чат' },
-                                    { value: 'all', label: 'Все чаты' },
-                                  ]}
-                                />
+                                <div className="broadcast-audience-card">
+                                  <div className="broadcast-audience-card__toggle">
+                                    <div className="broadcast-audience-card__toggle-copy">
+                                      <strong>Все чаты</strong>
+                                      <span>
+                                        {mailingTargetMode === 'all'
+                                          ? 'Без ограничений'
+                                          : mailingHeaderTargetLabel}
+                                      </span>
+                                    </div>
+
+                                    <label
+                                      className="settings-native-switch"
+                                      aria-label="Отправить во все чаты"
+                                    >
+                                      <input
+                                        type="checkbox"
+                                        checked={mailingTargetMode === 'all'}
+                                        onChange={(event) =>
+                                          handleMailingAllChatsToggle(event.target.checked)
+                                        }
+                                        disabled={isMailingBusy}
+                                      />
+                                      <span className="toggle-switch" aria-hidden>
+                                        <span className="toggle-switch__thumb" />
+                                      </span>
+                                    </label>
+                                  </div>
+
+                                  {mailingTargetMode !== 'all' ? (
+                                    <>
+                                      <SegmentedControl
+                                        className="broadcast-scope-control"
+                                        ariaLabel="Охват рассылки"
+                                        value={mailingScopedTargetMode}
+                                        onChange={handleMailingScopedTargetModeChange}
+                                        options={[
+                                          { value: 'current', label: 'Текущий' },
+                                          { value: 'selected', label: 'Выбрано' },
+                                        ]}
+                                      />
+
+                                      {mailingScopedTargetMode === 'selected' ? (
+                                        <button
+                                          type="button"
+                                          className="broadcast-audience-card__trigger"
+                                          onClick={() => {
+                                            setMailingAudienceError('');
+                                            setMailingAudienceSheetOpen(true);
+                                          }}
+                                          disabled={isMailingBusy}
+                                        >
+                                          <span className="broadcast-audience-card__trigger-copy">
+                                            <strong>Чаты</strong>
+                                            <small>{mailingAudienceTriggerLabel}</small>
+                                          </span>
+                                          <span className="broadcast-audience-card__trigger-badge">
+                                            {mailingAudiencePayload.targetChatIds.length}
+                                          </span>
+                                        </button>
+                                      ) : null}
+                                    </>
+                                  ) : null}
+
+                                  {mailingAudienceError ? (
+                                    <small className="field__hint">{mailingAudienceError}</small>
+                                  ) : null}
+                                </div>
                               </div>
                             </div>
 
@@ -11227,6 +11520,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </GlassCard>
       ) : null}
+
+      <BroadcastAudienceSheet
+        open={mailingAudienceSheetOpen}
+        currentChatId={chatId ?? ''}
+        choices={mailingAudienceChoices}
+        selection={mailingAudiencePayload.targetChatIds}
+        disabled={isMailingBusy}
+        loading={mailingAudienceChoicesLoading}
+        error={mailingAudienceChoicesError}
+        onClose={() => setMailingAudienceSheetOpen(false)}
+        onApply={handleApplyMailingAudienceSelection}
+      />
 
       <ActionConfirmSheet
         id="managed-broadcast-delete"

@@ -783,6 +783,7 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     status: details.status,
     textPreview: details.text.trim().slice(0, 120) || 'Пустая рассылка',
     textLength: details.text.length,
+    targetMode: details.targetMode,
     applyToAllChats: details.applyToAllChats,
     targetChats: details.targetChatIds.length || 1,
     hasImage: details.imageEnabled,
@@ -834,6 +835,8 @@ function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntit
 
 function buildBroadcastHandoffState(details: ManagedBroadcastDetails): BroadcastHandoffState {
   return broadcastHandoffStateSchema.parse({
+    targetMode: details.targetMode,
+    targetChatIds: details.targetChatIds,
     applyToAllChats: details.applyToAllChats,
     buttons: details.buttons,
     buttonEnabled: details.buttonEnabled,
@@ -1740,6 +1743,7 @@ function createInitialState(): PreviewState {
       status: 'ACTIVE',
       text: 'Напоминаем: в субботу уборка двора в 11:00. Приходите с перчатками.',
       textFormat: 'plain',
+      targetMode: 'current',
       applyToAllChats: false,
       targetChatIds: [PREVIEW_CHAT_ID],
       buttons: [
@@ -1888,6 +1892,7 @@ function createInitialState(): PreviewState {
       status: 'ACTIVE',
       text: 'Сегодня публикуем подборку событий района. Проверьте расписание и переходите в канал.',
       textFormat: 'markdown',
+      targetMode: 'current',
       applyToAllChats: false,
       targetChatIds: [PREVIEW_CHANNEL_ID],
       buttons: [

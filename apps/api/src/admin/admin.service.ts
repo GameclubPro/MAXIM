@@ -83,6 +83,7 @@ import {
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
+  type BroadcastTargetMode,
   type BroadcastLinkButton,
   type ManagedEntityAssignedBot,
   type ManagedEntitiesListResponse,
@@ -9587,6 +9588,7 @@ export class AdminService implements OnModuleDestroy {
         payload: {
           broadcastId: existing.id,
           entityType,
+          targetMode: request.payload.targetMode,
           targetChats: request.targetChatIds.length,
           nextSendAt: schedulePlan.nextSendAt?.toISOString() ?? null,
           scheduleMode: schedulePlan.scheduleMode,
@@ -9901,20 +9903,34 @@ export class AdminService implements OnModuleDestroy {
     }
 
     let targetChatIds = [sourceChatId];
-    if (parsed.data.applyToAllChats) {
+    const availableTargets = options.resolveTargets ? await options.resolveTargets(user) : [];
+    const allowedTargetIds = new Set([
+      sourceChatId,
+      ...availableTargets
+        .filter((chat) => chat.entityType === options.entityType)
+        .map((chat) => chat.id),
+    ]);
+    if (parsed.data.targetMode === 'all') {
       if (!options.resolveTargets) {
         throw new BadRequestException('Массовая рассылка по каналам пока недоступна.');
       }
 
-      const availableTargets = await options.resolveTargets(user);
-      targetChatIds = Array.from(
-        new Set([
-          sourceChatId,
-          ...availableTargets
-            .filter((chat) => chat.entityType === options.entityType)
-            .map((chat) => chat.id),
-        ]),
+      targetChatIds = [...allowedTargetIds];
+    } else if (parsed.data.targetMode === 'selected') {
+      if (!options.resolveTargets) {
+        throw new BadRequestException('Выбор нескольких чатов для этой рассылки недоступен.');
+      }
+
+      const invalidTargetChatIds = parsed.data.targetChatIds.filter(
+        (chatId) => !allowedTargetIds.has(chatId),
       );
+      if (invalidTargetChatIds.length > 0) {
+        throw new BadRequestException(
+          'Некоторые выбранные чаты больше недоступны. Откройте список заново.',
+        );
+      }
+
+      targetChatIds = parsed.data.targetChatIds;
     }
 
     return {
@@ -10064,6 +10080,7 @@ export class AdminService implements OnModuleDestroy {
         action: 'SEND_BROADCAST',
         payload: {
           entityType,
+          targetMode: request.payload.targetMode,
           applyToAllChats: request.payload.applyToAllChats,
           targetChats: request.targetChatIds.length,
           sentChats: sentChatIds.length,
@@ -10221,6 +10238,7 @@ export class AdminService implements OnModuleDestroy {
         payload: {
           broadcastId: created.id,
           entityType,
+          targetMode: request.payload.targetMode,
           applyToAllChats: request.payload.applyToAllChats,
           targetChats: request.targetChatIds.length,
           sendAt: schedulePlan.sendAt,
@@ -10321,11 +10339,14 @@ export class AdminService implements OnModuleDestroy {
         currentOccurrence,
         staleLockBefore,
       );
+      const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
 
       const request: PreparedManagedBroadcastRequest = {
         payload: {
           text: row.text,
           textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
+          targetMode,
+          targetChatIds,
           applyToAllChats: row.applyToAllChats,
           ...this.buildManagedBroadcastButtonState(row.buttons, {
             buttonEnabled: row.buttonEnabled,
@@ -10344,7 +10365,7 @@ export class AdminService implements OnModuleDestroy {
           cycleEveryHours: row.cycleEveryHours,
           cycleCount: row.cycleCount,
         },
-        targetChatIds: this.parseManagedBroadcastTargetChatIds(row.targetChatIds),
+        targetChatIds,
         normalizedSourceText: row.text,
       };
 
@@ -11167,7 +11188,7 @@ export class AdminService implements OnModuleDestroy {
     await tx.managedBroadcastDelivery.createMany({
       data: this.buildManagedBroadcastDeliveryRows(
         row.id,
-        this.parseManagedBroadcastTargetChatIds(row.targetChatIds),
+        this.parseManagedBroadcastTargetChatIds(row.targetChatIds, row.sourceChatId),
         currentOccurrence,
         nextCycleCount,
       ),
@@ -11315,14 +11336,71 @@ export class AdminService implements OnModuleDestroy {
     return cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
   }
 
-  private parseManagedBroadcastTargetChatIds(value: Prisma.JsonValue): string[] {
-    if (!Array.isArray(value)) {
-      return [];
+  private normalizeManagedBroadcastTargetChatIds(
+    targetChatIds: readonly string[],
+    fallbackChatId?: string,
+  ): string[] {
+    const normalized = Array.from(
+      new Set(
+        targetChatIds
+          .map((item) => item.trim())
+          .filter((item): item is string => item.length > 0),
+      ),
+    );
+    if (normalized.length > 0) {
+      return normalized;
     }
 
-    return value.filter(
-      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    return fallbackChatId?.trim() ? [fallbackChatId.trim()] : [];
+  }
+
+  private parseManagedBroadcastTargetChatIds(
+    value: Prisma.JsonValue,
+    fallbackChatId?: string,
+  ): string[] {
+    if (!Array.isArray(value)) {
+      return this.normalizeManagedBroadcastTargetChatIds([], fallbackChatId);
+    }
+
+    return this.normalizeManagedBroadcastTargetChatIds(
+      value.filter((item): item is string => typeof item === 'string'),
+      fallbackChatId,
     );
+  }
+
+  private resolveManagedBroadcastTargetMode(params: {
+    applyToAllChats: boolean;
+    sourceChatId: string;
+    targetChatIds: readonly string[];
+  }): BroadcastTargetMode {
+    if (params.applyToAllChats) {
+      return 'all';
+    }
+
+    if (params.targetChatIds.length === 1 && params.targetChatIds[0] === params.sourceChatId) {
+      return 'current';
+    }
+
+    return 'selected';
+  }
+
+  private resolveManagedBroadcastTargetsFromRow(row: {
+    applyToAllChats: boolean;
+    sourceChatId: string;
+    targetChatIds: Prisma.JsonValue;
+  }): { targetMode: BroadcastTargetMode; targetChatIds: string[] } {
+    const targetChatIds = this.parseManagedBroadcastTargetChatIds(
+      row.targetChatIds,
+      row.sourceChatId,
+    );
+    return {
+      targetMode: this.resolveManagedBroadcastTargetMode({
+        applyToAllChats: row.applyToAllChats,
+        sourceChatId: row.sourceChatId,
+        targetChatIds,
+      }),
+      targetChatIds,
+    };
   }
 
   private normalizeBroadcastTextFormat(value: string): BroadcastTextFormat {
@@ -12175,7 +12253,7 @@ export class AdminService implements OnModuleDestroy {
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
   ): ManagedBroadcastSummary {
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
+    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
     const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
@@ -12193,6 +12271,7 @@ export class AdminService implements OnModuleDestroy {
           ? 'Фото без текста'
           : 'Пустая рассылка',
       textLength: row.text.length,
+      targetMode,
       applyToAllChats: row.applyToAllChats,
       targetChats: targetChatIds.length,
       hasImage: row.imageEnabled,
@@ -12225,7 +12304,7 @@ export class AdminService implements OnModuleDestroy {
     snapshot?: ManagedBroadcastDeliverySnapshot,
     upcomingSlots: Date[] = [],
   ): ManagedBroadcastDetails {
-    const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
+    const { targetMode, targetChatIds } = this.resolveManagedBroadcastTargetsFromRow(row);
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
     const buttonState = this.buildManagedBroadcastButtonState(row.buttons, {
       buttonEnabled: row.buttonEnabled,
@@ -12238,6 +12317,7 @@ export class AdminService implements OnModuleDestroy {
       status: row.status,
       text: row.text,
       textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
+      targetMode,
       applyToAllChats: row.applyToAllChats,
       targetChatIds,
       buttons: buttonState.buttons,

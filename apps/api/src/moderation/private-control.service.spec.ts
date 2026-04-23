@@ -2556,7 +2556,6 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
@@ -3144,6 +3143,70 @@ describe('PrivateControlService', () => {
         cycleEnabled: true,
         cycleEveryHours: 24,
         cycleCount: 3,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('round-trips selected chat targets from miniapp handoff and confirms multi-chat selected sends', async () => {
+    const sendBroadcast = jest
+      .fn()
+      .mockResolvedValue({ targetChats: 2, sentChats: 2, failedChats: 0 });
+    const { service, adminService, maxClient, chats } = createHarness({
+      adminService: {
+        sendBroadcast,
+      },
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        targetMode: 'selected',
+        targetChatIds: [chats[0].id, 'chat-selected-2'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+      'chat',
+    );
+
+    const handoffState = await service.getBroadcastHandoffState(chats[0].id, actor, 'chat');
+
+    expect(handoffState.targetMode).toBe('selected');
+    expect(handoffState.targetChatIds).toEqual([chats[0].id, 'chat-selected-2']);
+    expect(handoffState.applyToAllChats).toBe(false);
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+    await service.handleUpdate(createPrivateTextUpdate('Точная рассылка'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(getLastEditedText(maxClient)).toContain('Подтвердите массовую рассылку');
+    expect(sendBroadcast).not.toHaveBeenCalled();
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
+    await flushBackgroundBroadcast();
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Точная рассылка',
+        targetMode: 'selected',
+        targetChatIds: [chats[0].id, 'chat-selected-2'],
+        applyToAllChats: false,
       }),
       'private_bot',
     );

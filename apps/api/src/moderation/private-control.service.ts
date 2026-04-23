@@ -10,6 +10,7 @@ import {
   profileMentionHandoffRequestSchema,
   stepDeleteBotMessagesDelayMinutes,
   type BroadcastLinkButton,
+  type BroadcastTargetMode,
   type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -152,6 +153,8 @@ type PendingMassAction =
 type PrivateBroadcastDraft = {
   text: string;
   textFormat: BroadcastTextFormat;
+  targetMode: BroadcastTargetMode;
+  targetChatIds: string[];
   applyToAllChats: boolean;
   buttons: BroadcastLinkButton[];
   buttonEnabled: boolean;
@@ -1124,6 +1127,8 @@ const SECTION_CARD_FIELDS: Record<
 const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   text: '',
   textFormat: 'plain',
+  targetMode: 'current',
+  targetChatIds: [],
   applyToAllChats: false,
   buttons: [],
   buttonEnabled: false,
@@ -1490,6 +1495,12 @@ export class PrivateControlService {
     session.pendingInput = hasPreservedContent ? null : { kind: 'broadcast_content' };
     const scheduleMode: BroadcastScheduleMode =
       parsed.data.scheduleMode === 'calendar' ? 'calendar' : 'legacy';
+    const targetState = this.resolveBroadcastDraftTargetState({
+      targetMode: entityType === 'channel' ? 'current' : parsed.data.targetMode,
+      targetChatIds: parsed.data.targetChatIds,
+      applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
+      fallbackChatId: sourceChatId,
+    });
     session.broadcastDraft = {
       ...DEFAULT_BROADCAST_DRAFT,
       text: preservedDraft.text,
@@ -1498,7 +1509,9 @@ export class PrivateControlService {
       imageBase64: preservedDraft.imageBase64,
       imageMimeType: preservedDraft.imageMimeType,
       imageFileName: preservedDraft.imageFileName,
-      applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
+      targetMode: targetState.targetMode,
+      targetChatIds: targetState.targetChatIds,
+      applyToAllChats: targetState.applyToAllChats,
       buttons: parsed.data.buttons,
       buttonEnabled: parsed.data.buttonEnabled,
       buttonUrl: parsed.data.buttonEnabled ? parsed.data.buttonUrl.trim() : '',
@@ -4403,21 +4416,31 @@ export class PrivateControlService {
           return;
         }
 
-        if (session.selectedEntityType !== 'channel' && session.broadcastDraft.applyToAllChats) {
-          const availableChats = await this.adminService.listChatsForMassBroadcast(context.actor);
-          const targetChats = Array.from(
-            new Set([session.selectedChatId!, ...availableChats.map((chat) => chat.id)]),
-          ).length;
-          session.pendingMassAction = {
-            kind: 'broadcast',
-            targetChats,
-          };
-          const view = this.renderMassActionConfirmation(session.pendingMassAction);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Нужно подтверждение',
-          });
-          return;
+        if (session.selectedEntityType !== 'channel') {
+          let targetChats = 1;
+          if (session.broadcastDraft.targetMode === 'all') {
+            const availableChats = await this.adminService.listChatsForMassBroadcast(context.actor);
+            targetChats = Array.from(
+              new Set([session.selectedChatId!, ...availableChats.map((chat) => chat.id)]),
+            ).length;
+          } else if (session.broadcastDraft.targetMode === 'selected') {
+            targetChats = this.normalizeBroadcastTargetChatIds(
+              session.broadcastDraft.targetChatIds,
+            ).length;
+          }
+
+          if (targetChats > 1) {
+            session.pendingMassAction = {
+              kind: 'broadcast',
+              targetChats,
+            };
+            const view = this.renderMassActionConfirmation(session.pendingMassAction);
+            await this.respond(context, session, view, {
+              callbackId: context.callbackId,
+              notification: 'Нужно подтверждение',
+            });
+            return;
+          }
         }
 
         const publishClaim = this.claimBroadcastPublish(session);
@@ -6125,7 +6148,63 @@ export class PrivateControlService {
     return {
       ...draft,
       buttons: draft.buttons.map((button) => ({ ...button })),
+      targetChatIds: [...draft.targetChatIds],
       scheduledSlots: [...draft.scheduledSlots],
+    };
+  }
+
+  private normalizeBroadcastTargetChatIds(
+    targetChatIds: readonly string[],
+    fallbackChatId?: string | null,
+  ): string[] {
+    const normalized = Array.from(
+      new Set(
+        targetChatIds
+          .map((item) => item.trim())
+          .filter((item): item is string => item.length > 0),
+      ),
+    );
+    if (normalized.length > 0) {
+      return normalized;
+    }
+
+    return fallbackChatId?.trim() ? [fallbackChatId.trim()] : [];
+  }
+
+  private resolveBroadcastDraftTargetState(params: {
+    targetMode?: BroadcastTargetMode;
+    targetChatIds?: readonly string[];
+    applyToAllChats?: boolean;
+    fallbackChatId?: string | null;
+  }): {
+    targetMode: BroadcastTargetMode;
+    targetChatIds: string[];
+    applyToAllChats: boolean;
+  } {
+    const targetChatIds = this.normalizeBroadcastTargetChatIds(
+      params.targetChatIds ?? [],
+      params.targetMode === 'current' ? params.fallbackChatId : undefined,
+    );
+    let targetMode: BroadcastTargetMode;
+
+    if (params.targetMode === 'all' || params.applyToAllChats) {
+      targetMode = 'all';
+    } else if (params.targetMode === 'selected') {
+      targetMode = 'selected';
+    } else if (targetChatIds.length > 0) {
+      const fallbackChatId = params.fallbackChatId?.trim() ?? '';
+      targetMode =
+        fallbackChatId && targetChatIds.length === 1 && targetChatIds[0] === fallbackChatId
+          ? 'current'
+          : 'selected';
+    } else {
+      targetMode = 'current';
+    }
+
+    return {
+      targetMode,
+      targetChatIds,
+      applyToAllChats: targetMode === 'all',
     };
   }
 
@@ -6133,8 +6212,21 @@ export class PrivateControlService {
     entityType: ManagedEntityType,
     draft: PrivateBroadcastDraft,
   ): BroadcastHandoffState {
+    const targetState =
+      entityType === 'channel'
+        ? this.resolveBroadcastDraftTargetState({
+            targetMode: 'current',
+            targetChatIds: draft.targetChatIds,
+          })
+        : this.resolveBroadcastDraftTargetState({
+            targetMode: draft.targetMode,
+            targetChatIds: draft.targetChatIds,
+            applyToAllChats: draft.applyToAllChats,
+          });
     return broadcastHandoffStateSchema.parse({
-      applyToAllChats: entityType === 'channel' ? false : draft.applyToAllChats,
+      targetMode: targetState.targetMode,
+      targetChatIds: targetState.targetChatIds,
+      applyToAllChats: targetState.applyToAllChats,
       buttons: draft.buttons.map((button) => ({ ...button })),
       buttonEnabled: draft.buttonEnabled,
       buttonUrl: draft.buttonUrl,
@@ -6156,10 +6248,18 @@ export class PrivateControlService {
     actor: AuthUser;
     draft: PrivateBroadcastDraft;
   }): Promise<SendBroadcastResult> {
-    const payload: PrivateBroadcastDraft = {
-      ...params.draft,
+    const targetState = this.resolveBroadcastDraftTargetState({
+      targetMode: params.selectedEntityType === 'channel' ? 'current' : params.draft.targetMode,
+      targetChatIds: params.draft.targetChatIds,
       applyToAllChats:
         params.selectedEntityType === 'channel' ? false : params.draft.applyToAllChats,
+      fallbackChatId: params.selectedChatId,
+    });
+    const payload: PrivateBroadcastDraft = {
+      ...params.draft,
+      targetMode: targetState.targetMode,
+      targetChatIds: targetState.targetChatIds,
+      applyToAllChats: targetState.applyToAllChats,
     };
 
     return params.selectedEntityType === 'channel'
@@ -6310,6 +6410,8 @@ export class PrivateControlService {
       entityType: session.selectedEntityType ?? 'chat',
       text: draft.text,
       textFormat: draft.textFormat,
+      targetMode: draft.targetMode,
+      targetChatIds: [...draft.targetChatIds].sort((left, right) => left.localeCompare(right)),
       applyToAllChats: draft.applyToAllChats,
       buttons: draft.buttons,
       buttonEnabled: draft.buttonEnabled,
@@ -9598,10 +9700,21 @@ export class PrivateControlService {
   private toggleBroadcastFlag(session: PrivateSession, flag: string): void {
     if (flag === 'apply_to_all') {
       if (session.selectedEntityType === 'channel') {
+        session.broadcastDraft.targetMode = 'current';
+        session.broadcastDraft.targetChatIds = this.normalizeBroadcastTargetChatIds(
+          session.broadcastDraft.targetChatIds,
+          session.selectedChatId,
+        );
         session.broadcastDraft.applyToAllChats = false;
         return;
       }
-      session.broadcastDraft.applyToAllChats = !session.broadcastDraft.applyToAllChats;
+      const nextApplyToAll = !session.broadcastDraft.applyToAllChats;
+      session.broadcastDraft.targetMode = nextApplyToAll ? 'all' : 'current';
+      session.broadcastDraft.targetChatIds = this.normalizeBroadcastTargetChatIds(
+        session.broadcastDraft.targetChatIds,
+        session.selectedChatId,
+      );
+      session.broadcastDraft.applyToAllChats = nextApplyToAll;
       return;
     }
 
@@ -12831,11 +12944,20 @@ export class PrivateControlService {
           ]
         : [];
     const primaryButton = buttons[0];
+    const targetState = this.resolveBroadcastDraftTargetState({
+      targetMode: row.targetMode,
+      targetChatIds: Array.isArray(row.targetChatIds)
+        ? row.targetChatIds.filter((item): item is string => typeof item === 'string')
+        : [],
+      applyToAllChats: row.applyToAllChats === true,
+    });
 
     return {
       text: typeof row.text === 'string' ? row.text : '',
       textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
-      applyToAllChats: row.applyToAllChats === true,
+      targetMode: targetState.targetMode,
+      targetChatIds: targetState.targetChatIds,
+      applyToAllChats: targetState.applyToAllChats,
       buttons,
       buttonEnabled: buttons.length > 0,
       buttonUrl: primaryButton?.url ?? '',
