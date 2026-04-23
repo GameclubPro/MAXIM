@@ -56,7 +56,6 @@ import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
-import { BroadcastAudienceSheet } from '../components/broadcast-audience-sheet';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -222,6 +221,11 @@ const LazyMessageLimitsBlockedWordPresets = lazy(
 );
 const LazyPublishedRulesButtonToggle = lazy(
   () => import('../components/published-rules-button-toggle'),
+);
+const LazyBroadcastAudienceControls = lazy(() =>
+  import('../components/broadcast-audience-controls').then((module) => ({
+    default: module.BroadcastAudienceControls,
+  })),
 );
 
 const AUTO_SAVE_DELAY_MS = 650;
@@ -2047,7 +2051,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingTargetChatIds, setMailingTargetChatIds] = useState<string[]>([]);
   const [mailingLastScopedTargetMode, setMailingLastScopedTargetMode] =
     useState<BroadcastScopedTargetMode>('current');
-  const [mailingAudienceSheetOpen, setMailingAudienceSheetOpen] = useState(false);
   const [mailingAudienceError, setMailingAudienceError] = useState('');
   const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
   const [mailingButtonRevealSignal, setMailingButtonRevealSignal] = useState(0);
@@ -2181,7 +2184,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
     setMailingLastScopedTargetMode('current');
-    setMailingAudienceSheetOpen(false);
     setMailingAudienceError('');
     setMailingText('');
     setMailingButtons([]);
@@ -2541,7 +2543,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }),
     );
     setMailingAudienceError('');
-    setMailingAudienceSheetOpen(false);
     setMailingButtons(broadcastHandoffStateQuery.data.buttons);
     setMailingQuickPreset(null);
     setMailingScheduledSlots(
@@ -3188,7 +3189,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         }),
       );
       setMailingAudienceError('');
-      setMailingAudienceSheetOpen(false);
       setMailingText(broadcast.text);
       setMailingBotHasContent(false);
       setMailingButtons(broadcast.buttons);
@@ -4090,7 +4090,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
     setMailingLastScopedTargetMode('current');
-    setMailingAudienceSheetOpen(false);
     setMailingAudienceError('');
     setMailingText('');
     setMailingBotHasContent(false);
@@ -4136,7 +4135,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function handleMailingAllChatsToggle(enabled: boolean) {
     setMailingAudienceError('');
-    setMailingAudienceSheetOpen(false);
     if (enabled) {
       setMailingTargetMode('all');
       return;
@@ -4164,9 +4162,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingAudienceError('');
     setMailingLastScopedTargetMode(nextMode);
     setMailingTargetMode(nextMode);
-    if (nextMode !== 'selected') {
-      setMailingAudienceSheetOpen(false);
-    }
     if (nextMode === 'selected') {
       setMailingTargetChatIds((current) => {
         const normalized = normalizeBroadcastAudienceTargetChatIds(current);
@@ -4185,7 +4180,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingLastScopedTargetMode('selected');
     setMailingTargetMode('selected');
     setMailingAudienceError('');
-    setMailingAudienceSheetOpen(false);
   }
 
   function reportMailingAudienceApiError(error: unknown) {
@@ -4337,7 +4331,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     if (audiencePayload.targetMode === 'selected' && audiencePayload.targetChatIds.length === 0) {
       setMailingAudienceError('Выберите хотя бы один чат.');
-      setMailingAudienceSheetOpen(true);
       hasError = true;
     } else {
       setMailingAudienceError('');
@@ -5069,17 +5062,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : mailingSelectedTargetChatIds,
     currentLabel: 'Текущий чат',
   });
-  const mailingScopedTargetMode: BroadcastScopedTargetMode =
-    mailingTargetMode === 'selected' ? 'selected' : 'current';
-  const mailingSelectedAudienceLabel = resolveBroadcastAudienceTargetLabel({
-    targetMode: 'selected',
-    targetChatIds: mailingAudiencePayload.targetChatIds,
-  });
-  const mailingAudienceTriggerLabel = mailingAudienceChoicesLoading
-    ? 'Собираем чаты'
-    : mailingAudienceChoicesError
-      ? 'Обновить список'
-      : mailingSelectedAudienceLabel;
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -10127,74 +10109,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <div className="broadcast-audience-card">
-                                  <div className="broadcast-audience-card__toggle">
-                                    <div className="broadcast-audience-card__toggle-copy">
-                                      <strong>Все чаты</strong>
-                                      <span>
-                                        {mailingTargetMode === 'all'
-                                          ? 'Без ограничений'
-                                          : mailingHeaderTargetLabel}
-                                      </span>
-                                    </div>
-
-                                    <label
-                                      className="settings-native-switch"
-                                      aria-label="Отправить во все чаты"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={mailingTargetMode === 'all'}
-                                        onChange={(event) =>
-                                          handleMailingAllChatsToggle(event.target.checked)
-                                        }
-                                        disabled={isMailingBusy}
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </label>
-                                  </div>
-
-                                  {mailingTargetMode !== 'all' ? (
-                                    <>
-                                      <SegmentedControl
-                                        className="broadcast-scope-control"
-                                        ariaLabel="Охват рассылки"
-                                        value={mailingScopedTargetMode}
-                                        onChange={handleMailingScopedTargetModeChange}
-                                        options={[
-                                          { value: 'current', label: 'Текущий' },
-                                          { value: 'selected', label: 'Выбрано' },
-                                        ]}
-                                      />
-
-                                      {mailingScopedTargetMode === 'selected' ? (
-                                        <button
-                                          type="button"
-                                          className="broadcast-audience-card__trigger"
-                                          onClick={() => {
-                                            setMailingAudienceError('');
-                                            setMailingAudienceSheetOpen(true);
-                                          }}
-                                          disabled={isMailingBusy}
-                                        >
-                                          <span className="broadcast-audience-card__trigger-copy">
-                                            <strong>Чаты</strong>
-                                            <small>{mailingAudienceTriggerLabel}</small>
-                                          </span>
-                                          <span className="broadcast-audience-card__trigger-badge">
-                                            {mailingAudiencePayload.targetChatIds.length}
-                                          </span>
-                                        </button>
-                                      ) : null}
-                                    </>
-                                  ) : null}
-
-                                  {mailingAudienceError ? (
-                                    <small className="field__hint">{mailingAudienceError}</small>
-                                  ) : null}
-                                </div>
+                                <Suspense fallback={null}>
+                                  <LazyBroadcastAudienceControls
+                                    targetMode={mailingTargetMode}
+                                    currentChatId={chatId ?? ''}
+                                    targetChatIds={mailingAudiencePayload.targetChatIds}
+                                    choices={mailingAudienceChoices}
+                                    loading={mailingAudienceChoicesLoading}
+                                    remoteError={mailingAudienceChoicesError}
+                                    validationError={mailingAudienceError || null}
+                                    disabled={isMailingBusy}
+                                    onToggleAllChats={handleMailingAllChatsToggle}
+                                    onChangeScopedMode={handleMailingScopedTargetModeChange}
+                                    onApplySelection={handleApplyMailingAudienceSelection}
+                                    onClearValidationError={() => setMailingAudienceError('')}
+                                  />
+                                </Suspense>
                               </div>
                             </div>
 
@@ -11520,18 +11450,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </GlassCard>
       ) : null}
-
-      <BroadcastAudienceSheet
-        open={mailingAudienceSheetOpen}
-        currentChatId={chatId ?? ''}
-        choices={mailingAudienceChoices}
-        selection={mailingAudiencePayload.targetChatIds}
-        disabled={isMailingBusy}
-        loading={mailingAudienceChoicesLoading}
-        error={mailingAudienceChoicesError}
-        onClose={() => setMailingAudienceSheetOpen(false)}
-        onApply={handleApplyMailingAudienceSelection}
-      />
 
       <ActionConfirmSheet
         id="managed-broadcast-delete"

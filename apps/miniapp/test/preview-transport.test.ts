@@ -47,3 +47,51 @@ test('preview channel comment threads stay isolated per token', async () => {
     false,
   );
 });
+
+test('preview settings include schema-complete managed broadcast summaries', async () => {
+  const api = createPreviewApiTransport();
+
+  const chatSettings = (await api.request('/chats/preview-chat/settings-screen')) as {
+    managedBroadcasts: Array<{
+      id: string;
+      targetMode: string;
+      blockedChats: number;
+      failureBreakdown: {
+        transient: number;
+        permanentTarget: number;
+        quarantined: number;
+        unknown: number;
+      };
+    }>;
+  };
+  const channelSettings = (await api.request('/channels/preview-channel/settings-screen')) as {
+    managedBroadcasts: Array<{
+      id: string;
+      targetMode: string;
+      blockedChats: number;
+      failureBreakdown: {
+        transient: number;
+        permanentTarget: number;
+        quarantined: number;
+        unknown: number;
+      };
+    }>;
+  };
+
+  assert.equal(chatSettings.managedBroadcasts[0]?.targetMode, 'current');
+  assert.equal(chatSettings.managedBroadcasts[0]?.blockedChats, 0);
+  assert.deepEqual(chatSettings.managedBroadcasts[0]?.failureBreakdown, {
+    transient: 0,
+    permanentTarget: 0,
+    quarantined: 0,
+    unknown: 0,
+  });
+  assert.equal(channelSettings.managedBroadcasts[0]?.targetMode, 'current');
+  assert.equal(channelSettings.managedBroadcasts[0]?.blockedChats, 0);
+  assert.deepEqual(channelSettings.managedBroadcasts[0]?.failureBreakdown, {
+    transient: 0,
+    permanentTarget: 0,
+    quarantined: 0,
+    unknown: 0,
+  });
+});

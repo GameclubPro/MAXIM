@@ -801,6 +801,8 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     deliveredChats: details.deliveredChats,
     failedChats: details.failedChats,
     pendingChats: details.pendingChats,
+    blockedChats: details.blockedChats,
+    failureBreakdown: details.failureBreakdown,
     canRetry: details.canRetry,
     remainingCount: details.remainingCount,
     createdAt: details.createdAt,
