@@ -11,11 +11,15 @@ import {
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
+  Bell as IconoirBell,
+  Bookmark as IconoirBookmark,
   BubbleStar as IconoirBubbleStar,
   Camera as IconoirCamera,
   ChatLines as IconoirChatLines,
   ClockRotateRight as IconoirClockRotateRight,
   EmojiSatisfied as IconoirEmojiSatisfied,
+  GifFormat as IconoirGifFormat,
+  Hashtag as IconoirHashtag,
   Heart as IconoirHeart,
   MessageText as IconoirMessageText,
   Microphone as IconoirMicrophone,
@@ -24,6 +28,7 @@ import {
   SendDiagonal as IconoirSendDiagonal,
   Sparks as IconoirSparks,
   Star as IconoirStar,
+  VideoCamera as IconoirVideoCamera,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -125,7 +130,12 @@ type CommentBackdropIconName =
   | 'camera'
   | 'clock'
   | 'microphone'
-  | 'send';
+  | 'send'
+  | 'bell'
+  | 'bookmark'
+  | 'gif'
+  | 'hashtag'
+  | 'video';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -157,7 +167,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'msg-1', icon: 'message', tone: 'faint', rotate: 7, scale: 1.02, offsetY: 5 },
       { id: 'heart-1', icon: 'heart', tone: 'soft', rotate: -6, scale: 0.92, offsetY: -7 },
       { id: 'cam-1', icon: 'camera', tone: 'faint', rotate: 5, scale: 0.94, offsetY: 6 },
-      { id: 'send-1', icon: 'send', tone: 'accent', rotate: -12, scale: 0.9, offsetY: -3 },
+      { id: 'video-1', icon: 'video', tone: 'accent', rotate: -12, scale: 0.9, offsetY: -3 },
     ],
   },
   {
@@ -167,7 +177,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'paper-1', icon: 'paperclip', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
       { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.96, offsetY: -5 },
       { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -5, scale: 0.9, offsetY: 5 },
-      { id: 'star-1', icon: 'star', tone: 'faint', rotate: 10, scale: 0.82, offsetY: -7 },
+      { id: 'hash-1', icon: 'hashtag', tone: 'faint', rotate: 10, scale: 0.82, offsetY: -7 },
       { id: 'clock-1', icon: 'clock', tone: 'soft', rotate: -6, scale: 0.86, offsetY: 6 },
     ],
   },
@@ -186,7 +196,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.84, offsetY: 6 },
       { id: 'reaction-1', icon: 'reaction', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
       { id: 'pin-1', icon: 'pin', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'spark-2', icon: 'sparkles', tone: 'soft', rotate: 7, scale: 0.82, offsetY: -6 },
+      { id: 'bell-1', icon: 'bell', tone: 'soft', rotate: 7, scale: 0.82, offsetY: -6 },
     ],
   },
   {
@@ -197,7 +207,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'heart-2', icon: 'heart', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
       { id: 'message-2', icon: 'message', tone: 'soft', rotate: -8, scale: 0.94, offsetY: 5 },
       { id: 'camera-2', icon: 'camera', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
-      { id: 'send-2', icon: 'send', tone: 'faint', rotate: -10, scale: 0.88, offsetY: 7 },
+      { id: 'bookmark-1', icon: 'bookmark', tone: 'faint', rotate: -10, scale: 0.88, offsetY: 7 },
     ],
   },
   {
@@ -208,7 +218,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'star-2', icon: 'star', tone: 'soft', rotate: 9, scale: 0.82, offsetY: -4 },
       { id: 'clock-2', icon: 'clock', tone: 'faint', rotate: -8, scale: 0.86, offsetY: 7 },
       { id: 'smile-2', icon: 'smile', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
-      { id: 'microphone-2', icon: 'microphone', tone: 'accent', rotate: 10, scale: 0.84, offsetY: 4 },
+      { id: 'gif-1', icon: 'gif', tone: 'accent', rotate: 10, scale: 0.84, offsetY: 4 },
     ],
   },
   {
@@ -258,7 +268,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'message-4', icon: 'message', tone: 'soft', rotate: -6, scale: 0.96, offsetY: 6 },
       { id: 'spark-4', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
       { id: 'microphone-3', icon: 'microphone', tone: 'faint', rotate: -9, scale: 0.84, offsetY: 7 },
-      { id: 'pin-3', icon: 'pin', tone: 'soft', rotate: 11, scale: 0.82, offsetY: -5 },
+      { id: 'bell-2', icon: 'bell', tone: 'soft', rotate: 11, scale: 0.82, offsetY: -5 },
       { id: 'camera-5', icon: 'camera', tone: 'accent', rotate: -8, scale: 0.86, offsetY: 5 },
     ],
   },
@@ -270,7 +280,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'paper-4', icon: 'paperclip', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
       { id: 'heart-5', icon: 'heart', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
       { id: 'typing-4', icon: 'typing', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
-      { id: 'star-3', icon: 'star', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
+      { id: 'video-2', icon: 'video', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
   {
@@ -280,7 +290,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'clock-4', icon: 'clock', tone: 'soft', rotate: -7, scale: 0.86, offsetY: 4 },
       { id: 'send-5', icon: 'send', tone: 'faint', rotate: 11, scale: 0.9, offsetY: -7 },
       { id: 'smile-4', icon: 'smile', tone: 'soft', rotate: -5, scale: 0.84, offsetY: 6 },
-      { id: 'conversation-3', icon: 'conversation', tone: 'faint', rotate: 7, scale: 0.96, offsetY: -5 },
+      { id: 'hash-2', icon: 'hashtag', tone: 'faint', rotate: 7, scale: 0.96, offsetY: -5 },
       { id: 'microphone-4', icon: 'microphone', tone: 'accent', rotate: -10, scale: 0.82, offsetY: 6 },
     ],
   },
@@ -289,9 +299,9 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'pin-4', icon: 'pin', tone: 'faint', rotate: 11, scale: 0.8, offsetY: 7 },
-      { id: 'message-5', icon: 'message', tone: 'accent', rotate: -6, scale: 0.94, offsetY: -5 },
+      { id: 'bookmark-2', icon: 'bookmark', tone: 'accent', rotate: -6, scale: 0.94, offsetY: -5 },
       { id: 'camera-6', icon: 'camera', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'spark-5', icon: 'sparkles', tone: 'faint', rotate: -8, scale: 0.78, offsetY: -4 },
+      { id: 'gif-2', icon: 'gif', tone: 'faint', rotate: -8, scale: 0.78, offsetY: -4 },
       { id: 'heart-6', icon: 'heart', tone: 'soft', rotate: 7, scale: 0.84, offsetY: 5 },
     ],
   },
@@ -1485,6 +1495,26 @@ function SendOutlineIcon() {
   );
 }
 
+function BellOutlineIcon() {
+  return <IconoirBell strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function BookmarkOutlineIcon() {
+  return <IconoirBookmark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function GifOutlineIcon() {
+  return <IconoirGifFormat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function HashtagOutlineIcon() {
+  return <IconoirHashtag strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function VideoOutlineIcon() {
+  return <IconoirVideoCamera strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
   switch (name) {
     case 'conversation':
@@ -1515,6 +1545,16 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <MicrophoneOutlineIcon />;
     case 'send':
       return <SendOutlineIcon />;
+    case 'bell':
+      return <BellOutlineIcon />;
+    case 'bookmark':
+      return <BookmarkOutlineIcon />;
+    case 'gif':
+      return <GifOutlineIcon />;
+    case 'hashtag':
+      return <HashtagOutlineIcon />;
+    case 'video':
+      return <VideoOutlineIcon />;
     default:
       return null;
   }
@@ -2136,11 +2176,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const previousMessageId = lastMessageIdRef.current;
     const distanceToBottom = getViewportDistanceToBottom(viewport);
     const nearBottom = distanceToBottom < COMMENTS_NEAR_BOTTOM_THRESHOLD;
+    const isInitialMessageSet = previousMessageId === null;
     const shouldStickToBottom =
-      previousMessageId === null || distanceToBottom < COMMENTS_STICK_TO_BOTTOM_THRESHOLD;
+      !isInitialMessageSet && distanceToBottom < COMMENTS_STICK_TO_BOTTOM_THRESHOLD;
     setIsNearBottom(nearBottom);
 
-    if (previousMessageId !== lastMessageId) {
+    if (!isInitialMessageSet && previousMessageId !== lastMessageId) {
       if (shouldStickToBottom) {
         setFirstUnreadMessageId(null);
         requestAnimationFrame(() => {

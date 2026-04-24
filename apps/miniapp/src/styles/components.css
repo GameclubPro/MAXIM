@@ -2636,12 +2636,12 @@
 }
 
 .channel-dialog-screen--comments {
-  --dialog-bg-start: #e3eef2;
-  --dialog-bg-end: #e7ece7;
+  --dialog-bg-start: #edf7f8;
+  --dialog-bg-end: #e8f1ec;
   --dialog-surface: rgba(255, 255, 255, 0.92);
-  --dialog-wallpaper-ink: rgba(58, 83, 101, 0.13);
-  --dialog-wallpaper-soft: rgba(34, 128, 154, 0.115);
-  --dialog-wallpaper-warm: rgba(151, 111, 58, 0.105);
+  --dialog-wallpaper-ink: rgba(47, 76, 95, 0.2);
+  --dialog-wallpaper-soft: rgba(22, 128, 155, 0.17);
+  --dialog-wallpaper-warm: rgba(156, 112, 54, 0.145);
   padding: 2px clamp(6px, 1.8vw, 10px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 42px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 31rem);
@@ -2662,9 +2662,17 @@
 .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
   overflow: hidden;
   background:
-    radial-gradient(circle at 18% -8%, rgba(255, 255, 255, 0.72), transparent 32%),
-    radial-gradient(circle at 105% 24%, rgba(167, 205, 219, 0.2), transparent 30%),
-    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 58%, #e4e4dc);
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.16) 0 1px,
+      transparent 1px 34px
+    ),
+    repeating-linear-gradient(
+      90deg,
+      rgba(53, 89, 103, 0.018) 0 1px,
+      transparent 1px 34px
+    ),
+    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 62%, #e5eadf);
 }
 
 .channel-dialog-screen__backdrop {
@@ -2691,10 +2699,10 @@
   overflow: hidden;
   display: grid;
   grid-template-rows: repeat(12, minmax(0, 1fr));
-  gap: clamp(6px, 1.4vh, 14px);
-  padding: clamp(16px, 3.5vh, 32px) clamp(2px, 1.8vw, 10px) clamp(54px, 10vh, 92px);
+  gap: clamp(7px, 1.5vh, 15px);
+  padding: clamp(12px, 2.6vh, 26px) clamp(0px, 1.2vw, 8px) clamp(42px, 8vh, 78px);
   pointer-events: none;
-  opacity: 0.72;
+  opacity: 0.94;
   -webkit-mask-image: linear-gradient(
     180deg,
     rgba(0, 0, 0, 0.42),
@@ -2716,7 +2724,7 @@
   grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
   justify-items: center;
-  column-gap: clamp(6px, 2vw, 16px);
+  column-gap: clamp(2px, 1.2vw, 10px);
   min-height: 0;
 }
 
@@ -2730,12 +2738,43 @@
 
 .channel-dialog-screen__wallpaper-tile {
   display: block;
-  width: clamp(20px, 5.8vw, 28px);
-  height: clamp(20px, 5.8vw, 28px);
+  width: clamp(28px, 8vw, 42px);
+  height: clamp(28px, 8vw, 42px);
   transform: translateY(var(--channel-dialog-wallpaper-offset-y, 0px))
     rotate(var(--channel-dialog-wallpaper-rotation, 0deg))
-    scale(var(--channel-dialog-wallpaper-scale, 1));
+    scale(
+      calc(
+        var(--channel-dialog-wallpaper-scale, 1) *
+          var(--channel-dialog-wallpaper-size-boost, 1)
+      )
+    );
   transform-origin: center;
+}
+
+.channel-dialog-screen__wallpaper-row:nth-child(4n + 1)
+  .channel-dialog-screen__wallpaper-tile:nth-child(2),
+.channel-dialog-screen__wallpaper-row:nth-child(4n + 3)
+  .channel-dialog-screen__wallpaper-tile:nth-child(5) {
+  --channel-dialog-wallpaper-size-boost: 1.22;
+}
+
+.channel-dialog-screen__wallpaper-row:nth-child(3n + 1)
+  .channel-dialog-screen__wallpaper-tile:nth-child(4),
+.channel-dialog-screen__wallpaper-row:nth-child(3n + 2)
+  .channel-dialog-screen__wallpaper-tile:nth-child(1) {
+  --channel-dialog-wallpaper-size-boost: 1.42;
+}
+
+.channel-dialog-screen__wallpaper-row:nth-child(5n + 2)
+  .channel-dialog-screen__wallpaper-tile:nth-child(3),
+.channel-dialog-screen__wallpaper-row:nth-child(5n + 4)
+  .channel-dialog-screen__wallpaper-tile:nth-child(2) {
+  --channel-dialog-wallpaper-size-boost: 1.62;
+}
+
+.channel-dialog-screen__wallpaper-row:nth-child(6n)
+  .channel-dialog-screen__wallpaper-tile:nth-child(4) {
+  --channel-dialog-wallpaper-size-boost: 1.8;
 }
 
 .channel-dialog-screen__wallpaper-tile.is-faint {
@@ -2925,9 +2964,9 @@
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
   gap: 7px;
-  min-height: 100%;
-  align-content: end;
-  padding: 4px 0 2px;
+  min-height: auto;
+  align-content: start;
+  padding: 6px 0 10px;
 }
 
 .channel-dialog-intro {
