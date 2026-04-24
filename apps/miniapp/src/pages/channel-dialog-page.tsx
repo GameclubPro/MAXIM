@@ -860,14 +860,14 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
 
   if (isOwnMessage) {
     return {
-      background: 'linear-gradient(160deg, rgba(255, 245, 221, 0.9), rgba(241, 249, 244, 0.86))',
-      borderColor: 'rgba(205, 156, 66, 0.22)',
+      background: 'linear-gradient(160deg, rgba(212, 237, 255, 0.94), rgba(226, 244, 247, 0.9))',
+      borderColor: 'rgba(75, 151, 215, 0.18)',
     };
   }
 
   return {
-    background: 'linear-gradient(180deg, rgba(255, 251, 241, 0.92), rgba(250, 246, 232, 0.84))',
-    borderColor: 'rgba(205, 156, 66, 0.2)',
+    background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 252, 252, 0.9))',
+    borderColor: 'rgba(255, 255, 255, 0.7)',
   };
 }
 
@@ -877,7 +877,7 @@ function buildAdminAuthorStyle(isAdmin: boolean): CSSProperties | undefined {
   }
 
   return {
-    color: '#8d661f',
+    color: '#1f6f91',
   };
 }
 

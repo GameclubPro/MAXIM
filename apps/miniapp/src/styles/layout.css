@@ -683,6 +683,23 @@ body.settings-home-page-open .bottom-nav__label {
   );
 }
 
+.app-shell.app-shell--immersive {
+  gap: 0;
+  width: 100%;
+  max-width: none;
+  min-height: var(--app-viewport-height);
+  height: var(--app-viewport-height);
+  padding: 0;
+  padding-bottom: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.design-preview .app-shell.app-shell--immersive {
+  min-height: 100%;
+  height: 100%;
+}
+
 .page-stack {
   gap: 10px;
 }
