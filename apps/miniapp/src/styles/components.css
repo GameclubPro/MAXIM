@@ -2636,12 +2636,12 @@
 }
 
 .channel-dialog-screen--comments {
-  --dialog-bg-start: #edf7f8;
-  --dialog-bg-end: #e8f1ec;
+  --dialog-bg-start: #eef8ff;
+  --dialog-bg-end: #e8f2f4;
   --dialog-surface: rgba(255, 255, 255, 0.92);
-  --dialog-wallpaper-ink: rgba(47, 76, 95, 0.2);
-  --dialog-wallpaper-soft: rgba(22, 128, 155, 0.17);
-  --dialog-wallpaper-warm: rgba(156, 112, 54, 0.145);
+  --dialog-wallpaper-ink: rgba(32, 69, 106, 0.25);
+  --dialog-wallpaper-soft: rgba(21, 130, 164, 0.21);
+  --dialog-wallpaper-warm: rgba(142, 105, 55, 0.18);
   padding: 2px clamp(6px, 1.8vw, 10px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 42px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 31rem);
@@ -2663,16 +2663,16 @@
   overflow: hidden;
   background:
     repeating-linear-gradient(
-      0deg,
-      rgba(255, 255, 255, 0.16) 0 1px,
+      135deg,
+      rgba(255, 255, 255, 0.18) 0 1px,
       transparent 1px 34px
     ),
     repeating-linear-gradient(
-      90deg,
-      rgba(53, 89, 103, 0.018) 0 1px,
-      transparent 1px 34px
+      45deg,
+      rgba(41, 83, 116, 0.026) 0 1px,
+      transparent 1px 42px
     ),
-    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 62%, #e5eadf);
+    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 58%, #e6eee7);
 }
 
 .channel-dialog-screen__backdrop {
@@ -2698,11 +2698,13 @@
   inset: 0;
   overflow: hidden;
   display: grid;
-  grid-template-rows: repeat(12, minmax(0, 1fr));
-  gap: clamp(7px, 1.5vh, 15px);
-  padding: clamp(12px, 2.6vh, 26px) clamp(0px, 1.2vw, 8px) clamp(42px, 8vh, 78px);
+  grid-template-rows: repeat(12, clamp(58px, 16vw, 82px));
+  align-content: start;
+  gap: clamp(3px, 1.4vw, 8px);
+  padding: clamp(12px, 3.3vw, 22px) clamp(0px, 1.2vw, 8px) 72px;
   pointer-events: none;
-  opacity: 0.94;
+  opacity: 0.96;
+  contain: layout paint;
   -webkit-mask-image: linear-gradient(
     180deg,
     rgba(0, 0, 0, 0.42),
@@ -2738,8 +2740,8 @@
 
 .channel-dialog-screen__wallpaper-tile {
   display: block;
-  width: clamp(28px, 8vw, 42px);
-  height: clamp(28px, 8vw, 42px);
+  width: clamp(31px, 8.7vw, 46px);
+  height: clamp(31px, 8.7vw, 46px);
   transform: translateY(var(--channel-dialog-wallpaper-offset-y, 0px))
     rotate(var(--channel-dialog-wallpaper-rotation, 0deg))
     scale(

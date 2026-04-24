@@ -11,23 +11,38 @@ import {
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
+  Atom as IconoirAtom,
   Bell as IconoirBell,
   Bookmark as IconoirBookmark,
+  BrightStar as IconoirBrightStar,
   BubbleStar as IconoirBubbleStar,
   Camera as IconoirCamera,
   ChatLines as IconoirChatLines,
   ClockRotateRight as IconoirClockRotateRight,
   EmojiSatisfied as IconoirEmojiSatisfied,
+  Flare as IconoirFlare,
+  Flash as IconoirFlash,
   GifFormat as IconoirGifFormat,
+  Globe as IconoirGlobe,
+  HalfMoon as IconoirHalfMoon,
   Hashtag as IconoirHashtag,
   Heart as IconoirHeart,
   MessageText as IconoirMessageText,
   Microphone as IconoirMicrophone,
   MultiBubble as IconoirMultiBubble,
   Pin as IconoirPin,
+  Planet as IconoirPlanet,
+  PlanetAlt as IconoirPlanetAlt,
+  PlanetSat as IconoirPlanetSat,
+  Rocket as IconoirRocket,
   SendDiagonal as IconoirSendDiagonal,
+  Spark as IconoirSpark,
   Sparks as IconoirSparks,
+  Sphere as IconoirSphere,
+  Spiral as IconoirSpiral,
   Star as IconoirStar,
+  SunLight as IconoirSunLight,
+  ThreeStars as IconoirThreeStars,
   VideoCamera as IconoirVideoCamera,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -135,7 +150,22 @@ type CommentBackdropIconName =
   | 'bookmark'
   | 'gif'
   | 'hashtag'
-  | 'video';
+  | 'video'
+  | 'planet'
+  | 'planet-alt'
+  | 'planet-sat'
+  | 'rocket'
+  | 'moon'
+  | 'sun'
+  | 'stars'
+  | 'spark'
+  | 'globe'
+  | 'flash'
+  | 'bright-star'
+  | 'flare'
+  | 'atom'
+  | 'sphere'
+  | 'spiral';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -163,22 +193,22 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-1',
     shift: 'left',
     tiles: [
-      { id: 'spark-1', icon: 'sparkles', tone: 'soft', rotate: -9, scale: 0.88, offsetY: -4 },
-      { id: 'msg-1', icon: 'message', tone: 'faint', rotate: 7, scale: 1.02, offsetY: 5 },
-      { id: 'heart-1', icon: 'heart', tone: 'soft', rotate: -6, scale: 0.92, offsetY: -7 },
-      { id: 'cam-1', icon: 'camera', tone: 'faint', rotate: 5, scale: 0.94, offsetY: 6 },
-      { id: 'video-1', icon: 'video', tone: 'accent', rotate: -12, scale: 0.9, offsetY: -3 },
+      { id: 'stars-1', icon: 'stars', tone: 'soft', rotate: -9, scale: 0.88, offsetY: -4 },
+      { id: 'msg-1', icon: 'message', tone: 'faint', rotate: 7, scale: 1, offsetY: 5 },
+      { id: 'planet-1', icon: 'planet', tone: 'accent', rotate: -8, scale: 0.96, offsetY: -7 },
+      { id: 'sparkles-1', icon: 'sparkles', tone: 'soft', rotate: 5, scale: 0.9, offsetY: 6 },
+      { id: 'rocket-1', icon: 'rocket', tone: 'faint', rotate: -14, scale: 0.92, offsetY: -3 },
     ],
   },
   {
     id: 'row-2',
     shift: 'right',
     tiles: [
-      { id: 'paper-1', icon: 'paperclip', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
-      { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.96, offsetY: -5 },
-      { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -5, scale: 0.9, offsetY: 5 },
-      { id: 'hash-1', icon: 'hashtag', tone: 'faint', rotate: 10, scale: 0.82, offsetY: -7 },
-      { id: 'clock-1', icon: 'clock', tone: 'soft', rotate: -6, scale: 0.86, offsetY: 6 },
+      { id: 'moon-1', icon: 'moon', tone: 'faint', rotate: -11, scale: 0.88, offsetY: 4 },
+      { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.94, offsetY: -5 },
+      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'accent', rotate: -5, scale: 0.92, offsetY: 5 },
+      { id: 'star-1', icon: 'star', tone: 'faint', rotate: 10, scale: 0.82, offsetY: -7 },
+      { id: 'globe-1', icon: 'globe', tone: 'soft', rotate: -6, scale: 0.88, offsetY: 6 },
     ],
   },
   {
@@ -193,116 +223,109 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
         scale: 0.98,
         offsetY: -8,
       },
-      { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.84, offsetY: 6 },
-      { id: 'reaction-1', icon: 'reaction', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
-      { id: 'pin-1', icon: 'pin', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'bell-1', icon: 'bell', tone: 'soft', rotate: 7, scale: 0.82, offsetY: -6 },
+      { id: 'atom-1', icon: 'atom', tone: 'faint', rotate: 8, scale: 0.84, offsetY: 6 },
+      { id: 'spark-1', icon: 'spark', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
+      { id: 'heart-1', icon: 'heart', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
+      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.84, offsetY: -6 },
     ],
   },
   {
     id: 'row-4',
     shift: 'right',
     tiles: [
-      { id: 'paper-2', icon: 'paperclip', tone: 'accent', rotate: 11, scale: 0.86, offsetY: -5 },
-      { id: 'heart-2', icon: 'heart', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
-      { id: 'message-2', icon: 'message', tone: 'soft', rotate: -8, scale: 0.94, offsetY: 5 },
-      { id: 'camera-2', icon: 'camera', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
-      { id: 'bookmark-1', icon: 'bookmark', tone: 'faint', rotate: -10, scale: 0.88, offsetY: 7 },
+      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: 11, scale: 0.88, offsetY: -5 },
+      { id: 'send-1', icon: 'send', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
+      { id: 'bright-star-1', icon: 'bright-star', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
+      { id: 'sphere-1', icon: 'sphere', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
+      { id: 'flash-1', icon: 'flash', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
     ],
   },
   {
     id: 'row-5',
     shift: 'left',
     tiles: [
-      { id: 'typing-2', icon: 'typing', tone: 'faint', rotate: -4, scale: 0.92, offsetY: 6 },
-      { id: 'star-2', icon: 'star', tone: 'soft', rotate: 9, scale: 0.82, offsetY: -4 },
-      { id: 'clock-2', icon: 'clock', tone: 'faint', rotate: -8, scale: 0.86, offsetY: 7 },
-      { id: 'smile-2', icon: 'smile', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
-      { id: 'gif-1', icon: 'gif', tone: 'accent', rotate: 10, scale: 0.84, offsetY: 4 },
+      { id: 'spiral-1', icon: 'spiral', tone: 'faint', rotate: -4, scale: 0.92, offsetY: 6 },
+      { id: 'reaction-1', icon: 'reaction', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
+      { id: 'rocket-2', icon: 'rocket', tone: 'faint', rotate: -13, scale: 0.88, offsetY: 7 },
+      { id: 'moon-2', icon: 'moon', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
+      { id: 'stars-2', icon: 'stars', tone: 'accent', rotate: 10, scale: 0.86, offsetY: 4 },
     ],
   },
   {
     id: 'row-6',
     shift: 'right',
     tiles: [
-      { id: 'camera-3', icon: 'camera', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
-      { id: 'pin-2', icon: 'pin', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
-      { id: 'heart-3', icon: 'heart', tone: 'faint', rotate: 11, scale: 0.84, offsetY: 7 },
-      {
-        id: 'conversation-2',
-        icon: 'conversation',
-        tone: 'accent',
-        rotate: -7,
-        scale: 0.96,
-        offsetY: -5,
-      },
-      { id: 'paper-3', icon: 'paperclip', tone: 'soft', rotate: 8, scale: 0.84, offsetY: 4 },
+      { id: 'planet-sat-2', icon: 'planet-sat', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
+      { id: 'paper-1', icon: 'paperclip', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
+      { id: 'flare-1', icon: 'flare', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
+      { id: 'globe-2', icon: 'globe', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
     ],
   },
   {
     id: 'row-7',
     shift: 'left',
     tiles: [
-      { id: 'send-3', icon: 'send', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
-      { id: 'heart-4', icon: 'heart', tone: 'accent', rotate: -7, scale: 0.86, offsetY: 5 },
-      { id: 'typing-3', icon: 'typing', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
-      { id: 'camera-4', icon: 'camera', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
-      { id: 'reaction-2', icon: 'reaction', tone: 'faint', rotate: 8, scale: 0.92, offsetY: -5 },
+      { id: 'sun-2', icon: 'sun', tone: 'soft', rotate: 6, scale: 0.9, offsetY: -7 },
+      { id: 'message-2', icon: 'message', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
+      { id: 'planet-2', icon: 'planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
+      { id: 'atom-2', icon: 'atom', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
+      { id: 'sparkles-2', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
     ],
   },
   {
     id: 'row-8',
     shift: 'right',
     tiles: [
-      { id: 'clock-3', icon: 'clock', tone: 'faint', rotate: 10, scale: 0.86, offsetY: 7 },
-      { id: 'send-4', icon: 'send', tone: 'accent', rotate: -11, scale: 0.94, offsetY: -6 },
-      { id: 'smile-3', icon: 'smile', tone: 'soft', rotate: 5, scale: 0.86, offsetY: 5 },
-      { id: 'message-3', icon: 'message', tone: 'soft', rotate: -7, scale: 0.96, offsetY: -4 },
-      { id: 'spark-3', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.8, offsetY: 6 },
+      { id: 'bright-star-2', icon: 'bright-star', tone: 'faint', rotate: 10, scale: 0.86, offsetY: 7 },
+      { id: 'camera-1', icon: 'camera', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
+      { id: 'moon-3', icon: 'moon', tone: 'soft', rotate: 5, scale: 0.86, offsetY: 5 },
+      { id: 'sphere-2', icon: 'sphere', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
+      { id: 'rocket-3', icon: 'rocket', tone: 'faint', rotate: 12, scale: 0.82, offsetY: 6 },
     ],
   },
   {
     id: 'row-9',
     shift: 'left',
     tiles: [
-      { id: 'message-4', icon: 'message', tone: 'soft', rotate: -6, scale: 0.96, offsetY: 6 },
-      { id: 'spark-4', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
-      { id: 'microphone-3', icon: 'microphone', tone: 'faint', rotate: -9, scale: 0.84, offsetY: 7 },
-      { id: 'bell-2', icon: 'bell', tone: 'soft', rotate: 11, scale: 0.82, offsetY: -5 },
-      { id: 'camera-5', icon: 'camera', tone: 'accent', rotate: -8, scale: 0.86, offsetY: 5 },
+      { id: 'stars-3', icon: 'stars', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
+      { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
+      { id: 'planet-alt-2', icon: 'planet-alt', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
+      { id: 'flash-2', icon: 'flash', tone: 'soft', rotate: 11, scale: 0.82, offsetY: -5 },
+      { id: 'heart-2', icon: 'heart', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
     ],
   },
   {
     id: 'row-10',
     shift: 'right',
     tiles: [
-      { id: 'reaction-3', icon: 'reaction', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'paper-4', icon: 'paperclip', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
-      { id: 'heart-5', icon: 'heart', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
-      { id: 'typing-4', icon: 'typing', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
-      { id: 'video-2', icon: 'video', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
+      { id: 'spiral-2', icon: 'spiral', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'typing-2', icon: 'typing', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
+      { id: 'planet-sat-3', icon: 'planet-sat', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
+      { id: 'flare-2', icon: 'flare', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
+      { id: 'send-2', icon: 'send', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
   {
     id: 'row-11',
     shift: 'left',
     tiles: [
-      { id: 'clock-4', icon: 'clock', tone: 'soft', rotate: -7, scale: 0.86, offsetY: 4 },
-      { id: 'send-5', icon: 'send', tone: 'faint', rotate: 11, scale: 0.9, offsetY: -7 },
-      { id: 'smile-4', icon: 'smile', tone: 'soft', rotate: -5, scale: 0.84, offsetY: 6 },
-      { id: 'hash-2', icon: 'hashtag', tone: 'faint', rotate: 7, scale: 0.96, offsetY: -5 },
-      { id: 'microphone-4', icon: 'microphone', tone: 'accent', rotate: -10, scale: 0.82, offsetY: 6 },
+      { id: 'globe-3', icon: 'globe', tone: 'soft', rotate: -7, scale: 0.86, offsetY: 4 },
+      { id: 'star-2', icon: 'star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
+      { id: 'conversation-2', icon: 'conversation', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
+      { id: 'spark-2', icon: 'spark', tone: 'faint', rotate: 7, scale: 0.96, offsetY: -5 },
+      { id: 'sun-3', icon: 'sun', tone: 'accent', rotate: -10, scale: 0.82, offsetY: 6 },
     ],
   },
   {
     id: 'row-12',
     shift: 'right',
     tiles: [
-      { id: 'pin-4', icon: 'pin', tone: 'faint', rotate: 11, scale: 0.8, offsetY: 7 },
-      { id: 'bookmark-2', icon: 'bookmark', tone: 'accent', rotate: -6, scale: 0.94, offsetY: -5 },
-      { id: 'camera-6', icon: 'camera', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'gif-2', icon: 'gif', tone: 'faint', rotate: -8, scale: 0.78, offsetY: -4 },
-      { id: 'heart-6', icon: 'heart', tone: 'soft', rotate: 7, scale: 0.84, offsetY: 5 },
+      { id: 'rocket-4', icon: 'rocket', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
+      { id: 'moon-4', icon: 'moon', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
+      { id: 'reaction-2', icon: 'reaction', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'planet-3', icon: 'planet', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
+      { id: 'bright-star-3', icon: 'bright-star', tone: 'soft', rotate: 7, scale: 0.84, offsetY: 5 },
     ],
   },
 ] satisfies CommentBackdropWallpaperRow[];
@@ -1515,6 +1538,66 @@ function VideoOutlineIcon() {
   return <IconoirVideoCamera strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
 }
 
+function PlanetOutlineIcon() {
+  return <IconoirPlanet strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function PlanetAltOutlineIcon() {
+  return <IconoirPlanetAlt strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function PlanetSatOutlineIcon() {
+  return <IconoirPlanetSat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function RocketOutlineIcon() {
+  return <IconoirRocket strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function MoonOutlineIcon() {
+  return <IconoirHalfMoon strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function SunOutlineIcon() {
+  return <IconoirSunLight strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function StarsOutlineIcon() {
+  return <IconoirThreeStars strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function SparkOutlineIcon() {
+  return <IconoirSpark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function GlobeOutlineIcon() {
+  return <IconoirGlobe strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function FlashOutlineIcon() {
+  return <IconoirFlash strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function BrightStarOutlineIcon() {
+  return <IconoirBrightStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function FlareOutlineIcon() {
+  return <IconoirFlare strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function AtomOutlineIcon() {
+  return <IconoirAtom strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function SphereOutlineIcon() {
+  return <IconoirSphere strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
+function SpiralOutlineIcon() {
+  return <IconoirSpiral strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+}
+
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
   switch (name) {
     case 'conversation':
@@ -1555,6 +1638,36 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <HashtagOutlineIcon />;
     case 'video':
       return <VideoOutlineIcon />;
+    case 'planet':
+      return <PlanetOutlineIcon />;
+    case 'planet-alt':
+      return <PlanetAltOutlineIcon />;
+    case 'planet-sat':
+      return <PlanetSatOutlineIcon />;
+    case 'rocket':
+      return <RocketOutlineIcon />;
+    case 'moon':
+      return <MoonOutlineIcon />;
+    case 'sun':
+      return <SunOutlineIcon />;
+    case 'stars':
+      return <StarsOutlineIcon />;
+    case 'spark':
+      return <SparkOutlineIcon />;
+    case 'globe':
+      return <GlobeOutlineIcon />;
+    case 'flash':
+      return <FlashOutlineIcon />;
+    case 'bright-star':
+      return <BrightStarOutlineIcon />;
+    case 'flare':
+      return <FlareOutlineIcon />;
+    case 'atom':
+      return <AtomOutlineIcon />;
+    case 'sphere':
+      return <SphereOutlineIcon />;
+    case 'spiral':
+      return <SpiralOutlineIcon />;
     default:
       return null;
   }
