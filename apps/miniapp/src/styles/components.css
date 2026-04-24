@@ -2636,18 +2636,23 @@
 }
 
 .channel-dialog-screen--comments {
-  --dialog-bg-start: #eef8ff;
-  --dialog-bg-end: #eaf1f6;
-  --dialog-surface: rgba(255, 255, 255, 0.92);
-  --dialog-wallpaper-ink: rgba(24, 63, 104, 0.18);
-  --dialog-wallpaper-soft: rgba(20, 128, 168, 0.16);
-  --dialog-wallpaper-warm: rgba(138, 95, 42, 0.14);
-  padding: 2px clamp(6px, 1.8vw, 10px) max(2px, var(--safe-bottom));
-  --channel-dialog-comments-bubble-max-width: min(calc(100% - 42px), 34rem);
-  --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 31rem);
-  --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 62px), 25rem);
-  --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 54px), 31rem);
-  --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 66px), 25rem);
+  --dialog-accent: #00a7ff;
+  --dialog-bg-start: #fbfcf8;
+  --dialog-bg-end: #edf4f2;
+  --dialog-surface: rgba(255, 255, 255, 0.88);
+  --dialog-wallpaper-ink: rgba(20, 31, 41, 0.13);
+  --dialog-wallpaper-soft: rgba(0, 167, 255, 0.15);
+  --dialog-wallpaper-warm: rgba(255, 113, 91, 0.15);
+  --channel-dialog-ink: #14202b;
+  --channel-dialog-rail: #00b7c7;
+  --channel-dialog-energy: #b8ff7a;
+  --channel-dialog-coral: #ff715b;
+  padding: 2px clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
+  --channel-dialog-comments-bubble-max-width: min(calc(100% - 48px), 37rem);
+  --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 54px), 33rem);
+  --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 66px), 26rem);
+  --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 58px), 33rem);
+  --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 70px), 26rem);
 }
 
 .channel-dialog-screen--comments .channel-dialog-shell {
@@ -2661,20 +2666,7 @@
 
 .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
   overflow: hidden;
-  background:
-    linear-gradient(158deg, rgba(255, 255, 255, 0.58), rgba(233, 246, 252, 0.08) 42%),
-    linear-gradient(32deg, rgba(231, 244, 236, 0.52), transparent 46%),
-    repeating-linear-gradient(
-      135deg,
-      rgba(255, 255, 255, 0.18) 0 1px,
-      transparent 1px 34px
-    ),
-    repeating-linear-gradient(
-      45deg,
-      rgba(41, 83, 116, 0.026) 0 1px,
-      transparent 1px 42px
-    ),
-    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 58%, #e6eee7);
+  background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end) 58%, #fff4ee);
 }
 
 .channel-dialog-screen__backdrop {
@@ -2705,7 +2697,7 @@
   gap: clamp(3px, 1.4vw, 8px);
   padding: clamp(12px, 3.3vw, 22px) clamp(0px, 1.2vw, 8px) 72px;
   pointer-events: none;
-  opacity: 0.84;
+  opacity: 0.9;
   contain: layout paint;
   -webkit-mask-image: linear-gradient(
     180deg,
@@ -2863,23 +2855,23 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-thread-context--summary p {
-  max-width: min(calc(100% - 14px), 32rem);
+  max-width: min(calc(100% - 14px), 34rem);
   margin: 0 auto;
-  min-height: 30px;
-  padding: 6px 11px;
-  border-radius: 15px;
-  border: 1px solid rgba(255, 255, 255, 0.62);
+  min-height: 34px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(20, 32, 43, 0.08);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(241, 248, 249, 0.66)),
-    rgba(239, 248, 250, 0.58);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(249, 251, 246, 0.76)),
+    rgba(255, 255, 255, 0.76);
   box-shadow:
-    0 6px 16px rgba(30, 55, 72, 0.045),
-    inset 0 1px 0 rgba(255, 255, 255, 0.62);
-  backdrop-filter: blur(14px) saturate(128%);
-  -webkit-backdrop-filter: blur(14px) saturate(128%);
-  color: rgba(34, 55, 70, 0.58);
+    0 10px 26px rgba(20, 32, 43, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(18px) saturate(142%);
+  -webkit-backdrop-filter: blur(18px) saturate(142%);
+  color: rgba(20, 32, 43, 0.66);
   font-size: 0.72rem;
-  line-height: 1.2;
+  line-height: 1.25;
   text-align: center;
   display: block;
   max-height: none;
@@ -2958,7 +2950,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-body {
-  padding: 0 0 2px;
+  padding: 0 0 3px;
   scrollbar-gutter: auto;
 }
 
@@ -2970,10 +2962,11 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
-  gap: 7px;
+  gap: 9px;
   min-height: auto;
   align-content: start;
-  padding: 6px 0 10px;
+  padding: 7px 0 12px;
+  position: relative;
 }
 
 .channel-dialog-intro {
@@ -3026,7 +3019,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message {
-  gap: 7px;
+  gap: 8px;
+  align-items: flex-start;
+  position: relative;
 }
 
 .channel-dialog-message.is-own {
@@ -3034,7 +3029,7 @@
 }
 
 .channel-dialog-message.is-grouped {
-  margin-top: -5px;
+  margin-top: -6px;
 }
 
 .channel-dialog-new-comments {
@@ -3044,18 +3039,22 @@
 }
 
 .channel-dialog-new-comments__pill {
-  min-height: 28px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.72);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(246, 250, 255, 0.68));
-  color: rgba(27, 46, 63, 0.68);
+  min-height: 30px;
+  padding: 0 13px;
+  border-radius: 10px;
+  border: 1px solid rgba(0, 183, 199, 0.18);
+  background:
+    linear-gradient(135deg, rgba(184, 255, 122, 0.32), rgba(0, 183, 199, 0.12)),
+    rgba(255, 255, 255, 0.88);
+  color: rgba(20, 32, 43, 0.72);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   font-size: 0.72rem;
-  font-weight: 800;
-  box-shadow: 0 14px 30px rgba(31, 62, 90, 0.08);
+  font-weight: 900;
+  box-shadow:
+    0 14px 30px rgba(20, 32, 43, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
 .channel-dialog-skeleton__avatar,
@@ -3069,8 +3068,9 @@
 
 .channel-dialog-screen--comments .channel-dialog-message__avatar,
 .channel-dialog-screen--comments .channel-dialog-message__avatar-spacer {
-  width: 28px;
-  height: 28px;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
 }
 
 .channel-dialog-skeleton__avatar {
@@ -3176,8 +3176,8 @@
   width: 36px;
   min-width: 36px;
   height: 36px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--dialog-accent) 22%, white);
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--dialog-accent) 24%, white);
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--dialog-accent) 20%, white),
@@ -3216,15 +3216,15 @@
 .channel-dialog-reaction-popover__surface {
   display: grid;
   gap: 8px;
-  padding: 8px;
-  border-radius: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.94);
+  padding: 7px;
+  border-radius: 14px;
+  border: 1px solid rgba(20, 32, 43, 0.1);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 251, 255, 0.94)),
-    rgba(255, 255, 255, 0.94);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 251, 246, 0.94)),
+    rgba(255, 255, 255, 0.92);
   box-shadow:
-    0 18px 34px rgba(27, 57, 83, 0.12),
-    0 4px 10px rgba(27, 57, 83, 0.05),
+    0 22px 42px rgba(20, 32, 43, 0.14),
+    0 4px 10px rgba(20, 32, 43, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.86);
   backdrop-filter: blur(22px) saturate(160%);
   -webkit-backdrop-filter: blur(22px) saturate(160%);
@@ -3262,11 +3262,11 @@
   min-width: 44px;
   height: 44px;
   padding: 0;
-  border-radius: 14px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
+  border-radius: 10px;
+  border: 1px solid rgba(20, 32, 43, 0.1);
   background: rgba(255, 255, 255, 0.94);
   box-shadow:
-    0 6px 12px rgba(28, 61, 92, 0.03),
+    0 7px 14px rgba(20, 32, 43, 0.045),
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
   display: inline-flex;
   align-items: center;
@@ -3306,10 +3306,12 @@
 
 .channel-dialog-reaction-popover__emoji.is-active,
 .channel-dialog-reaction-popover__toggle.is-active {
-  border-color: color-mix(in srgb, var(--dialog-accent) 26%, white);
-  background: color-mix(in srgb, var(--dialog-accent) 14%, white);
+  border-color: rgba(0, 183, 199, 0.3);
+  background:
+    linear-gradient(135deg, rgba(184, 255, 122, 0.28), rgba(0, 183, 199, 0.14)),
+    rgba(255, 255, 255, 0.92);
   box-shadow:
-    0 12px 24px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+    0 12px 24px rgba(0, 183, 199, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
@@ -3317,17 +3319,17 @@
   flex: 1 1 auto;
   min-height: 44px;
   padding: 0 14px;
-  border-radius: 15px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  background: rgba(244, 248, 253, 0.94);
-  color: rgba(28, 47, 61, 0.78);
+  border-radius: 10px;
+  border: 1px solid rgba(20, 32, 43, 0.1);
+  background: rgba(246, 249, 244, 0.94);
+  color: rgba(20, 32, 43, 0.78);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   font-size: 0.74rem;
   font-weight: 800;
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   cursor: pointer;
 }
 
@@ -3359,18 +3361,37 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message__bubble {
-  padding: 8px 10px 9px;
-  border-color: rgba(255, 255, 255, 0.7);
-  border-radius: 19px 19px 19px 7px;
+  --channel-dialog-message-role-accent: var(--channel-dialog-rail);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  padding: 10px 12px 11px 14px;
+  border-color: rgba(20, 32, 43, 0.08);
+  border-radius: 10px 16px 16px 10px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(251, 253, 253, 0.92)),
-    rgba(255, 255, 255, 0.9);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 251, 246, 0.93)),
+    rgba(255, 255, 255, 0.92);
   box-shadow:
-    0 3px 9px rgba(28, 52, 68, 0.055),
-    0 1px 1px rgba(28, 52, 68, 0.035),
-    inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(9px) saturate(118%);
-  -webkit-backdrop-filter: blur(9px) saturate(118%);
+    0 14px 34px rgba(20, 32, 43, 0.075),
+    0 1px 1px rgba(20, 32, 43, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(18px) saturate(136%);
+  -webkit-backdrop-filter: blur(18px) saturate(136%);
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__bubble::before {
+  content: '';
+  position: absolute;
+  inset: 7px auto 7px 6px;
+  z-index: -1;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(
+    180deg,
+    var(--channel-dialog-message-role-accent),
+    rgba(255, 113, 91, 0.72)
+  );
+  opacity: 0.84;
 }
 
 .channel-dialog-message__avatar {
@@ -3389,6 +3410,17 @@
     0 8px 16px rgba(31, 62, 90, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
   overflow: hidden;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__avatar {
+  color: rgba(20, 32, 43, 0.78);
+  background:
+    linear-gradient(145deg, rgba(255, 255, 255, 0.92), rgba(225, 244, 239, 0.72)),
+    rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(20, 32, 43, 0.08);
+  box-shadow:
+    0 10px 24px rgba(20, 32, 43, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .channel-dialog-message__avatar-spacer {
@@ -3425,17 +3457,22 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble {
-  border-color: rgba(75, 151, 215, 0.18);
-  border-radius: 19px 19px 7px 19px;
-  background: linear-gradient(
-    160deg,
-    rgba(212, 237, 255, 0.94),
-    rgba(226, 244, 247, 0.9)
-  );
+  --channel-dialog-message-role-accent: var(--channel-dialog-energy);
+  padding: 10px 14px 11px 12px;
+  border-color: rgba(20, 32, 43, 0.18);
+  border-radius: 16px 10px 10px 16px;
+  background: linear-gradient(145deg, rgba(20, 32, 43, 0.98), rgba(28, 37, 42, 0.96)), #14202b;
   box-shadow:
-    0 4px 11px rgba(43, 103, 151, 0.09),
-    0 1px 1px rgba(43, 103, 151, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.68);
+    0 18px 36px rgba(20, 32, 43, 0.18),
+    0 1px 1px rgba(20, 32, 43, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__bubble::before {
+  inset: 7px 6px 7px auto;
+  background: linear-gradient(180deg, var(--channel-dialog-energy), rgba(0, 183, 199, 0.78));
 }
 
 .channel-dialog-message__bubble.is-selectable {
@@ -3468,6 +3505,17 @@
     0 0 0 4px color-mix(in srgb, var(--dialog-accent) 9%, transparent);
 }
 
+.channel-dialog-screen--comments .channel-dialog-message__bubble.is-active,
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-source-highlighted
+  .channel-dialog-message__bubble {
+  border-color: rgba(0, 183, 199, 0.36);
+  box-shadow:
+    0 22px 46px rgba(20, 32, 43, 0.13),
+    0 0 0 4px rgba(184, 255, 122, 0.24),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
 .channel-dialog-message.is-source-highlighted .channel-dialog-message__bubble {
   border-color: color-mix(in srgb, var(--dialog-accent) 30%, white);
   box-shadow:
@@ -3482,6 +3530,17 @@
 .channel-dialog-message.is-own .channel-dialog-message__bubble.is-grouped {
   border-top-right-radius: 16px;
   border-top-left-radius: 24px;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__bubble.is-grouped {
+  border-top-left-radius: 8px;
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__bubble.is-grouped {
+  border-top-right-radius: 8px;
+  border-top-left-radius: 16px;
 }
 
 .channel-dialog-message.is-own .channel-dialog-message__footer {
@@ -3500,6 +3559,21 @@
   line-height: 1.2;
 }
 
+.channel-dialog-screen--comments .channel-dialog-message__meta strong {
+  color: rgba(20, 32, 43, 0.86);
+  font-size: 0.74rem;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__meta
+  strong {
+  color: rgba(255, 255, 255, 0.88);
+}
+
 .channel-dialog-message__meta time {
   flex: 0 0 auto;
   color: rgba(30, 49, 64, 0.44);
@@ -3507,6 +3581,17 @@
   font-weight: 700;
   letter-spacing: 0.01em;
   white-space: nowrap;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__meta time {
+  color: rgba(20, 32, 43, 0.42);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__meta time {
+  color: rgba(255, 255, 255, 0.42);
 }
 
 .channel-dialog-message__reply {
@@ -3522,6 +3607,20 @@
   text-align: left;
 }
 
+.channel-dialog-screen--comments .channel-dialog-message__reply {
+  gap: 3px;
+  margin: 1px 0;
+  padding: 8px 9px 8px 12px;
+  border-left: 3px solid color-mix(in srgb, var(--channel-dialog-message-role-accent) 74%, white);
+  border-radius: 9px;
+  background: rgba(20, 32, 43, 0.045);
+}
+
+.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__reply {
+  border-left-color: rgba(184, 255, 122, 0.78);
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .channel-dialog-message__reply.is-link {
 }
 
@@ -3532,11 +3631,35 @@
   line-height: 1.15;
 }
 
+.channel-dialog-screen--comments .channel-dialog-message__reply span {
+  color: rgba(20, 32, 43, 0.78);
+  font-size: 0.7rem;
+  letter-spacing: 0;
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__reply
+  span {
+  color: rgba(217, 255, 194, 0.92);
+}
+
 .channel-dialog-message__reply p {
   margin: 0;
   color: rgba(32, 53, 69, 0.56);
   font-size: 0.76rem;
   line-height: 1.3;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__reply p {
+  color: rgba(20, 32, 43, 0.58);
+  font-size: 0.76rem;
+  line-height: 1.34;
+  letter-spacing: 0;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__reply p {
+  color: rgba(255, 255, 255, 0.62);
 }
 
 .channel-dialog-message__bubble p {
@@ -3546,6 +3669,17 @@
   line-height: 1.42;
   letter-spacing: -0.01em;
   white-space: pre-wrap;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__bubble p {
+  color: rgba(20, 32, 43, 0.88);
+  font-size: 0.95rem;
+  line-height: 1.46;
+  letter-spacing: 0;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble p {
+  color: rgba(255, 255, 255, 0.92);
 }
 
 .channel-dialog-message__attachments {
@@ -3604,6 +3738,17 @@
   transition:
     transform 180ms ease,
     box-shadow 180ms ease;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__image-tile {
+  border-color: rgba(20, 32, 43, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(222, 238, 234, 0.34)),
+    rgba(230, 240, 238, 0.86);
+  box-shadow:
+    0 12px 24px rgba(20, 32, 43, 0.08),
+    inset 0 1px 0 rgba(255, 255, 255, 0.64);
 }
 
 .channel-dialog-message__image-tile:disabled {
@@ -3679,6 +3824,24 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
+.channel-dialog-screen--comments .channel-dialog-message__file-pill {
+  padding: 11px 12px;
+  border-color: rgba(20, 32, 43, 0.08);
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 251, 246, 0.86)),
+    rgba(255, 255, 255, 0.82);
+  box-shadow:
+    0 12px 24px rgba(20, 32, 43, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__file-pill {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
 .channel-dialog-message__file-pill:disabled {
   cursor: default;
   opacity: 0.86;
@@ -3696,6 +3859,19 @@
   align-items: center;
   justify-content: center;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
+}
+
+.channel-dialog-screen--comments .channel-dialog-message__file-pill-icon {
+  border-radius: 10px;
+  background: rgba(0, 183, 199, 0.12);
+  color: rgba(0, 119, 130, 0.86);
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__file-pill-icon {
+  background: rgba(184, 255, 122, 0.16);
+  color: rgba(217, 255, 194, 0.92);
 }
 
 .channel-dialog-message__file-pill-copy {
@@ -3717,6 +3893,13 @@
   color: rgba(30, 49, 64, 0.86);
   font-size: 0.82rem;
   line-height: 1.2;
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__file-pill-copy
+  strong {
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .channel-dialog-message__file-pill-meta {
@@ -3741,6 +3924,21 @@
   color: rgba(30, 49, 64, 0.56);
   font-size: 0.72rem;
   line-height: 1.2;
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__file-pill-meta
+  b {
+  background: rgba(184, 255, 122, 0.14);
+  color: rgba(217, 255, 194, 0.88);
+}
+
+.channel-dialog-screen--comments
+  .channel-dialog-message.is-own
+  .channel-dialog-message__file-pill-meta
+  span {
+  color: rgba(255, 255, 255, 0.58);
 }
 
 .channel-dialog-message__file-pill-arrow {
@@ -3772,8 +3970,8 @@
   justify-self: start;
   position: relative;
   z-index: 1;
-  margin-top: -2px;
-  padding: 2px 10px 3px;
+  margin-top: -1px;
+  padding: 1px 9px 2px;
 }
 
 .channel-dialog-message.is-own .channel-dialog-message__footer--comments {
@@ -3793,11 +3991,11 @@
 }
 
 .channel-dialog-reaction-pill {
-  min-height: 28px;
-  border-radius: 999px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  background: rgba(255, 255, 255, 0.96);
-  color: rgba(24, 44, 58, 0.72);
+  min-height: 27px;
+  border-radius: 9px;
+  border: 1px solid rgba(20, 32, 43, 0.09);
+  background: rgba(255, 255, 255, 0.88);
+  color: rgba(20, 32, 43, 0.7);
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -3809,9 +4007,9 @@
 }
 
 .channel-dialog-reaction-pill {
-  padding: 0 10px;
+  padding: 0 9px;
   box-shadow:
-    0 6px 14px rgba(28, 61, 92, 0.04),
+    0 8px 18px rgba(20, 32, 43, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
@@ -3824,11 +4022,13 @@
 }
 
 .channel-dialog-reaction-pill.is-active {
-  border-color: color-mix(in srgb, var(--dialog-accent) 22%, white);
-  background: color-mix(in srgb, var(--dialog-accent) 14%, white);
-  color: color-mix(in srgb, var(--dialog-accent) 78%, black);
+  border-color: rgba(0, 183, 199, 0.28);
+  background:
+    linear-gradient(135deg, rgba(184, 255, 122, 0.26), rgba(0, 183, 199, 0.12)),
+    rgba(255, 255, 255, 0.92);
+  color: rgba(20, 32, 43, 0.84);
   box-shadow:
-    0 8px 18px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+    0 10px 22px rgba(0, 183, 199, 0.12),
     inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
@@ -3902,12 +4102,12 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose {
-  padding: 2px 0 3px;
+  padding: 3px 0 4px;
   background: linear-gradient(
     180deg,
-    rgba(226, 236, 238, 0) 0%,
-    rgba(226, 236, 238, 0.62) 44%,
-    rgba(226, 236, 238, 0.92) 100%
+    rgba(237, 244, 242, 0) 0%,
+    rgba(237, 244, 242, 0.72) 46%,
+    rgba(255, 244, 238, 0.96) 100%
   );
 }
 
@@ -3926,6 +4126,19 @@
   gap: 8px;
   font-size: 0.78rem;
   font-weight: 800;
+}
+
+.channel-dialog-screen--comments .channel-dialog-jump-latest {
+  min-height: 38px;
+  padding: 4px 7px 4px 5px;
+  border-radius: 12px;
+  border: 1px solid rgba(20, 32, 43, 0.1);
+  background:
+    linear-gradient(135deg, rgba(184, 255, 122, 0.28), rgba(0, 183, 199, 0.14)),
+    rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 18px 34px rgba(20, 32, 43, 0.12),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .channel-dialog-jump-latest__icon svg {
@@ -3949,19 +4162,19 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__surface {
-  gap: 4px;
-  padding: 4px;
-  border-radius: 24px;
-  border-color: rgba(255, 255, 255, 0.74);
+  gap: 5px;
+  padding: 5px;
+  border-radius: 14px;
+  border-color: rgba(20, 32, 43, 0.12);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 251, 252, 0.9)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 251, 246, 0.92)),
     rgba(255, 255, 255, 0.9);
   box-shadow:
-    0 8px 22px rgba(26, 45, 61, 0.1),
-    0 1px 2px rgba(26, 45, 61, 0.05),
+    0 18px 42px rgba(20, 32, 43, 0.14),
+    0 1px 2px rgba(20, 32, 43, 0.06),
     inset 0 1px 0 rgba(255, 255, 255, 0.76);
-  backdrop-filter: blur(16px) saturate(136%);
-  -webkit-backdrop-filter: blur(16px) saturate(136%);
+  backdrop-filter: blur(20px) saturate(148%);
+  -webkit-backdrop-filter: blur(20px) saturate(148%);
 }
 
 .channel-dialog-compose__reply {
@@ -3976,19 +4189,21 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__reply {
-  padding: 8px 10px 8px 8px;
-  border-radius: 22px;
-  border: 0;
-  background: rgba(255, 255, 255, 0.42);
+  padding: 8px 9px 8px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(20, 32, 43, 0.08);
+  background: rgba(246, 249, 244, 0.78);
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__reply.is-editing {
-  background: color-mix(in srgb, var(--dialog-accent) 12%, white);
+  background:
+    linear-gradient(135deg, rgba(184, 255, 122, 0.22), rgba(0, 183, 199, 0.1)),
+    rgba(255, 255, 255, 0.86);
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__reply-copy {
   padding-left: 12px;
-  border-left: 2px solid color-mix(in srgb, var(--dialog-accent) 48%, white);
+  border-left: 3px solid rgba(0, 183, 199, 0.54);
 }
 
 .channel-dialog-compose__reply-copy {
@@ -4036,8 +4251,11 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__reply-dismiss {
-  background: rgba(255, 255, 255, 0.72);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.74);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.74);
+  box-shadow:
+    0 8px 16px rgba(20, 32, 43, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
 }
 
 .channel-dialog-compose__reply-dismiss svg {
@@ -4077,6 +4295,18 @@
   color: rgba(47, 74, 96, 0.72);
   box-shadow:
     0 12px 24px rgba(28, 61, 92, 0.1),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__image-chip {
+  width: 70px;
+  height: 70px;
+  border-radius: 12px;
+  background:
+    linear-gradient(180deg, rgba(184, 255, 122, 0.16), rgba(0, 183, 199, 0.08)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 12px 24px rgba(20, 32, 43, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
@@ -4133,6 +4363,18 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.76);
 }
 
+.channel-dialog-screen--comments .channel-dialog-compose__attachment {
+  padding: 9px 10px;
+  border-radius: 12px;
+  border-color: rgba(20, 32, 43, 0.08);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(249, 251, 246, 0.86)),
+    rgba(255, 255, 255, 0.86);
+  box-shadow:
+    0 12px 24px rgba(20, 32, 43, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.74);
+}
+
 .channel-dialog-compose__attachment-preview {
   width: 54px;
   height: 54px;
@@ -4146,6 +4388,14 @@
   align-items: center;
   justify-content: center;
   color: rgba(47, 74, 96, 0.72);
+}
+
+.channel-dialog-screen--comments .channel-dialog-compose__attachment-preview {
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  background: rgba(0, 183, 199, 0.12);
+  color: rgba(0, 119, 130, 0.86);
 }
 
 .channel-dialog-compose__attachment-preview img {
@@ -4213,8 +4463,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__meta {
-  padding: 0 8px;
-  color: rgba(32, 53, 69, 0.5);
+  padding: 0 9px;
+  color: rgba(20, 32, 43, 0.5);
+  letter-spacing: 0;
 }
 
 .channel-dialog-compose__meta--solo {
@@ -4232,7 +4483,8 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__row {
-  gap: 3px;
+  gap: 4px;
+  align-items: flex-end;
 }
 
 .channel-dialog-compose__quick-actions {
@@ -4243,7 +4495,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__quick-actions {
-  gap: 0;
+  gap: 2px;
   padding-bottom: 1px;
 }
 
@@ -4293,14 +4545,14 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__attach {
-  width: 40px;
-  min-width: 40px;
-  min-height: 40px;
+  width: 38px;
+  min-width: 38px;
+  min-height: 38px;
   padding: 0;
-  border: 0;
-  border-radius: 999px;
+  border: 1px solid transparent;
+  border-radius: 10px;
   background: transparent;
-  color: rgba(72, 91, 106, 0.74);
+  color: rgba(20, 32, 43, 0.58);
   box-shadow: none;
 }
 
@@ -4310,8 +4562,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__attach.is-active {
-  background: rgba(11, 132, 255, 0.1);
-  color: var(--dialog-accent);
+  border-color: rgba(0, 183, 199, 0.16);
+  background: rgba(0, 183, 199, 0.1);
+  color: rgba(0, 119, 130, 0.9);
 }
 
 .channel-dialog-compose__attach.is-active {
@@ -4365,18 +4618,19 @@
 
 .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
   min-height: 42px;
-  padding: 9px 6px;
-  border: 0;
-  border-radius: 18px;
-  background: transparent;
-  box-shadow: none;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.68);
+  color: rgba(20, 32, 43, 0.88);
   font-size: 0.95rem;
   line-height: 1.38;
   letter-spacing: 0;
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__field textarea::placeholder {
-  color: rgba(30, 49, 64, 0.48);
+  color: rgba(20, 32, 43, 0.46);
 }
 
 .channel-dialog-compose__field textarea:focus {
@@ -4385,8 +4639,10 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__field textarea:focus {
-  border-color: transparent;
-  box-shadow: none;
+  border-color: rgba(0, 183, 199, 0.26);
+  box-shadow:
+    0 0 0 3px rgba(184, 255, 122, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
 }
 
 .channel-dialog-compose__actions {
@@ -4422,16 +4678,16 @@
   width: 42px;
   min-width: 42px;
   min-height: 42px;
-  border-radius: 999px;
+  border-radius: 12px;
   background: linear-gradient(
-    160deg,
-    color-mix(in srgb, var(--dialog-accent) 92%, white),
-    color-mix(in srgb, var(--dialog-accent) 70%, black)
+    145deg,
+    var(--channel-dialog-ink),
+    color-mix(in srgb, var(--channel-dialog-ink) 78%, var(--channel-dialog-rail))
   );
   box-shadow:
-    0 11px 20px color-mix(in srgb, var(--dialog-accent) 22%, transparent),
-    0 2px 6px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+    0 14px 24px rgba(20, 32, 43, 0.2),
+    0 0 0 1px rgba(184, 255, 122, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
 .channel-dialog-submit svg {
@@ -4493,7 +4749,7 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose {
-    padding: 2px 0 3px;
+    padding: 3px 0 4px;
   }
 
   .channel-dialog-thread-context {
@@ -4520,7 +4776,7 @@
 
   .channel-dialog-reaction-popover__surface {
     padding: 6px;
-    border-radius: 19px;
+    border-radius: 14px;
   }
 
   .channel-dialog-reaction-popover__rail {
@@ -4536,7 +4792,7 @@
     width: 44px;
     min-width: 44px;
     height: 44px;
-    border-radius: 14px;
+    border-radius: 10px;
   }
 
   .channel-dialog-reaction-popover__action {
@@ -4551,8 +4807,8 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__surface {
-    padding: 4px;
-    border-radius: 23px;
+    padding: 5px;
+    border-radius: 14px;
   }
 
   .channel-dialog-compose__meta {
@@ -4568,8 +4824,8 @@
 
   .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
     min-height: 42px;
-    padding: 9px 5px;
-    border-radius: 18px;
+    padding: 9px 10px;
+    border-radius: 10px;
   }
 
   .channel-dialog-message__meta strong {
@@ -4597,7 +4853,7 @@
     width: 42px;
     min-width: 42px;
     min-height: 42px;
-    border-radius: 999px;
+    border-radius: 12px;
   }
 }
 

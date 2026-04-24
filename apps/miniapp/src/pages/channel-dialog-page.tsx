@@ -987,26 +987,18 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
     return undefined;
   }
 
-  if (isOwnMessage) {
-    return {
-      background: 'linear-gradient(160deg, rgba(212, 237, 255, 0.94), rgba(226, 244, 247, 0.9))',
-      borderColor: 'rgba(75, 151, 215, 0.18)',
-    };
-  }
-
   return {
-    background: 'linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 252, 252, 0.9))',
-    borderColor: 'rgba(255, 255, 255, 0.7)',
-  };
+    '--channel-dialog-message-role-accent': isOwnMessage ? '#b8ff7a' : '#00b7c7',
+  } as CSSProperties;
 }
 
-function buildAdminAuthorStyle(isAdmin: boolean): CSSProperties | undefined {
+function buildAdminAuthorStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProperties | undefined {
   if (!isAdmin) {
     return undefined;
   }
 
   return {
-    color: '#1f6f91',
+    color: isOwnMessage ? '#d9ffc2' : '#007782',
   };
 }
 
@@ -3599,6 +3591,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         className={cn(
                           'channel-dialog-message',
                           isOwnMessage && 'is-own',
+                          isAdminMessage && 'is-admin',
                           groupedWithPrevious && 'is-grouped',
                           highlightedMessageId === message.id && 'is-source-highlighted',
                         )}
@@ -3641,6 +3634,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               className={cn(
                                 'channel-dialog-message__bubble',
                                 'is-selectable',
+                                isAdminMessage && 'is-admin',
                                 isActiveMessage && 'is-active',
                                 groupedWithPrevious && 'is-grouped',
                               )}
@@ -3660,7 +3654,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                             >
                               {!groupedWithPrevious ? (
                                 <div className="channel-dialog-message__meta">
-                                  <strong style={buildAdminAuthorStyle(isAdminMessage)}>
+                                  <strong
+                                    style={buildAdminAuthorStyle(isAdminMessage, isOwnMessage)}
+                                  >
                                     {getAuthorLabel(message)}
                                   </strong>
                                   <time dateTime={message.createdAt}>
