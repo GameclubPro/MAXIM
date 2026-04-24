@@ -10,7 +10,8 @@ import {
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
 } from '@maxim/contracts';
 import {
-  AntennaSignal as IconoirAntennaSignal,
+  Antenna as IconoirAntenna,
+  AntennaSignalTag as IconoirAntennaSignalTag,
   Attachment as IconoirAttachment,
   Atom as IconoirAtom,
   Bell as IconoirBell,
@@ -23,6 +24,7 @@ import {
   ClockRotateRight as IconoirClockRotateRight,
   Compass as IconoirCompass,
   Drone as IconoirDrone,
+  DroneTakeOff as IconoirDroneTakeOff,
   EmojiSatisfied as IconoirEmojiSatisfied,
   Flare as IconoirFlare,
   Flash as IconoirFlash,
@@ -32,9 +34,14 @@ import {
   HalfMoon as IconoirHalfMoon,
   Hashtag as IconoirHashtag,
   Heart as IconoirHeart,
+  Internet as IconoirInternet,
   MessageText as IconoirMessageText,
   Microphone as IconoirMicrophone,
+  MoonSat as IconoirMoonSat,
   MultiBubble as IconoirMultiBubble,
+  Navigator as IconoirNavigator,
+  NavigatorAlt as IconoirNavigatorAlt,
+  Network as IconoirNetwork,
   Pin as IconoirPin,
   Planet as IconoirPlanet,
   PlanetAlt as IconoirPlanetAlt,
@@ -179,7 +186,14 @@ type CommentBackdropIconName =
   | 'gps'
   | 'drone'
   | 'antenna'
-  | 'view-360';
+  | 'view-360'
+  | 'moon-sat'
+  | 'navigator'
+  | 'navigator-alt'
+  | 'network'
+  | 'internet'
+  | 'antenna-tag'
+  | 'drone-takeoff';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -200,55 +214,48 @@ type CommentBackdropWallpaperRow = {
   tiles: CommentBackdropWallpaperTile[];
 };
 
-const COMMENT_BACKDROP_STROKE = 1.46;
+const COMMENT_BACKDROP_STROKE = 1.18;
 
 const COMMENT_BACKDROP_WALLPAPER_ROWS = [
   {
     id: 'row-1',
     shift: 'left',
     tiles: [
-      { id: 'stars-1', icon: 'stars', tone: 'soft', rotate: -9, scale: 0.92, offsetY: -4 },
-      { id: 'message-1', icon: 'message', tone: 'faint', rotate: 7, scale: 0.96, offsetY: 5 },
-      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
-      { id: 'bright-star-1', icon: 'bright-star', tone: 'soft', rotate: 5, scale: 0.9, offsetY: 6 },
-      { id: 'rocket-1', icon: 'rocket', tone: 'faint', rotate: -14, scale: 0.94, offsetY: -3 },
+      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'soft', rotate: -9, scale: 0.94, offsetY: -4 },
+      { id: 'atom-1', icon: 'atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 5 },
+      { id: 'moon-sat-1', icon: 'moon-sat', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
+      { id: 'bright-star-1', icon: 'bright-star', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 6 },
+      { id: 'rocket-1', icon: 'rocket', tone: 'faint', rotate: -14, scale: 0.9, offsetY: -3 },
     ],
   },
   {
     id: 'row-2',
     shift: 'right',
     tiles: [
-      { id: 'moon-1', icon: 'moon', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
-      { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.9, offsetY: -5 },
-      { id: 'atom-1', icon: 'atom', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
+      { id: 'sphere-1', icon: 'sphere', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
+      { id: 'navigator-1', icon: 'navigator', tone: 'soft', rotate: 8, scale: 0.86, offsetY: -5 },
+      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
       { id: 'star-dashed-1', icon: 'star-dashed', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
-      { id: 'drone-1', icon: 'drone', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
+      { id: 'drone-takeoff-1', icon: 'drone-takeoff', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
     ],
   },
   {
     id: 'row-3',
     shift: 'left',
     tiles: [
-      {
-        id: 'conversation-1',
-        icon: 'conversation',
-        tone: 'soft',
-        rotate: -6,
-        scale: 0.98,
-        offsetY: -8,
-      },
-      { id: 'sphere-1', icon: 'sphere', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'view-360-1', icon: 'view-360', tone: 'soft', rotate: -6, scale: 0.94, offsetY: -8 },
+      { id: 'spiral-1', icon: 'spiral', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
       { id: 'spark-1', icon: 'spark', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
-      { id: 'heart-1', icon: 'heart', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
+      { id: 'antenna-tag-1', icon: 'antenna-tag', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
+      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.9, offsetY: -6 },
     ],
   },
   {
     id: 'row-4',
     shift: 'right',
     tiles: [
-      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
-      { id: 'send-1', icon: 'send', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
+      { id: 'planet-1', icon: 'planet', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
+      { id: 'compass-1', icon: 'compass', tone: 'soft', rotate: 7, scale: 0.86, offsetY: -6 },
       { id: 'circle-spark-1', icon: 'circle-spark', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
       { id: 'globe-1', icon: 'globe', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
       { id: 'flash-1', icon: 'flash', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
@@ -258,8 +265,8 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-5',
     shift: 'left',
     tiles: [
-      { id: 'spiral-1', icon: 'spiral', tone: 'faint', rotate: -4, scale: 0.92, offsetY: 6 },
-      { id: 'reaction-1', icon: 'reaction', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
+      { id: 'network-1', icon: 'network', tone: 'faint', rotate: -4, scale: 0.9, offsetY: 6 },
+      { id: 'flare-1', icon: 'flare', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
       { id: 'rocket-2', icon: 'rocket', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
       { id: 'moon-2', icon: 'moon', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
       { id: 'stars-2', icon: 'stars', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
@@ -270,9 +277,9 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'planet-sat-2', icon: 'planet-sat', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
-      { id: 'compass-1', icon: 'compass', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
-      { id: 'flare-1', icon: 'flare', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
-      { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
+      { id: 'internet-1', icon: 'internet', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
+      { id: 'sparkles-1', icon: 'sparkles', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      { id: 'drone-1', icon: 'drone', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
       { id: 'antenna-1', icon: 'antenna', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
     ],
   },
@@ -281,10 +288,10 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'left',
     tiles: [
       { id: 'sun-2', icon: 'sun', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
-      { id: 'message-2', icon: 'message', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
+      { id: 'sphere-2', icon: 'sphere', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
       { id: 'planet-2', icon: 'planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
-      { id: 'view-360-1', icon: 'view-360', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
-      { id: 'sparkles-1', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
+      { id: 'view-360-2', icon: 'view-360', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
+      { id: 'circle-spark-2', icon: 'circle-spark', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
     ],
   },
   {
@@ -292,9 +299,9 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'bright-star-2', icon: 'bright-star', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
-      { id: 'camera-1', icon: 'camera', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
-      { id: 'moon-3', icon: 'moon', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
-      { id: 'sphere-2', icon: 'sphere', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
+      { id: 'navigator-alt-1', icon: 'navigator-alt', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
+      { id: 'moon-sat-2', icon: 'moon-sat', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
+      { id: 'atom-2', icon: 'atom', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
       { id: 'gps-1', icon: 'gps', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
     ],
   },
@@ -303,10 +310,10 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'left',
     tiles: [
       { id: 'stars-3', icon: 'stars', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
-      { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
+      { id: 'network-2', icon: 'network', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
       { id: 'planet-alt-2', icon: 'planet-alt', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
       { id: 'flash-2', icon: 'flash', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
-      { id: 'heart-2', icon: 'heart', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
+      { id: 'star-dashed-2', icon: 'star-dashed', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
     ],
   },
   {
@@ -314,10 +321,10 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'drone-2', icon: 'drone', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'typing-2', icon: 'typing', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
+      { id: 'compass-2', icon: 'compass', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
       { id: 'planet-sat-3', icon: 'planet-sat', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
-      { id: 'circle-spark-2', icon: 'circle-spark', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
-      { id: 'send-2', icon: 'send', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
+      { id: 'flare-2', icon: 'flare', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
+      { id: 'navigator-2', icon: 'navigator', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
   {
@@ -325,9 +332,9 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'left',
     tiles: [
       { id: 'globe-2', icon: 'globe', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
-      { id: 'star-dashed-2', icon: 'star-dashed', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
-      { id: 'conversation-2', icon: 'conversation', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
-      { id: 'atom-2', icon: 'atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'moon-3', icon: 'moon', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
+      { id: 'internet-2', icon: 'internet', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
+      { id: 'atom-3', icon: 'atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
       { id: 'sun-3', icon: 'sun', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
     ],
   },
@@ -336,8 +343,8 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     shift: 'right',
     tiles: [
       { id: 'rocket-4', icon: 'rocket', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
-      { id: 'moon-4', icon: 'moon', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
-      { id: 'reaction-2', icon: 'reaction', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'moon-sat-3', icon: 'moon-sat', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
+      { id: 'view-360-3', icon: 'view-360', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
       { id: 'spiral-2', icon: 'spiral', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
       { id: 'bright-star-3', icon: 'bright-star', tone: 'soft', rotate: 7, scale: 0.86, offsetY: 5 },
     ],
@@ -1633,9 +1640,23 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
     case 'drone':
       return <IconoirDrone strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
     case 'antenna':
-      return <IconoirAntennaSignal strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+      return <IconoirAntenna strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
     case 'view-360':
       return <IconoirView360 strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'moon-sat':
+      return <IconoirMoonSat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'navigator':
+      return <IconoirNavigator strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'navigator-alt':
+      return <IconoirNavigatorAlt strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'network':
+      return <IconoirNetwork strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'internet':
+      return <IconoirInternet strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'antenna-tag':
+      return <IconoirAntennaSignalTag strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'drone-takeoff':
+      return <IconoirDroneTakeOff strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
     default:
       return null;
   }
