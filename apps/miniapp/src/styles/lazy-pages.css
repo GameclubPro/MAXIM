@@ -15036,3 +15036,601 @@
     flex-wrap: wrap;
   }
 }
+
+/* 2026 settings quality pass: lighter native sheets, denser editors, less web-form weight. */
+.settings-drilldown {
+  padding-top: max(6px, calc(env(safe-area-inset-top, 0px) + 2px));
+}
+
+.settings-drilldown__backdrop {
+  background: rgba(12, 24, 36, 0.18);
+  backdrop-filter: blur(18px) saturate(150%);
+  -webkit-backdrop-filter: blur(18px) saturate(150%);
+}
+
+.settings-drilldown__panel {
+  width: min(100%, 720px);
+  height: auto;
+  min-height: min(318px, calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px))));
+  max-height: calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px)));
+  border-radius: 26px 26px 0 0;
+  border-color: rgba(126, 153, 179, 0.2);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(246, 250, 254, 0.97)),
+    rgba(255, 255, 255, 0.96);
+  box-shadow:
+    0 24px 68px rgba(18, 38, 61, 0.18),
+    0 8px 28px rgba(18, 38, 61, 0.08);
+}
+
+.settings-drilldown__panel--campaign,
+.settings-drilldown__panel--ladder,
+.settings-drilldown__panel--required-subscription,
+.settings-drilldown__panel--time,
+.settings-drilldown__panel--board {
+  min-height: min(610px, calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px))));
+}
+
+.settings-drilldown__header {
+  padding: 20px 12px 10px;
+  gap: 10px;
+  border-bottom-color: rgba(139, 163, 186, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 251, 255, 0.95)),
+    rgba(255, 255, 255, 0.96);
+}
+
+.settings-drilldown__header::before {
+  top: 8px;
+  width: 44px;
+  height: 4px;
+  opacity: 0.72;
+}
+
+.settings-drilldown__title-wrap {
+  gap: 6px;
+}
+
+.settings-drilldown__title {
+  font-size: clamp(1rem, 0.95rem + 0.22vw, 1.1rem);
+  letter-spacing: 0;
+}
+
+.settings-drilldown__summary {
+  min-height: 30px;
+  padding: 5px 10px;
+  border-color: color-mix(in srgb, var(--settings-panel-accent-border) 72%, transparent);
+  background: rgba(255, 255, 255, 0.82);
+  font-size: 0.64rem;
+  letter-spacing: 0.005em;
+}
+
+.settings-drilldown__close {
+  width: 38px;
+  height: 38px;
+  border-radius: 14px;
+  box-shadow: 0 8px 18px rgba(18, 38, 61, 0.06);
+}
+
+.settings-drilldown__body {
+  scroll-padding-bottom: 86px;
+}
+
+.settings-drilldown .settings-section__collapse-inner {
+  padding: 10px 10px calc(14px + env(safe-area-inset-bottom, 0px));
+  gap: 10px;
+}
+
+.settings-drilldown__footer {
+  gap: 7px;
+  padding: 8px 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  border-top-color: rgba(139, 163, 186, 0.15);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(246, 250, 254, 0.96)),
+    rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(18px) saturate(140%);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+}
+
+.settings-drilldown__footer-actions {
+  grid-template-columns: minmax(0, 0.86fr) minmax(0, 1.24fr);
+  gap: 8px;
+}
+
+.settings-drilldown__footer-actions.is-single-action {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-drilldown__footer-actions .button {
+  min-height: 48px;
+  padding-inline: 10px;
+  border-radius: 17px;
+  font-size: clamp(0.84rem, 0.76rem + 0.18vw, 0.92rem);
+  line-height: 1.08;
+  white-space: normal;
+}
+
+.settings-drilldown__footer-note {
+  font-size: 0.68rem;
+  line-height: 1.28;
+}
+
+.settings-drilldown
+  :is(
+    .settings-native-toggle,
+    .channel-settings-toggle-card,
+    .field,
+    .broadcast-stage-card,
+    .mailing-option-card,
+    .managed-broadcast-editor-note,
+    .managed-broadcast-card,
+    .managed-poll-card,
+    .managed-poll-option-card,
+    .managed-poll-card__meta,
+    .managed-poll-card__footer,
+    .managed-giveaway__section,
+    .managed-giveaway__surface,
+    .managed-giveaway__subsection,
+    .required-subscription__timer-card,
+    .required-subscription__board
+  ) {
+  border-radius: 20px;
+  border-color: rgba(198, 212, 225, 0.72);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 252, 255, 0.94)),
+    rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.84),
+    0 8px 18px rgba(24, 55, 83, 0.04);
+}
+
+.settings-drilldown
+  :is(
+    .settings-native-toggle,
+    .channel-settings-toggle-card,
+    .broadcast-stage-card,
+    .mailing-option-card,
+    .managed-broadcast-editor-note,
+    .managed-broadcast-card
+  )::before {
+  inset: 12px auto 12px 0;
+  width: 3px;
+  opacity: 0.56;
+}
+
+.settings-drilldown .settings-native-toggle::after {
+  content: none;
+}
+
+.settings-drilldown .settings-native-toggle,
+.settings-drilldown .channel-settings-toggle-card {
+  min-height: 58px;
+  padding: 10px 10px 10px 13px;
+  gap: 9px;
+}
+
+.settings-drilldown .settings-native-toggle--nested {
+  margin-left: 0;
+  padding-left: 13px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(250, 252, 255, 0.96)),
+    rgba(255, 255, 255, 0.94);
+}
+
+.settings-drilldown .settings-native-toggle__row,
+.settings-drilldown .channel-settings-toggle-card {
+  align-items: center;
+  gap: 9px;
+}
+
+.settings-drilldown .settings-native-toggle__title {
+  font-size: 0.9rem;
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+
+.settings-drilldown__panel--ladder
+  :is(
+    .settings-native-toggle,
+    .duplicate-stage,
+    .settings-word-banlist,
+    .managed-giveaway__section,
+    .managed-giveaway__subsection
+  )::before {
+  inset: 16px auto 16px 0;
+  width: 2px;
+  opacity: 0.28;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--settings-mobile-mode-ink) 46%, transparent),
+    transparent 88%
+  );
+}
+
+.settings-drilldown .settings-native-toggle--nested .settings-native-toggle__title::before {
+  width: 8px;
+  height: 8px;
+  box-shadow: 0 0 0 4px var(--settings-panel-accent-soft);
+}
+
+.settings-drilldown .settings-info-button,
+.settings-drilldown .settings-edit-button {
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border-radius: 13px;
+}
+
+.settings-drilldown .settings-native-switch,
+.settings-drilldown .toggle-switch {
+  width: 48px;
+  height: 29px;
+}
+
+.settings-drilldown .toggle-switch__thumb {
+  width: 21px;
+  height: 21px;
+}
+
+.settings-drilldown .settings-native-switch input:checked + .toggle-switch .toggle-switch__thumb {
+  transform: translateX(19px);
+}
+
+.settings-drilldown .settings-native-toggle__hint {
+  border-radius: 15px;
+  padding: 9px 10px;
+  font-size: 0.72rem;
+  line-height: 1.32;
+}
+
+.settings-drilldown .settings-subsection-divider {
+  margin: 1px 0;
+}
+
+.settings-drilldown .settings-subsection-divider::before {
+  border-top-color: rgba(188, 205, 220, 0.58);
+}
+
+.settings-drilldown .settings-subsection-divider span,
+.settings-drilldown__panel--ladder .settings-subsection-divider span {
+  min-height: 26px;
+  border-color: rgba(188, 205, 220, 0.72);
+  background: rgba(255, 255, 255, 0.86);
+  color: color-mix(in srgb, var(--settings-panel-accent-text) 72%, #173048 28%);
+  box-shadow: 0 6px 14px rgba(24, 55, 83, 0.04);
+  font-size: 0.62rem;
+  letter-spacing: 0.065em;
+}
+
+.settings-drilldown .field {
+  gap: 9px;
+  padding: 11px;
+}
+
+.settings-drilldown .field > span,
+.settings-drilldown .field__label {
+  min-height: 21px;
+  padding: 0 8px;
+  border-color: color-mix(in srgb, var(--settings-panel-accent-border) 70%, transparent);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 0.58rem;
+  letter-spacing: 0.06em;
+}
+
+.settings-drilldown .field input,
+.settings-drilldown .field select,
+.settings-drilldown .field textarea {
+  min-height: 46px;
+  border-radius: 15px;
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.88);
+  font-size: 0.9rem;
+  line-height: 1.24;
+  letter-spacing: 0;
+}
+
+.settings-drilldown .field textarea {
+  min-height: 92px;
+  line-height: 1.34;
+}
+
+.settings-drilldown .field textarea::placeholder,
+.settings-drilldown .field input::placeholder {
+  letter-spacing: 0;
+}
+
+.settings-drilldown .field__hint {
+  font-size: 0.69rem;
+  line-height: 1.28;
+}
+
+.settings-drilldown .field__number-wrap {
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-drilldown .field__number-wrap select {
+  min-height: 44px;
+}
+
+.settings-drilldown .bot-message-editor {
+  padding: 10px;
+  gap: 9px;
+  border-radius: 18px;
+}
+
+.settings-drilldown .broadcast-compose-flow,
+.settings-drilldown .broadcast-studio-shell,
+.settings-drilldown .channel-broadcast-studio,
+.settings-drilldown .managed-poll-card__options,
+.settings-drilldown .channel-settings-stack {
+  gap: 9px;
+}
+
+.settings-drilldown .broadcast-stage-card {
+  padding: 11px;
+  gap: 8px;
+}
+
+.settings-drilldown .broadcast-stage-card__head {
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-drilldown .broadcast-stage-card__title-wrap {
+  gap: 2px;
+}
+
+.settings-drilldown .broadcast-stage-card__title-wrap strong {
+  font-size: 0.9rem;
+  line-height: 1.08;
+}
+
+.settings-drilldown .broadcast-stage-card__title-wrap small {
+  font-size: 0.68rem;
+  line-height: 1.24;
+}
+
+.settings-drilldown .broadcast-stage-card__body {
+  gap: 8px;
+}
+
+.settings-drilldown .broadcast-message-card,
+.settings-drilldown .broadcast-cta-toggle,
+.settings-drilldown .broadcast-audience-card__toggle,
+.settings-drilldown .broadcast-audience-card__trigger {
+  border-radius: 16px;
+  padding: 9px 10px;
+  border-color: rgba(198, 212, 225, 0.68);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.settings-drilldown .broadcast-message-card__facts,
+.settings-drilldown .managed-broadcast-card__facts {
+  gap: 5px;
+}
+
+.settings-drilldown .broadcast-message-card__facts span,
+.settings-drilldown .broadcast-cta-toggle__pill,
+.settings-drilldown .managed-broadcast-card__facts span,
+.settings-drilldown .managed-broadcast-card__badge,
+.settings-drilldown .chip {
+  min-height: 24px;
+  padding-inline: 8px;
+  font-size: 0.64rem;
+}
+
+.settings-drilldown .broadcast-shell-reset {
+  width: 38px;
+  height: 38px;
+  border-radius: 15px;
+}
+
+.settings-drilldown .broadcast-stage-card--planner .broadcast-planner {
+  gap: 8px;
+}
+
+.settings-drilldown .broadcast-stage-card--planner .broadcast-planner__calendar-head {
+  gap: 8px;
+}
+
+.settings-drilldown .broadcast-stage-card--planner .broadcast-planner__calendar-head strong {
+  font-size: 0.92rem;
+}
+
+.settings-drilldown .managed-poll-card {
+  padding: 11px;
+  gap: 10px;
+}
+
+.settings-drilldown .managed-poll-card__head,
+.settings-drilldown .managed-poll-card__meta-line,
+.settings-drilldown .managed-poll-option-card__head,
+.settings-drilldown .managed-poll-card__footer-copy {
+  gap: 8px;
+}
+
+.settings-drilldown .managed-poll-card__head,
+.settings-drilldown .managed-poll-card__meta-line {
+  align-items: center;
+}
+
+.settings-drilldown .managed-poll-card__title-wrap h3 {
+  font-size: 0.96rem;
+}
+
+.settings-drilldown .managed-poll-card__meta,
+.settings-drilldown .managed-poll-option-card,
+.settings-drilldown .managed-poll-card__footer {
+  padding: 9px;
+  gap: 8px;
+  border-radius: 16px;
+}
+
+.settings-drilldown .managed-poll-option-card .field {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.settings-drilldown .managed-poll-option-card__remove {
+  min-height: 32px;
+  padding-inline: 10px;
+}
+
+.settings-drilldown .managed-poll-card__add-option,
+.settings-drilldown .managed-poll-card__actions .button {
+  min-height: 42px;
+  border-radius: 15px;
+}
+
+.settings-drilldown .managed-giveaway__surface,
+.settings-drilldown .managed-giveaway__section,
+.settings-drilldown .managed-giveaway__subsection {
+  padding: 11px;
+  gap: 9px;
+}
+
+.settings-drilldown .managed-giveaway__dashboard-stat-grid {
+  gap: 8px;
+}
+
+.settings-drilldown .managed-giveaway__dashboard-stat {
+  min-height: 66px;
+  padding: 10px;
+  border-radius: 16px;
+}
+
+.settings-drilldown .managed-giveaway__dashboard-note,
+.settings-drilldown .managed-giveaway__selected-channel,
+.settings-drilldown .managed-giveaway__channel-picker,
+.settings-drilldown .managed-giveaway__channel-picker-item,
+.settings-drilldown .managed-giveaway__prize-editor-row {
+  border-radius: 16px;
+}
+
+.settings-drilldown .managed-giveaway__primary-actions .button,
+.settings-drilldown .managed-giveaway__action-dock-actions .button {
+  min-height: 46px;
+  border-radius: 16px;
+}
+
+.settings-drilldown__panel--required-subscription .required-subscription__timer-card,
+.settings-drilldown__panel--required-subscription .required-subscription__board {
+  padding: 12px;
+  gap: 10px;
+}
+
+.required-subscription__timer-icon-shell {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+}
+
+.required-subscription__timer-copy strong {
+  font-size: 0.96rem;
+}
+
+.required-subscription__selection-card {
+  min-height: 58px;
+  padding: 9px;
+  gap: 8px;
+}
+
+.settings-drilldown__panel--time .night-window-grid,
+.settings-duration-stack {
+  gap: 8px;
+}
+
+.settings-drilldown__panel--time .night-window-grid__field {
+  padding: 10px;
+  border-radius: 18px;
+}
+
+.settings-drilldown__panel--time .night-window-grid__field input {
+  min-height: 46px;
+  height: 46px;
+  border-radius: 15px;
+  font-size: 1rem;
+  letter-spacing: 0;
+}
+
+.settings-duration-stack__item {
+  gap: 8px;
+}
+
+@media (max-width: 480px) {
+  .settings-drilldown__footer-actions {
+    grid-template-columns: minmax(0, 0.84fr) minmax(0, 1.28fr);
+  }
+
+  .settings-drilldown__footer-actions:has(> :only-child),
+  .settings-drilldown__footer-actions.is-single-action {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-drilldown__footer-actions:has(> :only-child) > :only-child {
+    width: 100%;
+  }
+}
+
+@media (max-width: 390px) {
+  .settings-drilldown__panel {
+    border-radius: 24px 24px 0 0;
+  }
+
+  .settings-drilldown__header {
+    padding: 19px 11px 9px;
+  }
+
+  .settings-drilldown__summary {
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  :is(
+      .settings-drilldown__panel--board,
+      .settings-drilldown__panel--notice,
+      .settings-drilldown__panel--ladder,
+      .settings-drilldown__panel--time,
+      .settings-drilldown__panel--campaign
+    )
+    .settings-drilldown__summary {
+    width: fit-content;
+    max-width: 100%;
+  }
+
+  .settings-drilldown .settings-section__collapse-inner {
+    padding: 9px 9px calc(12px + env(safe-area-inset-bottom, 0px));
+    gap: 9px;
+  }
+
+  .settings-drilldown__footer {
+    padding: 7px 8px calc(9px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .settings-drilldown__footer-actions {
+    gap: 7px;
+  }
+
+  .settings-drilldown__footer-actions .button {
+    min-height: 46px;
+    border-radius: 16px;
+    font-size: 0.8rem;
+  }
+
+  .settings-drilldown .settings-native-toggle,
+  .settings-drilldown .channel-settings-toggle-card {
+    min-height: 56px;
+    padding: 9px 9px 9px 12px;
+  }
+
+  .settings-drilldown .settings-native-toggle__title {
+    font-size: 0.88rem;
+  }
+
+  .settings-drilldown .field textarea {
+    min-height: 86px;
+  }
+}
