@@ -52,6 +52,9 @@ const envSchema = z.object({
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: z.coerce.number().int().positive().default(12_000),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE: z.coerce.number().min(0.5).max(1).default(0.7),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_MIN: z.coerce.number().int().positive().default(4),
+  MAX_WEBHOOK_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
+  MAX_WEBHOOK_STALE_INGRESS_MS: z.coerce.number().int().positive().default(300_000),
+  MAX_WEBHOOK_STALE_RECREATE_COOLDOWN_MS: z.coerce.number().int().positive().default(600_000),
   WEBHOOK_DYNAMIC_LEASES_MODE: z.enum(['off', 'shadow', 'canary', 'on']).default('off'),
   WEBHOOK_DYNAMIC_LEASES_WORKER_GROUP: z
     .enum([

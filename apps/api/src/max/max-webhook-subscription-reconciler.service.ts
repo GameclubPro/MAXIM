@@ -15,9 +15,9 @@ import {
 } from './max-bot-registry.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
 
-const DEFAULT_RECONCILE_INTERVAL_MS = 10 * 60 * 1_000;
-const DEFAULT_STALE_INGRESS_MS = 30 * 60 * 1_000;
-const DEFAULT_STALE_RECREATE_COOLDOWN_MS = 60 * 60 * 1_000;
+const DEFAULT_RECONCILE_INTERVAL_MS = 60 * 1_000;
+const DEFAULT_STALE_INGRESS_MS = 5 * 60 * 1_000;
+const DEFAULT_STALE_RECREATE_COOLDOWN_MS = 10 * 60 * 1_000;
 const REQUIRED_WEBHOOK_UPDATE_TYPES_SET = new Set<string>(MAX_REQUIRED_WEBHOOK_UPDATE_TYPES);
 
 @Injectable()
@@ -53,9 +53,6 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
 
   async onModuleInit(): Promise<void> {
     if (!this.enabled) {
-      await this.webhookSubscriptionStatusService.writeSnapshot(
-        this.createDisabledSnapshot('Webhook reconcile отключён на этом app role.'),
-      );
       return;
     }
 
@@ -82,16 +79,21 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       this.inFlight = true;
     try {
       const syncState = await this.webhookSubscriptionStatusService.getSyncState();
-      const latestRecordedIncomingWebhookAt =
-        await this.resolveLatestRecordedIncomingWebhookAt(syncState);
+      const operationalBots = this.getOperationalBots();
+      const latestRecordedIncomingByBot = await this.resolveLatestRecordedIncomingWebhookAtByBot(
+        syncState,
+        operationalBots.map((bot) => bot.id),
+      );
+      const latestRecordedIncomingWebhookAt = this.resolveLatestIso(
+        Object.values(latestRecordedIncomingByBot),
+      );
       const botResults = await Promise.all(
-        this.getOperationalBots().map((bot) =>
+        operationalBots.map((bot) =>
           this.reconcileBot(
             bot,
             syncState?.bots?.[bot.id] ?? null,
             {
-              latestRecordedIncomingWebhookAt,
-              lastGlobalAutoRecreateAt: syncState?.lastGlobalAutoRecreateAt ?? null,
+              latestRecordedIncomingWebhookAt: latestRecordedIncomingByBot[bot.id] ?? null,
             },
             reason,
           ),
@@ -207,9 +209,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
   private async reconcileBot(
     bot: MaxBotDefinition,
     syncState: WebhookSubscriptionBotSyncState | null,
-    globalState: {
+    botState: {
       latestRecordedIncomingWebhookAt: string | null;
-      lastGlobalAutoRecreateAt: string | null;
     },
     reason: 'startup' | 'scheduled',
   ): Promise<{
@@ -242,7 +243,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
           configuredUrl: null,
           headerSecretFingerprint,
           updatedAt: checkedAt,
-          lastIncomingWebhookAt: syncState?.lastIncomingWebhookAt ?? null,
+          lastIncomingWebhookAt:
+            botState.latestRecordedIncomingWebhookAt ?? syncState?.lastIncomingWebhookAt ?? null,
           lastAutoRecreateAt: syncState?.lastAutoRecreateAt ?? null,
         },
       };
@@ -272,13 +274,13 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       bot.webhookHeaderSecrets.length > 1 &&
       (!syncState?.headerSecretFingerprint ||
         syncState.headerSecretFingerprint !== headerSecretFingerprint);
-    const staleIngress = this.isStaleIngress(globalState.latestRecordedIncomingWebhookAt);
+    const staleIngress = this.isStaleIngress(botState.latestRecordedIncomingWebhookAt);
     const shouldAutoRecreateStaleIngress =
       Boolean(current) &&
       !shouldRotateWebhookSecret &&
       missingUpdateTypes.length === 0 &&
       staleIngress &&
-      this.canAutoRecreateStaleIngress(globalState.lastGlobalAutoRecreateAt);
+      this.canAutoRecreateStaleIngress(syncState?.lastAutoRecreateAt ?? null);
 
     let reconciledAt: string | null = null;
     let effectiveOtherSubscriptionsCount = otherSubscriptionsCount;
@@ -372,7 +374,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         note: this.buildBotNote({
           botId: bot.id,
           reason,
-          staleIngressAt: globalState.latestRecordedIncomingWebhookAt,
+          staleIngressAt: botState.latestRecordedIncomingWebhookAt,
           autoRecreatedAt: shouldAutoRecreateStaleIngress ? reconciledAt : null,
         }),
       },
@@ -380,7 +382,8 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         configuredUrl: target.url,
         headerSecretFingerprint,
         updatedAt: checkedAt,
-        lastIncomingWebhookAt: syncState?.lastIncomingWebhookAt ?? null,
+        lastIncomingWebhookAt:
+          botState.latestRecordedIncomingWebhookAt ?? syncState?.lastIncomingWebhookAt ?? null,
         lastAutoRecreateAt:
           shouldAutoRecreateStaleIngress && reconciledAt
             ? reconciledAt
@@ -434,31 +437,57 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     return Date.now() - lastAutoRecreateAtMs >= this.staleRecreateCooldownMs;
   }
 
-  private async resolveLatestRecordedIncomingWebhookAt(
+  private async resolveLatestRecordedIncomingWebhookAtByBot(
     syncState: WebhookSubscriptionSyncState | null,
-  ): Promise<string | null> {
-    const cachedAt = syncState?.lastGlobalIncomingWebhookAt ?? null;
-    const latestMembershipWebhook =
-      (await this.prisma.chatBotMembership.aggregate({
-        _max: {
-          lastWebhookAt: true,
-        },
-        where: {
-          lastWebhookAt: {
-            not: null,
-          },
-        },
-      }))._max.lastWebhookAt?.toISOString() ?? null;
-
-    if (!cachedAt) {
-      return latestMembershipWebhook;
+    botIds: readonly string[],
+  ): Promise<Record<string, string | null>> {
+    const normalizedBotIds = [...new Set(botIds.map((botId) => botId.trim()).filter(Boolean))];
+    if (normalizedBotIds.length === 0) {
+      return {};
     }
 
-    if (!latestMembershipWebhook) {
-      return cachedAt;
+    const latestMembershipRows = await this.prisma.chatBotMembership.groupBy({
+      by: ['botId'],
+      _max: {
+        lastWebhookAt: true,
+      },
+      where: {
+        botId: {
+          in: normalizedBotIds,
+        },
+        lastWebhookAt: {
+          not: null,
+        },
+      },
+    });
+    const latestMembershipByBot = new Map(
+      latestMembershipRows.map((row) => [row.botId, row._max.lastWebhookAt?.toISOString() ?? null]),
+    );
+
+    return Object.fromEntries(
+      normalizedBotIds.map((botId) => [
+        botId,
+        this.resolveLatestIso([
+          syncState?.bots?.[botId]?.lastIncomingWebhookAt ?? null,
+          latestMembershipByBot.get(botId) ?? null,
+        ]),
+      ]),
+    );
+  }
+
+  private resolveLatestIso(values: Iterable<string | null | undefined>): string | null {
+    let latest: string | null = null;
+    for (const value of values) {
+      if (!value) {
+        continue;
+      }
+
+      if (!latest || value.localeCompare(latest) > 0) {
+        latest = value;
+      }
     }
 
-    return cachedAt.localeCompare(latestMembershipWebhook) >= 0 ? cachedAt : latestMembershipWebhook;
+    return latest;
   }
 
   private buildAggregateSnapshot(

@@ -60,6 +60,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       {
         chatBotMembership: {
           aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+          groupBy: jest.fn().mockResolvedValue([]),
         },
       } as never,
       {
@@ -111,7 +112,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleDestroy();
   });
 
-  it('stores a disabled snapshot when reconcile is not active on the current app role', async () => {
+  it('leaves the shared snapshot untouched when reconcile is not active on the current app role', async () => {
     process.env.APP_ROLE = 'admin';
 
     const botRegistry = {
@@ -144,6 +145,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       {
         chatBotMembership: {
           aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+          groupBy: jest.fn().mockResolvedValue([]),
         },
       } as never,
       {
@@ -154,14 +156,8 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
     await service.onModuleInit();
 
     expect(maxClient.listWebhookSubscriptions).not.toHaveBeenCalled();
-    expect(statusService.writeSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: 'disabled',
-        configured: false,
-        botCount: 0,
-        bots: {},
-      }),
-    );
+    expect(statusService.writeSnapshot).not.toHaveBeenCalled();
+    expect(statusService.writeSyncState).not.toHaveBeenCalled();
   });
 
   it('recreates the current webhook subscription once when header secret rotation is pending', async () => {
@@ -222,6 +218,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       {
         chatBotMembership: {
           aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+          groupBy: jest.fn().mockResolvedValue([]),
         },
       } as never,
       {
@@ -325,6 +322,7 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       {
         chatBotMembership: {
           aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+          groupBy: jest.fn().mockResolvedValue([]),
         },
       } as never,
       {
@@ -370,6 +368,136 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
             note: expect.stringContaining('подписка была пересоздана автоматически'),
           }),
         }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('auto-recreates only the bot whose incoming webhook stream is stale', async () => {
+    process.env.APP_ROLE = 'ingress';
+
+    const botRegistry = {
+      getAllBots: jest.fn().mockReturnValue([
+        {
+          id: 'fresh_bot',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+        {
+          id: 'stale_bot',
+          webhookHeaderSecrets: ['secret-header-current'],
+        },
+      ]),
+      getDefaultBot: jest.fn().mockReturnValue({ id: 'fresh_bot' }),
+      computeWebhookHeaderSecretFingerprint: jest
+        .fn()
+        .mockImplementation((botId: string) => `fingerprint-${botId}`),
+    };
+    const freshAt = new Date(Date.now() - 60_000).toISOString();
+    const staleAt = new Date(Date.now() - 40 * 60 * 1_000).toISOString();
+    const statusService = {
+      getSyncState: jest.fn().mockResolvedValue({
+        bots: {
+          fresh_bot: {
+            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/fresh_bot/secret-path',
+            headerSecretFingerprint: 'fingerprint-fresh_bot',
+            updatedAt: '2026-03-30T00:00:00.000Z',
+            lastIncomingWebhookAt: freshAt,
+            lastAutoRecreateAt: null,
+          },
+          stale_bot: {
+            configuredUrl: 'https://maxim.play-team.ru/api/webhook/max/stale_bot/secret-path',
+            headerSecretFingerprint: 'fingerprint-stale_bot',
+            updatedAt: '2026-03-30T00:00:00.000Z',
+            lastIncomingWebhookAt: staleAt,
+            lastAutoRecreateAt: null,
+          },
+        },
+        lastGlobalIncomingWebhookAt: freshAt,
+        lastGlobalAutoRecreateAt: null,
+      }),
+      writeSnapshot: jest.fn().mockResolvedValue(undefined),
+      writeSyncState: jest.fn().mockResolvedValue(undefined),
+      getSnapshot: jest.fn(),
+    };
+    const maxClient = {
+      getConfiguredWebhookSubscriptionTarget: jest.fn().mockImplementation((botId: string) => ({
+        url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+        maskedUrl: `https://maxim.play-team.ru/api/webhook/max/${botId}/***`,
+      })),
+      listWebhookSubscriptions: jest.fn().mockImplementation(({ botId }: { botId: string }) =>
+        Promise.resolve([
+          {
+            url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+            updateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
+          },
+        ]),
+      ),
+      matchesConfiguredWebhookUrl: jest
+        .fn()
+        .mockImplementation((url: string, botId: string) =>
+          url === `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+        ),
+      deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
+      ensureWebhookSubscription: jest.fn().mockImplementation((updateTypes, { botId }) =>
+        Promise.resolve({
+          url: `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+          updateTypes,
+        }),
+      ),
+    };
+    const service = new MaxWebhookSubscriptionReconcilerService(
+      maxClient as never,
+      botRegistry as never,
+      statusService as never,
+      {
+        chatBotMembership: {
+          aggregate: jest.fn().mockResolvedValue({ _max: { lastWebhookAt: null } }),
+          groupBy: jest.fn().mockResolvedValue([]),
+        },
+      } as never,
+      {
+        get: jest.fn((key: string, fallback?: number | string) => {
+          if (key === 'MAX_WEBHOOK_RECONCILE_INTERVAL_MS') {
+            return 60_000;
+          }
+          if (key === 'MAX_WEBHOOK_STALE_INGRESS_MS') {
+            return 10 * 60 * 1_000;
+          }
+          if (key === 'MAX_WEBHOOK_STALE_RECREATE_COOLDOWN_MS') {
+            return 30 * 60 * 1_000;
+          }
+          return fallback;
+        }),
+      } as never,
+    );
+
+    await service.onModuleInit();
+
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteWebhookSubscription).toHaveBeenCalledWith(
+      'https://maxim.play-team.ru/api/webhook/max/stale_bot/secret-path',
+      expect.objectContaining({ botId: 'stale_bot' }),
+    );
+    expect(maxClient.deleteWebhookSubscription).not.toHaveBeenCalledWith(
+      'https://maxim.play-team.ru/api/webhook/max/fresh_bot/secret-path',
+      expect.anything(),
+    );
+    expect(statusService.writeSnapshot).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'warning',
+        bots: expect.objectContaining({
+          fresh_bot: expect.objectContaining({ status: 'healthy' }),
+          stale_bot: expect.objectContaining({
+            status: 'warning',
+            note: expect.stringContaining('подписка была пересоздана автоматически'),
+          }),
+        }),
+      }),
+    );
+    expect(statusService.writeSyncState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        lastGlobalIncomingWebhookAt: freshAt,
       }),
     );
 
