@@ -1463,9 +1463,7 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';
   const extras = [
-    broadcast.buttonEnabled
-      ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
-      : null,
+    broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
     broadcast.hasImage ? 'Фото' : null,
     broadcast.hasVideo ? 'Видео' : null,
   ]
@@ -5086,19 +5084,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingButtonEnabled = normalizedMailingButtons.length > 0;
   const editingMailingHasVideo =
     editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
-  const mailingContentReady = editingManagedBroadcast
-    ? normalizedMailingText.length > 0 || mailingImageEnabled || editingMailingHasVideo
-    : mailingBotHasContent;
   const mailingQuickSchedule = mailingQuickPreset
     ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
     : null;
-  const mailingMessageFacts = [
-    mailingImageEnabled ? 'Фото' : null,
-    editingMailingHasVideo ? 'Видео' : null,
-    mailingButtonEnabled
-      ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
-      : null,
-  ].filter((item): item is string => Boolean(item));
   const mailingSelectionSummary = [
     mailingPlannerState.selectedDayCount > 0
       ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
@@ -5120,7 +5108,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingTargetMode !== 'current' ||
     mailingQuickPreset !== null ||
     mailingScheduledSlots.length > 0 ||
-    mailingText.trim().length > 0 ||
+    normalizedMailingText.length > 0 ||
     mailingImageEnabled ||
     mailingButtonEnabled ||
     mailingBotHasContent;
@@ -5156,9 +5144,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !editingManagedBroadcast && mailingBotHasContent ? 'В боте' : null,
     mailingImageEnabled ? 'Фото' : null,
     editingMailingHasVideo ? 'Видео' : null,
-    mailingButtonEnabled
-      ? `${normalizedMailingButtons.length > 1 ? normalizedMailingButtons.length : ''} CTA`.trim()
-      : null,
+    mailingButtonEnabled ? formatBroadcastButtonsStatus(normalizedMailingButtons) : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -10000,8 +9986,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
-              style={{ animationDelay: '315ms', order: 23 }}
+              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              style={{ animationDelay: '315ms', order: 5 }}
               aria-label="Рассылки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -10078,52 +10064,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow">
-                            <div className="broadcast-stage-card broadcast-stage-card--message">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Сообщение</strong>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                <div
-                                  className={cn(
-                                    'broadcast-message-card',
-                                    !mailingContentReady && 'is-empty',
-                                  )}
-                                >
-                                  <div className="broadcast-message-card__surface">
-                                    {editingManagedBroadcast ? (
-                                      <MaxMarkdownPreview
-                                        value={mailingText}
-                                        className="broadcast-message-card__preview max-markdown-preview--clamp-3"
-                                        normalizeWhitespace
-                                        fallback={
-                                          mailingImageEnabled
-                                            ? 'Фото без текста'
-                                            : editingMailingHasVideo
-                                              ? 'Видео без текста'
-                                              : 'Пусто'
-                                        }
-                                      />
-                                    ) : (
-                                      <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">
-                                        {mailingBotHasContent ? 'В боте' : 'Пусто'}
-                                      </span>
-                                    )}
-                                  </div>
-
-                                  {mailingMessageFacts.length > 0 ? (
-                                    <div className="broadcast-message-card__facts">
-                                      {mailingMessageFacts.map((fact) => (
-                                        <span key={`mailing-message-${fact}`}>{fact}</span>
-                                      ))}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              </div>
-                            </div>
-
                             <div className="broadcast-stage-card broadcast-stage-card--scope">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
@@ -10203,7 +10143,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--cta">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Кнопка</strong>
+                                  <strong>Добавить кнопку</strong>
                                 </div>
                               </div>
 
@@ -10216,8 +10156,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )}
                                   >
                                     {mailingButtonEnabled
-                                      ? normalizedMailingButtons[0]?.text || 'CTA'
-                                      : 'Без CTA'}
+                                      ? normalizedMailingButtons[0]?.text ||
+                                        formatBroadcastButtonsStatus(normalizedMailingButtons)
+                                      : 'Без кнопки'}
                                   </span>
 
                                   <label
@@ -10258,7 +10199,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     errors={mailingButtonErrors}
                                     revealNextStepSignal={mailingButtonRevealSignal}
                                     compact
-                                    title="CTA"
+                                    title="Сетка кнопок"
                                     subtitle=""
                                     onChange={(nextButtons) => {
                                       setMailingButtons(nextButtons);

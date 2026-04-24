@@ -43,6 +43,7 @@ import type { BroadcastHandoffPayload, SendBroadcastPayload } from '../lib/api/s
 import {
   buildBroadcastLinkButtonLegacyFields,
   createEmptyBroadcastLinkButton,
+  formatBroadcastButtonsStatus,
   hasBroadcastLinkButtonErrors,
   trimBroadcastLinkButtons,
   validateBroadcastLinkButtons,
@@ -445,9 +446,7 @@ function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): st
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
         : '1 отправка';
   const extras = [
-    broadcast.buttonEnabled
-      ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
-      : null,
+    broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
     broadcast.hasImage ? 'Фото' : null,
     broadcast.hasVideo ? 'Видео' : null,
   ]
@@ -1378,22 +1377,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const normalizedBroadcastText = broadcastText.trim();
   const editingBroadcastHasVideo =
     editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
-  const broadcastContentReady = editingManagedBroadcast
-    ? normalizedBroadcastText.length > 0 || broadcastImageEnabled || editingBroadcastHasVideo
-    : broadcastBotHasContent;
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
   );
   const broadcastQuickSchedule = broadcastQuickPreset
     ? resolveBroadcastQuickScheduleSelection(broadcastQuickPreset)
     : null;
-  const broadcastMessageFacts = [
-    broadcastImageEnabled ? 'Фото' : null,
-    editingBroadcastHasVideo ? 'Видео' : null,
-    broadcastHasButton
-      ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
-      : null,
-  ].filter((item): item is string => Boolean(item));
   const broadcastSlotsSummary = broadcastQuickSchedule
     ? broadcastQuickSchedule.summary
     : broadcastScheduledSlots.length > 0
@@ -1449,7 +1438,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0
       ? 'Календ'
       : broadcastHasButton
-        ? `${broadcastButtons.length} CTA`
+        ? formatBroadcastButtonsStatus(broadcastButtons)
         : 'Бот';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
@@ -1466,9 +1455,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     !editingManagedBroadcast && broadcastBotHasContent ? 'В боте' : null,
     broadcastImageEnabled ? 'Фото' : null,
     editingBroadcastHasVideo ? 'Видео' : null,
-    broadcastHasButton
-      ? `${normalizedBroadcastButtons.length > 1 ? normalizedBroadcastButtons.length : ''} CTA`.trim()
-      : null,
+    broadcastHasButton ? formatBroadcastButtonsStatus(normalizedBroadcastButtons) : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -1980,7 +1967,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
                     />
                     <span className="field__hint">
-                      Используется, когда бот публикует CTA-пост с кнопками обсуждения и предложки.
+                      Используется, когда бот публикует пост с кнопками обсуждения и предложки.
                     </span>
                   </label>
 
@@ -2067,52 +2054,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
 
                   <div className="broadcast-compose-flow">
-                    <div className="broadcast-stage-card broadcast-stage-card--message">
-                      <div className="broadcast-stage-card__head">
-                        <div className="broadcast-stage-card__title-wrap">
-                          <strong>Сообщение</strong>
-                        </div>
-                      </div>
-
-                      <div className="broadcast-stage-card__body">
-                        <div
-                          className={cn(
-                            'broadcast-message-card',
-                            !broadcastContentReady && 'is-empty',
-                          )}
-                        >
-                          <div className="broadcast-message-card__surface">
-                            {editingManagedBroadcast ? (
-                              <MaxMarkdownPreview
-                                value={broadcastText}
-                                className="broadcast-message-card__preview max-markdown-preview--clamp-3"
-                                normalizeWhitespace
-                                fallback={
-                                  broadcastImageEnabled
-                                    ? 'Фото без текста'
-                                    : editingBroadcastHasVideo
-                                      ? 'Видео без текста'
-                                      : 'Пусто'
-                                }
-                              />
-                            ) : (
-                              <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">
-                                {broadcastBotHasContent ? 'В боте' : 'Пусто'}
-                              </span>
-                            )}
-                          </div>
-
-                          {broadcastMessageFacts.length > 0 ? (
-                            <div className="broadcast-message-card__facts">
-                              {broadcastMessageFacts.map((fact) => (
-                                <span key={`broadcast-message-${fact}`}>{fact}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
@@ -2165,7 +2106,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <div className="broadcast-stage-card broadcast-stage-card--cta">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
-                          <strong>Кнопка</strong>
+                          <strong>Добавить кнопку</strong>
                         </div>
                       </div>
 
@@ -2178,8 +2119,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             {broadcastHasButton
-                              ? normalizedBroadcastButtons[0]?.text || 'CTA'
-                              : 'Без CTA'}
+                              ? normalizedBroadcastButtons[0]?.text ||
+                                formatBroadcastButtonsStatus(normalizedBroadcastButtons)
+                              : 'Без кнопки'}
                           </span>
 
                           <label
@@ -2221,7 +2163,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             errors={broadcastButtonErrors}
                             revealNextStepSignal={broadcastButtonRevealSignal}
                             compact
-                            title="CTA"
+                            title="Сетка кнопок"
                             subtitle=""
                             onChange={(nextButtons) => {
                               setBroadcastButtons(nextButtons);
@@ -2300,7 +2242,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   'слотов',
                                 ),
                                 normalizedBroadcastButtons.length > 0
-                                  ? `${normalizedBroadcastButtons.length} CTA`
+                                  ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
                                   : null,
                                 editingManagedBroadcast.imageEnabled ? 'Фото' : null,
                               ]

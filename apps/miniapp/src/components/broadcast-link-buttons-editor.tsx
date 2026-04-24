@@ -157,7 +157,7 @@ export function BroadcastLinkButtonsEditor({
           ) : (
             <div className="broadcast-link-editor__empty">
               <strong>
-                {compact ? 'CTA появится здесь' : 'Первая кнопка откроет ленту действий'}
+                {compact ? 'Кнопка появится здесь' : 'Первая кнопка откроет ленту действий'}
               </strong>
               {!compact ? (
                 <small>После этого снизу появится удобное добавление ещё кнопок.</small>

@@ -3,6 +3,7 @@ import { useEffect, useEffectEvent, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
+import { formatBroadcastButtonsStatus } from '../lib/broadcast-link-buttons';
 import {
   BROADCAST_QUICK_PRESETS,
   BROADCAST_SCHEDULE_MAX_DAYS,
@@ -181,9 +182,7 @@ function buildAgendaFacts(
   return [
     audienceLabel,
     broadcast.hasImage ? 'Фото' : null,
-    broadcast.buttonEnabled
-      ? `${broadcast.buttons.length > 1 ? broadcast.buttons.length : ''} CTA`.trim()
-      : null,
+    broadcast.buttonEnabled ? formatBroadcastButtonsStatus(broadcast.buttons) : null,
   ].filter((item): item is string => Boolean(item));
 }
 
