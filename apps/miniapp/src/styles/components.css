@@ -2639,9 +2639,9 @@
   --dialog-bg-start: #e3eef2;
   --dialog-bg-end: #e7ece7;
   --dialog-surface: rgba(255, 255, 255, 0.92);
-  --dialog-wallpaper-ink: rgba(58, 83, 101, 0.1);
-  --dialog-wallpaper-soft: rgba(39, 122, 154, 0.085);
-  --dialog-wallpaper-warm: rgba(147, 111, 62, 0.075);
+  --dialog-wallpaper-ink: rgba(58, 83, 101, 0.13);
+  --dialog-wallpaper-soft: rgba(34, 128, 154, 0.115);
+  --dialog-wallpaper-warm: rgba(151, 111, 58, 0.105);
   padding: 2px clamp(6px, 1.8vw, 10px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 42px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 31rem);
@@ -2690,48 +2690,48 @@
   inset: 0;
   overflow: hidden;
   display: grid;
-  grid-template-rows: repeat(9, minmax(0, 1fr));
-  gap: clamp(14px, 2.4vh, 22px);
-  padding: clamp(24px, 5vh, 42px) clamp(10px, 3vw, 18px) clamp(72px, 14vh, 112px);
+  grid-template-rows: repeat(12, minmax(0, 1fr));
+  gap: clamp(6px, 1.4vh, 14px);
+  padding: clamp(16px, 3.5vh, 32px) clamp(2px, 1.8vw, 10px) clamp(54px, 10vh, 92px);
   pointer-events: none;
-  opacity: 0.42;
+  opacity: 0.72;
   -webkit-mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.3),
-    rgba(0, 0, 0, 0.92) 10%,
-    rgba(0, 0, 0, 0.88) 82%,
-    rgba(0, 0, 0, 0.28)
+    rgba(0, 0, 0, 0.42),
+    rgba(0, 0, 0, 0.94) 8%,
+    rgba(0, 0, 0, 0.94) 86%,
+    rgba(0, 0, 0, 0.34)
   );
   mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.3),
-    rgba(0, 0, 0, 0.92) 10%,
-    rgba(0, 0, 0, 0.88) 82%,
-    rgba(0, 0, 0, 0.28)
+    rgba(0, 0, 0, 0.42),
+    rgba(0, 0, 0, 0.94) 8%,
+    rgba(0, 0, 0, 0.94) 86%,
+    rgba(0, 0, 0, 0.34)
   );
 }
 
 .channel-dialog-screen__wallpaper-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   align-items: center;
   justify-items: center;
-  column-gap: clamp(4px, 2vw, 12px);
+  column-gap: clamp(6px, 2vw, 16px);
   min-height: 0;
 }
 
 .channel-dialog-screen__wallpaper-row.is-shift-left {
-  transform: translateX(-8%);
+  transform: translateX(-9%);
 }
 
 .channel-dialog-screen__wallpaper-row.is-shift-right {
-  transform: translateX(8%);
+  transform: translateX(9%);
 }
 
 .channel-dialog-screen__wallpaper-tile {
   display: block;
-  width: clamp(22px, 6.2vw, 30px);
-  height: clamp(22px, 6.2vw, 30px);
+  width: clamp(20px, 5.8vw, 28px);
+  height: clamp(20px, 5.8vw, 28px);
   transform: translateY(var(--channel-dialog-wallpaper-offset-y, 0px))
     rotate(var(--channel-dialog-wallpaper-rotation, 0deg))
     scale(var(--channel-dialog-wallpaper-scale, 1));
