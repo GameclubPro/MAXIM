@@ -11,38 +11,23 @@ import {
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
-  Atom as IconoirAtom,
   Bell as IconoirBell,
   Bookmark as IconoirBookmark,
-  BrightStar as IconoirBrightStar,
   BubbleStar as IconoirBubbleStar,
   Camera as IconoirCamera,
   ChatLines as IconoirChatLines,
   ClockRotateRight as IconoirClockRotateRight,
   EmojiSatisfied as IconoirEmojiSatisfied,
-  Flare as IconoirFlare,
-  Flash as IconoirFlash,
   GifFormat as IconoirGifFormat,
-  Globe as IconoirGlobe,
-  HalfMoon as IconoirHalfMoon,
   Hashtag as IconoirHashtag,
   Heart as IconoirHeart,
   MessageText as IconoirMessageText,
   Microphone as IconoirMicrophone,
   MultiBubble as IconoirMultiBubble,
   Pin as IconoirPin,
-  Planet as IconoirPlanet,
-  PlanetAlt as IconoirPlanetAlt,
-  PlanetSat as IconoirPlanetSat,
-  Rocket as IconoirRocket,
   SendDiagonal as IconoirSendDiagonal,
-  Spark as IconoirSpark,
   Sparks as IconoirSparks,
-  Sphere as IconoirSphere,
-  Spiral as IconoirSpiral,
   Star as IconoirStar,
-  SunLight as IconoirSunLight,
-  ThreeStars as IconoirThreeStars,
   VideoCamera as IconoirVideoCamera,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -165,7 +150,15 @@ type CommentBackdropIconName =
   | 'flare'
   | 'atom'
   | 'sphere'
-  | 'spiral';
+  | 'spiral'
+  | 'comet'
+  | 'constellation'
+  | 'nebula'
+  | 'satellite'
+  | 'orbit'
+  | 'eclipse'
+  | 'diamond-star'
+  | 'capsule';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -193,22 +186,22 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-1',
     shift: 'left',
     tiles: [
-      { id: 'stars-1', icon: 'stars', tone: 'soft', rotate: -9, scale: 0.88, offsetY: -4 },
-      { id: 'msg-1', icon: 'message', tone: 'faint', rotate: 7, scale: 1, offsetY: 5 },
-      { id: 'planet-1', icon: 'planet', tone: 'accent', rotate: -8, scale: 0.96, offsetY: -7 },
-      { id: 'sparkles-1', icon: 'sparkles', tone: 'soft', rotate: 5, scale: 0.9, offsetY: 6 },
-      { id: 'rocket-1', icon: 'rocket', tone: 'faint', rotate: -14, scale: 0.92, offsetY: -3 },
+      { id: 'constellation-1', icon: 'constellation', tone: 'soft', rotate: -9, scale: 0.92, offsetY: -4 },
+      { id: 'message-1', icon: 'message', tone: 'faint', rotate: 7, scale: 0.96, offsetY: 5 },
+      { id: 'orbit-1', icon: 'orbit', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
+      { id: 'diamond-star-1', icon: 'diamond-star', tone: 'soft', rotate: 5, scale: 0.9, offsetY: 6 },
+      { id: 'comet-1', icon: 'comet', tone: 'faint', rotate: -14, scale: 0.94, offsetY: -3 },
     ],
   },
   {
     id: 'row-2',
     shift: 'right',
     tiles: [
-      { id: 'moon-1', icon: 'moon', tone: 'faint', rotate: -11, scale: 0.88, offsetY: 4 },
-      { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.94, offsetY: -5 },
-      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'accent', rotate: -5, scale: 0.92, offsetY: 5 },
-      { id: 'star-1', icon: 'star', tone: 'faint', rotate: 10, scale: 0.82, offsetY: -7 },
-      { id: 'globe-1', icon: 'globe', tone: 'soft', rotate: -6, scale: 0.88, offsetY: 6 },
+      { id: 'eclipse-1', icon: 'eclipse', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
+      { id: 'typing-1', icon: 'typing', tone: 'soft', rotate: 8, scale: 0.9, offsetY: -5 },
+      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
+      { id: 'stars-1', icon: 'stars', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
+      { id: 'satellite-1', icon: 'satellite', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
     ],
   },
   {
@@ -223,32 +216,32 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
         scale: 0.98,
         offsetY: -8,
       },
-      { id: 'atom-1', icon: 'atom', tone: 'faint', rotate: 8, scale: 0.84, offsetY: 6 },
-      { id: 'spark-1', icon: 'spark', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
+      { id: 'capsule-1', icon: 'capsule', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'nebula-1', icon: 'nebula', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
       { id: 'heart-1', icon: 'heart', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.84, offsetY: -6 },
+      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
     ],
   },
   {
     id: 'row-4',
     shift: 'right',
     tiles: [
-      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: 11, scale: 0.88, offsetY: -5 },
+      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
       { id: 'send-1', icon: 'send', tone: 'soft', rotate: 7, scale: 0.88, offsetY: -6 },
-      { id: 'bright-star-1', icon: 'bright-star', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
-      { id: 'sphere-1', icon: 'sphere', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
-      { id: 'flash-1', icon: 'flash', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
+      { id: 'diamond-star-2', icon: 'diamond-star', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
+      { id: 'orbit-2', icon: 'orbit', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
+      { id: 'comet-2', icon: 'comet', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
     ],
   },
   {
     id: 'row-5',
     shift: 'left',
     tiles: [
-      { id: 'spiral-1', icon: 'spiral', tone: 'faint', rotate: -4, scale: 0.92, offsetY: 6 },
+      { id: 'nebula-2', icon: 'nebula', tone: 'faint', rotate: -4, scale: 0.92, offsetY: 6 },
       { id: 'reaction-1', icon: 'reaction', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
-      { id: 'rocket-2', icon: 'rocket', tone: 'faint', rotate: -13, scale: 0.88, offsetY: 7 },
-      { id: 'moon-2', icon: 'moon', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
-      { id: 'stars-2', icon: 'stars', tone: 'accent', rotate: 10, scale: 0.86, offsetY: 4 },
+      { id: 'rocket-2', icon: 'rocket', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
+      { id: 'eclipse-2', icon: 'eclipse', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
+      { id: 'constellation-2', icon: 'constellation', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
     ],
   },
   {
@@ -257,31 +250,31 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     tiles: [
       { id: 'planet-sat-2', icon: 'planet-sat', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
       { id: 'paper-1', icon: 'paperclip', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
-      { id: 'flare-1', icon: 'flare', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      { id: 'capsule-2', icon: 'capsule', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
       { id: 'smile-1', icon: 'smile', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
-      { id: 'globe-2', icon: 'globe', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
+      { id: 'satellite-2', icon: 'satellite', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
     ],
   },
   {
     id: 'row-7',
     shift: 'left',
     tiles: [
-      { id: 'sun-2', icon: 'sun', tone: 'soft', rotate: 6, scale: 0.9, offsetY: -7 },
+      { id: 'sun-2', icon: 'sun', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
       { id: 'message-2', icon: 'message', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
       { id: 'planet-2', icon: 'planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
-      { id: 'atom-2', icon: 'atom', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
-      { id: 'sparkles-2', icon: 'sparkles', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
+      { id: 'orbit-3', icon: 'orbit', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
+      { id: 'stardust-1', icon: 'diamond-star', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
     ],
   },
   {
     id: 'row-8',
     shift: 'right',
     tiles: [
-      { id: 'bright-star-2', icon: 'bright-star', tone: 'faint', rotate: 10, scale: 0.86, offsetY: 7 },
+      { id: 'constellation-3', icon: 'constellation', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
       { id: 'camera-1', icon: 'camera', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
-      { id: 'moon-3', icon: 'moon', tone: 'soft', rotate: 5, scale: 0.86, offsetY: 5 },
-      { id: 'sphere-2', icon: 'sphere', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
-      { id: 'rocket-3', icon: 'rocket', tone: 'faint', rotate: 12, scale: 0.82, offsetY: 6 },
+      { id: 'moon-3', icon: 'moon', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
+      { id: 'nebula-3', icon: 'nebula', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
+      { id: 'rocket-3', icon: 'rocket', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
     ],
   },
   {
@@ -291,7 +284,7 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'stars-3', icon: 'stars', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
       { id: 'microphone-1', icon: 'microphone', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
       { id: 'planet-alt-2', icon: 'planet-alt', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
-      { id: 'flash-2', icon: 'flash', tone: 'soft', rotate: 11, scale: 0.82, offsetY: -5 },
+      { id: 'comet-3', icon: 'comet', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
       { id: 'heart-2', icon: 'heart', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
     ],
   },
@@ -299,10 +292,10 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-10',
     shift: 'right',
     tiles: [
-      { id: 'spiral-2', icon: 'spiral', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'satellite-3', icon: 'satellite', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
       { id: 'typing-2', icon: 'typing', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
       { id: 'planet-sat-3', icon: 'planet-sat', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
-      { id: 'flare-2', icon: 'flare', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
+      { id: 'diamond-star-3', icon: 'diamond-star', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
       { id: 'send-2', icon: 'send', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
@@ -310,11 +303,11 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-11',
     shift: 'left',
     tiles: [
-      { id: 'globe-3', icon: 'globe', tone: 'soft', rotate: -7, scale: 0.86, offsetY: 4 },
-      { id: 'star-2', icon: 'star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
+      { id: 'orbit-4', icon: 'orbit', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
+      { id: 'eclipse-3', icon: 'eclipse', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
       { id: 'conversation-2', icon: 'conversation', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
-      { id: 'spark-2', icon: 'spark', tone: 'faint', rotate: 7, scale: 0.96, offsetY: -5 },
-      { id: 'sun-3', icon: 'sun', tone: 'accent', rotate: -10, scale: 0.82, offsetY: 6 },
+      { id: 'capsule-3', icon: 'capsule', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'sun-3', icon: 'sun', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
     ],
   },
   {
@@ -324,8 +317,8 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
       { id: 'rocket-4', icon: 'rocket', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
       { id: 'moon-4', icon: 'moon', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
       { id: 'reaction-2', icon: 'reaction', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'planet-3', icon: 'planet', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
-      { id: 'bright-star-3', icon: 'bright-star', tone: 'soft', rotate: 7, scale: 0.84, offsetY: 5 },
+      { id: 'nebula-4', icon: 'nebula', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
+      { id: 'constellation-4', icon: 'constellation', tone: 'soft', rotate: 7, scale: 0.86, offsetY: 5 },
     ],
   },
 ] satisfies CommentBackdropWallpaperRow[];
@@ -1539,63 +1532,398 @@ function VideoOutlineIcon() {
 }
 
 function PlanetOutlineIcon() {
-  return <IconoirPlanet strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <circle cx="12" cy="12" r="4.85" fill="currentColor" opacity="0.14" />
+      <circle cx="12" cy="12" r="4.85" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <path
+        d="M4.4 14.55c2.8 2.75 9.9 3.12 15.08-1.02 1.55-1.24 1.93-2.55 1.1-3.28-.91-.82-3.05-.38-5.48 1"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.76"
+      />
+      <circle cx="15.7" cy="8.05" r="0.78" fill="currentColor" opacity="0.42" />
+    </svg>
+  );
 }
 
 function PlanetAltOutlineIcon() {
-  return <IconoirPlanetAlt strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M7.35 17.05c-2.35-2.35-2.1-6.32.55-8.98s6.62-2.9 8.98-.55c2.35 2.36 2.1 6.33-.55 8.98s-6.62 2.9-8.98.55Z"
+        fill="currentColor"
+        opacity="0.12"
+      />
+      <path
+        d="M7.35 17.05c-2.35-2.35-2.1-6.32.55-8.98s6.62-2.9 8.98-.55c2.35 2.36 2.1 6.33-.55 8.98s-6.62 2.9-8.98.55Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+      />
+      <path
+        d="M4.3 9.55c3.2 1.84 7.56 2.02 12.8.52M6.9 19.75c4.86-.96 8.5-3.4 11.1-7.16"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.52"
+      />
+    </svg>
+  );
 }
 
 function PlanetSatOutlineIcon() {
-  return <IconoirPlanetSat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <circle cx="11.5" cy="12.35" r="4.25" fill="currentColor" opacity="0.12" />
+      <circle cx="11.5" cy="12.35" r="4.25" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <path
+        d="M3.8 13.25c2.3 2.15 7.35 2.85 12.32 1.16 3.03-1.03 4.95-2.72 4.53-3.9-.34-.96-2.14-1.22-4.52-.75"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.78"
+      />
+      <path
+        d="M18.45 5.35l1.4 1.4M19.85 5.35l-1.4 1.4"
+        stroke="currentColor"
+        strokeWidth="1.25"
+        strokeLinecap="round"
+        opacity="0.62"
+      />
+      <circle cx="18.25" cy="18" r="0.72" fill="currentColor" opacity="0.5" />
+    </svg>
+  );
 }
 
 function RocketOutlineIcon() {
-  return <IconoirRocket strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M13.5 4.05c2.72.65 5.08 2.97 6 5.88-1.72 4.22-5.18 7.6-10 9.8L6.05 16.3c1.98-5.05 5.05-9.4 7.45-12.25Z"
+        fill="currentColor"
+        opacity="0.11"
+      />
+      <path
+        d="M13.5 4.05c2.72.65 5.08 2.97 6 5.88-1.72 4.22-5.18 7.6-10 9.8L6.05 16.3c1.98-5.05 5.05-9.4 7.45-12.25Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+      <circle cx="14.3" cy="9.8" r="1.45" stroke="currentColor" strokeWidth="1.25" opacity="0.7" />
+      <path
+        d="M6.2 16.15l-2.62 1.03 3.1 3.08 1.02-2.6M10.15 8.9l-3.42-.03-1.74 3.05 2.96 1.05M14.72 14.08l-.05 3.41-3.05 1.74-1.04-2.96"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.72"
+      />
+    </svg>
+  );
 }
 
 function MoonOutlineIcon() {
-  return <IconoirHalfMoon strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M17.55 18.8a7.7 7.7 0 0 1-9.5-10.86 7.74 7.74 0 0 1 4.55-3.08c-1.58 3.8-.5 8.24 2.7 10.92a8.1 8.1 0 0 0 4.05 1.8 7.95 7.95 0 0 1-1.8 1.22Z"
+        fill="currentColor"
+        opacity="0.13"
+      />
+      <path
+        d="M17.55 18.8a7.7 7.7 0 0 1-9.5-10.86 7.74 7.74 0 0 1 4.55-3.08c-1.58 3.8-.5 8.24 2.7 10.92a8.1 8.1 0 0 0 4.05 1.8 7.95 7.95 0 0 1-1.8 1.22Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+      <circle cx="18.6" cy="7.1" r="0.68" fill="currentColor" opacity="0.5" />
+      <path d="M5.3 5.2l.88-.88.88.88-.88.88-.88-.88Z" fill="currentColor" opacity="0.42" />
+    </svg>
+  );
 }
 
 function SunOutlineIcon() {
-  return <IconoirSunLight strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <circle cx="12" cy="12" r="3.5" fill="currentColor" opacity="0.13" />
+      <circle cx="12" cy="12" r="3.5" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <path
+        d="M12 3.3v2.04M12 18.66v2.04M3.3 12h2.04M18.66 12h2.04M5.84 5.84l1.44 1.44M16.72 16.72l1.44 1.44M18.16 5.84l-1.44 1.44M7.28 16.72l-1.44 1.44"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.72"
+      />
+    </svg>
+  );
 }
 
 function StarsOutlineIcon() {
-  return <IconoirThreeStars strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M12 3.9l1.42 3.76 3.75 1.42-3.75 1.42L12 14.25l-1.42-3.75-3.75-1.42 3.75-1.42L12 3.9Z"
+        fill="currentColor"
+        opacity="0.12"
+      />
+      <path
+        d="M12 3.9l1.42 3.76 3.75 1.42-3.75 1.42L12 14.25l-1.42-3.75-3.75-1.42 3.75-1.42L12 3.9ZM5.55 14.8l.72 1.92 1.92.72-1.92.72-.72 1.92-.72-1.92-1.92-.72 1.92-.72.72-1.92ZM18.2 14.95l.56 1.48 1.47.56-1.47.56-.56 1.47-.56-1.47-1.48-.56 1.48-.56.56-1.48Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 }
 
 function SparkOutlineIcon() {
-  return <IconoirSpark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <DiamondStarOutlineIcon />;
 }
 
 function GlobeOutlineIcon() {
-  return <IconoirGlobe strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <OrbitOutlineIcon />;
 }
 
 function FlashOutlineIcon() {
-  return <IconoirFlash strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <CometOutlineIcon />;
 }
 
 function BrightStarOutlineIcon() {
-  return <IconoirBrightStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <DiamondStarOutlineIcon />;
 }
 
 function FlareOutlineIcon() {
-  return <IconoirFlare strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <NebulaOutlineIcon />;
 }
 
 function AtomOutlineIcon() {
-  return <IconoirAtom strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <OrbitOutlineIcon />;
 }
 
 function SphereOutlineIcon() {
-  return <IconoirSphere strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <NebulaOutlineIcon />;
 }
 
 function SpiralOutlineIcon() {
-  return <IconoirSpiral strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+  return <NebulaOutlineIcon />;
+}
+
+function CometOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M5.05 17.55c3.9-5.4 8.3-8.62 14.3-10.66"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.72"
+      />
+      <path
+        d="M4.18 13.25c3.55-2.25 7.2-3.98 11.85-5.25M7.15 19.95c2.14-2.88 4.62-5.06 8.5-7.2"
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinecap="round"
+        opacity="0.45"
+      />
+      <path
+        d="M17.9 5.4l1.08 2.38 2.42.98-2.36 1.12-.96 2.43-1.12-2.36-2.44-.96 2.37-1.13.99-2.46Z"
+        fill="currentColor"
+        opacity="0.14"
+      />
+      <path
+        d="M17.9 5.4l1.08 2.38 2.42.98-2.36 1.12-.96 2.43-1.12-2.36-2.44-.96 2.37-1.13.99-2.46Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ConstellationOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M5.25 16.2l4.55-7.1 4.9 3.1 4.05-5.3"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.62"
+      />
+      <circle cx="5.25" cy="16.2" r="1.45" fill="currentColor" opacity="0.14" />
+      <circle cx="5.25" cy="16.2" r="1.45" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <circle cx="9.8" cy="9.1" r="1.05" fill="currentColor" opacity="0.22" />
+      <circle cx="14.7" cy="12.2" r="1.28" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <circle cx="18.75" cy="6.9" r="1.65" fill="currentColor" opacity="0.12" />
+      <circle cx="18.75" cy="6.9" r="1.65" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <path
+        d="M16.85 18.15l.7 1.1 1.1.7-1.1.7-.7 1.1-.7-1.1-1.1-.7 1.1-.7.7-1.1Z"
+        fill="currentColor"
+        opacity="0.48"
+      />
+    </svg>
+  );
+}
+
+function NebulaOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M6.3 14.35c2.36 3.35 8.6 3.12 10.85-.78 1.42-2.46-.45-5.38-3.62-5.38-2.62 0-4.24 2-3.72 3.78.42 1.42 2.15 2.1 3.54 1.34"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.42 11.3c1.7-4.54 7.42-6.62 11.55-4.08M19.8 12.25c-.2 4.7-4.02 7.75-8.42 7.55"
+        stroke="currentColor"
+        strokeWidth="1.16"
+        strokeLinecap="round"
+        opacity="0.46"
+      />
+      <circle cx="6.15" cy="6.62" r="0.8" fill="currentColor" opacity="0.5" />
+      <circle cx="18.95" cy="7.9" r="0.62" fill="currentColor" opacity="0.45" />
+      <circle cx="6.42" cy="18.55" r="0.68" fill="currentColor" opacity="0.4" />
+    </svg>
+  );
+}
+
+function SatelliteOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M10.25 9.2l4.52 4.52-2.96 2.95-4.52-4.52 2.96-2.95Z"
+        fill="currentColor"
+        opacity="0.12"
+      />
+      <path
+        d="M10.25 9.2l4.52 4.52-2.96 2.95-4.52-4.52 2.96-2.95ZM14.77 13.72l2.4-2.4M10.25 9.2l2.36-2.36"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+        strokeLinecap="round"
+      />
+      <path
+        d="M16.45 4.5l3.05 3.05-2.34 3.77-4.48-4.48 3.77-2.34ZM7.56 12.42l-3.62 2.1 3.04 3.04 2.1-3.62"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+        opacity="0.68"
+      />
+      <path
+        d="M18.25 16.2c.96.3 1.72 1.06 2.04 2.02M17.2 19.05c.48.17.86.54 1.04 1.02"
+        stroke="currentColor"
+        strokeWidth="1.15"
+        strokeLinecap="round"
+        opacity="0.52"
+      />
+    </svg>
+  );
+}
+
+function OrbitOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <circle cx="12" cy="12" r="2.1" fill="currentColor" opacity="0.16" />
+      <circle cx="12" cy="12" r="2.1" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <ellipse
+        cx="12"
+        cy="12"
+        rx="8.1"
+        ry="3.35"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        opacity="0.76"
+      />
+      <ellipse
+        cx="12"
+        cy="12"
+        rx="8.1"
+        ry="3.35"
+        stroke="currentColor"
+        strokeWidth="1.12"
+        opacity="0.46"
+        transform="rotate(62 12 12)"
+      />
+      <circle cx="18.9" cy="10.25" r="0.82" fill="currentColor" opacity="0.5" />
+      <circle cx="6.45" cy="15.1" r="0.58" fill="currentColor" opacity="0.42" />
+    </svg>
+  );
+}
+
+function EclipseOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <circle cx="12" cy="12" r="6.45" fill="currentColor" opacity="0.1" />
+      <circle cx="12" cy="12" r="6.45" stroke="currentColor" strokeWidth={COMMENT_BACKDROP_STROKE} />
+      <path
+        d="M14.9 5.95a6.45 6.45 0 0 0 0 12.1 7.18 7.18 0 0 1 0-12.1Z"
+        fill="currentColor"
+        opacity="0.22"
+      />
+      <path
+        d="M5.05 19.05l2.02-2.02M16.93 6.97l2.02-2.02"
+        stroke="currentColor"
+        strokeWidth="1.12"
+        strokeLinecap="round"
+        opacity="0.5"
+      />
+    </svg>
+  );
+}
+
+function DiamondStarOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M12 3.8l2.02 5.1L19.15 11l-5.13 2.1L12 18.2l-2.02-5.1L4.85 11l5.13-2.1L12 3.8Z"
+        fill="currentColor"
+        opacity="0.12"
+      />
+      <path
+        d="M12 3.8l2.02 5.1L19.15 11l-5.13 2.1L12 18.2l-2.02-5.1L4.85 11l5.13-2.1L12 3.8Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M12 1.85v1.1M12 19.05v1.1M2.85 11h1.1M20.05 11h1.1"
+        stroke="currentColor"
+        strokeWidth="1.1"
+        strokeLinecap="round"
+        opacity="0.55"
+      />
+      <circle cx="18.82" cy="17.42" r="0.56" fill="currentColor" opacity="0.42" />
+    </svg>
+  );
+}
+
+function CapsuleOutlineIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M14.2 4.65c3.02 1.12 5.02 3.1 5.72 5.9l-8.25 8.25-5.28-5.28 7.81-8.87Z"
+        fill="currentColor"
+        opacity="0.11"
+      />
+      <path
+        d="M14.2 4.65c3.02 1.12 5.02 3.1 5.72 5.9l-8.25 8.25-5.28-5.28 7.81-8.87Z"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10.28 9.1l5.48 5.48M7.2 16.15l-2.9 2.9M9.35 18.3l-1.18 2.52M5.05 14l-2.52 1.18"
+        stroke="currentColor"
+        strokeWidth={COMMENT_BACKDROP_STROKE}
+        strokeLinecap="round"
+        opacity="0.68"
+      />
+      <circle cx="14.9" cy="9.72" r="1.22" stroke="currentColor" strokeWidth="1.14" opacity="0.72" />
+    </svg>
+  );
 }
 
 function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
@@ -1668,6 +1996,22 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <SphereOutlineIcon />;
     case 'spiral':
       return <SpiralOutlineIcon />;
+    case 'comet':
+      return <CometOutlineIcon />;
+    case 'constellation':
+      return <ConstellationOutlineIcon />;
+    case 'nebula':
+      return <NebulaOutlineIcon />;
+    case 'satellite':
+      return <SatelliteOutlineIcon />;
+    case 'orbit':
+      return <OrbitOutlineIcon />;
+    case 'eclipse':
+      return <EclipseOutlineIcon />;
+    case 'diamond-star':
+      return <DiamondStarOutlineIcon />;
+    case 'capsule':
+      return <CapsuleOutlineIcon />;
     default:
       return null;
   }
