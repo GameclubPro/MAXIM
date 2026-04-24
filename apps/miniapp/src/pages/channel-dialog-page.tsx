@@ -860,14 +860,14 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
 
   if (isOwnMessage) {
     return {
-      background: 'linear-gradient(160deg, rgba(255, 238, 198, 0.92), rgba(255, 247, 228, 0.88))',
-      borderColor: 'rgba(225, 178, 89, 0.3)',
+      background: 'linear-gradient(160deg, rgba(255, 245, 221, 0.9), rgba(241, 249, 244, 0.86))',
+      borderColor: 'rgba(205, 156, 66, 0.22)',
     };
   }
 
   return {
-    background: 'linear-gradient(180deg, rgba(255, 249, 234, 0.88), rgba(255, 244, 218, 0.8))',
-    borderColor: 'rgba(224, 180, 96, 0.28)',
+    background: 'linear-gradient(180deg, rgba(255, 251, 241, 0.92), rgba(250, 246, 232, 0.84))',
+    borderColor: 'rgba(205, 156, 66, 0.2)',
   };
 }
 
@@ -1631,7 +1631,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [isPreparingAttachment, setIsPreparingAttachment] = useState(false);
   const [imageViewer, setImageViewer] = useState<CommentImageViewerState | null>(null);
-  const [floatingThreadContextHeight, setFloatingThreadContextHeight] = useState(0);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
   );
@@ -1640,7 +1639,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
-  const floatingThreadContextRef = useRef<HTMLDivElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
   const highlightTimerRef = useRef<number | null>(null);
@@ -1766,14 +1764,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
-  const floatingThreadContextOffset = introText
-    ? Math.max(96, (floatingThreadContextHeight > 0 ? floatingThreadContextHeight : 0) + 18)
-    : 0;
-  const dialogBodyStyle = introText
-    ? ({
-        '--channel-dialog-thread-context-offset': `${floatingThreadContextOffset}px`,
-      } as CSSProperties)
-    : undefined;
   const messageIdSet = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
   const activeMessage = useMemo(
     () => messages.find((message) => message.id === activeMessageId) ?? null,
@@ -2016,34 +2006,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
     field.style.height = `${nextHeight}px`;
   }, [draft, editingMessage, replyTarget, draftAttachments.length]);
-
-  useLayoutEffect(() => {
-    if (typeof window === 'undefined' || !introText) {
-      setFloatingThreadContextHeight(0);
-      return;
-    }
-
-    const node = floatingThreadContextRef.current;
-    if (!node) {
-      setFloatingThreadContextHeight(0);
-      return;
-    }
-
-    const measure = () => {
-      setFloatingThreadContextHeight(Math.ceil(node.getBoundingClientRect().height));
-    };
-
-    measure();
-    const observer =
-      typeof ResizeObserver === 'function' ? new ResizeObserver(() => measure()) : null;
-    observer?.observe(node);
-    window.addEventListener('resize', measure);
-
-    return () => {
-      observer?.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, [introText]);
 
   useEffect(
     () => () => {
@@ -3152,7 +3114,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       '.channel-dialog-compose__surface',
     );
     const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
-    const topInset = introText ? Math.max(18, floatingThreadContextOffset + 4) : 18;
+    const topInset = 18;
     const bottomInset = composeHeight + 22;
     const availableHeight = Math.max(140, viewport.clientHeight - topInset - bottomInset);
     const desiredTop =
@@ -3299,20 +3261,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         {dialogType === 'comments' ? <CommentBackdropOrnaments /> : null}
       </div>
 
-      <div className="channel-dialog-shell">
+      <div className={cn('channel-dialog-shell', introText && 'has-thread-context')}>
         {introText ? (
-          <div
-            ref={floatingThreadContextRef}
-            className="channel-dialog-thread-context channel-dialog-thread-context--floating"
-          >
+          <div className="channel-dialog-thread-context channel-dialog-thread-context--summary">
             <p>{introText}</p>
           </div>
         ) : null}
 
         <section
           ref={scrollViewportRef}
-          className={cn('channel-dialog-body', introText && 'has-floating-thread-context')}
-          style={dialogBodyStyle}
+          className="channel-dialog-body"
           onScroll={handleBodyScroll}
         >
           {dialogQuery.isLoading ? (
@@ -3811,11 +3769,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   placeholder={
                     editingMessage
                       ? editingMessage.attachments.length > 0 && !editingMessage.text.trim()
-                        ? 'Добавить подпись'
-                        : 'Изменить комментарий'
+                        ? 'Подпись'
+                        : 'Правка'
                       : replyTarget
-                        ? 'Ответить на комментарий'
-                        : 'Комментарий'
+                        ? 'Ответ'
+                        : 'Текст'
                   }
                   maxLength={2_000}
                 />

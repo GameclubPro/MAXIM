@@ -2636,16 +2636,20 @@
 }
 
 .channel-dialog-screen--comments {
-  --dialog-bg-start: #eef5ff;
-  --dialog-bg-end: #f9fbff;
-  --dialog-surface: rgba(255, 255, 255, 0.78);
+  --dialog-bg-start: #f4f8fb;
+  --dialog-bg-end: #f8f5ed;
+  --dialog-surface: rgba(255, 255, 255, 0.86);
+  --dialog-canvas-line: rgba(81, 103, 125, 0.07);
+  --dialog-canvas-mint: rgba(88, 188, 168, 0.14);
+  --dialog-canvas-amber: rgba(255, 179, 96, 0.14);
+  --dialog-canvas-coral: rgba(247, 117, 103, 0.1);
   padding-top: max(4px, env(safe-area-inset-top, 0px));
   padding-bottom: max(0px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 58px), 31rem);
-  --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 82px), 27rem);
-  --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 114px), 21rem);
-  --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 94px), 25rem);
-  --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 122px), 19.5rem);
+  --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 72px), 28rem);
+  --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 86px), 23rem);
+  --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 78px), 27rem);
+  --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 92px), 22rem);
 }
 
 .channel-dialog-screen--comments .channel-dialog-shell {
@@ -2653,13 +2657,23 @@
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
+.channel-dialog-screen--comments .channel-dialog-shell.has-thread-context {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
 .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
   overflow: hidden;
   background:
-    radial-gradient(circle at 10% 0%, rgba(77, 152, 255, 0.2), transparent 28%),
-    radial-gradient(circle at 86% 12%, rgba(255, 255, 255, 0.88), transparent 24%),
-    radial-gradient(circle at 76% 80%, rgba(70, 132, 255, 0.14), transparent 28%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.56), rgba(255, 255, 255, 0) 30%);
+    linear-gradient(138deg, var(--dialog-canvas-mint) 0 16%, transparent 16% 48%),
+    linear-gradient(26deg, transparent 0 54%, var(--dialog-canvas-amber) 54% 72%, transparent 72%),
+    linear-gradient(172deg, transparent 0 62%, var(--dialog-canvas-coral) 62% 82%, transparent 82%),
+    repeating-linear-gradient(
+      118deg,
+      transparent 0 23px,
+      var(--dialog-canvas-line) 24px,
+      transparent 25px 54px
+    ),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(255, 255, 255, 0.2) 38%);
 }
 
 .channel-dialog-screen__backdrop {
@@ -2689,6 +2703,7 @@
   gap: clamp(10px, 1.8vh, 18px);
   padding: clamp(64px, 10vh, 90px) clamp(12px, 4vw, 22px) clamp(96px, 16vh, 132px);
   pointer-events: none;
+  opacity: 0.72;
   -webkit-mask-image: linear-gradient(
     180deg,
     rgba(0, 0, 0, 0.62),
@@ -2733,15 +2748,15 @@
 }
 
 .channel-dialog-screen__wallpaper-tile.is-faint {
-  color: rgba(103, 130, 169, 0.11);
+  color: rgba(72, 88, 107, 0.08);
 }
 
 .channel-dialog-screen__wallpaper-tile.is-soft {
-  color: rgba(97, 138, 192, 0.14);
+  color: rgba(37, 148, 132, 0.1);
 }
 
 .channel-dialog-screen__wallpaper-tile.is-accent {
-  color: rgba(90, 152, 227, 0.18);
+  color: rgba(204, 118, 61, 0.11);
 }
 
 .channel-dialog-screen__wallpaper-tile svg {
@@ -2798,46 +2813,41 @@
   overflow: hidden;
 }
 
-.channel-dialog-screen--comments .channel-dialog-thread-context--floating {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 3;
-  padding: 6px 0 16px;
+.channel-dialog-screen--comments .channel-dialog-thread-context--summary {
+  position: relative;
+  z-index: 1;
+  padding: 2px 0 0;
   border: 0;
   border-radius: 0;
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--dialog-bg-start) 92%, white),
-    rgba(238, 246, 255, 0.88) 62%,
-    rgba(238, 246, 255, 0)
-  );
+  background: transparent;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  pointer-events: none;
 }
 
-.channel-dialog-screen--comments .channel-dialog-thread-context--floating p {
-  max-width: calc(100% - 40px);
+.channel-dialog-screen--comments .channel-dialog-thread-context--summary p {
+  max-width: min(calc(100% - 36px), 34rem);
   margin: 0 auto;
-  padding: 10px 16px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.7);
+  padding: 9px 14px 10px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.84);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(247, 251, 255, 0.62)),
-    rgba(255, 255, 255, 0.64);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 252, 249, 0.78)),
+    rgba(255, 255, 255, 0.7);
   box-shadow:
-    0 18px 34px rgba(31, 62, 90, 0.08),
+    0 12px 28px rgba(26, 45, 61, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
-  backdrop-filter: blur(18px) saturate(160%);
-  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  backdrop-filter: blur(18px) saturate(148%);
+  -webkit-backdrop-filter: blur(18px) saturate(148%);
   color: rgba(31, 48, 62, 0.64);
   font-size: 0.76rem;
-  line-height: 1.2;
-  letter-spacing: 0.01em;
-  -webkit-line-clamp: 1;
+  line-height: 1.26;
+  display: block;
+  max-height: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .channel-dialog-topbar.is-compact {
@@ -2909,11 +2919,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-body {
-  padding: 0 2px 12px;
-}
-
-.channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-  padding: var(--channel-dialog-thread-context-offset, 96px) 2px 14px;
+  padding: 8px 2px 12px;
 }
 
 .channel-dialog-skeletons,
@@ -2924,8 +2930,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message-list {
-  gap: 12px;
-  min-height: 100%;
+  gap: 10px;
+  min-height: auto;
+  padding-top: 2px;
 }
 
 .channel-dialog-intro {
@@ -3147,7 +3154,7 @@
 .channel-dialog-reaction-popover {
   position: absolute;
   z-index: 5;
-  width: min(calc(100% - 24px), 304px);
+  width: min(calc(100% - 24px), 322px);
   animation: dialogReactionPopoverIn 0.22s cubic-bezier(0.2, 0.9, 0.2, 1);
 }
 
@@ -3200,9 +3207,9 @@
 
 .channel-dialog-reaction-popover__emoji,
 .channel-dialog-reaction-popover__toggle {
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
   padding: 0;
   border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.12);
@@ -3257,7 +3264,7 @@
 
 .channel-dialog-reaction-popover__action {
   flex: 1 1 auto;
-  min-height: 38px;
+  min-height: 44px;
   padding: 0 14px;
   border-radius: 15px;
   border: 1px solid rgba(62, 96, 127, 0.12);
@@ -3301,17 +3308,17 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message__bubble {
-  padding: 12px 14px 12px;
-  border-color: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px 11px;
+  border-color: rgba(255, 255, 255, 0.82);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(249, 252, 255, 0.66)),
-    rgba(255, 255, 255, 0.68);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(250, 252, 249, 0.86)),
+    rgba(255, 255, 255, 0.82);
   box-shadow:
-    0 16px 34px rgba(31, 62, 90, 0.08),
-    0 2px 10px rgba(31, 62, 90, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.74);
-  backdrop-filter: blur(22px) saturate(170%);
-  -webkit-backdrop-filter: blur(22px) saturate(170%);
+    0 10px 22px rgba(26, 45, 61, 0.07),
+    0 1px 4px rgba(26, 45, 61, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(16px) saturate(145%);
+  -webkit-backdrop-filter: blur(16px) saturate(145%);
 }
 
 .channel-dialog-message__avatar {
@@ -3366,15 +3373,15 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-message.is-own .channel-dialog-message__bubble {
-  border-color: color-mix(in srgb, var(--dialog-accent) 18%, white);
+  border-color: rgba(101, 164, 222, 0.22);
   background: linear-gradient(
     160deg,
-    color-mix(in srgb, var(--dialog-accent) 24%, white),
-    color-mix(in srgb, var(--dialog-accent) 12%, white)
+    rgba(220, 239, 255, 0.92),
+    rgba(235, 248, 246, 0.88)
   );
   box-shadow:
-    0 18px 32px color-mix(in srgb, var(--dialog-accent) 12%, transparent),
-    0 4px 12px color-mix(in srgb, var(--dialog-accent) 6%, transparent),
+    0 12px 26px rgba(43, 103, 151, 0.12),
+    0 2px 8px rgba(43, 103, 151, 0.05),
     inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
@@ -3842,12 +3849,12 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose {
-  padding: 10px 2px 2px;
+  padding: 7px 2px 2px;
   background: linear-gradient(
     180deg,
     rgba(245, 249, 255, 0) 0%,
-    rgba(245, 249, 255, 0.62) 28%,
-    rgba(245, 249, 255, 0.94) 100%
+    rgba(247, 250, 249, 0.62) 28%,
+    rgba(247, 250, 249, 0.94) 100%
   );
 }
 
@@ -3889,19 +3896,19 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__surface {
-  gap: 8px;
-  padding: 8px;
-  border-radius: 30px;
-  border-color: rgba(255, 255, 255, 0.76);
+  gap: 6px;
+  padding: 6px;
+  border-radius: 26px;
+  border-color: rgba(255, 255, 255, 0.82);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(245, 249, 255, 0.64)),
-    rgba(255, 255, 255, 0.68);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(250, 251, 247, 0.72)),
+    rgba(255, 255, 255, 0.76);
   box-shadow:
-    0 22px 40px rgba(27, 57, 83, 0.14),
-    0 8px 18px rgba(27, 57, 83, 0.08),
+    0 16px 34px rgba(26, 45, 61, 0.13),
+    0 6px 14px rgba(26, 45, 61, 0.07),
     inset 0 1px 0 rgba(255, 255, 255, 0.82);
-  backdrop-filter: blur(28px) saturate(175%);
-  -webkit-backdrop-filter: blur(28px) saturate(175%);
+  backdrop-filter: blur(22px) saturate(158%);
+  -webkit-backdrop-filter: blur(22px) saturate(158%);
 }
 
 .channel-dialog-compose__reply {
@@ -4168,14 +4175,14 @@
 .channel-dialog-compose__row {
   display: flex;
   align-items: flex-end;
-  gap: 7px;
+  gap: 6px;
 }
 
 .channel-dialog-compose__quick-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding-bottom: 2px;
+  gap: 4px;
+  padding-bottom: 1px;
 }
 
 .channel-dialog-compose__field {
@@ -4216,9 +4223,9 @@
 }
 
 .channel-dialog-compose__attach--icon {
-  width: 42px;
-  min-width: 42px;
-  min-height: 42px;
+  width: 44px;
+  min-width: 44px;
+  min-height: 44px;
   padding: 0;
   border-radius: 999px;
 }
@@ -4273,10 +4280,10 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
-  min-height: 52px;
-  padding: 14px 16px;
+  min-height: 48px;
+  padding: 12px 10px;
   border: 0;
-  border-radius: 24px;
+  border-radius: 20px;
   background: transparent;
   box-shadow: none;
   font-size: 0.94rem;
@@ -4328,9 +4335,9 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-submit {
-  width: 52px;
-  min-width: 52px;
-  min-height: 52px;
+  width: 48px;
+  min-width: 48px;
+  min-height: 48px;
   border-radius: 999px;
   background: linear-gradient(
     160deg,
@@ -4416,18 +4423,14 @@
 
   .channel-dialog-screen--comments {
     --channel-dialog-comments-bubble-max-width: min(calc(100% - 56px), 100%);
-    --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 74px), 100%);
-    --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 102px), 100%);
-    --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 86px), 100%);
-    --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 110px), 100%);
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
-    padding: var(--channel-dialog-thread-context-offset, 92px) 2px 12px;
+    --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 66px), 100%);
+    --channel-dialog-comments-bubble-compact-max-width: min(calc(100% - 76px), 100%);
+    --channel-dialog-comments-bubble-own-medium-max-width: min(calc(100% - 70px), 100%);
+    --channel-dialog-comments-bubble-own-compact-max-width: min(calc(100% - 80px), 100%);
   }
 
   .channel-dialog-reaction-popover {
-    width: min(100%, 304px);
+    width: min(100%, 322px);
   }
 
   .channel-dialog-reaction-popover__surface {
@@ -4445,14 +4448,14 @@
 
   .channel-dialog-reaction-popover__emoji,
   .channel-dialog-reaction-popover__toggle {
-    width: 36px;
-    min-width: 36px;
-    height: 36px;
-    border-radius: 12px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    border-radius: 14px;
   }
 
   .channel-dialog-reaction-popover__action {
-    min-height: 36px;
+    min-height: 44px;
     padding: 0 12px;
   }
 
@@ -4463,8 +4466,8 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__surface {
-    padding: 8px;
-    border-radius: 28px;
+    padding: 6px;
+    border-radius: 25px;
   }
 
   .channel-dialog-compose__meta {
@@ -4479,9 +4482,9 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-compose__field textarea {
-    min-height: 50px;
-    padding: 13px 15px;
-    border-radius: 22px;
+    min-height: 48px;
+    padding: 12px 9px;
+    border-radius: 20px;
   }
 
   .channel-dialog-message__meta strong {
@@ -4506,9 +4509,9 @@
   }
 
   .channel-dialog-screen--comments .channel-dialog-submit {
-    width: 50px;
-    min-width: 50px;
-    min-height: 50px;
+    width: 48px;
+    min-width: 48px;
+    min-height: 48px;
     border-radius: 999px;
   }
 }
