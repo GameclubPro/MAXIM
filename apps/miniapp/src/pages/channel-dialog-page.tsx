@@ -59,6 +59,27 @@ import {
   VideoCamera as IconoirVideoCamera,
   View360 as IconoirView360,
 } from 'iconoir-react';
+import {
+  Atom as PhosphorAtom,
+  Broadcast as PhosphorBroadcast,
+  Circuitry as PhosphorCircuitry,
+  CompassRose as PhosphorCompassRose,
+  CubeFocus as PhosphorCubeFocus,
+  CubeTransparent as PhosphorCubeTransparent,
+  GlobeHemisphereEast as PhosphorGlobeHemisphereEast,
+  GlobeStand as PhosphorGlobeStand,
+  Meteor as PhosphorMeteor,
+  MoonStars as PhosphorMoonStars,
+  NavigationArrow as PhosphorNavigationArrow,
+  Planet as PhosphorPlanet,
+  RocketLaunch as PhosphorRocketLaunch,
+  Scan as PhosphorScan,
+  ShootingStar as PhosphorShootingStar,
+  Sparkle as PhosphorSparkle,
+  StarAndCrescent as PhosphorStarAndCrescent,
+  StarFour as PhosphorStarFour,
+  SunHorizon as PhosphorSunHorizon,
+} from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Fragment,
@@ -193,7 +214,26 @@ type CommentBackdropIconName =
   | 'network'
   | 'internet'
   | 'antenna-tag'
-  | 'drone-takeoff';
+  | 'drone-takeoff'
+  | 'phosphor-planet'
+  | 'phosphor-rocket-launch'
+  | 'phosphor-shooting-star'
+  | 'phosphor-moon-stars'
+  | 'phosphor-meteor'
+  | 'phosphor-sparkle'
+  | 'phosphor-star-four'
+  | 'phosphor-star-crescent'
+  | 'phosphor-sun-horizon'
+  | 'phosphor-atom'
+  | 'phosphor-globe'
+  | 'phosphor-globe-stand'
+  | 'phosphor-compass-rose'
+  | 'phosphor-navigation'
+  | 'phosphor-broadcast'
+  | 'phosphor-circuitry'
+  | 'phosphor-cube-transparent'
+  | 'phosphor-cube-focus'
+  | 'phosphor-scan';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -221,132 +261,132 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-1',
     shift: 'left',
     tiles: [
-      { id: 'planet-sat-1', icon: 'planet-sat', tone: 'soft', rotate: -9, scale: 0.94, offsetY: -4 },
-      { id: 'atom-1', icon: 'atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 5 },
-      { id: 'moon-sat-1', icon: 'moon-sat', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
-      { id: 'bright-star-1', icon: 'bright-star', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 6 },
-      { id: 'rocket-1', icon: 'rocket', tone: 'faint', rotate: -14, scale: 0.9, offsetY: -3 },
+      { id: 'ph-planet-1', icon: 'phosphor-planet', tone: 'soft', rotate: -9, scale: 0.94, offsetY: -4 },
+      { id: 'ph-atom-1', icon: 'phosphor-atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 5 },
+      { id: 'ph-moon-stars-1', icon: 'phosphor-moon-stars', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
+      { id: 'ph-shooting-star-1', icon: 'phosphor-shooting-star', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 6 },
+      { id: 'ph-rocket-launch-1', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: -14, scale: 0.9, offsetY: -3 },
     ],
   },
   {
     id: 'row-2',
     shift: 'right',
     tiles: [
-      { id: 'sphere-1', icon: 'sphere', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
-      { id: 'navigator-1', icon: 'navigator', tone: 'soft', rotate: 8, scale: 0.86, offsetY: -5 },
-      { id: 'planet-alt-1', icon: 'planet-alt', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
-      { id: 'star-dashed-1', icon: 'star-dashed', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
-      { id: 'drone-takeoff-1', icon: 'drone-takeoff', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
+      { id: 'ph-cube-transparent-1', icon: 'phosphor-cube-transparent', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
+      { id: 'ph-navigation-1', icon: 'phosphor-navigation', tone: 'soft', rotate: 8, scale: 0.86, offsetY: -5 },
+      { id: 'ph-globe-1', icon: 'phosphor-globe', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
+      { id: 'ph-star-four-1', icon: 'phosphor-star-four', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
+      { id: 'ph-broadcast-1', icon: 'phosphor-broadcast', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
     ],
   },
   {
     id: 'row-3',
     shift: 'left',
     tiles: [
-      { id: 'view-360-1', icon: 'view-360', tone: 'soft', rotate: -6, scale: 0.94, offsetY: -8 },
-      { id: 'spiral-1', icon: 'spiral', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'spark-1', icon: 'spark', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
-      { id: 'antenna-tag-1', icon: 'antenna-tag', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'sun-1', icon: 'sun', tone: 'soft', rotate: 7, scale: 0.9, offsetY: -6 },
+      { id: 'ph-scan-1', icon: 'phosphor-scan', tone: 'soft', rotate: -6, scale: 0.94, offsetY: -8 },
+      { id: 'ph-circuitry-1', icon: 'phosphor-circuitry', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'ph-sparkle-1', icon: 'phosphor-sparkle', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
+      { id: 'ph-compass-rose-1', icon: 'phosphor-compass-rose', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
+      { id: 'ph-sun-horizon-1', icon: 'phosphor-sun-horizon', tone: 'soft', rotate: 7, scale: 0.9, offsetY: -6 },
     ],
   },
   {
     id: 'row-4',
     shift: 'right',
     tiles: [
-      { id: 'planet-1', icon: 'planet', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
-      { id: 'compass-1', icon: 'compass', tone: 'soft', rotate: 7, scale: 0.86, offsetY: -6 },
-      { id: 'circle-spark-1', icon: 'circle-spark', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
-      { id: 'globe-1', icon: 'globe', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
-      { id: 'flash-1', icon: 'flash', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
+      { id: 'ph-planet-2', icon: 'phosphor-planet', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
+      { id: 'ph-cube-focus-1', icon: 'phosphor-cube-focus', tone: 'soft', rotate: 7, scale: 0.86, offsetY: -6 },
+      { id: 'ph-meteor-1', icon: 'phosphor-meteor', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
+      { id: 'ph-globe-stand-1', icon: 'phosphor-globe-stand', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
+      { id: 'ph-shooting-star-2', icon: 'phosphor-shooting-star', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
     ],
   },
   {
     id: 'row-5',
     shift: 'left',
     tiles: [
-      { id: 'network-1', icon: 'network', tone: 'faint', rotate: -4, scale: 0.9, offsetY: 6 },
-      { id: 'flare-1', icon: 'flare', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
-      { id: 'rocket-2', icon: 'rocket', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
-      { id: 'moon-2', icon: 'moon', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
-      { id: 'stars-2', icon: 'stars', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
+      { id: 'ph-broadcast-2', icon: 'phosphor-broadcast', tone: 'faint', rotate: -4, scale: 0.9, offsetY: 6 },
+      { id: 'ph-star-crescent-1', icon: 'phosphor-star-crescent', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
+      { id: 'ph-rocket-launch-2', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
+      { id: 'ph-moon-stars-2', icon: 'phosphor-moon-stars', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
+      { id: 'ph-sparkle-2', icon: 'phosphor-sparkle', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
     ],
   },
   {
     id: 'row-6',
     shift: 'right',
     tiles: [
-      { id: 'planet-sat-2', icon: 'planet-sat', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
-      { id: 'internet-1', icon: 'internet', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
-      { id: 'sparkles-1', icon: 'sparkles', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
-      { id: 'drone-1', icon: 'drone', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
-      { id: 'antenna-1', icon: 'antenna', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
+      { id: 'ph-globe-2', icon: 'phosphor-globe', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
+      { id: 'ph-circuitry-2', icon: 'phosphor-circuitry', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
+      { id: 'ph-shooting-star-3', icon: 'phosphor-shooting-star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      { id: 'ph-navigation-2', icon: 'phosphor-navigation', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
+      { id: 'ph-compass-rose-2', icon: 'phosphor-compass-rose', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
     ],
   },
   {
     id: 'row-7',
     shift: 'left',
     tiles: [
-      { id: 'sun-2', icon: 'sun', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
-      { id: 'sphere-2', icon: 'sphere', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
-      { id: 'planet-2', icon: 'planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
-      { id: 'view-360-2', icon: 'view-360', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
-      { id: 'circle-spark-2', icon: 'circle-spark', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
+      { id: 'ph-sun-horizon-2', icon: 'phosphor-sun-horizon', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
+      { id: 'ph-cube-transparent-2', icon: 'phosphor-cube-transparent', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
+      { id: 'ph-planet-3', icon: 'phosphor-planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
+      { id: 'ph-scan-2', icon: 'phosphor-scan', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
+      { id: 'ph-star-four-2', icon: 'phosphor-star-four', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
     ],
   },
   {
     id: 'row-8',
     shift: 'right',
     tiles: [
-      { id: 'bright-star-2', icon: 'bright-star', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
-      { id: 'navigator-alt-1', icon: 'navigator-alt', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
-      { id: 'moon-sat-2', icon: 'moon-sat', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
-      { id: 'atom-2', icon: 'atom', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
-      { id: 'gps-1', icon: 'gps', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
+      { id: 'ph-shooting-star-4', icon: 'phosphor-shooting-star', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
+      { id: 'ph-navigation-3', icon: 'phosphor-navigation', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
+      { id: 'ph-moon-stars-3', icon: 'phosphor-moon-stars', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
+      { id: 'ph-atom-2', icon: 'phosphor-atom', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
+      { id: 'ph-meteor-2', icon: 'phosphor-meteor', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
     ],
   },
   {
     id: 'row-9',
     shift: 'left',
     tiles: [
-      { id: 'stars-3', icon: 'stars', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
-      { id: 'network-2', icon: 'network', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
-      { id: 'planet-alt-2', icon: 'planet-alt', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
-      { id: 'flash-2', icon: 'flash', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
-      { id: 'star-dashed-2', icon: 'star-dashed', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
+      { id: 'ph-sparkle-3', icon: 'phosphor-sparkle', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
+      { id: 'ph-broadcast-3', icon: 'phosphor-broadcast', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
+      { id: 'ph-globe-stand-2', icon: 'phosphor-globe-stand', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
+      { id: 'ph-meteor-3', icon: 'phosphor-meteor', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
+      { id: 'ph-star-crescent-2', icon: 'phosphor-star-crescent', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
     ],
   },
   {
     id: 'row-10',
     shift: 'right',
     tiles: [
-      { id: 'drone-2', icon: 'drone', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'compass-2', icon: 'compass', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
-      { id: 'planet-sat-3', icon: 'planet-sat', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
-      { id: 'flare-2', icon: 'flare', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
-      { id: 'navigator-2', icon: 'navigator', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
+      { id: 'ph-cube-focus-2', icon: 'phosphor-cube-focus', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'ph-compass-rose-3', icon: 'phosphor-compass-rose', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
+      { id: 'ph-planet-4', icon: 'phosphor-planet', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
+      { id: 'ph-shooting-star-5', icon: 'phosphor-shooting-star', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
+      { id: 'ph-navigation-4', icon: 'phosphor-navigation', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
   {
     id: 'row-11',
     shift: 'left',
     tiles: [
-      { id: 'globe-2', icon: 'globe', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
-      { id: 'moon-3', icon: 'moon', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
-      { id: 'internet-2', icon: 'internet', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
-      { id: 'atom-3', icon: 'atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'sun-3', icon: 'sun', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
+      { id: 'ph-globe-3', icon: 'phosphor-globe', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
+      { id: 'ph-moon-stars-4', icon: 'phosphor-moon-stars', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
+      { id: 'ph-circuitry-3', icon: 'phosphor-circuitry', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
+      { id: 'ph-atom-3', icon: 'phosphor-atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'ph-sun-horizon-3', icon: 'phosphor-sun-horizon', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
     ],
   },
   {
     id: 'row-12',
     shift: 'right',
     tiles: [
-      { id: 'rocket-4', icon: 'rocket', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
-      { id: 'moon-sat-3', icon: 'moon-sat', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
-      { id: 'view-360-3', icon: 'view-360', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'spiral-2', icon: 'spiral', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
-      { id: 'bright-star-3', icon: 'bright-star', tone: 'soft', rotate: 7, scale: 0.86, offsetY: 5 },
+      { id: 'ph-rocket-launch-3', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
+      { id: 'ph-star-four-3', icon: 'phosphor-star-four', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
+      { id: 'ph-scan-3', icon: 'phosphor-scan', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'ph-cube-transparent-3', icon: 'phosphor-cube-transparent', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
+      { id: 'ph-shooting-star-6', icon: 'phosphor-shooting-star', tone: 'soft', rotate: 7, scale: 0.86, offsetY: 5 },
     ],
   },
 ] satisfies CommentBackdropWallpaperRow[];
@@ -1657,6 +1697,44 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <IconoirAntennaSignalTag strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
     case 'drone-takeoff':
       return <IconoirDroneTakeOff strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
+    case 'phosphor-planet':
+      return <PhosphorPlanet weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-rocket-launch':
+      return <PhosphorRocketLaunch weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-shooting-star':
+      return <PhosphorShootingStar weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-moon-stars':
+      return <PhosphorMoonStars weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-meteor':
+      return <PhosphorMeteor weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-sparkle':
+      return <PhosphorSparkle weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-star-four':
+      return <PhosphorStarFour weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-star-crescent':
+      return <PhosphorStarAndCrescent weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-sun-horizon':
+      return <PhosphorSunHorizon weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-atom':
+      return <PhosphorAtom weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-globe':
+      return <PhosphorGlobeHemisphereEast weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-globe-stand':
+      return <PhosphorGlobeStand weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-compass-rose':
+      return <PhosphorCompassRose weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-navigation':
+      return <PhosphorNavigationArrow weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-broadcast':
+      return <PhosphorBroadcast weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-circuitry':
+      return <PhosphorCircuitry weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-cube-transparent':
+      return <PhosphorCubeTransparent weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-cube-focus':
+      return <PhosphorCubeFocus weight="thin" aria-hidden focusable="false" />;
+    case 'phosphor-scan':
+      return <PhosphorScan weight="thin" aria-hidden focusable="false" />;
     default:
       return null;
   }

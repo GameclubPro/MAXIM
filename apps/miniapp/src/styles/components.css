@@ -2639,9 +2639,9 @@
   --dialog-bg-start: #eef8ff;
   --dialog-bg-end: #eaf1f6;
   --dialog-surface: rgba(255, 255, 255, 0.92);
-  --dialog-wallpaper-ink: rgba(24, 63, 104, 0.24);
-  --dialog-wallpaper-soft: rgba(20, 128, 168, 0.21);
-  --dialog-wallpaper-warm: rgba(138, 95, 42, 0.18);
+  --dialog-wallpaper-ink: rgba(24, 63, 104, 0.18);
+  --dialog-wallpaper-soft: rgba(20, 128, 168, 0.16);
+  --dialog-wallpaper-warm: rgba(138, 95, 42, 0.14);
   padding: 2px clamp(6px, 1.8vw, 10px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 42px), 34rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 50px), 31rem);
@@ -2705,7 +2705,7 @@
   gap: clamp(3px, 1.4vw, 8px);
   padding: clamp(12px, 3.3vw, 22px) clamp(0px, 1.2vw, 8px) 72px;
   pointer-events: none;
-  opacity: 0.91;
+  opacity: 0.84;
   contain: layout paint;
   -webkit-mask-image: linear-gradient(
     180deg,
