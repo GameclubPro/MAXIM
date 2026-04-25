@@ -9,7 +9,11 @@ import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
 } from '@maxim/contracts';
-import { Attachment as IconoirAttachment, Camera as IconoirCamera } from 'iconoir-react';
+import {
+  Attachment as IconoirAttachment,
+  BubbleStar as IconoirEmoji,
+  Camera as IconoirCamera,
+} from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Fragment,
@@ -85,6 +89,30 @@ const COMMENT_REACTION_OPTIONS = [
 
 const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
 const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
+const COMMENT_COMPOSE_EMOJI_GROUPS = [
+  {
+    id: 'frequent',
+    label: 'Частые',
+    emojis: ['👍', '❤️', '😂', '🔥', '👏', '😍', '🎉', '💯'],
+  },
+  {
+    id: 'faces',
+    label: 'Лица',
+    emojis: ['😊', '😎', '🤔', '😮', '😢', '😡', '😇', '🙌'],
+  },
+  {
+    id: 'gestures',
+    label: 'Жесты',
+    emojis: ['👌', '🤝', '🙏', '💪', '👀', '✅', '❌', '⭐'],
+  },
+  {
+    id: 'symbols',
+    label: 'Символы',
+    emojis: ['🚀', '⚡', '✨', '💬', '📌', '📎', '🧠', '🫶'],
+  },
+] as const;
+type CommentComposeEmojiGroupId = (typeof COMMENT_COMPOSE_EMOJI_GROUPS)[number]['id'];
+const COMMENT_DRAFT_MAX_LENGTH = 2_000;
 const COMMENTS_NEAR_BOTTOM_THRESHOLD = 72;
 const COMMENTS_STICK_TO_BOTTOM_THRESHOLD = 160;
 const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
@@ -1327,6 +1355,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [editRestoreState, setEditRestoreState] = useState<EditRestoreState | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
+  const [isComposeEmojiOpen, setIsComposeEmojiOpen] = useState(false);
+  const [activeComposeEmojiGroupId, setActiveComposeEmojiGroupId] =
+    useState<CommentComposeEmojiGroupId>('frequent');
   const [isNearBottom, setIsNearBottom] = useState(true);
   const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -1532,6 +1563,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
       : draftAttachmentSummary;
+  const activeComposeEmojiGroup = useMemo(
+    () =>
+      COMMENT_COMPOSE_EMOJI_GROUPS.find((group) => group.id === activeComposeEmojiGroupId) ??
+      COMMENT_COMPOSE_EMOJI_GROUPS[0],
+    [activeComposeEmojiGroupId],
+  );
   const activeViewerAttachment = imageViewer?.attachments[imageViewer.activeIndex] ?? null;
   const activeViewerImageSrc = activeViewerAttachment
     ? getCommentAttachmentViewerUrl(activeViewerAttachment)
@@ -1651,6 +1688,45 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     clearSwipeReplyGesture();
   };
 
+  const handleComposeEmojiInsert = (emoji: string) => {
+    const field = composeFieldRef.current;
+
+    setDraft((current) => {
+      const selectionStart =
+        field && field.value === current
+          ? (field.selectionStart ?? current.length)
+          : current.length;
+      const selectionEnd =
+        field && field.value === current ? (field.selectionEnd ?? selectionStart) : selectionStart;
+      const remainingLength =
+        COMMENT_DRAFT_MAX_LENGTH - (current.length - (selectionEnd - selectionStart));
+
+      if (remainingLength < emoji.length) {
+        return current;
+      }
+
+      const nextDraft =
+        current.slice(0, selectionStart) +
+        emoji +
+        current.slice(selectionEnd, COMMENT_DRAFT_MAX_LENGTH);
+
+      requestAnimationFrame(() => {
+        const nextField = composeFieldRef.current;
+        if (!nextField) {
+          return;
+        }
+
+        const nextSelection = selectionStart + emoji.length;
+        nextField.focus();
+        nextField.setSelectionRange(nextSelection, nextSelection);
+      });
+
+      return nextDraft;
+    });
+
+    maxSelectionChanged();
+  };
+
   const cancelEditing = (options?: { restoreDraft?: boolean }) => {
     if (options?.restoreDraft && editRestoreState) {
       setDraft(editRestoreState.draft);
@@ -1664,6 +1740,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     setEditingMessageId(null);
     setEditRestoreState(null);
+    setIsComposeEmojiOpen(false);
     resetAttachmentPickers();
   };
 
@@ -2399,6 +2476,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setDraft('');
       setReplyToMessageId(null);
       setDraftAttachments([]);
+      setIsComposeEmojiOpen(false);
       resetAttachmentPickers();
       dismissMessageActions();
       requestAnimationFrame(() => {
@@ -2553,6 +2631,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   ) => {
     maxImpact(options?.haptic ?? 'light');
+    setIsComposeEmojiOpen(false);
     clearSwipeReplyGesture();
     setIsReactionPickerExpanded(false);
     setActiveMessageId((current) => {
@@ -2736,6 +2815,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setDraft('');
     setDraftAttachments([]);
     setReplyToMessageId(message.id);
+    setIsComposeEmojiOpen(false);
     dismissMessageActions();
     resetAttachmentPickers();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
@@ -2759,6 +2839,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setEditingMessageId(message.id);
     setDraft(message.text);
     setDraftAttachments([]);
+    setIsComposeEmojiOpen(false);
     dismissMessageActions();
     resetAttachmentPickers();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
@@ -3294,14 +3375,82 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 )}
               >
                 {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
-                <span>{draftLength}/2000</span>
+                <span>
+                  {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                </span>
+              </div>
+            ) : null}
+
+            {isComposeEmojiOpen ? (
+              <div
+                id="channel-dialog-compose-emoji-panel"
+                className="channel-dialog-compose__emoji-panel"
+                aria-label="Эмодзи"
+              >
+                <span className="channel-dialog-compose__emoji-handle" aria-hidden />
+                <div className="channel-dialog-compose__emoji-tabs" role="tablist">
+                  {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
+                    <button
+                      key={group.id}
+                      type="button"
+                      className={cn(
+                        'channel-dialog-compose__emoji-tab',
+                        group.id === activeComposeEmojiGroup.id && 'is-active',
+                      )}
+                      role="tab"
+                      aria-selected={group.id === activeComposeEmojiGroup.id}
+                      onClick={() => setActiveComposeEmojiGroupId(group.id)}
+                    >
+                      {group.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="channel-dialog-compose__emoji-grid" role="list">
+                  {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
+                    <button
+                      key={`${emoji}-${emojiIndex}`}
+                      type="button"
+                      className="channel-dialog-compose__emoji"
+                      onClick={() => handleComposeEmojiInsert(emoji)}
+                      aria-label={`Добавить ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
               </div>
             ) : null}
 
             <div className="channel-dialog-compose__row">
-              {!editingMessage ? (
-                <div className="channel-dialog-compose__quick-actions">
-                  {useNativeTapFileInputs ? (
+              <div
+                className={cn(
+                  'channel-dialog-compose__quick-actions',
+                  editingMessage && 'is-editing',
+                )}
+              >
+                <button
+                  type="button"
+                  className={cn(
+                    'channel-dialog-compose__attach',
+                    'channel-dialog-compose__attach--icon',
+                    'channel-dialog-compose__emoji-toggle',
+                    isComposeEmojiOpen && 'is-active',
+                  )}
+                  onClick={() => {
+                    maxImpact('light');
+                    setIsComposeEmojiOpen((current) => !current);
+                    requestAnimationFrame(() => composeFieldRef.current?.focus());
+                  }}
+                  aria-label="Эмодзи"
+                  aria-expanded={isComposeEmojiOpen}
+                  aria-controls="channel-dialog-compose-emoji-panel"
+                  disabled={isComposePending}
+                >
+                  <IconoirEmoji aria-hidden focusable="false" />
+                </button>
+
+                {!editingMessage ? (
+                  useNativeTapFileInputs ? (
                     <>
                       <label
                         className={cn(
@@ -3465,9 +3614,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         tabIndex={-1}
                       />
                     </>
-                  )}
-                </div>
-              ) : null}
+                  )
+                ) : null}
+              </div>
 
               <label className="channel-dialog-compose__field">
                 <textarea
@@ -3484,7 +3633,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         ? 'Ответ'
                         : 'Текст'
                   }
-                  maxLength={2_000}
+                  maxLength={COMMENT_DRAFT_MAX_LENGTH}
                 />
               </label>
 
