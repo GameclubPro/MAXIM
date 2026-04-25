@@ -13,6 +13,8 @@ import { GlassCard } from './components/ui/glass-card';
 import { SkeletonCard } from './components/ui/skeleton';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
+import commentsSpaceDarkWallpaperUrl from './assets/wallpapers/comments-space-dark.webp';
+import commentsSpaceLightWallpaperUrl from './assets/wallpapers/comments-space-light.webp';
 import { createApiTransport } from './lib/api/transport';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData, waitForInitData } from './lib/init-data';
@@ -127,6 +129,36 @@ function buildWindowPathForRoute(pathname: string): string {
   return pathname === '/' ? `${PUBLIC_ROUTER_BASENAME}/` : `${PUBLIC_ROUTER_BASENAME}${pathname}`;
 }
 
+function preloadImageAsset(href: string, key: string): void {
+  if (typeof document === 'undefined') {
+    return;
+  }
+
+  if (document.head.querySelector(`link[data-maxim-preload="${key}"]`)) {
+    return;
+  }
+
+  const link = document.createElement('link');
+  link.rel = 'preload';
+  link.as = 'image';
+  link.href = href;
+  link.type = 'image/webp';
+  link.dataset.maximPreload = key;
+  document.head.appendChild(link);
+}
+
+function preloadCommentsWallpaper(): void {
+  const prefersDark =
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const variant = prefersDark ? 'dark' : 'light';
+  preloadImageAsset(
+    prefersDark ? commentsSpaceDarkWallpaperUrl : commentsSpaceLightWallpaperUrl,
+    `comments-wallpaper-${variant}`,
+  );
+}
+
 function applyInitialLaunchRoute(targetRoute: string): void {
   if (typeof window === 'undefined') {
     return;
@@ -155,6 +187,7 @@ function preloadLaunchRouteModule(route: string): void {
 
   const pathname = parsedRoute.pathname;
   if (/^\/(?:chat|channel)\/[^/]+\/dialog\/comments$/u.test(pathname)) {
+    preloadCommentsWallpaper();
     void preloadChannelDialogPage();
     return;
   }
@@ -365,7 +398,10 @@ export function App() {
             <p>Проверьте:</p>
             <ul>
               <li>Запуск идет из MAX, а не по прямой ссылке.</li>
-              <li>В URL сохраняется `WebAppData` во фрагменте `#...` или bridge `window.WebApp.initData`.</li>
+              <li>
+                В URL сохраняется `WebAppData` во фрагменте `#...` или bridge
+                `window.WebApp.initData`.
+              </li>
               <li>
                 Редирект на <code>{PUBLIC_BASE_PATH}</code> не теряет hash-фрагмент и параметры
                 запуска MAX.

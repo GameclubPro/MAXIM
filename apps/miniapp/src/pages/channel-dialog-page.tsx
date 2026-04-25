@@ -67,6 +67,7 @@ import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
+import '../styles/channel-dialog-comments.css';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
