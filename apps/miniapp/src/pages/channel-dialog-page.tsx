@@ -3367,61 +3367,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               </>
             ) : null}
 
-            {showComposeMeta ? (
-              <div
-                className={cn(
-                  'channel-dialog-compose__meta',
-                  !composeMetaLabel && 'channel-dialog-compose__meta--solo',
-                )}
-              >
-                {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
-                <span>
-                  {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
-                </span>
-              </div>
-            ) : null}
-
-            {isComposeEmojiOpen ? (
-              <div
-                id="channel-dialog-compose-emoji-panel"
-                className="channel-dialog-compose__emoji-panel"
-                aria-label="Эмодзи"
-              >
-                <span className="channel-dialog-compose__emoji-handle" aria-hidden />
-                <div className="channel-dialog-compose__emoji-tabs" role="tablist">
-                  {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
-                    <button
-                      key={group.id}
-                      type="button"
-                      className={cn(
-                        'channel-dialog-compose__emoji-tab',
-                        group.id === activeComposeEmojiGroup.id && 'is-active',
-                      )}
-                      role="tab"
-                      aria-selected={group.id === activeComposeEmojiGroup.id}
-                      onClick={() => setActiveComposeEmojiGroupId(group.id)}
-                    >
-                      {group.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="channel-dialog-compose__emoji-grid" role="list">
-                  {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
-                    <button
-                      key={`${emoji}-${emojiIndex}`}
-                      type="button"
-                      className="channel-dialog-compose__emoji"
-                      onClick={() => handleComposeEmojiInsert(emoji)}
-                      aria-label={`Добавить ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="channel-dialog-compose__row">
+            <div className="channel-dialog-compose__toolbar">
               <div
                 className={cn(
                   'channel-dialog-compose__quick-actions',
@@ -3618,6 +3564,76 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 ) : null}
               </div>
 
+              {showComposeMeta ? (
+                <div
+                  className={cn(
+                    'channel-dialog-compose__meta',
+                    !composeMetaLabel && 'channel-dialog-compose__meta--solo',
+                  )}
+                >
+                  {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
+                  <span>
+                    {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                  </span>
+                </div>
+              ) : null}
+            </div>
+
+            {isComposeEmojiOpen ? (
+              <div
+                id="channel-dialog-compose-emoji-panel"
+                className="channel-dialog-compose__emoji-panel"
+                aria-label="Эмодзи"
+              >
+                <div className="channel-dialog-compose__emoji-head">
+                  <span className="channel-dialog-compose__emoji-handle" aria-hidden />
+                  <button
+                    type="button"
+                    className="channel-dialog-compose__emoji-close"
+                    onClick={() => {
+                      maxImpact('light');
+                      setIsComposeEmojiOpen(false);
+                      requestAnimationFrame(() => composeFieldRef.current?.focus());
+                    }}
+                    aria-label="Закрыть эмодзи"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+                <div className="channel-dialog-compose__emoji-tabs" role="tablist">
+                  {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
+                    <button
+                      key={group.id}
+                      type="button"
+                      className={cn(
+                        'channel-dialog-compose__emoji-tab',
+                        group.id === activeComposeEmojiGroup.id && 'is-active',
+                      )}
+                      role="tab"
+                      aria-selected={group.id === activeComposeEmojiGroup.id}
+                      onClick={() => setActiveComposeEmojiGroupId(group.id)}
+                    >
+                      {group.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="channel-dialog-compose__emoji-grid" role="list">
+                  {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
+                    <button
+                      key={`${emoji}-${emojiIndex}`}
+                      type="button"
+                      className="channel-dialog-compose__emoji"
+                      onClick={() => handleComposeEmojiInsert(emoji)}
+                      aria-label={`Добавить ${emoji}`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="channel-dialog-compose__row">
               <label className="channel-dialog-compose__field">
                 <textarea
                   ref={composeFieldRef}
