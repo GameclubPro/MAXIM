@@ -10,76 +10,26 @@ import {
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
 } from '@maxim/contracts';
 import {
-  Antenna as IconoirAntenna,
-  AntennaSignalTag as IconoirAntennaSignalTag,
   Attachment as IconoirAttachment,
-  Atom as IconoirAtom,
   Bell as IconoirBell,
   Bookmark as IconoirBookmark,
-  BrightStar as IconoirBrightStar,
   BubbleStar as IconoirBubbleStar,
   Camera as IconoirCamera,
   ChatLines as IconoirChatLines,
-  CircleSpark as IconoirCircleSpark,
   ClockRotateRight as IconoirClockRotateRight,
-  Compass as IconoirCompass,
-  Drone as IconoirDrone,
-  DroneTakeOff as IconoirDroneTakeOff,
   EmojiSatisfied as IconoirEmojiSatisfied,
-  Flare as IconoirFlare,
-  Flash as IconoirFlash,
   GifFormat as IconoirGifFormat,
-  Globe as IconoirGlobe,
-  Gps as IconoirGps,
-  HalfMoon as IconoirHalfMoon,
   Hashtag as IconoirHashtag,
   Heart as IconoirHeart,
-  Internet as IconoirInternet,
   MessageText as IconoirMessageText,
   Microphone as IconoirMicrophone,
-  MoonSat as IconoirMoonSat,
   MultiBubble as IconoirMultiBubble,
-  Navigator as IconoirNavigator,
-  NavigatorAlt as IconoirNavigatorAlt,
-  Network as IconoirNetwork,
   Pin as IconoirPin,
-  Planet as IconoirPlanet,
-  PlanetAlt as IconoirPlanetAlt,
-  PlanetSat as IconoirPlanetSat,
-  Rocket as IconoirRocket,
   SendDiagonal as IconoirSendDiagonal,
-  Spark as IconoirSpark,
   Sparks as IconoirSparks,
-  Sphere as IconoirSphere,
-  Spiral as IconoirSpiral,
   Star as IconoirStar,
-  StarDashed as IconoirStarDashed,
-  SunLight as IconoirSunLight,
-  ThreeStars as IconoirThreeStars,
   VideoCamera as IconoirVideoCamera,
-  View360 as IconoirView360,
 } from 'iconoir-react';
-import {
-  Atom as PhosphorAtom,
-  Broadcast as PhosphorBroadcast,
-  Circuitry as PhosphorCircuitry,
-  CompassRose as PhosphorCompassRose,
-  CubeFocus as PhosphorCubeFocus,
-  CubeTransparent as PhosphorCubeTransparent,
-  GlobeHemisphereEast as PhosphorGlobeHemisphereEast,
-  GlobeStand as PhosphorGlobeStand,
-  Meteor as PhosphorMeteor,
-  MoonStars as PhosphorMoonStars,
-  NavigationArrow as PhosphorNavigationArrow,
-  Planet as PhosphorPlanet,
-  RocketLaunch as PhosphorRocketLaunch,
-  Scan as PhosphorScan,
-  ShootingStar as PhosphorShootingStar,
-  Sparkle as PhosphorSparkle,
-  StarAndCrescent as PhosphorStarAndCrescent,
-  StarFour as PhosphorStarFour,
-  SunHorizon as PhosphorSunHorizon,
-} from '@phosphor-icons/react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Fragment,
@@ -132,11 +82,7 @@ import { readChatTitle } from '../lib/chat-titles';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import {
-  maxImpact,
-  maxSelectionChanged,
-  openMaxBotLink,
-} from '../lib/max-bridge';
+import { maxImpact, maxSelectionChanged, openMaxBotLink } from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -185,55 +131,7 @@ type CommentBackdropIconName =
   | 'bookmark'
   | 'gif'
   | 'hashtag'
-  | 'video'
-  | 'planet'
-  | 'planet-alt'
-  | 'planet-sat'
-  | 'rocket'
-  | 'moon'
-  | 'sun'
-  | 'stars'
-  | 'spark'
-  | 'globe'
-  | 'flash'
-  | 'bright-star'
-  | 'flare'
-  | 'atom'
-  | 'sphere'
-  | 'spiral'
-  | 'circle-spark'
-  | 'star-dashed'
-  | 'compass'
-  | 'gps'
-  | 'drone'
-  | 'antenna'
-  | 'view-360'
-  | 'moon-sat'
-  | 'navigator'
-  | 'navigator-alt'
-  | 'network'
-  | 'internet'
-  | 'antenna-tag'
-  | 'drone-takeoff'
-  | 'phosphor-planet'
-  | 'phosphor-rocket-launch'
-  | 'phosphor-shooting-star'
-  | 'phosphor-moon-stars'
-  | 'phosphor-meteor'
-  | 'phosphor-sparkle'
-  | 'phosphor-star-four'
-  | 'phosphor-star-crescent'
-  | 'phosphor-sun-horizon'
-  | 'phosphor-atom'
-  | 'phosphor-globe'
-  | 'phosphor-globe-stand'
-  | 'phosphor-compass-rose'
-  | 'phosphor-navigation'
-  | 'phosphor-broadcast'
-  | 'phosphor-circuitry'
-  | 'phosphor-cube-transparent'
-  | 'phosphor-cube-focus'
-  | 'phosphor-scan';
+  | 'video';
 
 type CommentBackdropTone = 'accent' | 'soft' | 'faint';
 type AttachmentInputKind = 'image' | 'file';
@@ -261,132 +159,167 @@ const COMMENT_BACKDROP_WALLPAPER_ROWS = [
     id: 'row-1',
     shift: 'left',
     tiles: [
-      { id: 'ph-planet-1', icon: 'phosphor-planet', tone: 'soft', rotate: -9, scale: 0.94, offsetY: -4 },
-      { id: 'ph-atom-1', icon: 'phosphor-atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 5 },
-      { id: 'ph-moon-stars-1', icon: 'phosphor-moon-stars', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
-      { id: 'ph-shooting-star-1', icon: 'phosphor-shooting-star', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 6 },
-      { id: 'ph-rocket-launch-1', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: -14, scale: 0.9, offsetY: -3 },
+      {
+        id: 'conversation-1',
+        icon: 'conversation',
+        tone: 'soft',
+        rotate: -8,
+        scale: 0.94,
+        offsetY: -4,
+      },
+      { id: 'paperclip-1', icon: 'paperclip', tone: 'faint', rotate: 7, scale: 0.9, offsetY: 5 },
+      { id: 'reaction-1', icon: 'reaction', tone: 'accent', rotate: -8, scale: 0.98, offsetY: -7 },
+      { id: 'send-1', icon: 'send', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 6 },
+      { id: 'heart-1', icon: 'heart', tone: 'faint', rotate: -14, scale: 0.9, offsetY: -3 },
     ],
   },
   {
     id: 'row-2',
     shift: 'right',
     tiles: [
-      { id: 'ph-cube-transparent-1', icon: 'phosphor-cube-transparent', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
-      { id: 'ph-navigation-1', icon: 'phosphor-navigation', tone: 'soft', rotate: 8, scale: 0.86, offsetY: -5 },
-      { id: 'ph-globe-1', icon: 'phosphor-globe', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
-      { id: 'ph-star-four-1', icon: 'phosphor-star-four', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
-      { id: 'ph-broadcast-1', icon: 'phosphor-broadcast', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
+      { id: 'typing-1', icon: 'typing', tone: 'faint', rotate: -11, scale: 0.9, offsetY: 4 },
+      { id: 'camera-1', icon: 'camera', tone: 'soft', rotate: 8, scale: 0.86, offsetY: -5 },
+      { id: 'message-1', icon: 'message', tone: 'accent', rotate: -5, scale: 0.95, offsetY: 5 },
+      { id: 'star-1', icon: 'star', tone: 'faint', rotate: 10, scale: 0.86, offsetY: -7 },
+      { id: 'microphone-1', icon: 'microphone', tone: 'soft', rotate: -6, scale: 0.9, offsetY: 6 },
     ],
   },
   {
     id: 'row-3',
     shift: 'left',
     tiles: [
-      { id: 'ph-scan-1', icon: 'phosphor-scan', tone: 'soft', rotate: -6, scale: 0.94, offsetY: -8 },
-      { id: 'ph-circuitry-1', icon: 'phosphor-circuitry', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'ph-sparkle-1', icon: 'phosphor-sparkle', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
-      { id: 'ph-compass-rose-1', icon: 'phosphor-compass-rose', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
-      { id: 'ph-sun-horizon-1', icon: 'phosphor-sun-horizon', tone: 'soft', rotate: 7, scale: 0.9, offsetY: -6 },
+      { id: 'smile-1', icon: 'smile', tone: 'soft', rotate: -6, scale: 0.94, offsetY: -8 },
+      { id: 'clock-1', icon: 'clock', tone: 'faint', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'sparkles-1', icon: 'sparkles', tone: 'accent', rotate: -5, scale: 0.94, offsetY: -4 },
+      { id: 'bookmark-1', icon: 'bookmark', tone: 'faint', rotate: 10, scale: 0.84, offsetY: 7 },
+      { id: 'pin-1', icon: 'pin', tone: 'soft', rotate: 7, scale: 0.9, offsetY: -6 },
     ],
   },
   {
     id: 'row-4',
     shift: 'right',
     tiles: [
-      { id: 'ph-planet-2', icon: 'phosphor-planet', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
-      { id: 'ph-cube-focus-1', icon: 'phosphor-cube-focus', tone: 'soft', rotate: 7, scale: 0.86, offsetY: -6 },
-      { id: 'ph-meteor-1', icon: 'phosphor-meteor', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
-      { id: 'ph-globe-stand-1', icon: 'phosphor-globe-stand', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
-      { id: 'ph-shooting-star-2', icon: 'phosphor-shooting-star', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
+      { id: 'gif-1', icon: 'gif', tone: 'accent', rotate: 11, scale: 0.92, offsetY: -5 },
+      { id: 'bell-1', icon: 'bell', tone: 'soft', rotate: 7, scale: 0.86, offsetY: -6 },
+      { id: 'video-1', icon: 'video', tone: 'soft', rotate: -8, scale: 0.92, offsetY: 5 },
+      { id: 'hashtag-1', icon: 'hashtag', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -6 },
+      { id: 'message-2', icon: 'message', tone: 'faint', rotate: -10, scale: 0.86, offsetY: 7 },
     ],
   },
   {
     id: 'row-5',
     shift: 'left',
     tiles: [
-      { id: 'ph-broadcast-2', icon: 'phosphor-broadcast', tone: 'faint', rotate: -4, scale: 0.9, offsetY: 6 },
-      { id: 'ph-star-crescent-1', icon: 'phosphor-star-crescent', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
-      { id: 'ph-rocket-launch-2', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
-      { id: 'ph-moon-stars-2', icon: 'phosphor-moon-stars', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
-      { id: 'ph-sparkle-2', icon: 'phosphor-sparkle', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
+      {
+        id: 'conversation-2',
+        icon: 'conversation',
+        tone: 'faint',
+        rotate: -4,
+        scale: 0.9,
+        offsetY: 6,
+      },
+      { id: 'smile-2', icon: 'smile', tone: 'soft', rotate: 9, scale: 0.84, offsetY: -4 },
+      { id: 'send-2', icon: 'send', tone: 'faint', rotate: -13, scale: 0.9, offsetY: 7 },
+      { id: 'paperclip-2', icon: 'paperclip', tone: 'soft', rotate: 6, scale: 0.86, offsetY: -5 },
+      { id: 'reaction-2', icon: 'reaction', tone: 'accent', rotate: 10, scale: 0.9, offsetY: 4 },
     ],
   },
   {
     id: 'row-6',
     shift: 'right',
     tiles: [
-      { id: 'ph-globe-2', icon: 'phosphor-globe', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
-      { id: 'ph-circuitry-2', icon: 'phosphor-circuitry', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
-      { id: 'ph-shooting-star-3', icon: 'phosphor-shooting-star', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
-      { id: 'ph-navigation-2', icon: 'phosphor-navigation', tone: 'accent', rotate: -7, scale: 0.88, offsetY: -5 },
-      { id: 'ph-compass-rose-2', icon: 'phosphor-compass-rose', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
+      { id: 'camera-2', icon: 'camera', tone: 'soft', rotate: 8, scale: 0.9, offsetY: 5 },
+      { id: 'typing-2', icon: 'typing', tone: 'faint', rotate: -9, scale: 0.82, offsetY: -6 },
+      { id: 'heart-2', icon: 'heart', tone: 'faint', rotate: 11, scale: 0.86, offsetY: 7 },
+      {
+        id: 'microphone-2',
+        icon: 'microphone',
+        tone: 'accent',
+        rotate: -7,
+        scale: 0.88,
+        offsetY: -5,
+      },
+      { id: 'star-2', icon: 'star', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 4 },
     ],
   },
   {
     id: 'row-7',
     shift: 'left',
     tiles: [
-      { id: 'ph-sun-horizon-2', icon: 'phosphor-sun-horizon', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
-      { id: 'ph-cube-transparent-2', icon: 'phosphor-cube-transparent', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
-      { id: 'ph-planet-3', icon: 'phosphor-planet', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
-      { id: 'ph-scan-2', icon: 'phosphor-scan', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
-      { id: 'ph-star-four-2', icon: 'phosphor-star-four', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
+      { id: 'bookmark-2', icon: 'bookmark', tone: 'soft', rotate: 6, scale: 0.92, offsetY: -7 },
+      { id: 'sparkles-2', icon: 'sparkles', tone: 'accent', rotate: -7, scale: 0.88, offsetY: 5 },
+      { id: 'bell-2', icon: 'bell', tone: 'soft', rotate: 4, scale: 0.92, offsetY: -3 },
+      { id: 'clock-2', icon: 'clock', tone: 'faint', rotate: -9, scale: 0.88, offsetY: 8 },
+      { id: 'pin-2', icon: 'pin', tone: 'faint', rotate: 8, scale: 0.9, offsetY: -5 },
     ],
   },
   {
     id: 'row-8',
     shift: 'right',
     tiles: [
-      { id: 'ph-shooting-star-4', icon: 'phosphor-shooting-star', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
-      { id: 'ph-navigation-3', icon: 'phosphor-navigation', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
-      { id: 'ph-moon-stars-3', icon: 'phosphor-moon-stars', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
-      { id: 'ph-atom-2', icon: 'phosphor-atom', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
-      { id: 'ph-meteor-2', icon: 'phosphor-meteor', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
+      { id: 'hashtag-2', icon: 'hashtag', tone: 'faint', rotate: 10, scale: 0.9, offsetY: 7 },
+      { id: 'gif-2', icon: 'gif', tone: 'accent', rotate: -11, scale: 0.9, offsetY: -6 },
+      { id: 'video-2', icon: 'video', tone: 'soft', rotate: 5, scale: 0.88, offsetY: 5 },
+      { id: 'message-3', icon: 'message', tone: 'soft', rotate: -7, scale: 0.94, offsetY: -4 },
+      { id: 'heart-3', icon: 'heart', tone: 'faint', rotate: 12, scale: 0.86, offsetY: 6 },
     ],
   },
   {
     id: 'row-9',
     shift: 'left',
     tiles: [
-      { id: 'ph-sparkle-3', icon: 'phosphor-sparkle', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
-      { id: 'ph-broadcast-3', icon: 'phosphor-broadcast', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
-      { id: 'ph-globe-stand-2', icon: 'phosphor-globe-stand', tone: 'faint', rotate: -9, scale: 0.86, offsetY: 7 },
-      { id: 'ph-meteor-3', icon: 'phosphor-meteor', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
-      { id: 'ph-star-crescent-2', icon: 'phosphor-star-crescent', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
+      { id: 'paperclip-3', icon: 'paperclip', tone: 'soft', rotate: -6, scale: 0.94, offsetY: 6 },
+      { id: 'send-3', icon: 'send', tone: 'faint', rotate: 8, scale: 0.82, offsetY: -8 },
+      {
+        id: 'conversation-3',
+        icon: 'conversation',
+        tone: 'faint',
+        rotate: -9,
+        scale: 0.86,
+        offsetY: 7,
+      },
+      { id: 'camera-3', icon: 'camera', tone: 'soft', rotate: 11, scale: 0.84, offsetY: -5 },
+      { id: 'reaction-3', icon: 'reaction', tone: 'accent', rotate: -8, scale: 0.84, offsetY: 5 },
     ],
   },
   {
     id: 'row-10',
     shift: 'right',
     tiles: [
-      { id: 'ph-cube-focus-2', icon: 'phosphor-cube-focus', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'ph-compass-rose-3', icon: 'phosphor-compass-rose', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
-      { id: 'ph-planet-4', icon: 'phosphor-planet', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
-      { id: 'ph-shooting-star-5', icon: 'phosphor-shooting-star', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
-      { id: 'ph-navigation-4', icon: 'phosphor-navigation', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
+      { id: 'typing-3', icon: 'typing', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'smile-3', icon: 'smile', tone: 'soft', rotate: -10, scale: 0.84, offsetY: 7 },
+      { id: 'clock-3', icon: 'clock', tone: 'faint', rotate: 8, scale: 0.86, offsetY: -6 },
+      { id: 'sparkles-3', icon: 'sparkles', tone: 'accent', rotate: -6, scale: 0.92, offsetY: 5 },
+      { id: 'microphone-3', icon: 'microphone', tone: 'soft', rotate: 12, scale: 0.8, offsetY: -4 },
     ],
   },
   {
     id: 'row-11',
     shift: 'left',
     tiles: [
-      { id: 'ph-globe-3', icon: 'phosphor-globe', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
-      { id: 'ph-moon-stars-4', icon: 'phosphor-moon-stars', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
-      { id: 'ph-circuitry-3', icon: 'phosphor-circuitry', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
-      { id: 'ph-atom-3', icon: 'phosphor-atom', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
-      { id: 'ph-sun-horizon-3', icon: 'phosphor-sun-horizon', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
+      { id: 'star-3', icon: 'star', tone: 'soft', rotate: -7, scale: 0.9, offsetY: 4 },
+      { id: 'pin-3', icon: 'pin', tone: 'faint', rotate: 11, scale: 0.86, offsetY: -7 },
+      { id: 'bell-3', icon: 'bell', tone: 'soft', rotate: -5, scale: 0.9, offsetY: 6 },
+      { id: 'bookmark-3', icon: 'bookmark', tone: 'faint', rotate: 7, scale: 0.9, offsetY: -5 },
+      { id: 'message-4', icon: 'message', tone: 'accent', rotate: -10, scale: 0.86, offsetY: 6 },
     ],
   },
   {
     id: 'row-12',
     shift: 'right',
     tiles: [
-      { id: 'ph-rocket-launch-3', icon: 'phosphor-rocket-launch', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
-      { id: 'ph-star-four-3', icon: 'phosphor-star-four', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
-      { id: 'ph-scan-3', icon: 'phosphor-scan', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
-      { id: 'ph-cube-transparent-3', icon: 'phosphor-cube-transparent', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
-      { id: 'ph-shooting-star-6', icon: 'phosphor-shooting-star', tone: 'soft', rotate: 7, scale: 0.86, offsetY: 5 },
+      { id: 'video-3', icon: 'video', tone: 'faint', rotate: 11, scale: 0.82, offsetY: 7 },
+      { id: 'heart-4', icon: 'heart', tone: 'accent', rotate: -6, scale: 0.9, offsetY: -5 },
+      { id: 'send-4', icon: 'send', tone: 'soft', rotate: 8, scale: 0.86, offsetY: 6 },
+      { id: 'hashtag-3', icon: 'hashtag', tone: 'faint', rotate: -8, scale: 0.86, offsetY: -4 },
+      {
+        id: 'conversation-4',
+        icon: 'conversation',
+        tone: 'soft',
+        rotate: 7,
+        scale: 0.86,
+        offsetY: 5,
+      },
     ],
   },
 ] satisfies CommentBackdropWallpaperRow[];
@@ -511,7 +444,9 @@ function resolveCommentAttachmentBadge(
 
   const mimeType = attachment.mimeType?.trim().toLowerCase() ?? '';
   if (mimeType.startsWith('application/')) {
-    return mimeType.slice('application/'.length).split(/[.+-]/u)[0]?.slice(0, 5).toUpperCase() || 'FILE';
+    return (
+      mimeType.slice('application/'.length).split(/[.+-]/u)[0]?.slice(0, 5).toUpperCase() || 'FILE'
+    );
   }
   if (mimeType.startsWith('text/')) {
     return 'TEXT';
@@ -587,7 +522,7 @@ function getCommentAttachmentOpenUrl(attachment: ChannelDialogAttachment): strin
     return remoteUrl;
   }
 
-  return isCommentAttachmentImageLike(attachment) ? attachment.previewUrl?.trim() ?? '' : '';
+  return isCommentAttachmentImageLike(attachment) ? (attachment.previewUrl?.trim() ?? '') : '';
 }
 
 function getCommentAttachmentViewerUrl(attachment: ChannelDialogAttachment): string {
@@ -1316,7 +1251,11 @@ function CommentComposeImageStrip({
   }
 
   return (
-    <div className="channel-dialog-compose__image-strip" role="list" aria-label={`Фото: ${attachments.length}`}>
+    <div
+      className="channel-dialog-compose__image-strip"
+      role="list"
+      aria-label={`Фото: ${attachments.length}`}
+    >
       {attachments.map((attachment, attachmentIndex) => {
         const previewUrl = getCommentComposeAttachmentPreviewUrl(attachment);
         const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
@@ -1368,12 +1307,19 @@ function CommentComposeFileList({
     const fileName = attachment.fileName?.trim() || `Файл ${attachmentIndex + 1}`;
 
     return (
-      <div key={`${fileName}-${attachmentIndex}`} className="channel-dialog-compose__attachment is-file">
+      <div
+        key={`${fileName}-${attachmentIndex}`}
+        className="channel-dialog-compose__attachment is-file"
+      >
         <div className="channel-dialog-compose__attachment-preview" aria-hidden>
           <CommentAttachmentGlyph kind="file" />
         </div>
         <div className="channel-dialog-compose__attachment-copy">
-          <span>{[fileName, attachment.size ? formatDialogAttachmentSize(attachment.size) : null].filter(Boolean).join(' · ')}</span>
+          <span>
+            {[fileName, attachment.size ? formatDialogAttachmentSize(attachment.size) : null]
+              .filter(Boolean)
+              .join(' · ')}
+          </span>
         </div>
         {removable && onRemove ? (
           <button
@@ -1631,102 +1577,6 @@ function CommentBackdropIcon({ name }: { name: CommentBackdropIconName }) {
       return <HashtagOutlineIcon />;
     case 'video':
       return <VideoOutlineIcon />;
-    case 'planet':
-      return <IconoirPlanet strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'planet-alt':
-      return <IconoirPlanetAlt strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'planet-sat':
-      return <IconoirPlanetSat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'rocket':
-      return <IconoirRocket strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'moon':
-      return <IconoirHalfMoon strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'sun':
-      return <IconoirSunLight strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'stars':
-      return <IconoirThreeStars strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'spark':
-      return <IconoirSpark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'globe':
-      return <IconoirGlobe strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'flash':
-      return <IconoirFlash strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'bright-star':
-      return <IconoirBrightStar strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'flare':
-      return <IconoirFlare strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'atom':
-      return <IconoirAtom strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'sphere':
-      return <IconoirSphere strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'spiral':
-      return <IconoirSpiral strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'circle-spark':
-      return <IconoirCircleSpark strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'star-dashed':
-      return <IconoirStarDashed strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'compass':
-      return <IconoirCompass strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'gps':
-      return <IconoirGps strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'drone':
-      return <IconoirDrone strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'antenna':
-      return <IconoirAntenna strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'view-360':
-      return <IconoirView360 strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'moon-sat':
-      return <IconoirMoonSat strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'navigator':
-      return <IconoirNavigator strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'navigator-alt':
-      return <IconoirNavigatorAlt strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'network':
-      return <IconoirNetwork strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'internet':
-      return <IconoirInternet strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'antenna-tag':
-      return <IconoirAntennaSignalTag strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'drone-takeoff':
-      return <IconoirDroneTakeOff strokeWidth={COMMENT_BACKDROP_STROKE} aria-hidden focusable="false" />;
-    case 'phosphor-planet':
-      return <PhosphorPlanet weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-rocket-launch':
-      return <PhosphorRocketLaunch weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-shooting-star':
-      return <PhosphorShootingStar weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-moon-stars':
-      return <PhosphorMoonStars weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-meteor':
-      return <PhosphorMeteor weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-sparkle':
-      return <PhosphorSparkle weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-star-four':
-      return <PhosphorStarFour weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-star-crescent':
-      return <PhosphorStarAndCrescent weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-sun-horizon':
-      return <PhosphorSunHorizon weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-atom':
-      return <PhosphorAtom weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-globe':
-      return <PhosphorGlobeHemisphereEast weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-globe-stand':
-      return <PhosphorGlobeStand weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-compass-rose':
-      return <PhosphorCompassRose weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-navigation':
-      return <PhosphorNavigationArrow weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-broadcast':
-      return <PhosphorBroadcast weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-circuitry':
-      return <PhosphorCircuitry weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-cube-transparent':
-      return <PhosphorCubeTransparent weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-cube-focus':
-      return <PhosphorCubeFocus weight="thin" aria-hidden focusable="false" />;
-    case 'phosphor-scan':
-      return <PhosphorScan weight="thin" aria-hidden focusable="false" />;
     default:
       return null;
   }
@@ -1892,9 +1742,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
   const swipeReplyGestureRef = useRef<SwipeReplyGesture | null>(null);
-  const attachmentInputWatchCleanupRef = useRef<
-    Record<AttachmentInputKind, (() => void) | null>
-  >({
+  const attachmentInputWatchCleanupRef = useRef<Record<AttachmentInputKind, (() => void) | null>>({
     image: null,
     file: null,
   });
@@ -1966,14 +1814,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       durationMs: 4_000,
     });
     navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-  }, [
-    dialogQuery.error,
-    dialogQueryKey,
-    entityType,
-    navigate,
-    pushToast,
-    queryClient,
-  ]);
+  }, [dialogQuery.error, dialogQueryKey, entityType, navigate, pushToast, queryClient]);
 
   useEffect(() => {
     if (!imageViewer) {
@@ -2029,7 +1870,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
   const showComposeMeta = isPreparingAttachment || draftLength > 0 || Boolean(editingMessage);
   const canSubmitMessage =
-    !isPreparingAttachment && (draftLength > 0 || draftAttachmentCount > 0 || editingAttachmentCount > 0);
+    !isPreparingAttachment &&
+    (draftLength > 0 || draftAttachmentCount > 0 || editingAttachmentCount > 0);
   const activeMessageIsOwn = activeMessage ? currentUserId === activeMessage.authorUserId : false;
   const unreadStartIndex = useMemo(
     () =>
@@ -2056,11 +1898,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     [editingMessage?.attachments],
   );
   const draftImageAttachments = useMemo(
-    () => draftAttachments.filter((attachment) => resolveCommentAttachmentKind(attachment) === 'image'),
+    () =>
+      draftAttachments.filter((attachment) => resolveCommentAttachmentKind(attachment) === 'image'),
     [draftAttachments],
   );
   const draftFileAttachments = useMemo(
-    () => draftAttachments.filter((attachment) => resolveCommentAttachmentKind(attachment) === 'file'),
+    () =>
+      draftAttachments.filter((attachment) => resolveCommentAttachmentKind(attachment) === 'file'),
     [draftAttachments],
   );
   const editingImageAttachments = useMemo(
@@ -2113,7 +1957,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     const requestedAttachment = attachments[requestedIndex] ?? null;
     const activeIndex = requestedAttachment
-      ? Math.max(0, viewerAttachments.findIndex((attachment) => attachment === requestedAttachment))
+      ? Math.max(
+          0,
+          viewerAttachments.findIndex((attachment) => attachment === requestedAttachment),
+        )
       : 0;
 
     setActiveMessageId(null);
@@ -2700,9 +2547,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           tone: 'info',
           title: `Добавили ${addedCount} из ${nextAttachments.length}`,
           description:
-            rejectedCount > 0
-              ? description
-              : 'Оставшиеся вложения уже были в комментарии.',
+            rejectedCount > 0 ? description : 'Оставшиеся вложения уже были в комментарии.',
         });
       }
 
@@ -2712,9 +2557,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const buildAttachmentSelectionSignature = (files: File[]): string =>
-    files
-      .map((file) => [file.name, file.size, file.type, file.lastModified].join(':'))
-      .join('|');
+    files.map((file) => [file.name, file.size, file.type, file.lastModified].join(':')).join('|');
 
   const prepareDraftAttachmentsFromFiles = async (kind: AttachmentInputKind, files: File[]) => {
     if (files.length === 0 || editingMessage) {
@@ -2725,7 +2568,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const selectableFiles =
       kind === 'image'
         ? (() => {
-            const remainingSlots = Math.max(0, MAX_CHANNEL_DIALOG_ATTACHMENTS - draftAttachmentCount);
+            const remainingSlots = Math.max(
+              0,
+              MAX_CHANNEL_DIALOG_ATTACHMENTS - draftAttachmentCount,
+            );
             if (remainingSlots <= 0) {
               pushToast({
                 tone: 'info',
@@ -2829,17 +2675,22 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const armDraftAttachmentInputWatcher = (kind: AttachmentInputKind) => {
-    armAttachmentInputWatcher(kind, kind === 'image' ? imageInputRef.current : fileInputRef.current);
+    armAttachmentInputWatcher(
+      kind,
+      kind === 'image' ? imageInputRef.current : fileInputRef.current,
+    );
   };
 
-  const armAttachmentInputWatcher = (
-    kind: AttachmentInputKind,
-    input: HTMLInputElement | null,
-  ) => {
+  const armAttachmentInputWatcher = (kind: AttachmentInputKind, input: HTMLInputElement | null) => {
     attachmentInputWatchCleanupRef.current[kind]?.();
     attachmentInputWatchCleanupRef.current[kind] = null;
 
-    if (typeof window === 'undefined' || typeof document === 'undefined' || !input || input.disabled) {
+    if (
+      typeof window === 'undefined' ||
+      typeof document === 'undefined' ||
+      !input ||
+      input.disabled
+    ) {
       return;
     }
 
@@ -2894,7 +2745,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   };
 
   const handleDraftAttachmentRemove = (index: number) => {
-    setDraftAttachments((current) => current.filter((_, attachmentIndex) => attachmentIndex !== index));
+    setDraftAttachments((current) =>
+      current.filter((_, attachmentIndex) => attachmentIndex !== index),
+    );
     maxSelectionChanged();
     resetAttachmentPickers();
   };
