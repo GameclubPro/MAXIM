@@ -241,6 +241,41 @@ type RequiredSubscriptionMembershipLookupOptions = {
   allowStaleOnError?: boolean;
 };
 
+type InvitationAccessProgressSnapshot = {
+  invitedUserIds: string[];
+  invitedCount: number;
+  completedAt: Date | null;
+};
+
+type InvitationAccessProgressUpdateResult = InvitationAccessProgressSnapshot & {
+  addedInviteeUserIds: string[];
+  completed: boolean;
+};
+
+type InvitationAccessProgressDelegate = {
+  findUnique?: (args: {
+    where: { chatId_userId: { chatId: string; userId: string } };
+    select: { invitedUserIds: true; completedAt: true };
+  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null } | null>;
+  create?: (args: {
+    data: {
+      chatId: string;
+      userId: string;
+      invitedUserIds: string[];
+      completedAt?: Date;
+    };
+    select: { invitedUserIds: true; completedAt: true };
+  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null }>;
+  update?: (args: {
+    where: { chatId_userId: { chatId: string; userId: string } };
+    data: {
+      invitedUserIds: { set: string[] };
+      completedAt?: Date;
+    };
+    select: { invitedUserIds: true; completedAt: true };
+  }) => Promise<{ invitedUserIds: string[]; completedAt: Date | null }>;
+};
+
 type ChannelDialogType = 'comments' | 'suggest';
 
 type ModerationActionAttemptResult =
@@ -300,6 +335,9 @@ const REQUIRED_SUBSCRIPTION_LOOKUP_BACKOFF_MS = 15_000;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_CHANNEL_METADATA_CACHE_TTL_MS = 60_000;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
+const INVITATION_ACCESS_ESCALATION_WINDOW_HOURS = 24;
+const INVITATION_ACCESS_NOTICE_COOLDOWN_SEC = 15 * 60;
+const INVITATION_ACCESS_RULE_CODE = 'INVITATION_ACCESS_REQUIRED';
 const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 5 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS = 1_500;
@@ -513,6 +551,12 @@ function isRequiredSubscriptionCurrentlyActive(
     channelIds.length > 0 &&
     !hasRequiredSubscriptionExpired(settings)
   );
+}
+
+function isInvitationAccessCurrentlyActive(
+  settings: Pick<ChatSettings, 'invitationAccessEnabled' | 'invitationAccessRequiredCount'>,
+): boolean {
+  return settings.invitationAccessEnabled && settings.invitationAccessRequiredCount >= 1;
 }
 
 @Injectable()
@@ -1247,11 +1291,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      const deferHotChatModerationSkipUntilAfterRequiredSubscription =
-        hotChatBackoffActive && isRequiredSubscriptionCurrentlyActive(settings);
+      const deferHotChatModerationSkipUntilAfterAccessGates =
+        hotChatBackoffActive &&
+        (isRequiredSubscriptionCurrentlyActive(settings) ||
+          isInvitationAccessCurrentlyActive(settings));
       if (
         this.shouldSkipHotChatModeration(mode, hotChatBackoffActive) &&
-        !deferHotChatModerationSkipUntilAfterRequiredSubscription
+        !deferHotChatModerationSkipUntilAfterAccessGates
       ) {
         this.logHotChatModerationSkip(chatId, senderId, mode);
         this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
@@ -1264,7 +1310,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const mediaFlags = this.detectMediaFlags(update);
-      if (!deferHotChatModerationSkipUntilAfterRequiredSubscription) {
+      if (!deferHotChatModerationSkipUntilAfterAccessGates) {
         const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
           ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds, {
               chatId,
@@ -1338,7 +1384,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      if (deferHotChatModerationSkipUntilAfterRequiredSubscription) {
+      this.markWebhookHotPathStage(hotPathProfile, 'invitation-access');
+      const invitationAccessHandled = await this.handleInvitationAccessMessage({
+        chatId,
+        userId: senderId,
+        userLabel,
+        messageId,
+        text,
+        createdAt,
+        systemMode: mode,
+        hotChatBackoffActive,
+        settings,
+        rulesPublishedUrl,
+        rulesPublishedMessageId,
+        hotPathProfile,
+      });
+      if (invitationAccessHandled) {
+        return;
+      }
+
+      if (deferHotChatModerationSkipUntilAfterAccessGates) {
         this.logHotChatModerationSkip(chatId, senderId, mode);
         this.markWebhookHotPathStage(hotPathProfile, 'hot-chat-skip');
         void this.runtimeDiagnosticsService?.recordHotPathStageOutcome({
@@ -2523,6 +2588,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private buildInvitationAccessExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    requiredCount: number,
+    invitedCount: number,
+    templateText: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    return this.renderEditableBotSpeechTemplate({
+      style: botSpeechStyle,
+      fieldKey: 'invitationAccessBotMessageText',
+      overrideText: templateText,
+      replacements: {
+        user: userLabel,
+        message_status: this.buildMessageStatusLabel(canDeleteMessage),
+        ...this.buildInvitationAccessTemplateReplacements(requiredCount, invitedCount),
+      },
+    });
+  }
+
+  private buildInvitationAccessWarnExplanation(
+    userLabel: string,
+    requiredCount: number,
+    invitedCount: number,
+    templateText: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    const reason = 'для сообщений нужно пригласить друзей в чат';
+    const warning = 'вынесено предупреждение за доступ без приглашений';
+
+    return this.renderEditableBotSpeechTemplate({
+      style: botSpeechStyle,
+      fieldKey: 'invitationAccessWarnMessageText',
+      overrideText: templateText,
+      replacements: {
+        user: userLabel,
+        reason,
+        warning,
+        ...this.buildInvitationAccessTemplateReplacements(requiredCount, invitedCount),
+      },
+    });
+  }
+
   private buildLinkWarnExplanation(
     userLabel: string,
     templateText: string,
@@ -2554,6 +2662,65 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return normalizedTitles.join(', ');
+  }
+
+  private buildInvitationAccessTemplateReplacements(
+    requiredCount: number,
+    invitedCount: number,
+  ): Record<string, string> {
+    const normalizedRequiredCount = this.normalizeInvitationAccessRequiredCount(requiredCount);
+    const normalizedInvitedCount = Math.max(0, Math.trunc(invitedCount));
+    const visibleInvitedCount = Math.min(normalizedRequiredCount, normalizedInvitedCount);
+    const remainingCount = Math.max(0, normalizedRequiredCount - normalizedInvitedCount);
+
+    return {
+      required_invites: this.formatInvitationAccessInviteCount(normalizedRequiredCount),
+      required_invites_count: String(normalizedRequiredCount),
+      invited_count: String(visibleInvitedCount),
+      remaining_invites: this.formatInvitationAccessInviteCount(remainingCount),
+    };
+  }
+
+  private formatInvitationAccessInviteCount(count: number): string {
+    const normalizedCount = Math.max(0, Math.trunc(count));
+    if (normalizedCount === 1) {
+      return '1 друга';
+    }
+
+    return `${normalizedCount} друзей`;
+  }
+
+  private buildInvitationAccessMuteExplanation(
+    userLabel: string,
+    requiredCount: number,
+    invitedCount: number,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    return this.renderSystemBotSpeechTemplate({
+      style: botSpeechStyle,
+      templateKey: 'invitationAccessMute',
+      replacements: {
+        user: userLabel,
+        ...this.buildInvitationAccessTemplateReplacements(requiredCount, invitedCount),
+      },
+    });
+  }
+
+  private buildInvitationAccessBanExplanation(
+    userLabel: string,
+    requiredCount: number,
+    invitedCount: number,
+    _muteDurationHours: number,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    return this.renderSystemBotSpeechTemplate({
+      style: botSpeechStyle,
+      templateKey: 'invitationAccessBan',
+      replacements: {
+        user: userLabel,
+        ...this.buildInvitationAccessTemplateReplacements(requiredCount, invitedCount),
+      },
+    });
   }
 
   private buildRequiredSubscriptionMuteExplanation(
@@ -2896,9 +3063,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (style === 'POLICE' || style === null) {
       const activeBotPersona = this.resolveActiveBotSpeechProfile().persona;
       if (action === 'WARN') {
-        return activeBotPersona === 'female'
-          ? 'Взяла на карандаш 📝.'
-          : 'Взял на карандаш 📝.';
+        return activeBotPersona === 'female' ? 'Взяла на карандаш 📝.' : 'Взял на карандаш 📝.';
       }
       if (action === 'MUTE') {
         return `Включаю тихий режим на ${muteDurationLabel} 🔒.`;
@@ -3481,6 +3646,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (ruleCode === REQUIRED_SUBSCRIPTION_RULE_CODE) {
       return settings.requiredSubscriptionMuteDurationHours;
+    }
+
+    if (ruleCode === INVITATION_ACCESS_RULE_CODE) {
+      return settings.invitationAccessMuteDurationHours;
     }
 
     if (ruleCode === 'PROFANITY') {
@@ -4500,6 +4669,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
+  private async countRecentInvitationAccessViolations(
+    chatId: string,
+    userId: string,
+  ): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      INVITATION_ACCESS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: INVITATION_ACCESS_RULE_CODE,
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
   private async countRecentTextFilterViolations(
     chatId: string,
     userId: string,
@@ -4998,8 +5203,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       commandMessageId: params.commandMessageId,
       actor: params.actor,
       action: params.command.action,
-      muteDurationHours:
-        params.command.action === 'MUTE' ? params.command.muteDurationHours : null,
+      muteDurationHours: params.command.action === 'MUTE' ? params.command.muteDurationHours : null,
       deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
     });
@@ -6064,6 +6268,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         excludedGreetingUserIds.add(userId);
       }
     }
+
+    await this.handleInvitationAccessMembershipUpdate({
+      chatId,
+      messageId,
+      update,
+      settings,
+    });
 
     if (!settings.greetingEnabled) {
       return;
@@ -7855,6 +8066,614 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
+  private async handleInvitationAccessMembershipUpdate(params: {
+    chatId: string;
+    messageId: string;
+    update: MaxUpdate;
+    settings: Pick<ChatSettings, 'invitationAccessEnabled' | 'invitationAccessRequiredCount'>;
+  }): Promise<void> {
+    if (!isInvitationAccessCurrentlyActive(params.settings)) {
+      return;
+    }
+
+    if (params.update.membership?.action !== 'added') {
+      return;
+    }
+
+    const inviterId = this.extractInvitationAccessInviterId(params.update);
+    if (!inviterId) {
+      return;
+    }
+
+    const invitedUserIds = this.extractInvitationAccessJoinedUserIds(params.update, inviterId);
+    if (invitedUserIds.length === 0) {
+      return;
+    }
+
+    const requiredCount = this.normalizeInvitationAccessRequiredCount(
+      params.settings.invitationAccessRequiredCount,
+    );
+    const progress = await this.addInvitationAccessInvites({
+      chatId: params.chatId,
+      userId: inviterId,
+      invitedUserIds,
+      requiredCount,
+    });
+
+    if (progress.addedInviteeUserIds.length === 0) {
+      return;
+    }
+
+    await this.createBotModerationEvent({
+      data: {
+        chatId: params.chatId,
+        userId: inviterId,
+        messageId: params.messageId,
+        eventType: EventType.SYSTEM,
+        ruleCode: `${INVITATION_ACCESS_RULE_CODE}_PROGRESS`,
+        action: SanctionAction.NONE,
+        maskedExcerpt: null,
+        score: progress.completed ? 0 : 0.1,
+        operator: Operator.BOT,
+        metadata: {
+          reason: 'Invitation access progress updated',
+          addedInviteeUserIds: progress.addedInviteeUserIds,
+          invitedUserIds: progress.invitedUserIds,
+          invitedCount: progress.invitedCount,
+          requiredCount,
+          completed: progress.completed,
+          completedAt: progress.completedAt?.toISOString() ?? null,
+        },
+      },
+    });
+  }
+
+  private async handleInvitationAccessMessage(params: {
+    chatId: string;
+    userId: string;
+    userLabel: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    hotChatBackoffActive: boolean;
+    systemMode: SystemModeSnapshot;
+    settings: Pick<
+      ChatSettings,
+      | 'invitationAccessEnabled'
+      | 'invitationAccessRequiredCount'
+      | 'invitationAccessBotMessageEnabled'
+      | 'invitationAccessBotMessageText'
+      | 'invitationAccessWarnEnabled'
+      | 'invitationAccessWarnMessageText'
+      | 'invitationAccessBanEnabled'
+      | 'invitationAccessMuteEnabled'
+      | 'invitationAccessMuteDurationHours'
+      | 'botSpeechStyle'
+      | 'rulesAttachViolationsEnabled'
+      | 'deleteBotMessagesEnabled'
+      | 'deleteBotMessagesDelayMinutes'
+    >;
+    rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
+    hotPathProfile?: WebhookHotPathProfile | null;
+  }): Promise<boolean> {
+    if (!isInvitationAccessCurrentlyActive(params.settings)) {
+      return false;
+    }
+
+    const requiredCount = this.normalizeInvitationAccessRequiredCount(
+      params.settings.invitationAccessRequiredCount,
+    );
+    const progress = await this.getInvitationAccessProgress(params.chatId, params.userId);
+    if (progress.invitedCount >= requiredCount) {
+      return false;
+    }
+
+    const messageAgeMs = Date.now() - new Date(params.createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1_000;
+    if (!canDeleteMessage) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+        },
+        'Invitation access violation arrived too late to delete message',
+      );
+      return false;
+    }
+
+    const messageDeleted = await this.deleteMessageImmediately(params.chatId, params.messageId);
+    this.markWebhookHotPathStage(params.hotPathProfile, 'invitation-access.delete');
+
+    await this.prisma.violation.create({
+      data: {
+        chatId: params.chatId,
+        userId: params.userId,
+        ruleCode: INVITATION_ACCESS_RULE_CODE,
+        score: 1,
+      },
+    });
+
+    const invitationAccessViolationCount24h = await this.countRecentInvitationAccessViolations(
+      params.chatId,
+      params.userId,
+    );
+    const action = this.resolveRequiredSubscriptionEscalationAction(
+      invitationAccessViolationCount24h,
+      {
+        warnEnabled: params.settings.invitationAccessWarnEnabled,
+        banEnabled: params.settings.invitationAccessBanEnabled,
+        muteEnabled: params.settings.invitationAccessMuteEnabled,
+      },
+    );
+    const isFirstInvitationAccessViolation = invitationAccessViolationCount24h === 1;
+
+    if (messageDeleted) {
+      await this.createBotModerationEvent({
+        data: {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: `${INVITATION_ACCESS_RULE_CODE}_DELETE`,
+          action: SanctionAction.DELETE_MESSAGE,
+          maskedExcerpt: maskText(params.text),
+          score: 1,
+          operator: Operator.BOT,
+          metadata: {
+            action: SanctionAction.DELETE_MESSAGE,
+            invitedCount: progress.invitedCount,
+            requiredCount,
+            remainingInvites: Math.max(0, requiredCount - progress.invitedCount),
+          },
+        },
+      });
+    }
+
+    const invitationAccessMessageOptions =
+      this.buildBotMessageOptions(
+        params.chatId,
+        [],
+        false,
+        '',
+        DEFAULT_BOT_BUTTON_TEXT,
+        params.settings.rulesAttachViolationsEnabled,
+        params.rulesPublishedUrl,
+        params.rulesPublishedMessageId,
+      ) ?? undefined;
+
+    const sendInvitationAccessBotMessage = async (textValue: string) =>
+      this.sendBotMessageWithOptionalAutoDelete({
+        chatId: params.chatId,
+        text: textValue,
+        messageOptions: invitationAccessMessageOptions,
+        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+      });
+    const invitationAccessNoticeSkipReason = this.resolveOptionalWebhookStageSkipReason({
+      stage: 'invitation-access.notice',
+      hotPathProfile: params.hotPathProfile,
+      systemMode: params.systemMode,
+      hotChatBackoffActive: params.hotChatBackoffActive,
+      minRemainingMs: REQUIRED_SUBSCRIPTION_NOTICE_MIN_REMAINING_MS,
+    });
+    const canSendInvitationAccessNotice = !invitationAccessNoticeSkipReason;
+    if (invitationAccessNoticeSkipReason) {
+      this.recordOptionalWebhookStageSkip({
+        stage: 'invitation-access.notice',
+        reason: invitationAccessNoticeSkipReason,
+      });
+    }
+
+    if (action === SanctionAction.NONE) {
+      if (
+        isFirstInvitationAccessViolation &&
+        params.settings.invitationAccessBotMessageEnabled &&
+        canSendInvitationAccessNotice
+      ) {
+        const noticeOnCooldown = await this.hasInvitationAccessNoticeCooldown(
+          params.chatId,
+          params.userId,
+        );
+        if (!noticeOnCooldown) {
+          try {
+            await sendInvitationAccessBotMessage(
+              this.buildInvitationAccessExplanation(
+                params.userLabel,
+                messageDeleted,
+                requiredCount,
+                progress.invitedCount,
+                params.settings.invitationAccessBotMessageText,
+                params.settings.botSpeechStyle,
+              ),
+            );
+            await this.markInvitationAccessNoticeSent(params.chatId, params.userId);
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: params.chatId,
+                userId: params.userId,
+                messageId: params.messageId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send invitation access explanation message',
+            );
+          }
+        }
+      }
+    } else if (action === SanctionAction.WARN && canSendInvitationAccessNotice) {
+      try {
+        await sendInvitationAccessBotMessage(
+          this.buildInvitationAccessWarnExplanation(
+            params.userLabel,
+            requiredCount,
+            progress.invitedCount,
+            params.settings.invitationAccessWarnMessageText,
+            params.settings.botSpeechStyle,
+          ),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId: params.messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send invitation access warning message',
+        );
+      }
+    }
+
+    if (action !== SanctionAction.NONE) {
+      await this.applySanctionAction({
+        chatId: params.chatId,
+        userId: params.userId,
+        action,
+        userLabel: params.userLabel,
+        messageId: params.messageId,
+        muteDurationHours: params.settings.invitationAccessMuteDurationHours,
+        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+        botMessageOptions: invitationAccessMessageOptions,
+        sanctionNoticeText:
+          action === SanctionAction.BAN
+            ? this.buildInvitationAccessBanExplanation(
+                params.userLabel,
+                requiredCount,
+                progress.invitedCount,
+                params.settings.invitationAccessMuteDurationHours,
+                params.settings.botSpeechStyle,
+              )
+            : undefined,
+        botSpeechStyle: params.settings.botSpeechStyle,
+        trackAsGlobalSpammer: false,
+      });
+
+      if (action === SanctionAction.MUTE && canSendInvitationAccessNotice) {
+        try {
+          await sendInvitationAccessBotMessage(
+            this.buildInvitationAccessMuteExplanation(
+              params.userLabel,
+              requiredCount,
+              progress.invitedCount,
+              params.settings.botSpeechStyle,
+            ),
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: params.chatId,
+              userId: params.userId,
+              messageId: params.messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send invitation access mute message',
+          );
+        }
+      }
+    }
+
+    await this.createBotModerationEvent({
+      data: {
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId: params.messageId,
+        eventType: EventType.MESSAGE,
+        ruleCode: INVITATION_ACCESS_RULE_CODE,
+        action,
+        maskedExcerpt: maskText(params.text),
+        score: 1,
+        operator: Operator.BOT,
+        metadata: {
+          action,
+          invitedCount: progress.invitedCount,
+          requiredCount,
+          remainingInvites: Math.max(0, requiredCount - progress.invitedCount),
+          invitationAccessViolationCount24h,
+          invitationAccessEscalationWindowHours: INVITATION_ACCESS_ESCALATION_WINDOW_HOURS,
+        },
+      },
+    });
+
+    return true;
+  }
+
+  private extractInvitationAccessInviterId(update: MaxUpdate): string {
+    const membershipInviterId =
+      typeof update.membership?.inviterId === 'string' ? update.membership.inviterId.trim() : '';
+    if (membershipInviterId) {
+      return membershipInviterId;
+    }
+
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return '';
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    const typePayload = typeof update.type === 'string' ? this.asRecord(raw[update.type]) : null;
+    const candidates = [
+      raw,
+      typePayload,
+      data,
+      data ? this.asRecord(data[update.type]) : null,
+      event,
+      event ? this.asRecord(event[update.type]) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const actor =
+        this.asRecord(candidate.inviter) ??
+        this.asRecord(candidate.invited_by) ??
+        this.asRecord(candidate.actor) ??
+        this.asRecord(candidate.initiator);
+      const values = [
+        candidate.inviter_id,
+        candidate.inviterId,
+        candidate.invited_by_id,
+        candidate.invitedById,
+        candidate.actor_id,
+        candidate.actorId,
+        candidate.initiator_id,
+        candidate.initiatorId,
+        actor?.id,
+        actor?.user_id,
+        actor?.userId,
+      ];
+
+      for (const value of values) {
+        const userId = this.readScalarId(value);
+        if (userId) {
+          return userId;
+        }
+      }
+    }
+
+    return '';
+  }
+
+  private extractInvitationAccessJoinedUserIds(update: MaxUpdate, inviterId: string): string[] {
+    const humanUserIds = this.extractHumanServiceMembers(update).map((member) => member.userId);
+    const fallbackUserIds =
+      update.membership?.action === 'added' ? (update.membership.memberUserIds ?? []) : [];
+
+    return this.normalizeInvitationAccessInviteeUserIds(
+      humanUserIds.length > 0 ? humanUserIds : fallbackUserIds,
+      inviterId,
+    );
+  }
+
+  private normalizeInvitationAccessInviteeUserIds(
+    userIds: readonly string[],
+    inviterId: string,
+  ): string[] {
+    const normalizedInviterId = inviterId.trim();
+    const uniqueUserIds = new Set<string>();
+
+    for (const value of userIds) {
+      const userId = typeof value === 'string' ? value.trim() : '';
+      if (!userId || userId === normalizedInviterId) {
+        continue;
+      }
+      uniqueUserIds.add(userId);
+    }
+
+    return [...uniqueUserIds];
+  }
+
+  private readScalarId(value: unknown): string {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return '';
+    }
+
+    return String(value).trim();
+  }
+
+  private normalizeInvitationAccessRequiredCount(value: number): number {
+    const numericValue = Number.isFinite(value) ? Math.trunc(value) : 1;
+    return Math.min(3, Math.max(1, numericValue));
+  }
+
+  private async getInvitationAccessProgress(
+    chatId: string,
+    userId: string,
+  ): Promise<InvitationAccessProgressSnapshot> {
+    const delegate = this.getInvitationAccessProgressDelegate(this.prisma);
+    if (!delegate?.findUnique) {
+      return {
+        invitedUserIds: [],
+        invitedCount: 0,
+        completedAt: null,
+      };
+    }
+
+    const row = await delegate.findUnique({
+      where: { chatId_userId: { chatId, userId } },
+      select: { invitedUserIds: true, completedAt: true },
+    });
+
+    return this.normalizeInvitationAccessProgressSnapshot(row);
+  }
+
+  private async addInvitationAccessInvites(params: {
+    chatId: string;
+    userId: string;
+    invitedUserIds: readonly string[];
+    requiredCount: number;
+  }): Promise<InvitationAccessProgressUpdateResult> {
+    const normalizedInviteeUserIds = this.normalizeInvitationAccessInviteeUserIds(
+      params.invitedUserIds,
+      params.userId,
+    );
+
+    if (normalizedInviteeUserIds.length === 0) {
+      const current = await this.getInvitationAccessProgress(params.chatId, params.userId);
+      return {
+        ...current,
+        addedInviteeUserIds: [],
+        completed: current.invitedCount >= params.requiredCount,
+      };
+    }
+
+    return this.runInvitationAccessProgressTransaction(async (client) => {
+      const delegate = this.getInvitationAccessProgressDelegate(client);
+      if (!delegate?.findUnique || !delegate.create || !delegate.update) {
+        return {
+          invitedUserIds: [],
+          invitedCount: 0,
+          completedAt: null,
+          addedInviteeUserIds: [],
+          completed: false,
+        };
+      }
+
+      const existing = await delegate.findUnique({
+        where: { chatId_userId: { chatId: params.chatId, userId: params.userId } },
+        select: { invitedUserIds: true, completedAt: true },
+      });
+      const existingSnapshot = this.normalizeInvitationAccessProgressSnapshot(existing);
+      const existingInviteeUserIds = new Set(existingSnapshot.invitedUserIds);
+      const addedInviteeUserIds = normalizedInviteeUserIds.filter(
+        (inviteeUserId) => !existingInviteeUserIds.has(inviteeUserId),
+      );
+      const nextInvitedUserIds = Array.from(
+        new Set([...existingSnapshot.invitedUserIds, ...normalizedInviteeUserIds]),
+      );
+      const completed = nextInvitedUserIds.length >= params.requiredCount;
+      const shouldMarkCompleted = completed && !existingSnapshot.completedAt;
+      const completedAt = shouldMarkCompleted ? new Date() : existingSnapshot.completedAt;
+
+      const select = { invitedUserIds: true, completedAt: true } as const;
+      const row = existing
+        ? await delegate.update({
+            where: { chatId_userId: { chatId: params.chatId, userId: params.userId } },
+            data: {
+              invitedUserIds: { set: nextInvitedUserIds },
+              ...(shouldMarkCompleted ? { completedAt: completedAt ?? new Date() } : {}),
+            },
+            select,
+          })
+        : await delegate.create({
+            data: {
+              chatId: params.chatId,
+              userId: params.userId,
+              invitedUserIds: nextInvitedUserIds,
+              ...(completedAt ? { completedAt } : {}),
+            },
+            select,
+          });
+      const snapshot = this.normalizeInvitationAccessProgressSnapshot(row);
+
+      return {
+        ...snapshot,
+        addedInviteeUserIds,
+        completed: snapshot.invitedCount >= params.requiredCount,
+      };
+    });
+  }
+
+  private async runInvitationAccessProgressTransaction<T>(
+    operation: (client: unknown) => Promise<T>,
+  ): Promise<T> {
+    const prisma = this.prisma as unknown as {
+      $transaction?: <R>(
+        callback: (client: unknown) => Promise<R>,
+        options?: { isolationLevel?: Prisma.TransactionIsolationLevel },
+      ) => Promise<R>;
+    };
+
+    if (typeof prisma.$transaction !== 'function') {
+      return operation(this.prisma);
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await prisma.$transaction(operation, {
+          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        });
+      } catch (error: unknown) {
+        if (attempt >= maxAttempts || !this.isPrismaSerializationFailure(error)) {
+          throw error;
+        }
+      }
+    }
+
+    return operation(this.prisma);
+  }
+
+  private isPrismaSerializationFailure(error: unknown): boolean {
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? String((error as { code?: unknown }).code)
+        : '';
+    if (code === 'P2034') {
+      return true;
+    }
+
+    const message = error instanceof Error ? error.message : '';
+    return message.toLowerCase().includes('could not serialize access');
+  }
+
+  private getInvitationAccessProgressDelegate(
+    client: unknown,
+  ): InvitationAccessProgressDelegate | null {
+    const delegate =
+      client && typeof client === 'object'
+        ? (client as { chatInvitationAccessProgress?: unknown }).chatInvitationAccessProgress
+        : null;
+    if (!delegate || typeof delegate !== 'object') {
+      return null;
+    }
+
+    return delegate as InvitationAccessProgressDelegate;
+  }
+
+  private normalizeInvitationAccessProgressSnapshot(
+    row: { invitedUserIds: string[]; completedAt: Date | null } | null,
+  ): InvitationAccessProgressSnapshot {
+    const invitedUserIds = Array.from(
+      new Set(
+        (Array.isArray(row?.invitedUserIds) ? row.invitedUserIds : [])
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item) => item.length > 0),
+      ),
+    );
+
+    return {
+      invitedUserIds,
+      invitedCount: invitedUserIds.length,
+      completedAt: row?.completedAt ?? null,
+    };
+  }
+
   private readRequiredSubscriptionChannelIds(value: Prisma.JsonValue): string[] {
     if (!Array.isArray(value)) {
       return [];
@@ -8348,12 +9167,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async hasInvitationAccessNoticeCooldown(
+    chatId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const cacheKey = this.buildInvitationAccessNoticeCooldownKey(chatId, userId);
+    const cached = await this.redisCounter?.getString(cacheKey);
+    return cached === '1';
+  }
+
+  private async markInvitationAccessNoticeSent(chatId: string, userId: string): Promise<void> {
+    const cacheKey = this.buildInvitationAccessNoticeCooldownKey(chatId, userId);
+    await this.redisCounter?.setStringWithTtl(cacheKey, '1', INVITATION_ACCESS_NOTICE_COOLDOWN_SEC);
+  }
+
   private buildRequiredSubscriptionMembershipCacheKey(channelId: string, userId: string): string {
     return `required-subscription:member:v1:${channelId}:${userId}`;
   }
 
   private buildRequiredSubscriptionNoticeCooldownKey(chatId: string, userId: string): string {
     return `required-subscription:notice:v1:${chatId}:${userId}`;
+  }
+
+  private buildInvitationAccessNoticeCooldownKey(chatId: string, userId: string): string {
+    return `invitation-access:notice:v1:${chatId}:${userId}`;
   }
 
   private isNightModeActiveNow(settings: {

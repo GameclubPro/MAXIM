@@ -10,6 +10,7 @@ export type ApplySectionKey =
   | 'limits'
   | 'night'
   | 'requiredSubscription'
+  | 'invitationAccess'
   | 'extra';
 
 export const NIGHT_SECTION_SETTING_KEYS = [
@@ -157,6 +158,17 @@ export const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatS
     'requiredSubscriptionMuteEnabled',
     'requiredSubscriptionMuteDurationHours',
     'requiredSubscriptionBanEnabled',
+  ],
+  invitationAccess: [
+    'invitationAccessEnabled',
+    'invitationAccessRequiredCount',
+    'invitationAccessBotMessageEnabled',
+    'invitationAccessBotMessageText',
+    'invitationAccessWarnEnabled',
+    'invitationAccessWarnMessageText',
+    'invitationAccessMuteEnabled',
+    'invitationAccessMuteDurationHours',
+    'invitationAccessBanEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',

@@ -67,6 +67,7 @@ export const applySettingsSectionSchema = z.enum([
   'limits',
   'night',
   'requiredSubscription',
+  'invitationAccess',
   'extra',
 ]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
@@ -121,6 +122,8 @@ export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
 export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN = 1;
 export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX = 14;
 export const REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT = 7;
+export const INVITATION_ACCESS_REQUIRED_COUNT_MIN = 1;
+export const INVITATION_ACCESS_REQUIRED_COUNT_MAX = 3;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
@@ -136,12 +139,7 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
-const requiredSubscriptionMuteDurationHoursSchema = z
-  .number()
-  .int()
-  .min(1)
-  .max(336)
-  .default(6);
+const requiredSubscriptionMuteDurationHoursSchema = z.number().int().min(1).max(336).default(6);
 const requiredSubscriptionDurationDaysSchema = z
   .number()
   .int()
@@ -149,6 +147,12 @@ const requiredSubscriptionDurationDaysSchema = z
   .max(REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX)
   .default(REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT);
 const requiredSubscriptionExpiresAtSchema = z.string().trim().max(64).default('');
+const invitationAccessRequiredCountSchema = z
+  .number()
+  .int()
+  .min(INVITATION_ACCESS_REQUIRED_COUNT_MIN)
+  .max(INVITATION_ACCESS_REQUIRED_COUNT_MAX)
+  .default(INVITATION_ACCESS_REQUIRED_COUNT_MIN);
 const deleteBotMessagesDelayMinutesSchema = z
   .number()
   .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
@@ -622,6 +626,7 @@ const AUTO_MUTE_DURATION_FIELD_KEYS = [
   'messageLimitsMuteDurationHours',
   'profanityMuteDurationHours',
   'requiredSubscriptionMuteDurationHours',
+  'invitationAccessMuteDurationHours',
   'textFiltersMuteDurationHours',
   'thematicFiltersMuteDurationHours',
 ] as const;
@@ -690,6 +695,15 @@ export const chatSettingsSchema = z
       requiredSubscriptionBanEnabled: z.boolean().default(false),
       requiredSubscriptionMuteEnabled: z.boolean().default(false),
       requiredSubscriptionMuteDurationHours: requiredSubscriptionMuteDurationHoursSchema,
+      invitationAccessEnabled: z.boolean().default(false),
+      invitationAccessRequiredCount: invitationAccessRequiredCountSchema,
+      invitationAccessBotMessageEnabled: z.boolean().default(true),
+      invitationAccessBotMessageText: botMessageTextSchema,
+      invitationAccessWarnEnabled: z.boolean().default(false),
+      invitationAccessWarnMessageText: botMessageTextSchema,
+      invitationAccessBanEnabled: z.boolean().default(false),
+      invitationAccessMuteEnabled: z.boolean().default(false),
+      invitationAccessMuteDurationHours: autoMuteDurationHoursSchema,
       commentsEnabled: z.boolean().default(false),
       commentsAdminsEnabled: z.boolean().default(true),
       commentsAllEnabled: z.boolean().default(false),
@@ -3397,7 +3411,9 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       });
     }
 
-    const fileAttachments = normalizedAttachments.filter((attachment) => attachment.type === 'file');
+    const fileAttachments = normalizedAttachments.filter(
+      (attachment) => attachment.type === 'file',
+    );
     if (fileAttachments.length > MAX_CHANNEL_DIALOG_COMMENT_FILES) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -3508,7 +3524,10 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   editedAt: z.string().datetime().nullable().optional(),
   replyToMessageId: z.string().nullable().optional(),
   replyTo: channelDialogReplyPreviewSchema.nullable().optional(),
-  attachments: z.array(channelDialogAttachmentSchema).max(MAX_CHANNEL_DIALOG_ATTACHMENTS).default([]),
+  attachments: z
+    .array(channelDialogAttachmentSchema)
+    .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
+    .default([]),
   reactionGroups: z.array(channelDialogReactionGroupSchema).default([]),
   canEdit: z.boolean().default(false),
   canDelete: z.boolean().default(false),
@@ -3614,6 +3633,7 @@ export const maxMessagePayloadSchema = z.object({
 export const maxMembershipChangeSchema = z.object({
   action: z.enum(['added', 'removed']),
   memberUserIds: z.array(z.string()).min(1),
+  inviterId: z.string().optional(),
 });
 
 export const maxUpdateSchema = z.object({

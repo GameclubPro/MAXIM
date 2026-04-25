@@ -28,12 +28,14 @@ describe('ModerationService chat admin access lookups', () => {
       configService as never,
     );
 
-    await (service as unknown as {
-      loadRemoteChatAdminAccessBatch: (
-        chatId: string,
-        userIds: readonly string[],
-      ) => Promise<Map<string, 'granted' | 'user_denied'>>;
-    }).loadRemoteChatAdminAccessBatch('-100123', ['user-1']);
+    await (
+      service as unknown as {
+        loadRemoteChatAdminAccessBatch: (
+          chatId: string,
+          userIds: readonly string[],
+        ) => Promise<Map<string, 'granted' | 'user_denied'>>;
+      }
+    ).loadRemoteChatAdminAccessBatch('-100123', ['user-1']);
 
     expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
       '-100123',
@@ -71,20 +73,20 @@ describe('ModerationService chat admin access lookups', () => {
       configService as never,
     );
 
-    const setTimeoutSpy = jest
-      .spyOn(global, 'setTimeout')
-      .mockImplementation((((callback: TimerHandler) => {
-        const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
-        queueMicrotask(() => {
-          if (typeof callback === 'function') {
-            callback();
-          }
-        });
-        return timer;
-      }) as unknown) as typeof setTimeout);
+    const setTimeoutSpy = jest.spyOn(global, 'setTimeout').mockImplementation(((
+      callback: TimerHandler,
+    ) => {
+      const timer = { unref: jest.fn() } as unknown as NodeJS.Timeout;
+      queueMicrotask(() => {
+        if (typeof callback === 'function') {
+          callback();
+        }
+      });
+      return timer;
+    }) as unknown as typeof setTimeout);
     const clearTimeoutSpy = jest
       .spyOn(global, 'clearTimeout')
-      .mockImplementation(((() => undefined) as unknown) as typeof clearTimeout);
+      .mockImplementation((() => undefined) as unknown as typeof clearTimeout);
 
     try {
       const lookup = (
@@ -163,6 +165,15 @@ describe('ModerationService chat admin access lookups', () => {
           requiredSubscriptionBanEnabled: false,
           requiredSubscriptionMuteEnabled: false,
           requiredSubscriptionMuteDurationHours: 6,
+          invitationAccessEnabled: false,
+          invitationAccessRequiredCount: 1,
+          invitationAccessBotMessageEnabled: true,
+          invitationAccessBotMessageText: '',
+          invitationAccessWarnEnabled: false,
+          invitationAccessWarnMessageText: '',
+          invitationAccessBanEnabled: false,
+          invitationAccessMuteEnabled: false,
+          invitationAccessMuteDurationHours: 6,
           commentsEnabled: false,
           commentsAdminsEnabled: true,
           commentsAllEnabled: false,
@@ -348,12 +359,7 @@ describe('ModerationService chat admin access lookups', () => {
         findMany: jest.fn().mockResolvedValue([{ userId: 'iduser-1' }]),
       },
     };
-    const service = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
 
     const [first, second] = await Promise.all([
       (

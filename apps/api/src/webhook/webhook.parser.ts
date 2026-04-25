@@ -25,13 +25,20 @@ export class WebhookParser {
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
     const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
     const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
+    const membershipInviterId = this.extractMembershipInviterId(membershipPayload, payload);
     const chatEntityType = this.extractChatEntityType(message, payload, membershipPayload);
     const resolvedMessageId =
       messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
     const resolvedChatId = chatId || membershipChatId;
     const resolvedSenderId = senderId || membershipSenderId;
     const resolvedSenderName = senderName ?? membershipSenderName;
-    const membership = this.extractMembershipChange(payload, type, message, resolvedSenderId);
+    const membership = this.extractMembershipChange(
+      payload,
+      type,
+      message,
+      resolvedSenderId,
+      membershipInviterId,
+    );
     const hasMessage =
       Boolean(message && resolvedMessageId && resolvedChatId) ||
       Boolean(this.isSyntheticMessageUpdateType(type) && resolvedChatId);
@@ -117,6 +124,7 @@ export class WebhookParser {
     type: string,
     message: Record<string, unknown> | undefined,
     resolvedSenderId: string,
+    inviterId?: string,
   ): MaxUpdate['membership'] | undefined {
     const normalizedType = type.trim().toLowerCase();
 
@@ -137,6 +145,7 @@ export class WebhookParser {
             ? 'removed'
             : 'added',
         memberUserIds,
+        ...(inviterId && normalizedType === 'user_added' ? { inviterId } : {}),
       };
     }
 
@@ -242,6 +251,55 @@ export class WebhookParser {
     );
     const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
     return fullName.length > 0 ? fullName : undefined;
+  }
+
+  private extractMembershipInviterId(
+    membershipPayload: Record<string, unknown> | null,
+    payload: Record<string, unknown>,
+  ): string | undefined {
+    const data = this.asRecord(payload.data);
+    const event = this.asRecord(payload.event);
+    const candidates = [
+      membershipPayload,
+      membershipPayload ? this.asRecord(membershipPayload.inviter) : null,
+      membershipPayload ? this.asRecord(membershipPayload.invited_by) : null,
+      data,
+      data ? this.asRecord(data.inviter) : null,
+      data ? this.asRecord(data.invited_by) : null,
+      event,
+      event ? this.asRecord(event.inviter) : null,
+      event ? this.asRecord(event.invited_by) : null,
+      payload,
+      this.asRecord(payload.inviter),
+      this.asRecord(payload.invited_by),
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const inviter = this.asRecord(candidate.inviter) ?? this.asRecord(candidate.invited_by);
+      const values = [
+        candidate.inviter_id,
+        candidate.inviterId,
+        candidate.invited_by_id,
+        candidate.invitedById,
+        inviter?.id,
+        inviter?.user_id,
+        inviter?.userId,
+      ];
+      for (const value of values) {
+        if (typeof value === 'string' || typeof value === 'number') {
+          const normalized = String(value).trim();
+          if (normalized) {
+            return normalized;
+          }
+        }
+      }
+    }
+
+    return undefined;
   }
 
   private extractChatEntityType(
@@ -1197,17 +1255,10 @@ export class WebhookParser {
     return this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
   }
 
-  private normalizeChatEntityType(
-    row: Record<string, unknown>,
-  ): 'chat' | 'channel' | undefined {
+  private normalizeChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' | undefined {
     const isChannel = this.readBoolean(row.is_channel ?? row.isChannel);
     const rawType = this.readLowerString(
-      row.chat_type ??
-        row.chatType ??
-        row.type ??
-        row.kind ??
-        row.entity_type ??
-        row.entityType,
+      row.chat_type ?? row.chatType ?? row.type ?? row.kind ?? row.entity_type ?? row.entityType,
     );
     if (rawType === 'channel') {
       return 'channel';

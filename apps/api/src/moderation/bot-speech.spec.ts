@@ -18,6 +18,8 @@ function createBotSpeechSettings(
     linkWarnMessageText: '',
     requiredSubscriptionBotMessageText: '',
     requiredSubscriptionWarnMessageText: '',
+    invitationAccessBotMessageText: '',
+    invitationAccessWarnMessageText: '',
     textFiltersBotMessageText: '',
     textFiltersWarnMessageText: '',
     duplicateBotMessageText: '',
@@ -139,9 +141,7 @@ describe('bot speech styles', () => {
         null,
         'ROBOT',
       ),
-    ).toBe(
-      '⚠️ **Алексей**, это предупреждение. Причина: слишком длинное сообщение.',
-    );
+    ).toBe('⚠️ **Алексей**, это предупреждение. Причина: слишком длинное сообщение.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
       'Здравия, **Алексей** 👮‍♂️ На линии Майор Максимов. Осваивайтесь спокойно, тут порядок без лишней драмы.',
@@ -249,7 +249,9 @@ describe('bot speech styles', () => {
     );
     expect(
       (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'IRONIC'),
-    ).toBe('☀️ Тихий режим снят. Группа снова открыта. Можно снова писать, только без резкого старта.');
+    ).toBe(
+      '☀️ Тихий режим снят. Группа снова открыта. Можно снова писать, только без резкого старта.',
+    );
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
       '**Алексей**, ссылку убрал 🔗 Тут и без внешнего интернета хватает приключений.',

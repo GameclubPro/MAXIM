@@ -268,6 +268,16 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-invitation-access',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'invitationAccess',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'chat-settings-broadcast',
     path: '/chat/preview-chat/settings',
     searchParams: {

@@ -119,6 +119,8 @@ import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
+  INVITATION_ACCESS_REQUIRED_COUNT_MAX,
+  INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_DEFAULT,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX,
   REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN,
@@ -783,6 +785,17 @@ const SETTINGS_SECTION_KEYS = {
     'requiredSubscriptionBanEnabled',
     'requiredSubscriptionMuteEnabled',
     'requiredSubscriptionMuteDurationHours',
+  ],
+  invitationAccess: [
+    'invitationAccessEnabled',
+    'invitationAccessRequiredCount',
+    'invitationAccessBotMessageEnabled',
+    'invitationAccessBotMessageText',
+    'invitationAccessWarnEnabled',
+    'invitationAccessWarnMessageText',
+    'invitationAccessBanEnabled',
+    'invitationAccessMuteEnabled',
+    'invitationAccessMuteDurationHours',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -8155,8 +8168,10 @@ export class AdminService implements OnModuleDestroy {
     },
   ): ChatSettings {
     const normalized = this.normalizeNightModeSettings(
-      this.normalizeMessageLimitsBlockedWords(
-        this.normalizeRequiredSubscriptionSettings(settings, currentState, options),
+      this.normalizeInvitationAccessSettings(
+        this.normalizeMessageLimitsBlockedWords(
+          this.normalizeRequiredSubscriptionSettings(settings, currentState, options),
+        ),
       ),
       currentState,
     );
@@ -8213,6 +8228,21 @@ export class AdminService implements OnModuleDestroy {
       requiredSubscriptionChannelIds,
       requiredSubscriptionDurationDays,
       requiredSubscriptionExpiresAt,
+    };
+  }
+
+  private normalizeInvitationAccessSettings(settings: ChatSettings): ChatSettings {
+    const invitationAccessRequiredCount = Math.min(
+      INVITATION_ACCESS_REQUIRED_COUNT_MAX,
+      Math.max(
+        INVITATION_ACCESS_REQUIRED_COUNT_MIN,
+        Math.round(Number(settings.invitationAccessRequiredCount)),
+      ),
+    );
+
+    return {
+      ...settings,
+      invitationAccessRequiredCount,
     };
   }
 
@@ -11398,9 +11428,7 @@ export class AdminService implements OnModuleDestroy {
   ): string[] {
     const normalized = Array.from(
       new Set(
-        targetChatIds
-          .map((item) => item.trim())
-          .filter((item): item is string => item.length > 0),
+        targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
       ),
     );
     if (normalized.length > 0) {
@@ -15068,10 +15096,7 @@ export class AdminService implements OnModuleDestroy {
     };
   }
 
-  private async deleteManualGroupCommandMessage(
-    chatId: string,
-    messageId: string,
-  ): Promise<void> {
+  private async deleteManualGroupCommandMessage(chatId: string, messageId: string): Promise<void> {
     try {
       await this.maxClient.deleteMessage(chatId, messageId, {
         immediate: true,
@@ -15143,9 +15168,7 @@ export class AdminService implements OnModuleDestroy {
     };
     if (params.deleteBotMessagesEnabled) {
       options.autoDeleteDelayMs =
-        normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) *
-        60 *
-        1_000;
+        normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1_000;
     }
     return options;
   }

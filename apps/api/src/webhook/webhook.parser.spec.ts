@@ -575,6 +575,26 @@ describe('WebhookParser', () => {
     });
   });
 
+  it('keeps inviter id for user_added updates', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-added-inviter-1',
+      update_type: 'user_added',
+      chat_id: -123456789,
+      inviter_id: 777,
+      user: {
+        user_id: 888,
+        first_name: 'Иван',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.membership).toEqual({
+      action: 'added',
+      memberUserIds: ['888'],
+      inviterId: '777',
+    });
+  });
+
   it('builds normalized message for user_removed update without message payload', () => {
     const parsed = parser.parse({
       update_id: 'upd-user-removed-1',

@@ -252,6 +252,16 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     requiredSubscriptionWarnMessageText: '',
     requiredSubscriptionBanEnabled: false,
     requiredSubscriptionMuteEnabled: false,
+    requiredSubscriptionMuteDurationHours: 6,
+    invitationAccessEnabled: false,
+    invitationAccessRequiredCount: 1,
+    invitationAccessBotMessageEnabled: true,
+    invitationAccessBotMessageText: '',
+    invitationAccessWarnEnabled: false,
+    invitationAccessWarnMessageText: '',
+    invitationAccessBanEnabled: false,
+    invitationAccessMuteEnabled: false,
+    invitationAccessMuteDurationHours: 6,
     linkBotMessageEnabled: true,
     linkBotMessageText: '',
     linkWarnEnabled: false,
@@ -3913,6 +3923,123 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('tracks invitation access progress from user_added inviter id', async () => {
+    const progressRows = new Map<string, { invitedUserIds: string[]; completedAt: Date | null }>();
+    const prismaRef: { current: unknown } = { current: null };
+    const prisma = {
+      $transaction: jest.fn(async (callback: (client: unknown) => Promise<unknown>) =>
+        callback(prismaRef.current),
+      ),
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            invitationAccessEnabled: true,
+            invitationAccessRequiredCount: 2,
+            greetingEnabled: false,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      chatInvitationAccessProgress: {
+        findUnique: jest.fn(
+          async ({ where }: { where: { chatId_userId: { chatId: string; userId: string } } }) => {
+            const key = `${where.chatId_userId.chatId}:${where.chatId_userId.userId}`;
+            return progressRows.get(key) ?? null;
+          },
+        ),
+        create: jest.fn(
+          async ({
+            data,
+          }: {
+            data: {
+              chatId: string;
+              userId: string;
+              invitedUserIds: string[];
+              completedAt?: Date;
+            };
+          }) => {
+            const row = {
+              invitedUserIds: data.invitedUserIds,
+              completedAt: data.completedAt ?? null,
+            };
+            progressRows.set(`${data.chatId}:${data.userId}`, row);
+            return row;
+          },
+        ),
+        update: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    prismaRef.current = prisma;
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+    const update = {
+      ...createUserAddedUpdate(),
+      membership: {
+        action: 'added' as const,
+        memberUserIds: ['user-added-1'],
+        inviterId: 'inviter-1',
+      },
+      raw: {
+        ...createUserAddedUpdate().raw,
+        inviter_id: 'inviter-1',
+      },
+    };
+
+    await service.handleUpdate(update);
+
+    expect(prisma.chatInvitationAccessProgress.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'inviter-1',
+          invitedUserIds: ['user-added-1'],
+        }),
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'inviter-1',
+        messageId: 'user_added:upd-user-added-1',
+        ruleCode: 'INVITATION_ACCESS_REQUIRED_PROGRESS',
+        action: SanctionAction.NONE,
+      }),
+    });
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
   it('skips system mode lookup for user_added service events', async () => {
@@ -16216,12 +16343,15 @@ describe('ModerationService', () => {
       getBotTokenSync: jest.fn().mockReturnValue('test-bot-token'),
       buildMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string, botId?: string | null) =>
-          `https://max.ru/${encodeURIComponent(botId?.trim() || 'scan-bot-2')}?startapp=${startParam}`,
+        .mockImplementation(
+          (startParam: string, botId?: string | null) =>
+            `https://max.ru/${encodeURIComponent(botId?.trim() || 'scan-bot-2')}?startapp=${startParam}`,
         ),
       buildEntryMiniappStartUrlSync: jest
         .fn()
-        .mockImplementation((startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`),
+        .mockImplementation(
+          (startParam: string) => `https://max.ru/test-bot?startapp=${startParam}`,
+        ),
       resolveContactIdSync: jest.fn((botId?: string | null) =>
         botId === 'scan-bot-2' ? '990002' : null,
       ),
