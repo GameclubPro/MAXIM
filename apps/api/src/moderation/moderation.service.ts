@@ -1090,7 +1090,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const updateType = this.readLowerString(update.type);
       const senderIsOwnBotInMessage =
-        updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
+        updateType === 'message_created' && senderId
+          ? this.isCurrentBotSender(senderId, update)
+          : false;
       if (senderIsOwnBotInMessage) {
         await this.handleOwnBotMessageAutoDelete({
           chatId,
@@ -1107,16 +1109,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const senderIsOwnBot = this.isOwnBotSender(senderId);
-      const senderIsBot = senderIsOwnBot || this.isBotAuthoredMessage(update);
+      const senderIsCurrentBot = this.isCurrentBotSender(senderId, update);
+      const senderIsBot = senderIsOwnBot || senderIsCurrentBot || this.isBotAuthoredMessage(update);
       if (senderIsBot) {
-        if (settings.removeBotsFromGroupEnabled && !senderIsOwnBot) {
+        const senderUsesOwnBotCleanup = senderIsOwnBot || senderIsCurrentBot;
+        const mayModerateOtherBotContent =
+          (!senderUsesOwnBotCleanup && settings.removeBotsFromGroupEnabled) ||
+          (senderUsesOwnBotCleanup && !senderIsCurrentBot && settings.deleteBotMessagesEnabled);
+        if (
+          !senderIsCurrentBot &&
+          mayModerateOtherBotContent &&
+          (await this.isOtherBotAdminModerationBypass({
+            chatId,
+            localAdminUserIds: chat.adminUserIds,
+            senderId,
+            degradeMode,
+            hotChatBackoffActive,
+          }))
+        ) {
+          return;
+        }
+
+        if (settings.removeBotsFromGroupEnabled && !senderUsesOwnBotCleanup) {
           await this.handleBotMessage({
             chatId,
             userId: senderId,
             messageId,
             text,
           });
-        } else if (senderIsOwnBot) {
+        } else if (senderUsesOwnBotCleanup) {
           await this.handleOwnBotMessageAutoDelete({
             chatId,
             userId: senderId,
@@ -10513,6 +10534,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async isOtherBotAdminModerationBypass(params: {
+    chatId: string;
+    localAdminUserIds: string[] | undefined;
+    senderId: string;
+    degradeMode: boolean;
+    hotChatBackoffActive: boolean;
+  }): Promise<boolean> {
+    const { chatId, localAdminUserIds, senderId, degradeMode, hotChatBackoffActive } = params;
+    const senderAdminCheck = await this.resolveSenderChatAdminCheck(
+      chatId,
+      localAdminUserIds,
+      senderId,
+      {
+        allowRemoteLookup: !degradeMode && !hotChatBackoffActive,
+        skipRemoteLookupWhenLocalAdminsKnown: false,
+        remoteLookupSoftTimeoutMs:
+          !degradeMode && !hotChatBackoffActive
+            ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
+            : undefined,
+      },
+    );
+    if (!senderAdminCheck.isAdmin) {
+      return false;
+    }
+
+    this.logger.debug(
+      {
+        chatId,
+        userId: senderId,
+        source: senderAdminCheck.source,
+      },
+      'Moderation bypassed for admin bot sender',
+    );
+    return true;
+  }
+
   private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
     if (!Array.isArray(adminUserIds) || adminUserIds.length === 0) {
       return false;
@@ -14803,6 +14860,74 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return false;
+  }
+
+  private isCurrentBotSender(userId: string, update: MaxUpdate): boolean {
+    const senderVariants = this.buildStrictBotIdVariants(userId);
+    if (senderVariants.size === 0) {
+      return false;
+    }
+
+    const explicitCurrentBotIds = [
+      this.maxBotContextService?.getActiveBotId?.(),
+      this.readString(update.botId),
+    ]
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+
+    if (explicitCurrentBotIds.length > 0) {
+      const currentBotIdentities = new Set(
+        explicitCurrentBotIds
+          .flatMap((botId) => [
+            botId,
+            this.readString(this.maxBotLinkService?.resolveContactIdSync?.(botId)),
+          ])
+          .filter((botId): botId is string => typeof botId === 'string' && botId.length > 0),
+      );
+      return [...currentBotIdentities].some((botId) =>
+        this.hasBotIdVariantOverlap(senderVariants, this.buildStrictBotIdVariants(botId)),
+      );
+    }
+
+    return this.hasBotIdVariantOverlap(this.buildBotIdVariants(userId), this.ownBotUserIdVariants);
+  }
+
+  private hasBotIdVariantOverlap(left: Set<string>, right: Set<string>): boolean {
+    if (left.size === 0 || right.size === 0) {
+      return false;
+    }
+
+    for (const variant of left) {
+      if (right.has(variant)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private buildStrictBotIdVariants(value: string | null | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set<string>();
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return new Set<string>();
+    }
+
+    const variants = new Set<string>([normalized]);
+    if (normalized.startsWith('id') && normalized.length > 2) {
+      variants.add(normalized.slice(2));
+    }
+    if (normalized.endsWith('_bot') && normalized.length > 4) {
+      variants.add(normalized.slice(0, -4));
+    }
+    if (normalized.startsWith('id') && normalized.endsWith('_bot') && normalized.length > 6) {
+      variants.add(normalized.slice(2, -4));
+    }
+
+    return variants;
   }
 
   private buildBotIdVariants(value: string | null | undefined): Set<string> {

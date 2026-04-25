@@ -1741,6 +1741,101 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not auto-delete messages from another configured bot when that bot is a chat admin', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'bot-1',
+            {
+              userId: 'bot-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+    const maxBotLinkService = {
+      isKnownBotUserId: jest.fn((userId: string) => userId === 'bot-1'),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxBotLinkService as never,
+    );
+
+    await service.handleUpdate({
+      ...createBotAuthoredUpdate(),
+      botId: 'bot-active',
+    });
+
+    expect(maxBotLinkService.isKnownBotUserId).toHaveBeenCalledWith('bot-1');
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['bot-1'],
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('schedules auto-delete when MAX_BOT_ID is in id..._bot format', async () => {
     const prisma = {
       chat: {
@@ -3146,6 +3241,82 @@ describe('ModerationService', () => {
         action: SanctionAction.KICK,
       }),
     });
+  });
+
+  it('does not remove bot-authored admin messages when remove-bots toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ removeBotsFromGroupEnabled: true }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'bot-1',
+            {
+              userId: 'bot-1',
+              isAdmin: true,
+              isOwner: false,
+              permissions: [],
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotAuthoredUpdate());
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['bot-1'],
+      expect.objectContaining({ trafficClass: 'interactive' }),
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('auto-leaves chats from join denylist on bot_added update', async () => {
