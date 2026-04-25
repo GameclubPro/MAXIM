@@ -2637,21 +2637,19 @@
 
 .channel-dialog-screen--comments {
   color-scheme: light;
-  --dialog-accent: #41a6d9;
-  --dialog-bg-start: #dce8ee;
-  --dialog-bg-mid: #d5e3e9;
-  --dialog-bg-end: #c6d7df;
+  --dialog-accent: #4d9cf7;
+  --dialog-bg-start: #c7edfb;
+  --dialog-bg-mid: #d6f5ff;
+  --dialog-bg-end: #c7effd;
   --dialog-surface: rgba(255, 255, 255, 0.88);
-  --dialog-wallpaper-ink: rgba(45, 75, 96, 0.14);
-  --dialog-wallpaper-soft: rgba(36, 122, 171, 0.14);
-  --dialog-wallpaper-warm: rgba(76, 142, 99, 0.13);
+  --channel-dialog-wallpaper-image: url('../assets/wallpapers/comments-space-light.webp');
   --channel-dialog-ink: #17212b;
   --channel-dialog-rail: #4fa8dc;
   --channel-dialog-energy: #a8d96d;
   --channel-dialog-coral: #df776a;
-  --channel-dialog-compose-fade-start: rgba(213, 227, 233, 0);
-  --channel-dialog-compose-fade-mid: rgba(213, 227, 233, 0.72);
-  --channel-dialog-compose-fade-end: rgba(230, 240, 232, 0.96);
+  --channel-dialog-compose-fade-start: rgba(199, 239, 253, 0);
+  --channel-dialog-compose-fade-mid: rgba(199, 239, 253, 0.68);
+  --channel-dialog-compose-fade-end: rgba(199, 239, 253, 0.92);
   padding: 2px clamp(7px, 1.8vw, 12px) max(2px, var(--safe-bottom));
   --channel-dialog-comments-bubble-max-width: min(calc(100% - 48px), 37rem);
   --channel-dialog-comments-bubble-medium-max-width: min(calc(100% - 54px), 33rem);
@@ -2672,13 +2670,12 @@
 .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
   overflow: hidden;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.24), transparent 28%),
-    linear-gradient(
-      180deg,
-      var(--dialog-bg-start) 0%,
-      var(--dialog-bg-mid) 48%,
-      var(--dialog-bg-end) 100%
-    );
+    linear-gradient(180deg, rgba(255, 255, 255, 0.1), rgba(199, 239, 253, 0.06)),
+    var(--channel-dialog-wallpaper-image),
+    linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
 }
 
 .channel-dialog-screen__backdrop {
@@ -2697,111 +2694,6 @@
       transparent 32%
     ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.42), transparent 26%);
-}
-
-.channel-dialog-screen__wallpaper {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  display: grid;
-  grid-template-rows: repeat(12, clamp(58px, 16vw, 82px));
-  align-content: start;
-  gap: clamp(3px, 1.4vw, 8px);
-  padding: clamp(12px, 3.3vw, 22px) clamp(0px, 1.2vw, 8px) 72px;
-  pointer-events: none;
-  opacity: 0.9;
-  contain: layout paint;
-  -webkit-mask-image: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0.42),
-    rgba(0, 0, 0, 0.94) 8%,
-    rgba(0, 0, 0, 0.94) 86%,
-    rgba(0, 0, 0, 0.34)
-  );
-  mask-image: linear-gradient(
-    180deg,
-    rgba(0, 0, 0, 0.42),
-    rgba(0, 0, 0, 0.94) 8%,
-    rgba(0, 0, 0, 0.94) 86%,
-    rgba(0, 0, 0, 0.34)
-  );
-}
-
-.channel-dialog-screen__wallpaper-row {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  align-items: center;
-  justify-items: center;
-  column-gap: clamp(2px, 1.2vw, 10px);
-  min-height: 0;
-}
-
-.channel-dialog-screen__wallpaper-row.is-shift-left {
-  transform: translateX(-9%);
-}
-
-.channel-dialog-screen__wallpaper-row.is-shift-right {
-  transform: translateX(9%);
-}
-
-.channel-dialog-screen__wallpaper-tile {
-  display: block;
-  width: clamp(33px, 9.2vw, 50px);
-  height: clamp(33px, 9.2vw, 50px);
-  filter: drop-shadow(0 10px 18px rgba(24, 72, 104, 0.08));
-  transform: translateY(var(--channel-dialog-wallpaper-offset-y, 0px))
-    rotate(var(--channel-dialog-wallpaper-rotation, 0deg))
-    scale(
-      calc(var(--channel-dialog-wallpaper-scale, 1) * var(--channel-dialog-wallpaper-size-boost, 1))
-    );
-  transform-origin: center;
-}
-
-.channel-dialog-screen__wallpaper-row:nth-child(4n + 1)
-  .channel-dialog-screen__wallpaper-tile:nth-child(2),
-.channel-dialog-screen__wallpaper-row:nth-child(4n + 3)
-  .channel-dialog-screen__wallpaper-tile:nth-child(5) {
-  --channel-dialog-wallpaper-size-boost: 1.22;
-}
-
-.channel-dialog-screen__wallpaper-row:nth-child(3n + 1)
-  .channel-dialog-screen__wallpaper-tile:nth-child(4),
-.channel-dialog-screen__wallpaper-row:nth-child(3n + 2)
-  .channel-dialog-screen__wallpaper-tile:nth-child(1) {
-  --channel-dialog-wallpaper-size-boost: 1.42;
-}
-
-.channel-dialog-screen__wallpaper-row:nth-child(5n + 2)
-  .channel-dialog-screen__wallpaper-tile:nth-child(3),
-.channel-dialog-screen__wallpaper-row:nth-child(5n + 4)
-  .channel-dialog-screen__wallpaper-tile:nth-child(2) {
-  --channel-dialog-wallpaper-size-boost: 1.62;
-}
-
-.channel-dialog-screen__wallpaper-row:nth-child(6n)
-  .channel-dialog-screen__wallpaper-tile:nth-child(4) {
-  --channel-dialog-wallpaper-size-boost: 1.8;
-}
-
-.channel-dialog-screen__wallpaper-tile.is-faint {
-  color: var(--dialog-wallpaper-ink);
-}
-
-.channel-dialog-screen__wallpaper-tile.is-soft {
-  color: var(--dialog-wallpaper-soft);
-}
-
-.channel-dialog-screen__wallpaper-tile.is-accent {
-  color: var(--dialog-wallpaper-warm);
-}
-
-.channel-dialog-screen__wallpaper-tile svg {
-  display: block;
-  width: 100%;
-  height: 100%;
-  overflow: visible;
-  stroke-linecap: round;
-  stroke-linejoin: round;
 }
 
 .channel-dialog-shell,
@@ -4726,40 +4618,29 @@
 @media (prefers-color-scheme: dark) {
   .channel-dialog-screen--comments {
     color-scheme: dark;
-    --dialog-accent: #5eb5f7;
-    --dialog-bg-start: #0e1621;
-    --dialog-bg-mid: #101a25;
-    --dialog-bg-end: #17212b;
+    --dialog-accent: #3769bd;
+    --dialog-bg-start: #001127;
+    --dialog-bg-mid: #031a35;
+    --dialog-bg-end: #000b19;
     --dialog-surface: rgba(27, 39, 51, 0.9);
-    --dialog-wallpaper-ink: rgba(180, 205, 221, 0.12);
-    --dialog-wallpaper-soft: rgba(92, 176, 239, 0.14);
-    --dialog-wallpaper-warm: rgba(128, 201, 136, 0.12);
+    --channel-dialog-wallpaper-image: url('../assets/wallpapers/comments-space-dark.webp');
     --channel-dialog-ink: #2b5278;
     --channel-dialog-rail: #61b3f2;
     --channel-dialog-energy: #82d26c;
     --channel-dialog-coral: #f08b78;
-    --channel-dialog-compose-fade-start: rgba(14, 22, 33, 0);
-    --channel-dialog-compose-fade-mid: rgba(14, 22, 33, 0.72);
-    --channel-dialog-compose-fade-end: rgba(14, 22, 33, 0.96);
+    --channel-dialog-compose-fade-start: rgba(0, 11, 25, 0);
+    --channel-dialog-compose-fade-mid: rgba(0, 11, 25, 0.72);
+    --channel-dialog-compose-fade-end: rgba(0, 11, 25, 0.96);
   }
 
   .channel-dialog-screen--comments .channel-dialog-screen__backdrop {
     background:
-      linear-gradient(180deg, rgba(255, 255, 255, 0.035), transparent 30%),
-      linear-gradient(
-        180deg,
-        var(--dialog-bg-start) 0%,
-        var(--dialog-bg-mid) 52%,
-        var(--dialog-bg-end) 100%
-      );
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-screen__wallpaper {
-    opacity: 0.78;
-  }
-
-  .channel-dialog-screen--comments .channel-dialog-screen__wallpaper-tile {
-    filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.22));
+      linear-gradient(180deg, rgba(0, 11, 25, 0.18), rgba(0, 11, 25, 0.08)),
+      var(--channel-dialog-wallpaper-image),
+      linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: cover;
   }
 
   .channel-dialog-screen--comments .channel-dialog-thread-context--summary p {
