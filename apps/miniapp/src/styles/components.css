@@ -6456,6 +6456,18 @@
   }
 }
 
+.channel-dialog-screen--comments .channel-dialog-screen__backdrop {
+  background-position:
+    center,
+    center top,
+    center;
+  background-repeat: no-repeat, no-repeat, no-repeat;
+  background-size:
+    100% 100%,
+    100% auto,
+    100% 100%;
+}
+
 .chats-search-card__field input {
   min-height: 44px;
 }
