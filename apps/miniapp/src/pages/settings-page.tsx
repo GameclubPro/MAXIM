@@ -256,18 +256,6 @@ const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_SOFT_MAX = 24;
 const COMMERCIAL_BALANCED_MAX = 69;
 const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES;
-const INVITATION_ACCESS_REQUIRED_COUNT_OPTIONS = Array.from(
-  {
-    length: INVITATION_ACCESS_REQUIRED_COUNT_MAX - INVITATION_ACCESS_REQUIRED_COUNT_MIN + 1,
-  },
-  (_, index) => {
-    const value = INVITATION_ACCESS_REQUIRED_COUNT_MIN + index;
-    return {
-      value: String(value),
-      label: formatInvitationAccessCount(value),
-    };
-  },
-);
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
@@ -1623,8 +1611,11 @@ function formatInvitationAccessCount(count: number): string {
   if (safeCount === 1) {
     return '1 друг';
   }
+  if (safeCount >= 2 && safeCount <= 4) {
+    return `${safeCount} друга`;
+  }
 
-  return `${safeCount} друга`;
+  return `${safeCount} друзей`;
 }
 
 function clampRequiredSubscriptionDurationDays(days: number): number {
@@ -3741,6 +3732,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       clampRequiredSubscriptionDurationDays(
         nextValue,
       ) as ChatSettings['requiredSubscriptionDurationDays'],
+    );
+  }
+
+  function setInvitationAccessRequiredCountValue(nextValue: number) {
+    setFieldValue(
+      'invitationAccessRequiredCount',
+      clampInvitationAccessRequiredCount(
+        nextValue,
+      ) as ChatSettings['invitationAccessRequiredCount'],
     );
   }
 
@@ -10743,7 +10743,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         <div className="required-subscription__timer-slider-wrap">
                           <input
-                            className="required-subscription__timer-slider"
+                            className="required-subscription__timer-slider invitation-access__slider"
                             type="range"
                             min={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MIN}
                             max={REQUIRED_SUBSCRIPTION_DURATION_DAYS_MAX}
@@ -11339,21 +11339,69 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         </div>
 
-                        <SegmentedControl
-                          value={String(invitationAccessRequiredCount)}
-                          options={INVITATION_ACCESS_REQUIRED_COUNT_OPTIONS}
-                          onChange={(value) =>
-                            setFieldValue(
-                              'invitationAccessRequiredCount',
-                              Number(value) as ChatSettings['invitationAccessRequiredCount'],
-                            )
-                          }
-                          ariaLabel="Сколько друзей нужно пригласить"
-                        />
+                        <div className="ban-duration-stepper" aria-label="Порог приглашений">
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() =>
+                              setInvitationAccessRequiredCountValue(
+                                invitationAccessRequiredCount - 1,
+                              )
+                            }
+                            disabled={
+                              invitationAccessRequiredCount <= INVITATION_ACCESS_REQUIRED_COUNT_MIN
+                            }
+                            aria-label="Уменьшить порог приглашений"
+                          >
+                            -
+                          </button>
 
-                        <small className="field__hint">
-                          Прогресс обновляется по событиям MAX, где есть пригласивший пользователь.
-                        </small>
+                          <output className="ban-duration-stepper__value" aria-live="polite">
+                            {formatInvitationAccessCount(invitationAccessRequiredCount)}
+                          </output>
+
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() =>
+                              setInvitationAccessRequiredCountValue(
+                                invitationAccessRequiredCount + 1,
+                              )
+                            }
+                            disabled={
+                              invitationAccessRequiredCount >= INVITATION_ACCESS_REQUIRED_COUNT_MAX
+                            }
+                            aria-label="Увеличить порог приглашений"
+                          >
+                            +
+                          </button>
+                        </div>
+
+                        <div className="required-subscription__timer-slider-wrap">
+                          <input
+                            className="required-subscription__timer-slider"
+                            type="range"
+                            min={INVITATION_ACCESS_REQUIRED_COUNT_MIN}
+                            max={INVITATION_ACCESS_REQUIRED_COUNT_MAX}
+                            step={1}
+                            value={invitationAccessRequiredCount}
+                            onChange={(event) =>
+                              setInvitationAccessRequiredCountValue(Number(event.target.value))
+                            }
+                            style={
+                              {
+                                '--required-subscription-slider-progress': `${
+                                  ((invitationAccessRequiredCount -
+                                    INVITATION_ACCESS_REQUIRED_COUNT_MIN) /
+                                    (INVITATION_ACCESS_REQUIRED_COUNT_MAX -
+                                      INVITATION_ACCESS_REQUIRED_COUNT_MIN)) *
+                                  100
+                                }%`,
+                              } as CSSProperties
+                            }
+                            aria-label="Сколько друзей нужно пригласить"
+                          />
+                        </div>
                       </div>
 
                       <div

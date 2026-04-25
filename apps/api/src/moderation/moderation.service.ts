@@ -11,6 +11,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import {
   DEFAULT_BROADCAST_BUTTON_TEXT,
+  INVITATION_ACCESS_REQUIRED_COUNT_MAX,
+  INVITATION_ACCESS_REQUIRED_COUNT_MIN,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
@@ -8497,8 +8499,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private normalizeInvitationAccessRequiredCount(value: number): number {
-    const numericValue = Number.isFinite(value) ? Math.trunc(value) : 1;
-    return Math.min(3, Math.max(1, numericValue));
+    const numericValue = Number.isFinite(value)
+      ? Math.trunc(value)
+      : INVITATION_ACCESS_REQUIRED_COUNT_MIN;
+    return Math.min(
+      INVITATION_ACCESS_REQUIRED_COUNT_MAX,
+      Math.max(INVITATION_ACCESS_REQUIRED_COUNT_MIN, numericValue),
+    );
   }
 
   private async getInvitationAccessProgress(

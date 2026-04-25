@@ -3410,8 +3410,7 @@
   padding: 13px 14px;
   border-radius: 18px;
   border: 1px solid rgba(11, 132, 255, 0.18);
-  background:
-    linear-gradient(180deg, rgba(241, 247, 255, 0.96), rgba(252, 253, 255, 0.98));
+  background: linear-gradient(180deg, rgba(241, 247, 255, 0.96), rgba(252, 253, 255, 0.98));
   color: inherit;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.86),
@@ -8578,6 +8577,10 @@
 
 .required-subscription__timer-slider {
   --required-subscription-slider-progress: 0%;
+  --settings-range-start: #1781d4;
+  --settings-range-end: #31a0ff;
+  --settings-range-thumb: #1781d4;
+  --settings-range-shadow: rgba(24, 87, 136, 0.16);
   width: 100%;
   height: 18px;
   appearance: none;
@@ -8594,8 +8597,8 @@
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    #1781d4 0%,
-    #31a0ff var(--required-subscription-slider-progress),
+    var(--settings-range-start) 0%,
+    var(--settings-range-end) var(--required-subscription-slider-progress),
     rgba(196, 213, 228, 0.76) var(--required-subscription-slider-progress),
     rgba(226, 235, 243, 0.96) 100%
   );
@@ -8607,8 +8610,8 @@
   border-radius: 999px;
   background: linear-gradient(
     90deg,
-    #1781d4 0%,
-    #31a0ff var(--required-subscription-slider-progress),
+    var(--settings-range-start) 0%,
+    var(--settings-range-end) var(--required-subscription-slider-progress),
     rgba(196, 213, 228, 0.76) var(--required-subscription-slider-progress),
     rgba(226, 235, 243, 0.96) 100%
   );
@@ -8620,18 +8623,25 @@
   height: 18px;
   margin-top: -6px;
   border-radius: 50%;
-  border: 3px solid #1781d4;
+  border: 3px solid var(--settings-range-thumb);
   background: #fff;
-  box-shadow: 0 5px 12px rgba(24, 87, 136, 0.16);
+  box-shadow: 0 5px 12px var(--settings-range-shadow);
 }
 
 .required-subscription__timer-slider::-moz-range-thumb {
   width: 18px;
   height: 18px;
-  border: 3px solid #1781d4;
+  border: 3px solid var(--settings-range-thumb);
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 5px 12px rgba(24, 87, 136, 0.16);
+  box-shadow: 0 5px 12px var(--settings-range-shadow);
+}
+
+.invitation-access__slider {
+  --settings-range-start: #128467;
+  --settings-range-end: #35c29c;
+  --settings-range-thumb: #128467;
+  --settings-range-shadow: rgba(18, 132, 103, 0.18);
 }
 
 .required-subscription__timer-scale {
@@ -9094,8 +9104,7 @@
   border: 0;
   padding: 0;
   background:
-    radial-gradient(circle at top, rgba(28, 91, 176, 0.14), transparent 42%),
-    rgba(7, 18, 30, 0.42);
+    radial-gradient(circle at top, rgba(28, 91, 176, 0.14), transparent 42%), rgba(7, 18, 30, 0.42);
   backdrop-filter: blur(16px);
 }
 
@@ -9193,8 +9202,7 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.92));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(239, 246, 255, 0.92));
   color: #37546f;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.94),
@@ -9250,8 +9258,7 @@
   padding: 0 12px 0 14px;
   border-radius: 20px;
   border: 1px solid rgba(92, 127, 163, 0.14);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 248, 255, 0.94));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(243, 248, 255, 0.94));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
     0 14px 28px rgba(23, 52, 81, 0.05);
@@ -9346,8 +9353,7 @@
   padding: 13px 14px;
   border-radius: 22px;
   border: 1px solid rgba(95, 128, 161, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(244, 248, 253, 0.95));
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(244, 248, 253, 0.95));
   position: relative;
   overflow: hidden;
   box-shadow:
@@ -9496,8 +9502,7 @@
   padding: 20px 18px;
   border-radius: 24px;
   border: 1px dashed rgba(95, 126, 156, 0.16);
-  background:
-    linear-gradient(180deg, rgba(247, 250, 255, 0.82), rgba(241, 247, 255, 0.7));
+  background: linear-gradient(180deg, rgba(247, 250, 255, 0.82), rgba(241, 247, 255, 0.7));
   color: #617a93;
   text-align: center;
   display: grid;
@@ -9526,8 +9531,7 @@
   margin: 0 -4px -2px;
   border-radius: 24px;
   border: 1px solid rgba(96, 129, 162, 0.12);
-  background:
-    linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(241, 247, 255, 0.94));
+  background: linear-gradient(180deg, rgba(252, 253, 255, 0.98), rgba(241, 247, 255, 0.94));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.96),
     0 16px 34px rgba(20, 46, 74, 0.08);
