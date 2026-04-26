@@ -246,6 +246,8 @@ type PrivateBroadcastView = 'basic' | 'advanced';
 type PrivateSession = {
   version: 3;
   lastPrivateChatId: string | null;
+  lastBroadcastHandoffDeliveredChatId: string | null;
+  lastBroadcastHandoffDeliveredAt: number | null;
   lastGiveawayHandoffDeliveredChatId: string | null;
   lastGiveawayHandoffDeliveredAt: number | null;
   lastRulesHandoffDeliveredChatId: string | null;
@@ -415,6 +417,7 @@ type ForwardedRulesSource = {
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
+const BROADCAST_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const RULES_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
@@ -1439,6 +1442,15 @@ export class PrivateControlService {
     }
 
     if (
+      startPayload === BROADCAST_HANDOFF_START_PAYLOAD &&
+      this.wasBroadcastHandoffAlreadyDelivered(session, context.chatId)
+    ) {
+      this.clearDeliveredBroadcastHandoff(session);
+      await this.saveSession(context.actor.userId, session);
+      return;
+    }
+
+    if (
       startPayload === RULES_HANDOFF_START_PAYLOAD &&
       this.wasRulesHandoffAlreadyDelivered(session, context.chatId)
     ) {
@@ -1552,6 +1564,7 @@ export class PrivateControlService {
     };
 
     await this.saveSession(user.userId, session);
+    await this.deliverBroadcastHandoffToKnownPrivateChat(user, session);
 
     const botUrl = this.buildBotStartUrl(BROADCAST_HANDOFF_START_PAYLOAD);
     if (!botUrl) {
@@ -10008,6 +10021,26 @@ export class PrivateControlService {
       : session.lastPrivateChatId;
   }
 
+  private wasBroadcastHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
+    if (
+      !session.lastBroadcastHandoffDeliveredChatId ||
+      session.lastBroadcastHandoffDeliveredChatId !== chatId
+    ) {
+      return false;
+    }
+
+    if (typeof session.lastBroadcastHandoffDeliveredAt !== 'number') {
+      return false;
+    }
+
+    return Date.now() - session.lastBroadcastHandoffDeliveredAt < BROADCAST_HANDOFF_DEDUP_WINDOW_MS;
+  }
+
+  private clearDeliveredBroadcastHandoff(session: PrivateSession): void {
+    session.lastBroadcastHandoffDeliveredChatId = null;
+    session.lastBroadcastHandoffDeliveredAt = null;
+  }
+
   private wasGiveawayHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
     if (
       !session.lastGiveawayHandoffDeliveredChatId ||
@@ -10127,6 +10160,38 @@ export class PrivateControlService {
       callbackId: null,
       callbackPayload: null,
     };
+  }
+
+  private async deliverBroadcastHandoffToKnownPrivateChat(
+    user: AuthUser,
+    session: PrivateSession,
+  ): Promise<void> {
+    if (!session.lastPrivateChatId) {
+      this.clearDeliveredBroadcastHandoff(session);
+      return;
+    }
+
+    try {
+      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
+      const view = await this.renderByCurrentScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      session.lastBroadcastHandoffDeliveredChatId = session.lastPrivateChatId;
+      session.lastBroadcastHandoffDeliveredAt = Date.now();
+      await this.saveSession(user.userId, session);
+    } catch (error: unknown) {
+      this.clearDeliveredBroadcastHandoff(session);
+      this.logger.warn(
+        {
+          userId: user.userId,
+          chatId: session.lastPrivateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to proactively deliver broadcast handoff to private chat',
+      );
+    }
   }
 
   private async deliverGiveawayHandoffToKnownPrivateChat(
@@ -12665,6 +12730,8 @@ export class PrivateControlService {
     return {
       version: 3,
       lastPrivateChatId: null,
+      lastBroadcastHandoffDeliveredChatId: null,
+      lastBroadcastHandoffDeliveredAt: null,
       lastGiveawayHandoffDeliveredChatId: null,
       lastGiveawayHandoffDeliveredAt: null,
       lastRulesHandoffDeliveredChatId: null,
@@ -12724,6 +12791,16 @@ export class PrivateControlService {
       lastPrivateChatId:
         typeof row.lastPrivateChatId === 'string' && row.lastPrivateChatId.trim().length > 0
           ? row.lastPrivateChatId.trim()
+          : null,
+      lastBroadcastHandoffDeliveredChatId:
+        typeof row.lastBroadcastHandoffDeliveredChatId === 'string' &&
+        row.lastBroadcastHandoffDeliveredChatId.trim().length > 0
+          ? row.lastBroadcastHandoffDeliveredChatId.trim()
+          : null,
+      lastBroadcastHandoffDeliveredAt:
+        typeof row.lastBroadcastHandoffDeliveredAt === 'number' &&
+        Number.isFinite(row.lastBroadcastHandoffDeliveredAt)
+          ? row.lastBroadcastHandoffDeliveredAt
           : null,
       lastGiveawayHandoffDeliveredChatId:
         typeof row.lastGiveawayHandoffDeliveredChatId === 'string' &&

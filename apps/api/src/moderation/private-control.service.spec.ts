@@ -2558,6 +2558,39 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
+  it('proactively delivers broadcast handoff into a known private chat and skips duplicate bot_started reply', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
+    const sentBeforeHandoff = maxClient.sendMessage.mock.calls.length;
+
+    const result = await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+      },
+      'chat',
+    );
+
+    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=broadcast_handoff');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст, фото или видео.');
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(sentBeforeHandoff + 1);
+  });
+
   it('acknowledges mass confirm immediately and ignores stale duplicate confirmations', async () => {
     const sendBroadcast = jest
       .fn()

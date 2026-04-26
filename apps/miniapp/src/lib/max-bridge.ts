@@ -121,6 +121,10 @@ function isMaxDeepLink(url: URL): boolean {
   return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
+function isMaxBotStartLink(url: URL): boolean {
+  return isMaxDeepLink(url) && url.searchParams.has('start') && !url.searchParams.has('startapp');
+}
+
 function isInlinePreviewUrl(url: URL): boolean {
   return url.protocol === 'data:' || url.protocol === 'blob:';
 }
@@ -156,6 +160,12 @@ export function openMaxBotLink(url: string): void {
   const bridge = resolveBridge();
 
   if (isDeepLink) {
+    if (parsed && isMaxBotStartLink(parsed)) {
+      // MAX Bridge link methods require a user gesture; handoff links often open after async saves.
+      window.location.assign(normalizedUrl);
+      return;
+    }
+
     if (typeof bridge?.openMaxLink === 'function') {
       bridge.openMaxLink(normalizedUrl);
       return;
@@ -188,8 +198,12 @@ export function openMaxBotLinkAndClose(url: string): boolean {
     return false;
   }
 
+  const parsed = parseMaxUrl(normalizedUrl);
+  const shouldCloseAfterOpen = !(parsed && isMaxBotStartLink(parsed));
   openMaxBotLink(normalizedUrl);
-  scheduleMiniAppClose();
+  if (shouldCloseAfterOpen) {
+    scheduleMiniAppClose();
+  }
   return true;
 }
 
