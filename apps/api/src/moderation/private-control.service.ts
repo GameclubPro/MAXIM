@@ -387,7 +387,8 @@ type ForwardedModerationCommand =
     }
   | {
       action: 'MUTE';
-      muteDurationHours: number;
+      muteDurationHours?: number;
+      mutePermanent?: true;
     }
   | {
       action: 'RULES';
@@ -435,6 +436,7 @@ const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
 const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
 const FORWARDED_MUTE_DURATION_HOURS_DEFAULT = 6;
 const FORWARDED_MUTE_DURATION_HOURS_MAX = 336;
+const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 const DUPLICATE_ALLOWED_COUNT_MAX = 16;
@@ -1963,7 +1965,9 @@ export class PrivateControlService {
             context.actor,
             {
               action: 'MUTE',
-              muteDurationHours: command.muteDurationHours,
+              ...(command.mutePermanent
+                ? { mutePermanent: true }
+                : { muteDurationHours: command.muteDurationHours }),
             },
             'private_command',
           );
@@ -2065,6 +2069,13 @@ export class PrivateControlService {
       }
 
       const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+      if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
+        return {
+          action: 'MUTE',
+          mutePermanent: true,
+        };
+      }
+
       if (
         !Number.isInteger(muteDurationHours) ||
         muteDurationHours < 1 ||

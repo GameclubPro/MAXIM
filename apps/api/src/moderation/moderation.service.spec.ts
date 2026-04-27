@@ -5281,6 +5281,74 @@ describe('ModerationService', () => {
     });
   });
 
+  it('keeps deleting messages for a permanent manual mute until it is lifted', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'manual-mute-permanent-1',
+          createdAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+          action: SanctionAction.MUTE,
+          ruleCode: 'MANUAL_MUTE',
+          metadata: { mutePermanent: true },
+        }),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'MUTE_ACTIVE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+        metadata: expect.objectContaining({
+          mutePermanent: true,
+          muteEventId: 'manual-mute-permanent-1',
+        }),
+      }),
+    });
+  });
+
   it('does not keep deleting messages after a later manual unban', async () => {
     const prisma = {
       chat: {
@@ -5600,6 +5668,7 @@ describe('ModerationService', () => {
       durationHours: 6,
       issuedAt,
       expiresAt,
+      permanent: false,
     });
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
   });
@@ -8260,6 +8329,88 @@ describe('ModerationService', () => {
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
     expect(sentTexts.some((text) => text.includes('Мут на 12ч.'))).toBe(true);
+  });
+
+  it('treats group mute command duration 88 as a permanent mute', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      applyManualSystemBan: jest.fn(),
+      applyManualModerationAction: jest.fn().mockResolvedValue({
+        ok: true,
+        action: 'MUTE',
+        userId: 'user-2',
+        muteDurationHours: null,
+        muteExpiresAt: null,
+        message: 'Мут бессрочно.',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminLinkedModerationUpdate('мут 88'));
+
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+      }),
+      {
+        action: 'MUTE',
+        mutePermanent: true,
+      },
+      'group_command',
+    );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(sentTexts.some((text) => text.includes('Мут бессрочно.'))).toBe(true);
   });
 
   it('lets chat admins bind forwarded rules message to moderation buttons', async () => {

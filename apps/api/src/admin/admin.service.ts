@@ -210,6 +210,7 @@ import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+  PERMANENT_ACTIVE_MUTE_CACHE_TTL_SEC,
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from '../moderation/moderation-state.util';
@@ -14518,8 +14519,9 @@ export class AdminService implements OnModuleDestroy {
     const shouldFanoutCommandMute = source === 'group_command' || source === 'private_command';
 
     if (parsed.data.action === 'MUTE') {
-      const muteDurationHours = parsed.data.muteDurationHours;
-      if (!muteDurationHours) {
+      const mutePermanent = parsed.data.mutePermanent === true;
+      const muteDurationHours = parsed.data.muteDurationHours ?? null;
+      if (!mutePermanent && !muteDurationHours) {
         throw new BadRequestException('Укажите длительность мута в часах.');
       }
 
@@ -14529,7 +14531,9 @@ export class AdminService implements OnModuleDestroy {
         'MUTE',
         resolvedBotId,
       );
-      const muteExpiresAt = new Date(Date.now() + muteDurationHours * ONE_HOUR_MS);
+      const muteExpiresAt = mutePermanent
+        ? null
+        : new Date(Date.now() + muteDurationHours! * ONE_HOUR_MS);
       const { sourceMessageCleanup, crossChatMuteFanout } = shouldFanoutCommandMute
         ? await this.resolveManualMuteCommandFollowUpSummaries({
             sourceChatId: chatId,
@@ -14537,6 +14541,7 @@ export class AdminService implements OnModuleDestroy {
             actor: user,
             muteDurationHours,
             muteExpiresAt,
+            mutePermanent,
             source,
           })
         : {
@@ -14563,8 +14568,11 @@ export class AdminService implements OnModuleDestroy {
         metadata: {
           ...metadataBase,
           reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
-          muteDurationHours,
-          muteExpiresAt: muteExpiresAt.toISOString(),
+          ...this.buildManualMuteMetadataFields({
+            muteDurationHours,
+            muteExpiresAt,
+            mutePermanent,
+          }),
           ...(shouldFanoutCommandMute
             ? {
                 sourceMessageCleanup,
@@ -14575,8 +14583,11 @@ export class AdminService implements OnModuleDestroy {
         auditPayload: {
           userId: targetUserId,
           source,
-          muteDurationHours,
-          muteExpiresAt: muteExpiresAt.toISOString(),
+          ...this.buildManualMuteMetadataFields({
+            muteDurationHours,
+            muteExpiresAt,
+            mutePermanent,
+          }),
           ...(shouldFanoutCommandMute
             ? {
                 sourceMessageCleanup,
@@ -14591,8 +14602,8 @@ export class AdminService implements OnModuleDestroy {
         action: 'MUTE',
         userId: targetUserId,
         muteDurationHours,
-        muteExpiresAt: muteExpiresAt.toISOString(),
-        message: `Мут на ${muteDurationHours}ч.`,
+        muteExpiresAt: muteExpiresAt ? muteExpiresAt.toISOString() : null,
+        message: mutePermanent ? 'Мут бессрочно.' : `Мут на ${muteDurationHours}ч.`,
       });
     }
 
@@ -14838,6 +14849,22 @@ export class AdminService implements OnModuleDestroy {
     }
   }
 
+  private buildManualMuteMetadataFields(params: {
+    muteDurationHours: number | null;
+    muteExpiresAt: Date | null;
+    mutePermanent: boolean;
+  }): {
+    muteDurationHours: number | null;
+    muteExpiresAt: string | null;
+    mutePermanent: boolean;
+  } {
+    return {
+      muteDurationHours: params.mutePermanent ? null : params.muteDurationHours,
+      muteExpiresAt: params.muteExpiresAt ? params.muteExpiresAt.toISOString() : null,
+      mutePermanent: params.mutePermanent,
+    };
+  }
+
   async applyManualSystemBan(
     chatId: string,
     targetUserIdRaw: string,
@@ -14975,6 +15002,7 @@ export class AdminService implements OnModuleDestroy {
     actor: AuthUser;
     action: 'BAN' | 'MUTE';
     muteDurationHours?: number | null;
+    mutePermanent?: boolean;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }): Promise<boolean> {
@@ -15054,7 +15082,8 @@ export class AdminService implements OnModuleDestroy {
           chatTitle: job.actor.chatTitle ?? undefined,
         },
         muteDurationHours: job.muteDurationHours,
-        muteExpiresAt: new Date(job.muteExpiresAt),
+        muteExpiresAt: job.muteExpiresAt ? new Date(job.muteExpiresAt) : null,
+        mutePermanent: job.mutePermanent === true,
         source: job.source,
       });
       return;
@@ -15096,8 +15125,12 @@ export class AdminService implements OnModuleDestroy {
               actor,
               {
                 action: 'MUTE',
-                muteDurationHours:
-                  job.muteDurationHours ?? DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
+                ...(job.mutePermanent === true
+                  ? { mutePermanent: true }
+                  : {
+                      muteDurationHours:
+                        job.muteDurationHours ?? DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS,
+                    }),
               },
               'group_command',
             );
@@ -15273,8 +15306,9 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
-    muteDurationHours: number;
-    muteExpiresAt: Date;
+    muteDurationHours: number | null;
+    muteExpiresAt: Date | null;
+    mutePermanent: boolean;
     source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
   }): Promise<{
     sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
@@ -15422,6 +15456,7 @@ export class AdminService implements OnModuleDestroy {
     actor: AuthUser;
     action: 'BAN' | 'MUTE';
     muteDurationHours?: number | null;
+    mutePermanent?: boolean;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }): AdminManualGroupModerationCommandJob {
@@ -15447,6 +15482,7 @@ export class AdminService implements OnModuleDestroy {
       },
       action: params.action,
       muteDurationHours: params.muteDurationHours ?? null,
+      mutePermanent: params.mutePermanent === true,
       deleteBotMessagesEnabled: params.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
     };
@@ -15457,8 +15493,9 @@ export class AdminService implements OnModuleDestroy {
     targetUserId: string;
     cleanupSourceChatMessages?: boolean;
     actor: AuthUser;
-    muteDurationHours: number;
-    muteExpiresAt: Date;
+    muteDurationHours: number | null;
+    muteExpiresAt: Date | null;
+    mutePermanent: boolean;
     source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
   }): AdminManualMuteFanoutJob {
     return {
@@ -15480,7 +15517,8 @@ export class AdminService implements OnModuleDestroy {
         chatTitle: params.actor.chatTitle ?? null,
       },
       muteDurationHours: params.muteDurationHours,
-      muteExpiresAt: params.muteExpiresAt.toISOString(),
+      muteExpiresAt: params.muteExpiresAt ? params.muteExpiresAt.toISOString() : null,
+      mutePermanent: params.mutePermanent,
       source: params.source,
     };
   }
@@ -15695,15 +15733,24 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
-    muteDurationHours: number;
-    muteExpiresAt: Date;
+    muteDurationHours: number | null;
+    muteExpiresAt: Date | null;
+    mutePermanent: boolean;
     source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
   }): Promise<{
     mutedChatIds: string[];
     skippedChatIds: string[];
     failedChatIds: string[];
   }> {
-    const { sourceChatId, targetUserId, actor, muteDurationHours, muteExpiresAt, source } = params;
+    const {
+      sourceChatId,
+      targetUserId,
+      actor,
+      muteDurationHours,
+      muteExpiresAt,
+      mutePermanent,
+      source,
+    } = params;
     const targetDisplayName = await this.resolveManualModerationTargetDisplayName(
       sourceChatId,
       targetUserId,
@@ -15744,16 +15791,22 @@ export class AdminService implements OnModuleDestroy {
             source,
             initiatedByUserId: actor.userId,
             reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
-            muteDurationHours,
-            muteExpiresAt: muteExpiresAt.toISOString(),
+            ...this.buildManualMuteMetadataFields({
+              muteDurationHours,
+              muteExpiresAt,
+              mutePermanent,
+            }),
             sourceChatId,
             fanout: true,
           },
           auditPayload: {
             userId: targetUserId,
             source,
-            muteDurationHours,
-            muteExpiresAt: muteExpiresAt.toISOString(),
+            ...this.buildManualMuteMetadataFields({
+              muteDurationHours,
+              muteExpiresAt,
+              mutePermanent,
+            }),
             sourceChatId,
             fanout: true,
           },
@@ -16527,8 +16580,36 @@ export class AdminService implements OnModuleDestroy {
 
     const cacheKey = buildActiveMuteStateKey(params.chatId, params.targetUserId);
     if (params.ruleCode === 'MANUAL_MUTE') {
+      const mutePermanent = params.metadata.mutePermanent === true;
       const muteDurationHours = params.metadata.muteDurationHours;
       const muteExpiresAt = params.metadata.muteExpiresAt;
+      if (mutePermanent) {
+        try {
+          await setStringWithTtl.call(
+            this.redisCounter,
+            cacheKey,
+            JSON.stringify({
+              eventId: `manual:${params.chatId}:${params.targetUserId}:permanent:${Date.now()}`,
+              issuedAt: new Date().toISOString(),
+              expiresAt: null,
+              durationHours: null,
+              permanent: true,
+            } satisfies CachedActiveMuteState),
+            PERMANENT_ACTIVE_MUTE_CACHE_TTL_SEC,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: params.chatId,
+              userId: params.targetUserId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to cache permanent manual active mute runtime state',
+          );
+        }
+        return;
+      }
+
       const expiresAtMs =
         typeof muteExpiresAt === 'string' ? Date.parse(muteExpiresAt) : Number.NaN;
       if (
@@ -16554,6 +16635,7 @@ export class AdminService implements OnModuleDestroy {
             issuedAt: new Date().toISOString(),
             expiresAt: new Date(expiresAtMs).toISOString(),
             durationHours: muteDurationHours,
+            permanent: false,
           } satisfies CachedActiveMuteState),
           ttlSec,
         );

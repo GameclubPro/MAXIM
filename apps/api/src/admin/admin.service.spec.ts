@@ -4923,6 +4923,103 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('fans out permanent manual mute from command to other chats of the admin', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-2',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'MUTE', mutePermanent: true },
+      'group_command',
+    );
+
+    expect(maxClient.getChatMemberAccess).toHaveBeenCalledWith('chat-2', 'user-2', {
+      trafficClass: 'background',
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+          metadata: expect.objectContaining({
+            mutePermanent: true,
+            muteDurationHours: null,
+            muteExpiresAt: null,
+            crossChatMuteFanout: expect.objectContaining({
+              mutedChatsCount: 1,
+              mutedChatIds: ['chat-2'],
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-2',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_MUTE',
+          action: 'MUTE',
+          metadata: expect.objectContaining({
+            fanout: true,
+            sourceChatId: 'chat-1',
+            mutePermanent: true,
+            muteDurationHours: null,
+            muteExpiresAt: null,
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Мут бессрочно.',
+    });
+  });
+
   it('applies permanent manual ban without scheduling auto-unban', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -6311,6 +6408,84 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Пользователь [Нарушитель](max://user/user-2) забанен.',
+      { textFormat: 'markdown' },
+      {
+        immediate: true,
+        trafficClass: 'interactive',
+        autoDeleteDelayMs: 3 * 60 * 1000,
+      },
+    );
+  });
+
+  it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'applyManualModerationAction').mockResolvedValue({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-2',
+      muteDurationHours: null,
+      muteExpiresAt: null,
+      message: 'Мут бессрочно.',
+    });
+
+    await service.processManualModerationFanoutJob({
+      kind: 'manual_group_moderation_command',
+      jobId: 'job-command-1',
+      sourceChatId: 'chat-1',
+      targetUserId: 'user-2',
+      targetSenderName: 'Нарушитель',
+      targetMessageId: 'mid-target-1',
+      commandMessageId: 'mid-command-1',
+      actor: {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      },
+      action: 'MUTE',
+      muteDurationHours: null,
+      mutePermanent: true,
+      deleteBotMessagesEnabled: true,
+      deleteBotMessagesDelayMinutes: 3,
+    });
+
+    expect(service.applyManualModerationAction).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+        chatTitle: 'Chat 1',
+      }),
+      {
+        action: 'MUTE',
+        mutePermanent: true,
+      },
+      'group_command',
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-target-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-command-1', {
+      immediate: true,
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Мут бессрочно.\nПользователь: [Нарушитель](max://user/user-2)',
       { textFormat: 'markdown' },
       {
         immediate: true,

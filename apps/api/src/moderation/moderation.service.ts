@@ -79,6 +79,7 @@ import { PrivateControlService } from './private-control.service';
 import {
   ACTIVE_MUTE_CACHE_SLACK_SEC,
   ACTIVE_MUTE_NEGATIVE_CACHE_TTL_SEC,
+  PERMANENT_ACTIVE_MUTE_CACHE_TTL_SEC,
   buildActiveMuteStateKey,
   type CachedActiveMuteState,
 } from './moderation-state.util';
@@ -123,8 +124,9 @@ const PRIVATE_DIALOG_TERMINAL_FAILURE_METRIC_STATUSES = [403, 404] as const;
 type ActiveMute = {
   eventId: string;
   issuedAt: Date;
-  expiresAt: Date;
-  durationHours: number;
+  expiresAt: Date | null;
+  durationHours: number | null;
+  permanent: boolean;
 };
 
 type ActiveMuteCacheReadResult =
@@ -296,7 +298,8 @@ type AdminForwardedModerationCommand =
     }
   | {
       action: 'MUTE';
-      muteDurationHours: number;
+      muteDurationHours?: number;
+      mutePermanent?: true;
     }
   | {
       action: 'RULES';
@@ -320,6 +323,7 @@ type ForwardedRulesSource = {
 
 const DEFAULT_MUTE_DURATION_HOURS = 6;
 const MAX_ACTIVE_MUTE_DURATION_HOURS = 336;
+const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
@@ -3192,6 +3196,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         issuedAt: new Date(),
         expiresAt: new Date(Date.now() + muteDurationHours * 60 * 60 * 1000),
         durationHours: muteDurationHours,
+        permanent: false,
       });
       await this.sendMuteNotice({
         chatId,
@@ -4932,9 +4937,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const latestAction = latestSanctionEvent.action ?? SanctionAction.BAN;
+    const isPermanentMute = this.readPermanentMuteFromMetadata(latestSanctionEvent.metadata);
     const storedDurationHours = this.readStoredMuteDurationHoursFromMetadata(
       latestSanctionEvent.metadata,
     );
+    if (latestAction === SanctionAction.MUTE && isPermanentMute) {
+      const activeMute = {
+        eventId: latestSanctionEvent.id,
+        issuedAt: latestSanctionEvent.createdAt,
+        expiresAt: null,
+        durationHours: null,
+        permanent: true,
+      };
+      await this.rememberActiveMuteState(chatId, userId, activeMute);
+      return activeMute;
+    }
+
     const isTimedMute =
       latestAction === SanctionAction.MUTE ||
       (latestAction === SanctionAction.BAN && storedDurationHours !== null);
@@ -4958,6 +4976,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       issuedAt: latestSanctionEvent.createdAt,
       expiresAt,
       durationHours,
+      permanent: false,
     };
     await this.rememberActiveMuteState(chatId, userId, activeMute);
     return activeMute;
@@ -5127,7 +5146,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               actor,
               {
                 action: 'MUTE',
-                muteDurationHours: command.muteDurationHours,
+                ...(command.mutePermanent
+                  ? { mutePermanent: true }
+                  : { muteDurationHours: command.muteDurationHours }),
               },
               'group_command',
             );
@@ -5186,6 +5207,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               actor: AuthUser;
               action: 'BAN' | 'MUTE';
               muteDurationHours?: number | null;
+              mutePermanent?: boolean;
               deleteBotMessagesEnabled: boolean;
               deleteBotMessagesDelayMinutes: number;
             }) => Promise<boolean>;
@@ -5206,6 +5228,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       actor: params.actor,
       action: params.command.action,
       muteDurationHours: params.command.action === 'MUTE' ? params.command.muteDurationHours : null,
+      mutePermanent:
+        params.command.action === 'MUTE' ? params.command.mutePermanent === true : false,
       deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
     });
@@ -5262,6 +5286,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+      if (muteDurationHours === PERMANENT_MUTE_COMMAND_DURATION_HOURS) {
+        return {
+          action: 'MUTE',
+          mutePermanent: true,
+        };
+      }
+
       if (
         !Number.isInteger(muteDurationHours) ||
         muteDurationHours < 1 ||
@@ -5848,8 +5879,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               reason: 'Message removed during active mute window',
               muteEventId: mute.eventId,
               muteIssuedAt: mute.issuedAt.toISOString(),
-              muteExpiresAt: mute.expiresAt.toISOString(),
-              muteDurationHours: mute.durationHours,
+              mutePermanent: mute.permanent,
+              ...(mute.expiresAt ? { muteExpiresAt: mute.expiresAt.toISOString() } : {}),
+              ...(mute.durationHours !== null ? { muteDurationHours: mute.durationHours } : {}),
             },
           },
         });
@@ -16655,6 +16687,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
+  private readPermanentMuteFromMetadata(metadata: unknown): boolean {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return false;
+    }
+
+    return (metadata as Record<string, unknown>).mutePermanent === true;
+  }
+
   private readMuteDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
     const storedValue = this.readStoredMuteDurationHoursFromMetadata(metadata);
     if (storedValue !== null) {
@@ -16694,6 +16734,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const parsed = JSON.parse(raw) as Partial<CachedActiveMuteState>;
       const eventId = typeof parsed.eventId === 'string' ? parsed.eventId.trim() : '';
+      const permanent = parsed.permanent === true;
       const durationHours =
         typeof parsed.durationHours === 'number' && Number.isFinite(parsed.durationHours)
           ? Math.trunc(parsed.durationHours)
@@ -16702,12 +16743,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         typeof parsed.issuedAt === 'string' ? Date.parse(parsed.issuedAt) : Number.NaN;
       const expiresAtMs =
         typeof parsed.expiresAt === 'string' ? Date.parse(parsed.expiresAt) : Number.NaN;
+      if (!eventId || !Number.isFinite(issuedAtMs)) {
+        return { status: 'miss' };
+      }
+
+      if (permanent) {
+        return {
+          status: 'active',
+          mute: {
+            eventId,
+            issuedAt: new Date(issuedAtMs),
+            expiresAt: null,
+            durationHours: null,
+            permanent: true,
+          },
+        };
+      }
+
       if (
-        !eventId ||
         !Number.isInteger(durationHours) ||
         durationHours < 1 ||
         durationHours > MAX_ACTIVE_MUTE_DURATION_HOURS ||
-        !Number.isFinite(issuedAtMs) ||
         !Number.isFinite(expiresAtMs)
       ) {
         return { status: 'miss' };
@@ -16718,8 +16774,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         issuedAt: new Date(issuedAtMs),
         expiresAt: new Date(expiresAtMs),
         durationHours,
+        permanent: false,
       };
-      if (mute.expiresAt.getTime() <= Date.now()) {
+      if (expiresAtMs <= Date.now()) {
         await this.rememberInactiveActiveMuteState(chatId, userId);
         return { status: 'miss' };
       }
@@ -16752,8 +16809,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const ttlSec =
-      Math.ceil((mute.expiresAt.getTime() - Date.now()) / 1_000) + ACTIVE_MUTE_CACHE_SLACK_SEC;
+    const ttlSec = mute.permanent
+      ? PERMANENT_ACTIVE_MUTE_CACHE_TTL_SEC
+      : mute.expiresAt
+        ? Math.ceil((mute.expiresAt.getTime() - Date.now()) / 1_000) + ACTIVE_MUTE_CACHE_SLACK_SEC
+        : 0;
     if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
       return;
     }
@@ -16765,8 +16825,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         JSON.stringify({
           eventId: mute.eventId,
           issuedAt: mute.issuedAt.toISOString(),
-          expiresAt: mute.expiresAt.toISOString(),
+          expiresAt: mute.expiresAt ? mute.expiresAt.toISOString() : null,
           durationHours: mute.durationHours,
+          permanent: mute.permanent,
         } satisfies CachedActiveMuteState),
         ttlSec,
       );

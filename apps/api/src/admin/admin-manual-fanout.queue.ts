@@ -17,8 +17,9 @@ export type AdminManualMuteFanoutJob = {
   targetUserId: string;
   cleanupSourceChatMessages?: boolean;
   actor: AdminManualFanoutActor;
-  muteDurationHours: number;
-  muteExpiresAt: string;
+  muteDurationHours: number | null;
+  muteExpiresAt: string | null;
+  mutePermanent?: boolean;
   source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
 };
 
@@ -42,6 +43,7 @@ export type AdminManualGroupModerationCommandJob = {
   actor: AdminManualFanoutActor;
   action: 'BAN' | 'MUTE';
   muteDurationHours?: number | null;
+  mutePermanent?: boolean;
   deleteBotMessagesEnabled: boolean;
   deleteBotMessagesDelayMinutes: number;
 };

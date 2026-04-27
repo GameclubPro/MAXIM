@@ -2663,13 +2663,24 @@ export const manualModerationActionRequestSchema = z
   .object({
     action: manualModerationActionSchema,
     muteDurationHours: z.number().int().min(1).max(336).optional(),
+    mutePermanent: z.boolean().optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.action === 'MUTE' && value.muteDurationHours === undefined) {
+    const mutePermanent = value.mutePermanent === true;
+
+    if (value.action === 'MUTE' && !mutePermanent && value.muteDurationHours === undefined) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['muteDurationHours'],
         message: 'Укажите длительность мута в часах.',
+      });
+    }
+
+    if (value.action === 'MUTE' && mutePermanent && value.muteDurationHours !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['muteDurationHours'],
+        message: 'Для бессрочного мута длительность не нужна.',
       });
     }
 
@@ -2678,6 +2689,14 @@ export const manualModerationActionRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ['muteDurationHours'],
         message: 'Длительность мута доступна только для действия MUTE.',
+      });
+    }
+
+    if (value.action !== 'MUTE' && value.mutePermanent !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mutePermanent'],
+        message: 'Бессрочный мут доступен только для действия MUTE.',
       });
     }
   });
