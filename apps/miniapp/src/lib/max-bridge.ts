@@ -25,6 +25,66 @@ function resolveViewportSize() {
   };
 }
 
+let reliableSettingsGridLayout: boolean | null = null;
+
+function hasReliableSettingsGridLayout(): boolean {
+  if (reliableSettingsGridLayout !== null) {
+    return reliableSettingsGridLayout;
+  }
+
+  if (
+    typeof CSS === 'undefined' ||
+    typeof CSS.supports !== 'function' ||
+    !CSS.supports('display', 'grid') ||
+    !CSS.supports('grid-template-rows', 'minmax(0, 1fr) auto')
+  ) {
+    reliableSettingsGridLayout = false;
+    return reliableSettingsGridLayout;
+  }
+
+  if (!document.body) {
+    return true;
+  }
+
+  const host = document.createElement('div');
+  const body = document.createElement('div');
+  const filler = document.createElement('div');
+  const footer = document.createElement('div');
+
+  host.style.cssText = [
+    'position:absolute',
+    'left:-10000px',
+    'top:-10000px',
+    'width:100px',
+    'height:100px',
+    'display:grid',
+    'grid-template-rows:minmax(0, 1fr) auto',
+    'overflow:hidden',
+    'visibility:hidden',
+  ].join(';');
+  body.style.cssText = 'min-height:0;overflow:auto';
+  filler.style.cssText = 'height:200px';
+  footer.style.cssText = 'height:20px';
+
+  body.appendChild(filler);
+  host.appendChild(body);
+  host.appendChild(footer);
+  document.body.appendChild(host);
+
+  const hostRect = host.getBoundingClientRect();
+  const bodyRect = body.getBoundingClientRect();
+  const footerRect = footer.getBoundingClientRect();
+  host.parentNode?.removeChild(host);
+
+  reliableSettingsGridLayout =
+    bodyRect.height > 70 &&
+    bodyRect.height < 82 &&
+    footerRect.height > 18 &&
+    footerRect.bottom <= hostRect.bottom + 1;
+
+  return reliableSettingsGridLayout;
+}
+
 function normalizePlatform(
   value: string | undefined,
   previewDevice: PreviewDevice | null | undefined,
@@ -61,6 +121,12 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
 
   root.dataset.maxPlatform = platform;
   root.dataset.maxClient = previewPreset ? 'preview' : bridge ? 'native' : 'browser';
+
+  if (platform === 'android' && !hasReliableSettingsGridLayout()) {
+    root.dataset.maxLegacySettingsDrilldown = 'true';
+  } else {
+    delete root.dataset.maxLegacySettingsDrilldown;
+  }
 
   if (platform === 'ios') {
     root.style.setProperty('--app-shell-max-width', '560px');
