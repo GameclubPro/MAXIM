@@ -13,6 +13,9 @@ export type MaxSharePayload =
 type MaxBackButtonHandler = () => void;
 export type MaxPlatform = 'ios' | 'android' | 'desktop' | 'web' | 'unknown';
 
+const LEGACY_ANDROID_MAJOR_MAX = 9;
+const LEGACY_ANDROID_CHROMIUM_MAJOR_MAX = 99;
+
 function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
 }
@@ -26,6 +29,30 @@ function resolveViewportSize() {
 }
 
 let reliableSettingsGridLayout: boolean | null = null;
+
+function parseMajorVersion(userAgent: string, pattern: RegExp): number | null {
+  const match = userAgent.match(pattern);
+  if (!match?.[1]) {
+    return null;
+  }
+
+  const major = Number.parseInt(match[1], 10);
+  return Number.isFinite(major) ? major : null;
+}
+
+export function isLegacyAndroidSettingsDrilldownUserAgent(userAgent: string): boolean {
+  if (!/Android/i.test(userAgent)) {
+    return false;
+  }
+
+  const androidMajor = parseMajorVersion(userAgent, /Android\s+(\d+)/i);
+  if (androidMajor !== null && androidMajor <= LEGACY_ANDROID_MAJOR_MAX) {
+    return true;
+  }
+
+  const chromiumMajor = parseMajorVersion(userAgent, /(?:Chrome|Chromium)\/(\d+)/i);
+  return chromiumMajor !== null && chromiumMajor <= LEGACY_ANDROID_CHROMIUM_MAJOR_MAX;
+}
 
 function hasReliableSettingsGridLayout(): boolean {
   if (reliableSettingsGridLayout !== null) {
@@ -85,6 +112,23 @@ function hasReliableSettingsGridLayout(): boolean {
   return reliableSettingsGridLayout;
 }
 
+function resolveSettingsDrilldownLegacyReason(
+  platform: MaxPlatform,
+): 'user-agent' | 'layout' | null {
+  if (platform !== 'android') {
+    return null;
+  }
+
+  if (
+    typeof navigator !== 'undefined' &&
+    isLegacyAndroidSettingsDrilldownUserAgent(navigator.userAgent)
+  ) {
+    return 'user-agent';
+  }
+
+  return hasReliableSettingsGridLayout() ? null : 'layout';
+}
+
 function normalizePlatform(
   value: string | undefined,
   previewDevice: PreviewDevice | null | undefined,
@@ -122,10 +166,13 @@ function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } 
   root.dataset.maxPlatform = platform;
   root.dataset.maxClient = previewPreset ? 'preview' : bridge ? 'native' : 'browser';
 
-  if (platform === 'android' && !hasReliableSettingsGridLayout()) {
+  const legacySettingsDrilldownReason = resolveSettingsDrilldownLegacyReason(platform);
+  if (legacySettingsDrilldownReason) {
     root.dataset.maxLegacySettingsDrilldown = 'true';
+    root.dataset.maxLegacySettingsDrilldownReason = legacySettingsDrilldownReason;
   } else {
     delete root.dataset.maxLegacySettingsDrilldown;
+    delete root.dataset.maxLegacySettingsDrilldownReason;
   }
 
   if (platform === 'ios') {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { openMaxBotLink } from '../src/lib/max-bridge';
+import { isLegacyAndroidSettingsDrilldownUserAgent, openMaxBotLink } from '../src/lib/max-bridge';
 
 type MockBridge = {
   openLink?: (url: string) => void;
@@ -112,4 +112,31 @@ test('openMaxBotLink avoids bridge browser API for inline preview urls', () => {
   assert.deepEqual(opened, []);
   assert.deepEqual(popupUrls, ['data:image/webp;base64,YQ==']);
   assert.deepEqual(assignedUrls, []);
+});
+
+test('isLegacyAndroidSettingsDrilldownUserAgent gates old Android and WebView versions', () => {
+  assert.equal(
+    isLegacyAndroidSettingsDrilldownUserAgent(
+      'Mozilla/5.0 (Linux; Android 8.1.0; Pixel Build/OPM1) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/83.0.4103.106 Mobile Safari/537.36 wv',
+    ),
+    true,
+  );
+  assert.equal(
+    isLegacyAndroidSettingsDrilldownUserAgent(
+      'Mozilla/5.0 (Linux; Android 10; Pixel Build/QP1A) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/99.0.4844.88 Mobile Safari/537.36 wv',
+    ),
+    true,
+  );
+  assert.equal(
+    isLegacyAndroidSettingsDrilldownUserAgent(
+      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+    ),
+    false,
+  );
+  assert.equal(
+    isLegacyAndroidSettingsDrilldownUserAgent(
+      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148',
+    ),
+    false,
+  );
 });
