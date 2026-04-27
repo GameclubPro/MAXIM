@@ -800,6 +800,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
   const [participantsSearch, setParticipantsSearch] = useState('');
+  const [lastKnownParticipantsTotal, setLastKnownParticipantsTotal] = useState<{
+    chatId: string | null;
+    total: number;
+  } | null>(null);
   const deferredParticipantsSearch = useDeferredValue(participantsSearch);
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -915,6 +919,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     initialPage: null,
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
+  const fullParticipantsTotal = dashboard?.chat.participantsCount ?? participantsFeed.totalCount;
+
+  useEffect(() => {
+    if (typeof fullParticipantsTotal === 'number') {
+      setLastKnownParticipantsTotal({ chatId: chatId ?? null, total: fullParticipantsTotal });
+    }
+  }, [chatId, fullParticipantsTotal]);
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChatMemberProfile(api, chatId ?? '', userId, { displayName }),
@@ -1141,10 +1152,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       : membershipSummary.netUsers < 0
         ? 'Отток участников'
         : 'Баланс без изменений';
-  const participantsTotal = participantsFeed.totalCount ?? participantsFeed.items.length;
+  const participantsTotal =
+    fullParticipantsTotal ??
+    (lastKnownParticipantsTotal?.chatId === (chatId ?? null)
+      ? lastKnownParticipantsTotal.total
+      : null);
   const participantsHeroMetric = {
     label: 'Сейчас в чате',
-    value: String(participantsTotal),
+    value: typeof participantsTotal === 'number' ? String(participantsTotal) : null,
     tone: 'accent' as const,
   };
   const moderationHeroMetric = {
@@ -1358,7 +1373,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   className={`events-dashboard__hero events-dashboard__hero--${participantsHeroMetric.tone}`}
                 >
                   <small>{participantsHeroMetric.label}</small>
-                  <strong>{participantsHeroMetric.value}</strong>
+                  <strong className="events-dashboard__hero-value">
+                    {participantsHeroMetric.value ?? (
+                      <span
+                        className="events-dashboard__hero-spinner"
+                        role="status"
+                        aria-label="Загружаем количество участников"
+                      />
+                    )}
+                  </strong>
                 </article>
               </div>
             ) : section === 'activity' ? (

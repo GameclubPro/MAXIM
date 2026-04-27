@@ -11488,6 +11488,26 @@
   letter-spacing: -0.055em;
 }
 
+.events-dashboard__hero-value {
+  display: inline-flex;
+  min-height: 1em;
+  align-items: center;
+}
+
+.events-dashboard__hero .events-dashboard__hero-spinner {
+  display: inline-block;
+  flex: 0 0 auto;
+  width: 0.78em;
+  height: 0.78em;
+  border: 2px solid rgba(11, 132, 255, 0.18);
+  border-top-color: rgba(11, 132, 255, 0.78);
+  border-radius: 999px;
+  color: transparent;
+  font-size: inherit;
+  line-height: 1;
+  animation: participants-search-spin 0.72s linear infinite;
+}
+
 .events-dashboard__hero span {
   color: #6f889d;
   font-size: 0.72rem;
@@ -12827,7 +12847,8 @@
 
 @media (prefers-reduced-motion: reduce) {
   .participants-roster__search-progress,
-  .participants-roster__search-status-spinner {
+  .participants-roster__search-status-spinner,
+  .events-dashboard__hero-spinner {
     animation-duration: 1.4s;
   }
 }

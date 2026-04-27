@@ -2629,6 +2629,7 @@ export const logsDashboardResponseSchema = z.object({
   chat: z.object({
     id: z.string(),
     title: z.string(),
+    participantsCount: z.number().int().min(0).nullable(),
     avatarUrl: z.string().trim().url().nullable().optional(),
   }),
   period: z.object({

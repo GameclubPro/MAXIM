@@ -14304,6 +14304,11 @@ export class AdminService implements OnModuleDestroy {
       chat: {
         id: chatId,
         title: chat?.title?.trim() || 'Чат без названия',
+        participantsCount:
+          typeof chatHeader?.participantsCount === 'number' &&
+          Number.isFinite(chatHeader.participantsCount)
+            ? Math.max(0, Math.trunc(chatHeader.participantsCount))
+            : null,
         avatarUrl: chatHeader?.avatarUrl?.trim() || null,
       },
       period: {

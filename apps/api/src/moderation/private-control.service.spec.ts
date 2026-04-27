@@ -713,7 +713,7 @@ function createHarness(
       .mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     getEvents: jest.fn().mockResolvedValue([]),
     getLogsDashboard: jest.fn().mockResolvedValue({
-      chat: { id: 'chat-1', title: 'Команда MAX', avatarUrl: null },
+      chat: { id: 'chat-1', title: 'Команда MAX', participantsCount: null, avatarUrl: null },
       period: {
         range: '7d',
         from: new Date('2026-03-01T00:00:00.000Z').toISOString(),

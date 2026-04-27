@@ -2440,6 +2440,7 @@ function buildLogsDashboard(
     chat: {
       id: chatId,
       title: resolveChatTitle(chatId, state),
+      participantsCount: state.chatHeaderParticipantsCount,
       avatarUrl: resolveChatAvatarUrl(chatId, state),
     },
     period: {

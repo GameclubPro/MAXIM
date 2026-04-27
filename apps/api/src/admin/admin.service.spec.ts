@@ -3797,6 +3797,14 @@ describe('AdminService.getLogsDashboard', () => {
     };
     const chatContextCache = {
       invalidate: jest.fn(),
+      getManagedEntityHeader: jest.fn().mockResolvedValue(
+        createManagedEntityHeaderFixture({
+          id: 'chat-1',
+          title: 'Команда MAX',
+          entityType: 'chat',
+          participantsCount: 1584,
+        }),
+      ),
     };
     const maxBotLinkService = {
       buildMiniappStartUrlSync: jest
@@ -3841,7 +3849,12 @@ describe('AdminService.getLogsDashboard', () => {
       { range: '7d' },
     );
 
-    expect(result.chat).toEqual({ id: 'chat-1', title: 'Команда MAX', avatarUrl: null });
+    expect(result.chat).toEqual({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      participantsCount: 1584,
+      avatarUrl: null,
+    });
     expect(result.membership).toEqual({ joinedUsers: 5, leftUsers: 2, netUsers: 3 });
     expect(result.violationsSummary).toEqual({
       warn: 3,
