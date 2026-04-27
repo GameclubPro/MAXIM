@@ -555,13 +555,20 @@
 }
 
 .settings-drilldown {
+  --settings-drilldown-top-offset: 12px;
   position: fixed;
   inset: 0;
   z-index: 90;
-  padding-top: max(12px, calc(env(safe-area-inset-top, 0px) + 6px));
+  padding-top: var(--settings-drilldown-top-offset);
   display: flex;
   align-items: stretch;
   justify-content: center;
+}
+
+@supports (top: max(1px, 2px)) {
+  .settings-drilldown {
+    --settings-drilldown-top-offset: max(12px, calc(env(safe-area-inset-top, 0px) + 6px));
+  }
 }
 
 .settings-drilldown__backdrop {
@@ -587,8 +594,8 @@
   width: min(100%, 980px);
   max-width: 100%;
   min-height: 0;
-  height: calc(100dvh - max(12px, calc(env(safe-area-inset-top, 0px) + 6px)));
-  max-height: calc(100dvh - max(12px, calc(env(safe-area-inset-top, 0px) + 6px)));
+  height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
+  max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
   margin: auto 0 0;
   display: flex;
   flex-direction: column;
@@ -754,6 +761,8 @@
   display: block;
   min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-y;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   scroll-padding-bottom: 120px;
@@ -15043,7 +15052,14 @@
 
 /* 2026 settings quality pass: lighter native sheets, denser editors, less web-form weight. */
 .settings-drilldown {
-  padding-top: max(6px, calc(env(safe-area-inset-top, 0px) + 2px));
+  --settings-drilldown-top-offset: 6px;
+  padding-top: var(--settings-drilldown-top-offset);
+}
+
+@supports (top: max(1px, 2px)) {
+  .settings-drilldown {
+    --settings-drilldown-top-offset: max(6px, calc(env(safe-area-inset-top, 0px) + 2px));
+  }
 }
 
 .settings-drilldown__backdrop {
@@ -15055,8 +15071,9 @@
 .settings-drilldown__panel {
   width: min(100%, 720px);
   height: auto;
-  min-height: min(318px, calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px))));
-  max-height: calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px)));
+  min-height: 0;
+  min-height: min(318px, calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)));
+  max-height: calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset));
   border-radius: 26px 26px 0 0;
   border-color: rgba(126, 153, 179, 0.2);
   background:
@@ -15072,7 +15089,8 @@
 .settings-drilldown__panel--required-subscription,
 .settings-drilldown__panel--time,
 .settings-drilldown__panel--board {
-  min-height: min(610px, calc(100dvh - max(6px, calc(env(safe-area-inset-top, 0px) + 2px))));
+  min-height: 0;
+  min-height: min(610px, calc(var(--app-viewport-height) - var(--settings-drilldown-top-offset)));
 }
 
 .settings-drilldown__header {
