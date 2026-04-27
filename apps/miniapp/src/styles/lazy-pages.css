@@ -667,9 +667,9 @@
 
 .settings-drilldown__header {
   position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 12px;
   padding: 24px 14px 14px;
   border-bottom: 1px solid rgba(115, 142, 168, 0.18);
@@ -711,7 +711,9 @@
 
 .settings-drilldown__title-wrap {
   min-width: 0;
-  display: grid;
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
@@ -742,6 +744,7 @@
 }
 
 .settings-drilldown__close {
+  flex: 0 0 auto;
   width: 40px;
   height: 40px;
   padding: 0;
@@ -751,14 +754,16 @@
 }
 
 .settings-drilldown__content {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
-  min-height: 0;
+  display: flex;
   flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .settings-drilldown__body {
   display: block;
+  flex: 1 1 0;
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
@@ -769,7 +774,9 @@
 }
 
 .settings-drilldown__footer {
-  display: grid;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
   gap: 8px;
   padding: 10px 12px calc(14px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid rgba(115, 142, 168, 0.18);
@@ -802,23 +809,23 @@
 }
 
 .settings-drilldown__footer-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
   gap: 10px;
 }
 
 .settings-drilldown__footer-actions.is-single-action {
-  grid-template-columns: minmax(0, 1fr);
+  display: flex;
 }
 
 .settings-drilldown__footer-actions .button {
+  flex: 1 1 0;
   min-height: 48px;
   border-radius: 18px;
 }
 
 @media (max-width: 480px) {
   .settings-drilldown__footer-actions {
-    grid-template-columns: minmax(0, 1fr);
+    flex-direction: column;
   }
 }
 
