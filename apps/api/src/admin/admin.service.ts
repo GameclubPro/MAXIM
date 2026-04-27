@@ -568,6 +568,10 @@ const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
 const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const ADMIN_ACTION_HEALTH_LANE = 'background' as const;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
+const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY = 2;
+const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS =
+  process.env.NODE_ENV === 'test' ? 0 : 250;
+const APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY = 4;
 const REQUIRED_SUBSCRIPTION_CHANNEL_CHECK_CONCURRENCY = 3;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -1157,8 +1161,15 @@ export class AdminService implements OnModuleDestroy {
     return result.items;
   }
 
-  async listChatsForMassBroadcast(user: AuthUser): Promise<ChatSummary[]> {
-    return this.collectManagedEntitiesForMassAction(user, 'chat');
+  async listChatsForMassBroadcast(
+    user: AuthUser,
+    options: {
+      discoveryMode?: 'full' | 'cached-first';
+    } = {},
+  ): Promise<ChatSummary[]> {
+    return this.collectManagedEntitiesForMassAction(user, 'chat', {
+      discoveryMode: options.discoveryMode ?? 'full',
+    });
   }
 
   async listChannels(
@@ -4120,7 +4131,14 @@ export class AdminService implements OnModuleDestroy {
   private async collectManagedEntitiesForMassAction(
     user: AuthUser,
     entityType: ManagedEntityType,
+    options: {
+      discoveryMode?: 'full' | 'cached-first';
+    } = {},
   ): Promise<ChatSummary[]> {
+    if (options.discoveryMode === 'cached-first') {
+      return this.collectManagedEntitiesForCachedMassAction(user, entityType);
+    }
+
     try {
       await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
     } catch (error: unknown) {
@@ -4196,6 +4214,54 @@ export class AdminService implements OnModuleDestroy {
           passes: attemptedPasses,
         },
         'Managed entities mass action scan stopped before completion',
+      );
+    }
+
+    return [...collected.values()];
+  }
+
+  private async collectManagedEntitiesForCachedMassAction(
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ChatSummary[]> {
+    const collected = new Map<string, ChatSummary>();
+
+    const publishedSnapshot = await this.readManagedEntitiesPublishedSnapshotForResponse(
+      user.userId,
+      entityType,
+    );
+    for (const item of publishedSnapshot?.items ?? []) {
+      collected.set(item.id, item);
+    }
+
+    const cached = await this.revalidateCachedManagedEntities(
+      user,
+      await this.listChatsFromAllowlistWithinResponseBudget(user.userId, entityType, {
+        source: 'refresh',
+      }),
+    );
+    for (const item of cached) {
+      collected.set(item.id, item);
+    }
+
+    if (collected.size === 0) {
+      for (const item of this.readManagedEntitiesLastSuccessSnapshot(user.userId, entityType)) {
+        collected.set(item.id, item);
+      }
+    }
+
+    if (this.adminManagedEntitiesRefreshQueue) {
+      void this.scheduleManagedEntitiesRemoteFullRefresh(user, entityType).catch(
+        (error: unknown) => {
+          this.logger.warn(
+            {
+              entityType,
+              userId: user.userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to schedule managed entities background refresh after cached mass action lookup',
+          );
+        },
       );
     }
 
@@ -7996,7 +8062,9 @@ export class AdminService implements OnModuleDestroy {
       resetRequiredSubscriptionExpiration: true,
     });
 
-    const availableChats = await this.listChatsForMassBroadcast(user);
+    const availableChats = await this.listChatsForMassBroadcast(user, {
+      discoveryMode: 'cached-first',
+    });
     const appliedChatIds = Array.from(
       new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]),
     );
@@ -8093,23 +8161,16 @@ export class AdminService implements OnModuleDestroy {
         ]);
 
         await this.chatContextCache.invalidate(chatId);
-        await this.refreshManagedEntityBotAccessSnapshots(
-          chatId,
-          'chat',
-          'chat settings apply-to-all',
-        );
       },
     );
 
-    if (
-      shouldValidateRequiredSubscription &&
-      this.isRequiredSubscriptionCurrentlyActive(normalizedSettings)
-    ) {
-      await this.refreshRequiredSubscriptionAccessSnapshots(
-        normalizedSettings.requiredSubscriptionChannelIds,
-        'required subscription settings apply-to-all',
-      );
-    }
+    this.scheduleApplySettingsToAllReadinessRefresh({
+      chatIds: appliedChatIds,
+      shouldRefreshRequiredSubscription:
+        shouldValidateRequiredSubscription &&
+        this.isRequiredSubscriptionCurrentlyActive(normalizedSettings),
+      requiredSubscriptionChannelIds: normalizedSettings.requiredSubscriptionChannelIds,
+    });
 
     return {
       sourceChatId,
@@ -18504,39 +18565,39 @@ export class AdminService implements OnModuleDestroy {
     });
     const sourceEntries = await this.canonicalizeActiveAllowlistRows(sourceChatId, rows);
 
-    for (const chatId of targetChatIds) {
-      if (chatId === sourceChatId) {
-        continue;
-      }
-
-      await this.prisma.$transaction([
-        this.prisma.domainAllowlist.deleteMany({
-          where: {
-            chatId,
-          },
-        }),
-        ...sourceEntries.map((entry) =>
-          this.prisma.domainAllowlist.upsert({
+    await this.mapWithConcurrencyLimit(
+      targetChatIds.filter((chatId) => chatId !== sourceChatId),
+      APPLY_SETTINGS_TO_ALL_DOMAIN_SYNC_CONCURRENCY,
+      async (chatId) => {
+        await this.prisma.$transaction([
+          this.prisma.domainAllowlist.deleteMany({
             where: {
-              chatId_domain: {
-                chatId,
-                domain: entry.normalizedValue,
-              },
-            },
-            create: {
               chatId,
-              domain: entry.normalizedValue,
-              removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
-            },
-            update: {
-              removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
             },
           }),
-        ),
-      ]);
+          ...sourceEntries.map((entry) =>
+            this.prisma.domainAllowlist.upsert({
+              where: {
+                chatId_domain: {
+                  chatId,
+                  domain: entry.normalizedValue,
+                },
+              },
+              create: {
+                chatId,
+                domain: entry.normalizedValue,
+                removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+              },
+              update: {
+                removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+              },
+            }),
+          ),
+        ]);
 
-      await this.chatContextCache.invalidate(chatId);
-    }
+        await this.chatContextCache.invalidate(chatId);
+      },
+    );
   }
 
   private async upsertNormalizedAllowlistDomain(chatId: string, normalizedDomain: string) {
@@ -22406,6 +22467,55 @@ export class AdminService implements OnModuleDestroy {
 
   private async refreshExecutionReadinessAfterChannelSettingsUpdate(chatId: string): Promise<void> {
     await this.refreshManagedEntityBotAccessSnapshots(chatId, 'channel', 'channel settings update');
+  }
+
+  private scheduleApplySettingsToAllReadinessRefresh(params: {
+    chatIds: readonly string[];
+    shouldRefreshRequiredSubscription: boolean;
+    requiredSubscriptionChannelIds: readonly string[];
+  }): void {
+    if (!this.maxBotExecutionPlanner) {
+      return;
+    }
+
+    void this.refreshApplySettingsToAllReadiness(params).catch((error: unknown) => {
+      this.logger.warn(
+        {
+          chats: params.chatIds.length,
+          requiredSubscriptionChannels: params.requiredSubscriptionChannelIds.length,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh apply-to-all readiness snapshots in background',
+      );
+    });
+  }
+
+  private async refreshApplySettingsToAllReadiness(params: {
+    chatIds: readonly string[];
+    shouldRefreshRequiredSubscription: boolean;
+    requiredSubscriptionChannelIds: readonly string[];
+  }): Promise<void> {
+    await this.mapWithConcurrencyLimit(
+      [...params.chatIds],
+      APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY,
+      async (chatId) => {
+        await this.sleepIfNeeded(APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS);
+        await this.refreshManagedEntityBotAccessSnapshots(
+          chatId,
+          'chat',
+          'chat settings apply-to-all',
+        );
+      },
+    );
+
+    if (!params.shouldRefreshRequiredSubscription) {
+      return;
+    }
+
+    await this.refreshRequiredSubscriptionAccessSnapshots(
+      params.requiredSubscriptionChannelIds,
+      'required subscription settings apply-to-all',
+    );
   }
 
   private async refreshManagedEntityBotAccessSnapshots(

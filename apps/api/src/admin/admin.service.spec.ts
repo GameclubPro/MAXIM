@@ -3164,6 +3164,9 @@ describe('AdminService required subscription settings', () => {
     );
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-2');
+
+    await flushAsyncTasks();
+
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledTimes(3);
     expect(maxBotExecutionPlanner.refreshChatBotCapabilitySnapshots).toHaveBeenCalledWith({
       chatId: 'chat-1',
@@ -3309,7 +3312,7 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
-  it('uses the full mass-action scan when applying settings to all chats', async () => {
+  it('uses the cached mass-action target set when applying settings to all chats', async () => {
     const prisma = createPrismaMock();
     const service = new AdminService(
       prisma as never,
@@ -3343,7 +3346,7 @@ describe('AdminService required subscription settings', () => {
 
     const result = await service.applySettingsToAllChats('chat-1', actor, settings);
 
-    expect(massScanSpy).toHaveBeenCalledWith(actor);
+    expect(massScanSpy).toHaveBeenCalledWith(actor, { discoveryMode: 'cached-first' });
     expect(result).toEqual({
       sourceChatId: 'chat-1',
       updatedChats: 2,
@@ -15631,6 +15634,79 @@ describe('AdminService.sendBroadcast', () => {
         entityType: 'chat',
       }),
     ]);
+  });
+
+  it('uses cached targets for foreground mass settings lookup and leaves full refresh to the queue', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-allowlist',
+          title: 'Чат из allowlist',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+          primaryBotId: '777000_bot',
+        },
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock();
+    await chatContextCache.setManagedEntitiesPublishedSnapshot('admin-1', 'chat', {
+      version: 'snapshot-v1',
+      builtAt: '2026-04-20T10:00:00.000Z',
+      lastSyncedAt: '2026-04-20T09:59:00.000Z',
+      itemCount: 1,
+      itemsHash: 'hash-v1',
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-snapshot',
+          title: 'Чат из snapshot',
+          createdAt: '2026-03-01T00:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+      ],
+    });
+    const refreshQueue = {
+      getJob: jest.fn().mockResolvedValue(null),
+      add: jest.fn().mockResolvedValue({}),
+    };
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      refreshQueue as never,
+    );
+    const discoverySpy = jest.spyOn(service as any, 'discoverManagedEntities');
+
+    const result = await service.listChatsForMassBroadcast(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { discoveryMode: 'cached-first' },
+    );
+
+    expect(discoverySpy).not.toHaveBeenCalled();
+    expect(result.map((chat) => chat.id)).toEqual(['chat-snapshot', 'chat-allowlist']);
+    await flushAsyncTasks();
+    expect(refreshQueue.add).toHaveBeenCalledWith(
+      'refresh-managed-entities',
+      expect.objectContaining({
+        userId: 'admin-1',
+        entityType: 'chat',
+      }),
+      expect.any(Object),
+    );
   });
 
   it('keeps draining due managed broadcasts until the current backlog is exhausted', async () => {
