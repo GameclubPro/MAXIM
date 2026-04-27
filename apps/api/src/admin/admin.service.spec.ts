@@ -15130,6 +15130,107 @@ describe('AdminService.getChatParticipantsPage', () => {
     expect(secondPage.nextCursor).toBeNull();
   });
 
+  it('returns partial participant search pages before scanning the whole MAX roster', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'CHAT',
+    });
+    prisma.moderationEvent.groupBy.mockResolvedValue([]);
+    prisma.chatParticipantModerationImmunity.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMembersPage: jest
+        .fn()
+        .mockImplementation(
+          async (_chatId: string, query: { marker?: string | null; limit?: number }) => {
+            const marker = query.marker ?? null;
+            if (marker === 'page-4') {
+              return {
+                items: [
+                  {
+                    userId: 'user-target',
+                    displayName: 'Целевой Участник',
+                    username: 'target',
+                    avatarUrl: null,
+                    profileUrl: null,
+                    role: 'member',
+                    isBot: false,
+                  },
+                ],
+                nextMarker: null,
+              };
+            }
+
+            return {
+              items: [
+                {
+                  userId: `user-${marker ?? 'page-1'}`,
+                  displayName: 'Другой пользователь',
+                  username: 'other',
+                  avatarUrl: null,
+                  profileUrl: null,
+                  role: 'member',
+                  isBot: false,
+                },
+              ],
+              nextMarker:
+                marker === 'page-3' ? 'page-4' : marker === 'page-2' ? 'page-3' : 'page-2',
+            };
+          },
+        ),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        participantsCount: 4,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: '2026-04-14T10:00:00.000Z',
+        entityType: 'chat',
+        avatarUrl: null,
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    const firstPage = await service.getChatParticipantsPage('chat-1', actor, {
+      limit: 10,
+      range: '7d',
+      search: 'целевой',
+    });
+    const secondPage = await service.getChatParticipantsPage('chat-1', actor, {
+      limit: 10,
+      range: '7d',
+      search: 'целевой',
+      cursor: firstPage.nextCursor ?? undefined,
+    });
+
+    expect(maxClient.getChatMembersPage).toHaveBeenCalledTimes(4);
+    expect(firstPage.items).toEqual([]);
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+    expect(secondPage.items).toEqual([
+      expect.objectContaining({
+        userId: 'user-target',
+      }),
+    ]);
+    expect(secondPage.hasMore).toBe(false);
+  });
+
   it('upserts participant immunity and returns a compact summary', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-04-15T09:00:00.000Z'));
     try {

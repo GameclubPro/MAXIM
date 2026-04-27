@@ -84,6 +84,7 @@ export function useChatParticipantsFeed({
   const queryKeyRef = useRef('');
   const runLoadPage = useEffectEvent(loadPage);
   const normalizedSearch = search.trim();
+  const requestLimit = normalizedSearch ? Math.min(limit, 24) : limit;
 
   useEffect(() => {
     feedRef.current = feed;
@@ -100,8 +101,9 @@ export function useChatParticipantsFeed({
       return;
     }
 
-    const queryKey = `${range}\u0000${limit}\u0000${normalizedSearch}`;
-    const shouldClearItems = feedRef.current.items.length === 0 || queryKeyRef.current !== queryKey;
+    const queryKey = `${range}\u0000${requestLimit}\u0000${normalizedSearch}`;
+    const shouldClearItems =
+      feedRef.current.items.length === 0 || (!normalizedSearch && queryKeyRef.current !== queryKey);
     queryKeyRef.current = queryKey;
 
     if (initialPage && !normalizedSearch) {
@@ -121,7 +123,7 @@ export function useChatParticipantsFeed({
     }
 
     void runLoadPage(
-      { limit, range, search: normalizedSearch || undefined },
+      { limit: requestLimit, range, search: normalizedSearch || undefined },
       { signal: controller.signal },
     )
       .then((page) => {
@@ -157,7 +159,7 @@ export function useChatParticipantsFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, initialPage, limit, normalizedSearch, range]);
+  }, [enabled, initialPage, normalizedSearch, range, requestLimit]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -175,7 +177,7 @@ export function useChatParticipantsFeed({
     try {
       const nextPage = await runLoadPage(
         {
-          limit,
+          limit: requestLimit,
           range,
           cursor: feed.nextCursor,
           search: normalizedSearch || undefined,
@@ -236,7 +238,7 @@ export function useChatParticipantsFeed({
 
     try {
       const page = await runLoadPage(
-        { limit, range, search: normalizedSearch || undefined },
+        { limit: requestLimit, range, search: normalizedSearch || undefined },
         { signal: controller.signal },
       );
       if (requestId !== requestIdRef.current || controller.signal.aborted) {

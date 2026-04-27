@@ -125,6 +125,9 @@ export function ChatParticipantsRoster({
   onParticipantActivate = null,
 }: ChatParticipantsRosterProps) {
   const isSearching = search.trim().length > 0;
+  const isSearchBusy = isSearching && (isReloading || isLoadingMore);
+  const showSearchScanning =
+    !error && isSearching && items.length === 0 && (isReloading || isLoadingMore || hasMore);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoLoadLockRef = useRef(false);
 
@@ -166,14 +169,15 @@ export function ChatParticipantsRoster({
   }, [hasMore, isLoadingMore, isReloading, onLoadMore]);
 
   const showSearch = items.length > 0 || isSearching || isReloading;
-  const showEmptySearch = !error && !isReloading && isSearching && items.length === 0;
+  const showEmptySearch =
+    !error && !isReloading && !isLoadingMore && !hasMore && isSearching && items.length === 0;
   const showEmptyRoster = !error && !isReloading && !isSearching && items.length === 0;
 
   return (
     <section className="participants-roster" aria-label="Список участников">
       {showSearch ? (
         <div className="participants-roster__toolbar">
-          <label className="participants-roster__search">
+          <label className={`participants-roster__search ${isSearchBusy ? 'is-busy' : ''}`}>
             <span className="participants-roster__search-icon" aria-hidden="true">
               <SearchIcon />
             </span>
@@ -186,6 +190,9 @@ export function ChatParticipantsRoster({
               autoComplete="off"
               spellCheck={false}
             />
+            {isSearchBusy ? (
+              <span className="participants-roster__search-progress" aria-hidden="true" />
+            ) : null}
           </label>
         </div>
       ) : null}
@@ -199,9 +206,16 @@ export function ChatParticipantsRoster({
         </div>
       ) : null}
 
-      {!error && isReloading && items.length === 0 ? (
+      {!error && isReloading && items.length === 0 && !isSearching ? (
         <div className="participants-roster__status">
           <Spinner size="lg" label="Загружаем участников" />
+        </div>
+      ) : null}
+
+      {showSearchScanning ? (
+        <div className="participants-roster__status participants-roster__status--search">
+          <span className="participants-roster__search-status-spinner" aria-hidden="true" />
+          <p>Ищем по участникам...</p>
         </div>
       ) : null}
 
@@ -337,14 +351,14 @@ export function ChatParticipantsRoster({
 
       <div ref={sentinelRef} className="participants-roster__sentinel" aria-hidden="true" />
 
-      {hasMore ? (
+      {hasMore && !showSearchScanning ? (
         <button
           type="button"
           className="button button--ghost participants-roster__load-more"
           onClick={onLoadMore}
           disabled={isLoadingMore || isReloading}
         >
-          {isLoadingMore ? 'Загружаем...' : 'Показать ещё'}
+          {isLoadingMore ? (isSearching ? 'Ищем...' : 'Загружаем...') : 'Показать ещё'}
         </button>
       ) : null}
     </section>

@@ -529,6 +529,7 @@ const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
 const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
 const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
+const CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE = 3;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE = 'Europe/Moscow';
@@ -17781,6 +17782,7 @@ export class AdminService implements OnModuleDestroy {
     const items: MaxChatRosterMember[] = [];
     let marker = cursor?.marker ?? null;
     let skip = cursor?.skip ?? 0;
+    let scannedRemotePages = 0;
 
     while (true) {
       const currentMarker = marker;
@@ -17790,6 +17792,7 @@ export class AdminService implements OnModuleDestroy {
         currentMarker,
         resolvedBotId,
       );
+      scannedRemotePages += 1;
       const matches = membersPage.items.filter((member) =>
         this.chatParticipantMatchesSearch(member, search),
       );
@@ -17809,6 +17812,17 @@ export class AdminService implements OnModuleDestroy {
         }
 
         marker = membersPage.nextMarker;
+        if (scannedRemotePages >= CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE) {
+          return {
+            items,
+            nextMarker: this.encodeChatParticipantsSearchCursor({
+              marker,
+              skip,
+              search,
+            }),
+          };
+        }
+
         continue;
       }
 
@@ -17827,6 +17841,19 @@ export class AdminService implements OnModuleDestroy {
         items.push(matches[matchIndex]);
       }
 
+      if (items.length >= limit) {
+        return {
+          items,
+          nextMarker: membersPage.nextMarker
+            ? this.encodeChatParticipantsSearchCursor({
+                marker: membersPage.nextMarker,
+                skip: 0,
+                search,
+              })
+            : null,
+        };
+      }
+
       if (!membersPage.nextMarker) {
         return {
           items,
@@ -17836,6 +17863,17 @@ export class AdminService implements OnModuleDestroy {
 
       marker = membersPage.nextMarker;
       skip = 0;
+
+      if (scannedRemotePages >= CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE) {
+        return {
+          items,
+          nextMarker: this.encodeChatParticipantsSearchCursor({
+            marker,
+            skip,
+            search,
+          }),
+        };
+      }
     }
   }
 
