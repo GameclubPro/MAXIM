@@ -1,14 +1,16 @@
 import type { ChatParticipantItem } from '@maxim/contracts';
-import { useDeferredValue, useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { PersonAvatar } from '../ui/person-avatar';
 import { Spinner } from '../ui/spinner';
 
 type ChatParticipantsRosterProps = {
   items: ChatParticipantItem[];
+  search: string;
   hasMore: boolean;
   isReloading: boolean;
   isLoadingMore: boolean;
   error: string | null;
+  onSearchChange: (value: string) => void;
   onLoadMore: () => void;
   onRetry: () => void;
   onParticipantActivate?: ((item: ChatParticipantItem) => void) | null;
@@ -116,20 +118,13 @@ export function ChatParticipantsRoster({
   isReloading,
   isLoadingMore,
   error,
+  search,
+  onSearchChange,
   onLoadMore,
   onRetry,
   onParticipantActivate = null,
 }: ChatParticipantsRosterProps) {
-  const [search, setSearch] = useState('');
-  const deferredSearch = useDeferredValue(search.trim().toLowerCase());
-  const isFiltering = deferredSearch.length > 0;
-  const filteredItems = isFiltering
-    ? items.filter((item) => {
-        const displayName = resolveDisplayName(item).toLowerCase();
-        const username = item.username?.replace(/^@+/u, '').trim().toLowerCase() ?? '';
-        return displayName.includes(deferredSearch) || username.includes(deferredSearch);
-      })
-    : items;
+  const isSearching = search.trim().length > 0;
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const autoLoadLockRef = useRef(false);
 
@@ -140,13 +135,7 @@ export function ChatParticipantsRoster({
   }, [isLoadingMore]);
 
   useEffect(() => {
-    if (
-      isFiltering ||
-      !hasMore ||
-      isLoadingMore ||
-      isReloading ||
-      typeof IntersectionObserver === 'undefined'
-    ) {
+    if (!hasMore || isLoadingMore || isReloading || typeof IntersectionObserver === 'undefined') {
       return;
     }
 
@@ -174,10 +163,11 @@ export function ChatParticipantsRoster({
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, isFiltering, isLoadingMore, isReloading, onLoadMore]);
+  }, [hasMore, isLoadingMore, isReloading, onLoadMore]);
 
-  const showSearch = items.length > 0 || isFiltering;
-  const showEmptySearch = !error && !isReloading && items.length > 0 && filteredItems.length === 0;
+  const showSearch = items.length > 0 || isSearching || isReloading;
+  const showEmptySearch = !error && !isReloading && isSearching && items.length === 0;
+  const showEmptyRoster = !error && !isReloading && !isSearching && items.length === 0;
 
   return (
     <section className="participants-roster" aria-label="Список участников">
@@ -190,7 +180,7 @@ export function ChatParticipantsRoster({
             <input
               type="search"
               value={search}
-              onChange={(event) => setSearch(event.target.value)}
+              onChange={(event) => onSearchChange(event.target.value)}
               placeholder="Поиск"
               aria-label="Поиск участника"
               autoComplete="off"
@@ -215,7 +205,7 @@ export function ChatParticipantsRoster({
         </div>
       ) : null}
 
-      {!error && !isReloading && items.length === 0 ? (
+      {showEmptyRoster ? (
         <div className="participants-roster__status">
           <p>Участников пока нет.</p>
         </div>
@@ -227,9 +217,9 @@ export function ChatParticipantsRoster({
         </div>
       ) : null}
 
-      {filteredItems.length > 0 ? (
+      {items.length > 0 ? (
         <div className="participants-roster__list">
-          {filteredItems.map((item) => {
+          {items.map((item) => {
             const displayName = resolveDisplayName(item);
             const username = item.username?.replace(/^@+/u, '').trim() ?? '';
             const canOpenDetails =

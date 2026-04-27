@@ -739,10 +739,12 @@ function buildParticipantsPage(
     range = '7d',
     limit = 100,
     cursor,
+    search,
   }: {
     range?: LogsDashboardRange;
     limit?: number;
     cursor?: string | null;
+    search?: string | null;
   },
   totalCount: number,
   violations: LogsDashboardResponse['violations'],
@@ -750,6 +752,10 @@ function buildParticipantsPage(
 ): ChatParticipantsPage {
   const offset = cursor ? Number.parseInt(cursor, 10) : 0;
   const safeOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const normalizedSearch = normalizeParticipantSearchText(search ?? '');
+  const filteredItems = normalizedSearch
+    ? items.filter((item) => participantMatchesSearch(item, normalizedSearch))
+    : items;
   const violationCountByUserId = new Map<string, number>();
 
   for (const violation of violations) {
@@ -763,7 +769,7 @@ function buildParticipantsPage(
     );
   }
 
-  const pageItems = items.slice(safeOffset, safeOffset + limit).map((item) => ({
+  const pageItems = filteredItems.slice(safeOffset, safeOffset + limit).map((item) => ({
     ...item,
     violationCount: violationCountByUserId.get(item.userId) ?? 0,
   }));
@@ -772,9 +778,26 @@ function buildParticipantsPage(
   return chatParticipantsPageSchema.parse({
     items: pageItems,
     totalCount,
-    hasMore: nextOffset < items.length,
-    nextCursor: nextOffset < items.length ? String(nextOffset) : null,
+    hasMore: nextOffset < filteredItems.length,
+    nextCursor: nextOffset < filteredItems.length ? String(nextOffset) : null,
   });
+}
+
+function normalizeParticipantSearchText(value: string): string {
+  const normalized = value
+    .normalize('NFKC')
+    .trim()
+    .replace(/\s+/gu, ' ')
+    .toLocaleLowerCase('ru-RU');
+  const withoutMentionPrefix = normalized.replace(/^@+/u, '');
+  return withoutMentionPrefix || normalized;
+}
+
+function participantMatchesSearch(item: ChatParticipantItem, search: string): boolean {
+  const username = item.username?.replace(/^@+/u, '').trim() ?? '';
+  const candidates = [item.userDisplayName, username, username ? `@${username}` : '', item.userId];
+
+  return candidates.some((candidate) => normalizeParticipantSearchText(candidate).includes(search));
 }
 
 function buildBroadcastSummary(details: ManagedBroadcastDetails) {
@@ -3472,6 +3495,7 @@ async function handleChatRequest(
           range: (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d',
           limit: Number.parseInt(url.searchParams.get('limit') ?? '100', 10),
           cursor: url.searchParams.get('cursor'),
+          search: url.searchParams.get('search'),
         },
         state.chatParticipants.length,
         state.chatViolations,

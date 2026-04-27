@@ -2197,21 +2197,21 @@ export class MaxClientService implements OnModuleDestroy {
       row.user && typeof row.user === 'object' && !Array.isArray(row.user)
         ? (row.user as Record<string, unknown>)
         : null;
+    const explicitDisplayName = this.readTrimmedString(
+      row.display_name ?? row.displayName ?? nestedUser?.display_name ?? nestedUser?.displayName,
+    );
+    const firstName = this.readTrimmedString(
+      row.first_name ?? row.firstName ?? nestedUser?.first_name ?? nestedUser?.firstName,
+    );
+    const lastName = this.readTrimmedString(
+      row.last_name ?? row.lastName ?? nestedUser?.last_name ?? nestedUser?.lastName,
+    );
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    const legacyName = this.readTrimmedString(row.name ?? nestedUser?.name);
 
     return {
       userId,
-      displayName: this.readTrimmedString(
-        row.first_name ??
-          row.firstName ??
-          row.display_name ??
-          row.displayName ??
-          row.name ??
-          nestedUser?.first_name ??
-          nestedUser?.firstName ??
-          nestedUser?.display_name ??
-          nestedUser?.displayName ??
-          nestedUser?.name,
-      ),
+      displayName: explicitDisplayName ?? (fullName || null) ?? legacyName,
       username: this.readTrimmedString(row.username ?? nestedUser?.username),
       avatarUrl: this.readTrimmedString(
         row.full_avatar_url ??

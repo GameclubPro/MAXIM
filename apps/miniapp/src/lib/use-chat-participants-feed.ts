@@ -12,6 +12,7 @@ type UseChatParticipantsFeedOptions = {
   loadPage: LoadChatParticipantsPage;
   range?: ChatParticipantsQuery['range'];
   limit?: number;
+  search?: string;
 };
 
 type FeedState = {
@@ -70,6 +71,7 @@ export function useChatParticipantsFeed({
   loadPage,
   range = '7d',
   limit = 100,
+  search = '',
 }: UseChatParticipantsFeedOptions) {
   const [feed, setFeed] = useState<FeedState>(() =>
     initialPage ? toFeedState(initialPage) : EMPTY_FEED,
@@ -79,7 +81,9 @@ export function useChatParticipantsFeed({
   const requestIdRef = useRef(0);
   const activeControllerRef = useRef<AbortController | null>(null);
   const feedRef = useRef(feed);
+  const queryKeyRef = useRef('');
   const runLoadPage = useEffectEvent(loadPage);
+  const normalizedSearch = search.trim();
 
   useEffect(() => {
     feedRef.current = feed;
@@ -96,7 +100,11 @@ export function useChatParticipantsFeed({
       return;
     }
 
-    if (initialPage) {
+    const queryKey = `${range}\u0000${limit}\u0000${normalizedSearch}`;
+    const shouldClearItems = feedRef.current.items.length === 0 || queryKeyRef.current !== queryKey;
+    queryKeyRef.current = queryKey;
+
+    if (initialPage && !normalizedSearch) {
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
@@ -108,11 +116,14 @@ export function useChatParticipantsFeed({
     activeControllerRef.current = controller;
     setStatus('reloading');
     setError(null);
-    if (feedRef.current.items.length === 0) {
+    if (shouldClearItems) {
       setFeed(EMPTY_FEED);
     }
 
-    void runLoadPage({ limit, range }, { signal: controller.signal })
+    void runLoadPage(
+      { limit, range, search: normalizedSearch || undefined },
+      { signal: controller.signal },
+    )
       .then((page) => {
         if (requestId !== requestIdRef.current || controller.signal.aborted) {
           return;
@@ -125,7 +136,11 @@ export function useChatParticipantsFeed({
         }
       })
       .catch((cause: unknown) => {
-        if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
+        if (
+          requestId !== requestIdRef.current ||
+          controller.signal.aborted ||
+          isAbortError(cause)
+        ) {
           return;
         }
 
@@ -142,7 +157,7 @@ export function useChatParticipantsFeed({
         activeControllerRef.current = null;
       }
     };
-  }, [enabled, initialPage, limit, range]);
+  }, [enabled, initialPage, limit, normalizedSearch, range]);
 
   async function loadMore() {
     if (!enabled || status !== 'idle' || !feed.hasMore || !feed.nextCursor) {
@@ -163,6 +178,7 @@ export function useChatParticipantsFeed({
           limit,
           range,
           cursor: feed.nextCursor,
+          search: normalizedSearch || undefined,
         },
         { signal: controller.signal },
       );
@@ -200,7 +216,7 @@ export function useChatParticipantsFeed({
       return;
     }
 
-    if (initialPage) {
+    if (initialPage && !normalizedSearch) {
       setFeed(toFeedState(initialPage));
       setError(null);
       setStatus('idle');
@@ -219,7 +235,10 @@ export function useChatParticipantsFeed({
     }
 
     try {
-      const page = await runLoadPage({ limit, range }, { signal: controller.signal });
+      const page = await runLoadPage(
+        { limit, range, search: normalizedSearch || undefined },
+        { signal: controller.signal },
+      );
       if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }

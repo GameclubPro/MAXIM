@@ -177,6 +177,7 @@ import {
   type MaxBotChat,
   type MaxChatMemberAccess,
   type MaxChatMemberRole,
+  type MaxChatRosterMember,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -382,6 +383,12 @@ type ResolveUserProfilesOptions = {
 type ModerationFeedCursor = {
   createdAt: Date;
   id: string;
+};
+
+type ChatParticipantsSearchCursor = {
+  marker: string | null;
+  skip: number;
+  search: string;
 };
 
 type ChannelSuggestionActor = Pick<AuthUser, 'userId'> & {
@@ -17627,23 +17634,14 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType = 'chat',
   ): Promise<ChatParticipantsPage> {
     const limit = Math.max(1, Math.min(100, query.limit));
-    const resolvedBotId = await this.resolveBackgroundReadBotAssignment(chatId);
+    const search = this.normalizeChatParticipantsSearchText(query.search ?? '');
+    const resolvedBotId = (await this.resolveBackgroundReadBotAssignment(chatId)) ?? null;
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(query.range, now);
     const [membersPage, header, settings] = await Promise.all([
-      this.maxClient.getChatMembersPage(
-        chatId,
-        {
-          limit,
-          marker: query.cursor ?? null,
-        },
-        {
-          trafficClass: 'interactive',
-          actionHealthLane: 'background',
-          ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
-          ...(resolvedBotId ? { botId: resolvedBotId } : {}),
-        },
-      ),
+      search
+        ? this.searchChatParticipantsMembersPage(chatId, query, search, resolvedBotId)
+        : this.loadChatParticipantsMembersPage(chatId, limit, query.cursor ?? null, resolvedBotId),
       this.getManagedEntityHeader(
         chatId,
         {
@@ -17749,6 +17747,172 @@ export class AdminService implements OnModuleDestroy {
       hasMore: Boolean(membersPage.nextMarker),
       nextCursor: membersPage.nextMarker,
     });
+  }
+
+  private loadChatParticipantsMembersPage(
+    chatId: string,
+    limit: number,
+    marker: string | null,
+    resolvedBotId: string | null,
+  ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
+    return this.maxClient.getChatMembersPage(
+      chatId,
+      {
+        limit,
+        marker,
+      },
+      {
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
+        ...(resolvedBotId ? { botId: resolvedBotId } : {}),
+      },
+    );
+  }
+
+  private async searchChatParticipantsMembersPage(
+    chatId: string,
+    query: ChatParticipantsQuery,
+    search: string,
+    resolvedBotId: string | null,
+  ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
+    const limit = Math.max(1, Math.min(100, query.limit));
+    const cursor = this.decodeChatParticipantsSearchCursor(query.cursor, search);
+    const items: MaxChatRosterMember[] = [];
+    let marker = cursor?.marker ?? null;
+    let skip = cursor?.skip ?? 0;
+
+    while (true) {
+      const currentMarker = marker;
+      const membersPage = await this.loadChatParticipantsMembersPage(
+        chatId,
+        100,
+        currentMarker,
+        resolvedBotId,
+      );
+      const matches = membersPage.items.filter((member) =>
+        this.chatParticipantMatchesSearch(member, search),
+      );
+      let matchIndex = 0;
+
+      if (skip > 0) {
+        matchIndex = Math.min(skip, matches.length);
+        skip -= matchIndex;
+      }
+
+      if (skip > 0) {
+        if (!membersPage.nextMarker) {
+          return {
+            items,
+            nextMarker: null,
+          };
+        }
+
+        marker = membersPage.nextMarker;
+        continue;
+      }
+
+      for (; matchIndex < matches.length; matchIndex += 1) {
+        if (items.length >= limit) {
+          return {
+            items,
+            nextMarker: this.encodeChatParticipantsSearchCursor({
+              marker: currentMarker,
+              skip: matchIndex,
+              search,
+            }),
+          };
+        }
+
+        items.push(matches[matchIndex]);
+      }
+
+      if (!membersPage.nextMarker) {
+        return {
+          items,
+          nextMarker: null,
+        };
+      }
+
+      marker = membersPage.nextMarker;
+      skip = 0;
+    }
+  }
+
+  private chatParticipantMatchesSearch(member: MaxChatRosterMember, search: string): boolean {
+    const username = member.username?.replace(/^@+/u, '').trim() ?? '';
+    const candidates = [
+      member.displayName ?? '',
+      username,
+      username ? `@${username}` : '',
+      member.userId,
+    ];
+
+    return candidates.some((candidate) =>
+      this.normalizeChatParticipantsSearchText(candidate).includes(search),
+    );
+  }
+
+  private normalizeChatParticipantsSearchText(value: string): string {
+    const normalized = value
+      .normalize('NFKC')
+      .trim()
+      .replace(/\s+/gu, ' ')
+      .toLocaleLowerCase('ru-RU');
+    const withoutMentionPrefix = normalized.replace(/^@+/u, '');
+    return withoutMentionPrefix || normalized;
+  }
+
+  private encodeChatParticipantsSearchCursor(cursor: ChatParticipantsSearchCursor): string {
+    return Buffer.from(
+      JSON.stringify({
+        v: 1,
+        marker: cursor.marker,
+        skip: cursor.skip,
+        search: cursor.search,
+      }),
+      'utf8',
+    ).toString('base64url');
+  }
+
+  private decodeChatParticipantsSearchCursor(
+    value: string | undefined,
+    search: string,
+  ): ChatParticipantsSearchCursor | null {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const decoded = Buffer.from(value, 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded) as Record<string, unknown>;
+      const marker =
+        typeof parsed.marker === 'string' && parsed.marker.trim()
+          ? parsed.marker.trim()
+          : parsed.marker === null
+            ? null
+            : null;
+      const skip =
+        typeof parsed.skip === 'number' && Number.isFinite(parsed.skip)
+          ? Math.max(0, Math.trunc(parsed.skip))
+          : 0;
+      const cursorSearch =
+        typeof parsed.search === 'string'
+          ? this.normalizeChatParticipantsSearchText(parsed.search)
+          : '';
+
+      if (parsed.v !== 1 || cursorSearch !== search) {
+        throw new Error('Invalid chat participants search cursor');
+      }
+
+      return {
+        marker,
+        skip,
+        search,
+      };
+    } catch {
+      throw new BadRequestException('Неверный cursor для поиска участников.');
+    }
   }
 
   private async getCachedChatParticipantsPage(
@@ -24957,9 +25121,15 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityType,
     query: ChatParticipantsQuery,
   ): string {
-    return [chatId, userId, entityType, query.range, String(query.limit), query.cursor ?? ''].join(
-      ':',
-    );
+    return [
+      chatId,
+      userId,
+      entityType,
+      query.range,
+      String(query.limit),
+      query.cursor ?? '',
+      query.search ?? '',
+    ].join(':');
   }
 
   private buildResolvedUserProfileCacheKey(

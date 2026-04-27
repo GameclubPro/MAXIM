@@ -120,6 +120,9 @@ export async function getChatParticipantsPage(
   if (validatedQuery.cursor) {
     params.set('cursor', validatedQuery.cursor);
   }
+  if (validatedQuery.search) {
+    params.set('search', validatedQuery.search);
+  }
 
   const response = await api.request(`/chats/${chatId}/members?${params.toString()}`, request);
   return chatParticipantsPageSchema.parse(response);

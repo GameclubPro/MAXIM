@@ -13,6 +13,7 @@ import {
   startTransition,
   type KeyboardEvent,
   type MouseEvent,
+  useDeferredValue,
   useEffect,
   useMemo,
   useState,
@@ -798,6 +799,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null);
+  const [participantsSearch, setParticipantsSearch] = useState('');
+  const deferredParticipantsSearch = useDeferredValue(participantsSearch);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -908,6 +911,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
+    search: deferredParticipantsSearch,
     initialPage: null,
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });
@@ -1462,10 +1466,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       {section === 'participants' ? (
         <ChatParticipantsRoster
           items={participantsFeed.items}
+          search={participantsSearch}
           hasMore={participantsFeed.hasMore}
           isReloading={participantsFeed.isReloading}
           isLoadingMore={participantsFeed.isLoadingMore}
           error={participantsFeed.error}
+          onSearchChange={setParticipantsSearch}
           onLoadMore={() => void participantsFeed.loadMore()}
           onRetry={() => void participantsFeed.retry()}
           onParticipantActivate={(item: ChatParticipantItem) =>

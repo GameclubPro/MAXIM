@@ -2133,6 +2133,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('combines first and last names for chat member roster profiles', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                first_name: 'Алексей',
+                last_name: 'Иванов',
+                username: 'aleksey',
+                is_bot: false,
+              },
+            ],
+            marker: null,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMembersPage('chat-1');
+
+    expect(result.items[0]).toEqual(
+      expect.objectContaining({
+        userId: 'user-1',
+        displayName: 'Алексей Иванов',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('reads the current bot profile from GET /me', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

@@ -2450,6 +2450,7 @@ export const chatParticipantsQuerySchema = z.object({
   range: logsDashboardRangeSchema.default('7d'),
   limit: z.coerce.number().int().min(1).max(100).default(100),
   cursor: z.string().trim().min(1).optional(),
+  search: z.string().trim().max(100).optional(),
 });
 export type ChatParticipantsQuery = z.infer<typeof chatParticipantsQuerySchema>;
 
