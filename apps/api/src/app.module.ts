@@ -1,5 +1,5 @@
 import { BullModule } from '@nestjs/bullmq';
-import { Module } from '@nestjs/common';
+import { Module, RequestMethod } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { LoggerModule } from 'nestjs-pino';
 import { AdminModule } from './admin/admin.module';
@@ -20,6 +20,7 @@ import { WebhookModule } from './webhook/webhook.module';
       expandVariables: true,
     }),
     LoggerModule.forRoot({
+      forRoutes: [{ path: '{*path}', method: RequestMethod.ALL }],
       pinoHttp: {
         level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
         transport:
