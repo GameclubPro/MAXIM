@@ -360,6 +360,7 @@ const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
+const CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS = 1_500;
 const CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS = 5_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
@@ -1135,6 +1136,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const settings = this.applyDegradeSettings(chat.settings, degradeMode);
       const manualGroupCloseActiveNow = this.isNightModeForceCloseActiveNow(settings);
       const nightModeActiveNow = !manualGroupCloseActiveNow && this.isNightModeActiveNow(settings);
+      const destructiveAccessGateActive = manualGroupCloseActiveNow || nightModeActiveNow;
       const forceSynchronousRemoteAdminLookup =
         this.shouldForceSynchronousRemoteAdminLookup(update);
       const rulesPublishedUrl = chat.rulesPublishedUrl;
@@ -1211,22 +1213,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           skipRemoteLookupWhenLocalAdminsKnown:
             hotChatBackoffActive ||
             degradeMode ||
-            manualGroupCloseActiveNow ||
-            nightModeActiveNow ||
-            !forceSynchronousRemoteAdminLookup,
+            (!destructiveAccessGateActive && !forceSynchronousRemoteAdminLookup),
           remoteLookupSoftTimeoutMs:
-            !hotChatBackoffActive &&
-            !degradeMode &&
-            !manualGroupCloseActiveNow &&
-            !nightModeActiveNow &&
-            !forceSynchronousRemoteAdminLookup
-              ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
+            !hotChatBackoffActive && !degradeMode && !forceSynchronousRemoteAdminLookup
+              ? destructiveAccessGateActive
+                ? CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS
+                : CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
               : undefined,
           prefetchRemoteLookupWhenLocalAdminsKnown:
             !hotChatBackoffActive &&
             !degradeMode &&
-            !manualGroupCloseActiveNow &&
-            !nightModeActiveNow &&
+            !destructiveAccessGateActive &&
             !this.chatAdminSyncRemoteLookupWhenLocalAdminsKnown,
         },
       );
@@ -1246,9 +1243,59 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
+      let latestSenderChatAdminCheck = senderChatAdminCheck;
+      const ensureDestructiveModerationAllowed = async (stage: string): Promise<boolean> => {
+        if (
+          latestSenderChatAdminCheck.source === 'local_fallback' &&
+          !degradeMode &&
+          !hotChatBackoffActive
+        ) {
+          latestSenderChatAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
+            chatId,
+            chat.adminUserIds,
+            senderId,
+            latestSenderChatAdminCheck,
+            {
+              maxWaitMs: CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS,
+            },
+          );
+        }
+
+        if (latestSenderChatAdminCheck.isAdmin) {
+          this.markWebhookHotPathStage(hotPathProfile, 'admin-command');
+          await this.handleChatAdminModerationBypass({
+            update,
+            chatId,
+            chatTitle,
+            senderId,
+            senderName,
+            messageId,
+            text,
+            settings,
+            source: latestSenderChatAdminCheck.source,
+          });
+          return false;
+        }
+
+        if (this.shouldSkipDestructiveModerationForUnresolvedAdmin(latestSenderChatAdminCheck)) {
+          this.logSkippedDestructiveModerationForUnresolvedAdmin({
+            chatId,
+            userId: senderId,
+            stage,
+            source: latestSenderChatAdminCheck.source,
+          });
+          return false;
+        }
+
+        return true;
+      };
+
       this.markWebhookHotPathStage(hotPathProfile, 'active-mute');
       const activeMute = await this.getActiveMute(chatId, senderId, settings.muteDurationHours);
       if (activeMute) {
+        if (!(await ensureDestructiveModerationAllowed('active-mute'))) {
+          return;
+        }
         await this.handleActiveMuteMessage({
           chatId,
           userId: senderId,
@@ -1261,6 +1308,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (manualGroupCloseActiveNow) {
+        if (!(await ensureDestructiveModerationAllowed('manual-group-close'))) {
+          return;
+        }
         await this.handleNightModeForceCloseMessage({
           chatId,
           userId: senderId,
@@ -1274,6 +1324,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (nightModeActiveNow) {
+        if (!(await ensureDestructiveModerationAllowed('night-mode'))) {
+          return;
+        }
         await this.handleNightModeMessage({
           chatId,
           userId: senderId,
@@ -1571,7 +1624,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         defaultWaitMs: CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS,
         reserveMs: VIOLATION_ADMIN_RECHECK_RESERVE_MS,
       });
-      let violationSenderAdminCheck = senderChatAdminCheck;
+      let violationSenderAdminCheck = latestSenderChatAdminCheck;
       if (violationAdminRecheckMaxWaitMs > 0) {
         violationSenderAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
           chatId,
@@ -11435,6 +11488,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         source,
       },
       'Moderation bypassed for chat admin',
+    );
+  }
+
+  private shouldSkipDestructiveModerationForUnresolvedAdmin(
+    adminCheck: ChatAdminCheckResult,
+  ): boolean {
+    return !adminCheck.isAdmin && adminCheck.source === 'local_fallback';
+  }
+
+  private logSkippedDestructiveModerationForUnresolvedAdmin(params: {
+    chatId: string;
+    userId: string;
+    stage: string;
+    source: ChatAdminCheckSource;
+  }): void {
+    this.logger.log(
+      {
+        chatId: params.chatId,
+        userId: params.userId,
+        stage: params.stage,
+        source: params.source,
+      },
+      'Skipped destructive moderation because chat admin access is unresolved',
     );
   }
 
