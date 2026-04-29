@@ -2187,67 +2187,73 @@ describe('AdminService required subscription settings', () => {
   });
 
   it('keeps the existing required subscription timer until channels or days change', async () => {
-    const prisma = createPrismaMock();
-    prisma.chatSettings.findUnique.mockResolvedValue({
-      nightModeForceCloseEnabled: false,
-      nightModeForceCloseForever: false,
-      nightModeForceCloseHours: 0,
-      nightModeForceCloseDays: 0,
-      nightModeForceCloseUntil: '',
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1'],
-      requiredSubscriptionDurationDays: 7,
-      requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
-    });
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'id613002203036_bot',
-        isAdmin: true,
-        isOwner: false,
-        permissions: [],
-      }),
-      getChatSnapshot: jest.fn().mockResolvedValue({
-        chatId: 'channel-1',
-        title: 'Новости MAX',
-        participantsCount: 125,
-        status: 'active',
-        isPublic: true,
-        link: 'https://max.ru/news',
-        lastEventAt: null,
-        entityType: 'channel',
-      }),
-    };
+    jest.useFakeTimers().setSystemTime(new Date('2026-04-20T12:00:00.000Z'));
 
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-    const result = await service.updateSettings('chat-1', actor, {
-      requiredSubscriptionEnabled: true,
-      requiredSubscriptionChannelIds: ['channel-1'],
-      requiredSubscriptionDurationDays: 7,
-      requiredSubscriptionBotMessageEnabled: true,
-      requiredSubscriptionBotMessageText: 'Новая подсказка.',
-    });
+    try {
+      const prisma = createPrismaMock();
+      prisma.chatSettings.findUnique.mockResolvedValue({
+        nightModeForceCloseEnabled: false,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 0,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: '',
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionDurationDays: 7,
+        requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
+      });
+      const maxClient = {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+        getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+          userId: 'id613002203036_bot',
+          isAdmin: true,
+          isOwner: false,
+          permissions: [],
+        }),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          participantsCount: 125,
+          status: 'active',
+          isPublic: true,
+          link: 'https://max.ru/news',
+          lastEventAt: null,
+          entityType: 'channel',
+        }),
+      };
 
-    expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-24T09:30:00.000Z');
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        update: expect.objectContaining({
-          settings: expect.objectContaining({
-            upsert: expect.objectContaining({
-              update: expect.objectContaining({
-                requiredSubscriptionDurationDays: 7,
-                requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
+      const service = new AdminService(
+        prisma as never,
+        maxClient as never,
+        createChatContextCacheMock() as never,
+        createConfigMock() as never,
+      );
+      const result = await service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionDurationDays: 7,
+        requiredSubscriptionBotMessageEnabled: true,
+        requiredSubscriptionBotMessageText: 'Новая подсказка.',
+      });
+
+      expect(result.requiredSubscriptionExpiresAt).toBe('2026-04-24T09:30:00.000Z');
+      expect(prisma.chat.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({
+            settings: expect.objectContaining({
+              upsert: expect.objectContaining({
+                update: expect.objectContaining({
+                  requiredSubscriptionDurationDays: 7,
+                  requiredSubscriptionExpiresAt: '2026-04-24T09:30:00.000Z',
+                }),
               }),
             }),
           }),
         }),
-      }),
-    );
+      );
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('refreshes bot access snapshots for the chat and required subscription chats/channels after settings update', async () => {
@@ -4900,7 +4906,9 @@ describe('AdminService.applyManualModerationAction', () => {
         },
       },
     ]);
-    prisma.$queryRaw.mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }]);
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatMemberAccess: jest.fn().mockResolvedValue({
@@ -5168,6 +5176,7 @@ describe('AdminService.applyManualModerationAction', () => {
       },
     ]);
     prisma.$queryRaw
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }])
       .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
 
@@ -6072,6 +6081,7 @@ describe('AdminService.applyManualSystemBan', () => {
       },
     ]);
     prisma.$queryRaw
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }])
       .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
 
@@ -6173,6 +6183,7 @@ describe('AdminService.applyManualSystemBan', () => {
       },
     ]);
     prisma.$queryRaw
+      .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ message_id: 'mid-source-1' }])
       .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
 
@@ -8291,17 +8302,15 @@ describe('AdminService.listChannels', () => {
     jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
       status: 'granted',
     });
-    jest
-      .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
-      .mockResolvedValue(
-        createChatSummaryFixture({
-          id: 'chat-keep',
-          title: 'Активный чат',
-          createdAt: '2026-03-02T10:00:00.000Z',
-          entityType: 'chat',
-          primaryBotId: 'main-bot',
-        }),
-      );
+    jest.spyOn(service as any, 'persistManagedEntityAccessBestEffort').mockResolvedValue(
+      createChatSummaryFixture({
+        id: 'chat-keep',
+        title: 'Активный чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        primaryBotId: 'main-bot',
+      }),
+    );
 
     const result = await (service as any).runManagedEntitiesDiscovery(
       {
@@ -18278,7 +18287,7 @@ describe('AdminService.sendBroadcast', () => {
       undefined,
     );
     expect(result.targetChats).toBe(2);
-    expect(result.sentChats).toBe(0);
+    expect(result.sentChats).toBe(2);
     expect(result.failedChats).toBe(0);
     expect(result.scheduleId).toBe('broadcast-1');
   });
