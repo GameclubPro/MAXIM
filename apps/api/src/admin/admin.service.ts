@@ -286,6 +286,7 @@ type ManagedEntitiesPublishedDiffReadResult = {
 };
 
 const DEFAULT_GROUP_COMMAND_MUTE_DURATION_HOURS = 6;
+const ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS = 30_000;
 
 type ManagedEntitiesListOptions = {
   refresh?: boolean;
@@ -962,6 +963,7 @@ export class AdminService implements OnModuleDestroy {
     string,
     TimedPromiseCacheEntry<ModerationFeedPage>
   >();
+  private readonly adminAccessValidationRosterSyncScheduledAtMs = new Map<string, number>();
   private readonly membershipActivityFeedPageCache = new Map<
     string,
     TimedPromiseCacheEntry<MembershipActivityPage>
@@ -17117,6 +17119,13 @@ export class AdminService implements OnModuleDestroy {
 
     if (options.syncPersistedAccess !== false) {
       await this.upsertUserChatAccess(chatId, userId, null, entityType);
+    } else {
+      this.rememberVerifiedChatAdminAccess({
+        chatId,
+        userId,
+        entityType,
+        source: access.source,
+      });
     }
   }
 
@@ -17141,6 +17150,73 @@ export class AdminService implements OnModuleDestroy {
     await this.assertChatAdmin(chatId, userId, entityType, {
       syncPersistedAccess: false,
     });
+  }
+
+  private rememberVerifiedChatAdminAccess(params: {
+    chatId: string;
+    userId: string;
+    entityType: ManagedEntityType | null;
+    source: 'cache' | 'remote' | 'allowlist_fallback';
+  }): void {
+    void Promise.all([
+      this.chatContextCache.setAdminAccess?.(params.chatId, params.userId, 'granted') ??
+        Promise.resolve(),
+      this.chatContextCache.rememberChatAdminUser?.(params.chatId, params.userId) ??
+        Promise.resolve(),
+    ]).catch((error: unknown) => {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to remember verified chat admin access after read-only validation',
+      );
+    });
+
+    if (params.source === 'remote') {
+      this.scheduleAdminAccessValidationRosterSync(params.chatId, params.entityType);
+    }
+  }
+
+  private scheduleAdminAccessValidationRosterSync(
+    chatId: string,
+    entityType: ManagedEntityType | null,
+  ): void {
+    if (typeof this.maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync !== 'function') {
+      return;
+    }
+
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastScheduledAt =
+      this.adminAccessValidationRosterSyncScheduledAtMs.get(normalizedChatId) ?? 0;
+    if (now - lastScheduledAt < ADMIN_ACCESS_VALIDATION_ROSTER_SYNC_THROTTLE_MS) {
+      return;
+    }
+    this.adminAccessValidationRosterSyncScheduledAtMs.set(normalizedChatId, now);
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId: normalizedChatId,
+        entityType,
+        source: 'admin_access_validation',
+        retryUntilMs: null,
+      })
+      .catch((error: unknown) => {
+        this.adminAccessValidationRosterSyncScheduledAtMs.delete(normalizedChatId);
+        this.logger.warn(
+          {
+            chatId: normalizedChatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule admin roster sync after read-only admin validation',
+        );
+      });
   }
 
   private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {

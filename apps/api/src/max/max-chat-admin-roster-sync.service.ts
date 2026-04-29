@@ -305,6 +305,7 @@ export class MaxChatAdminRosterSyncService {
       params?.source === 'webhook_chat_title_changed' ||
       params?.source === 'webhook_membership_churn' ||
       params?.source === 'moderation_destructive_path' ||
+      params?.source === 'admin_access_validation' ||
       params?.source === 'discovery_snapshot'
         ? params.source
         : null;
@@ -577,7 +578,11 @@ export class MaxChatAdminRosterSyncService {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS;
     }
 
-    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
+    if (
+      job.source === 'webhook_membership_churn' ||
+      job.source === 'moderation_destructive_path' ||
+      job.source === 'admin_access_validation'
+    ) {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS;
     }
 
@@ -589,7 +594,11 @@ export class MaxChatAdminRosterSyncService {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY;
     }
 
-    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
+    if (
+      job.source === 'webhook_membership_churn' ||
+      job.source === 'moderation_destructive_path' ||
+      job.source === 'admin_access_validation'
+    ) {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY;
     }
 
@@ -612,7 +621,11 @@ export class MaxChatAdminRosterSyncService {
       };
     }
 
-    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
+    if (
+      job.source === 'webhook_membership_churn' ||
+      job.source === 'moderation_destructive_path' ||
+      job.source === 'admin_access_validation'
+    ) {
       return {
         type: 'fixed',
         delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS,
@@ -635,7 +648,8 @@ export class MaxChatAdminRosterSyncService {
     if (
       job.source === 'webhook_bot_added' ||
       job.source === 'webhook_membership_churn' ||
-      job.source === 'moderation_destructive_path'
+      job.source === 'moderation_destructive_path' ||
+      job.source === 'admin_access_validation'
     ) {
       return {
         botId,

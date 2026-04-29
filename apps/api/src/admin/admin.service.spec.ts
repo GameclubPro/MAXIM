@@ -847,6 +847,7 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     invalidate: jest.fn().mockResolvedValue(undefined),
     getAdminAccess: jest.fn().mockResolvedValue(null),
     setAdminAccess: jest.fn().mockResolvedValue(undefined),
+    rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
     getManagedEntityHeader: jest.fn().mockResolvedValue(null),
     setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
     invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
@@ -14348,6 +14349,52 @@ describe('AdminService admin access validation', () => {
       skip: 0,
       take: 20,
     });
+  });
+
+  it('warms admin context and roster after read-only miniapp validation confirms a new admin', async () => {
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findMany.mockResolvedValue([]);
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockResolvedValue(null),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const maxChatAdminRosterSyncService = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await expect(service.getEvents('chat-1', user, {})).resolves.toEqual([]);
+    await flushAsyncTasks();
+
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+    expect(chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('chat-1', 'admin-1');
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: null,
+      source: 'admin_access_validation',
+      retryUntilMs: null,
+    });
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
   });
 });
 

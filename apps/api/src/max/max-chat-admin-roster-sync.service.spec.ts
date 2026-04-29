@@ -395,6 +395,34 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('uses the interactive fast lane after read-only admin access validation', async () => {
+    const { service, queue } = createService();
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100130',
+        entityType: 'chat',
+        source: 'admin_access_validation',
+      }),
+    ).resolves.toBe(true);
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'sync-chat-admin-roster',
+      expect.objectContaining({
+        chatId: '-100130',
+        source: 'admin_access_validation',
+      }),
+      expect.objectContaining({
+        attempts: 6,
+        priority: 2,
+        backoff: {
+          type: 'fixed',
+          delay: 3_000,
+        },
+      }),
+    );
+  });
+
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);
