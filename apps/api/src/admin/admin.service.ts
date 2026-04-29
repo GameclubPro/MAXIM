@@ -529,7 +529,8 @@ const LOGS_DASHBOARD_RESPONSE_CACHE_TTL_MS = 30_000;
 const SLOW_LOGS_DASHBOARD_THRESHOLD_MS = 1_500;
 const EVENTS_FEED_PAGE_CACHE_TTL_MS = 30_000;
 const RESOLVED_USER_PROFILE_CACHE_TTL_MS = 30_000;
-const CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE = 3;
+const CHAT_PARTICIPANTS_SEARCH_REMOTE_PAGES_PER_RESPONSE = 2;
+const CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS = 700;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const DEFAULT_PARTICIPANT_IMMUNITY_TIMEZONE = 'Europe/Moscow';
@@ -2930,7 +2931,7 @@ export class AdminService implements OnModuleDestroy {
         resolve(value);
       };
       const timer = setTimeout(() => {
-        this.logger.warn(
+        this.logger.debug(
           {
             ...options.logData,
             budgetMs: options.budgetMs,
@@ -4323,7 +4324,7 @@ export class AdminService implements OnModuleDestroy {
 
       const elapsedMs = Date.now() - startedAtMs;
       if (elapsedMs >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ELAPSED_MS) {
-        this.logger.warn(
+        this.logger.debug(
           {
             entityType,
             userId: normalizedUserId,
@@ -4337,7 +4338,7 @@ export class AdminService implements OnModuleDestroy {
       }
 
       if (attemptedAdminChecks >= RECENT_BOT_ADDED_BOOTSTRAP_MAX_ADMIN_CHECKS) {
-        this.logger.warn(
+        this.logger.debug(
           {
             entityType,
             userId: normalizedUserId,
@@ -4376,7 +4377,7 @@ export class AdminService implements OnModuleDestroy {
             reason: access.status,
           });
         }
-        this.logger.warn(
+        this.logger.debug(
           {
             chatId,
             entityType,
@@ -5294,7 +5295,7 @@ export class AdminService implements OnModuleDestroy {
           entityType,
           refreshCooldownKey,
         );
-        this.logger.warn(
+        this.logger.log(
           {
             entityType,
             userId: user.userId,
@@ -17760,6 +17761,9 @@ export class AdminService implements OnModuleDestroy {
     limit: number,
     marker: string | null,
     resolvedBotId: string | null,
+    options: {
+      search?: boolean;
+    } = {},
   ): Promise<{ items: MaxChatRosterMember[]; nextMarker: string | null }> {
     return this.maxClient.getChatMembersPage(
       chatId,
@@ -17770,6 +17774,12 @@ export class AdminService implements OnModuleDestroy {
       {
         trafficClass: 'interactive',
         actionHealthLane: 'background',
+        ...(options.search
+          ? {
+              sourceTag: MAX_API_SOURCE_TAGS.PARTICIPANT_SEARCH,
+              timeoutMs: CHAT_PARTICIPANTS_SEARCH_MAX_API_WAIT_MS,
+            }
+          : {}),
         ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       },
@@ -17791,12 +17801,39 @@ export class AdminService implements OnModuleDestroy {
 
     while (true) {
       const currentMarker = marker;
-      const membersPage = await this.loadChatParticipantsMembersPage(
-        chatId,
-        100,
-        currentMarker,
-        resolvedBotId,
-      );
+      let membersPage: { items: MaxChatRosterMember[]; nextMarker: string | null };
+      try {
+        membersPage = await this.loadChatParticipantsMembersPage(
+          chatId,
+          100,
+          currentMarker,
+          resolvedBotId,
+          { search: true },
+        );
+      } catch (error: unknown) {
+        if (!this.isMaxApiThrottleError(error)) {
+          throw error;
+        }
+
+        this.logger.log(
+          {
+            chatId,
+            marker: currentMarker,
+            itemsReturned: items.length,
+            scannedRemotePages,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Paused participant search page scan after MAX API throttling',
+        );
+        return {
+          items,
+          nextMarker: this.encodeChatParticipantsSearchCursor({
+            marker: currentMarker,
+            skip,
+            search,
+          }),
+        };
+      }
       scannedRemotePages += 1;
       const matches = membersPage.items.filter((member) =>
         this.chatParticipantMatchesSearch(member, search),
@@ -23348,7 +23385,7 @@ export class AdminService implements OnModuleDestroy {
       return resolution;
     }
 
-    this.logger.warn(
+    this.logger.log(
       {
         chatId,
         userId,

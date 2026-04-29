@@ -348,6 +348,7 @@ const MODERATION_ACTION_PERMISSION_SKIP_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_BACKOFF_MS = 5 * 60 * 1_000;
 const MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS = 1_500;
 const MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS = 15_000;
+const REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS = 5 * 60 * 1_000;
 const WEBHOOK_HOT_CHAT_BACKOFF_MS = 60_000;
 const WEBHOOK_HOT_CHAT_SKIP_LOG_INTERVAL_MS = 30_000;
 const REQUIRED_SUBSCRIPTION_PRESSURE_SKIP_QUEUE_LAG_SEC = 10;
@@ -602,6 +603,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     Promise<boolean | null>
   >();
   private readonly requiredSubscriptionMembershipBackoffUntilMs = new Map<string, number>();
+  private readonly requiredSubscriptionUnresolvedLogAtMs = new Map<string, number>();
   private readonly requiredSubscriptionChannelMetadataCache = new Map<
     string,
     {
@@ -8767,15 +8769,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       (channelId) => membershipsByChannelId.get(channelId) === null,
     );
     if (unresolvedChannelIds.length > 0) {
-      this.logger.error(
-        {
-          chatId,
-          userId,
-          unresolvedChannelIds,
-          checkedChannelCount: requiredChannelIds.length,
-        },
-        'Required subscription checks remained unresolved after strict retry; enforcing conservatively',
-      );
+      this.logRequiredSubscriptionUnresolved({
+        chatId,
+        userId,
+        unresolvedChannelIds,
+        checkedChannelCount: requiredChannelIds.length,
+      });
     }
 
     const missingChannelIds = requiredChannelIds.filter(
@@ -8783,6 +8782,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     return { missingChannelIds };
+  }
+
+  private logRequiredSubscriptionUnresolved(params: {
+    chatId: string;
+    userId: string;
+    unresolvedChannelIds: string[];
+    checkedChannelCount: number;
+  }): void {
+    const cacheKey = [
+      params.chatId,
+      params.userId,
+      ...params.unresolvedChannelIds.slice().sort(),
+    ].join(':');
+    const now = Date.now();
+    const lastLoggedAtMs = this.requiredSubscriptionUnresolvedLogAtMs.get(cacheKey) ?? 0;
+    if (now - lastLoggedAtMs < REQUIRED_SUBSCRIPTION_UNRESOLVED_LOG_INTERVAL_MS) {
+      return;
+    }
+
+    this.requiredSubscriptionUnresolvedLogAtMs.set(cacheKey, now);
+    this.logger.warn(
+      {
+        chatId: params.chatId,
+        userId: params.userId,
+        unresolvedChannelIds: params.unresolvedChannelIds,
+        checkedChannelCount: params.checkedChannelCount,
+      },
+      'Required subscription checks remained unresolved after strict retry; enforcing conservatively',
+    );
   }
 
   private async getRequiredSubscriptionMembership(

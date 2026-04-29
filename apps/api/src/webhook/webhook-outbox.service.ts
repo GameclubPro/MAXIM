@@ -61,6 +61,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly enqueueConcurrency: number;
   private readonly maxEnqueueAttempts: number;
   private readonly webhookRetentionDays: number;
+  private readonly webhookFailedRetentionHours: number;
   private readonly moderationRetentionDays: number;
 
   private poller: NodeJS.Timeout | null = null;
@@ -93,12 +94,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.enqueueConcurrency = this.configService.get<number>('ENQUEUE_CONCURRENCY', 25);
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
+    this.webhookFailedRetentionHours = this.configService.get<number>(
+      'WEBHOOK_FAILED_RETENTION_HOURS',
+      24,
+    );
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
     this.joinShardQueuesByName = Object.fromEntries(
       JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveShardQueue(queueName)]),
     ) as Record<JoinWebhookQueueName, Queue<ProcessWebhookJob>>;
     this.defaultShardQueuesByName = Object.fromEntries(
-      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveShardQueue(queueName)]),
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+        queueName,
+        this.resolveShardQueue(queueName),
+      ]),
     ) as Record<DefaultWebhookQueueName, Queue<ProcessWebhookJob>>;
     this.queuesByName = {
       [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
@@ -135,12 +143,16 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     }, this.pollIntervalMs);
     this.poller.unref();
 
-    this.cleaner = setInterval(() => {
-      void this.cleanupRetention();
-    }, 60 * 60 * 1_000);
+    this.cleaner = setInterval(
+      () => {
+        void this.cleanupRetention();
+      },
+      60 * 60 * 1_000,
+    );
     this.cleaner.unref();
 
     void this.tick();
+    void this.cleanupRetention();
   }
 
   onModuleDestroy() {
@@ -182,7 +194,9 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private async selectEnqueueCandidates(now: Date): Promise<WebhookEnqueueCandidate[]> {
     const selectionWindowSize = this.resolvePrioritySelectionWindowSize();
-    const staleUserFacingQueuedBefore = new Date(now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS);
+    const staleUserFacingQueuedBefore = new Date(
+      now.getTime() - USER_FACING_STALE_QUEUED_REPAIR_MS,
+    );
     const staleBackgroundQueuedBefore = new Date(now.getTime() - BACKGROUND_STALE_QUEUED_REPAIR_MS);
     const staleUserFacingQueuedWhere: Prisma.WebhookEventWhereInput = {
       status: WebhookStatus.QUEUED,
@@ -209,25 +223,29 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       ],
     };
 
-    const [receivedCandidates, failedCandidates, staleUserFacingQueuedCandidates, staleBackgroundQueuedCandidates] =
-      await Promise.all([
-        this.findEnqueueCandidates(
-          {
-            status: WebhookStatus.RECEIVED,
-            OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
-          },
-          selectionWindowSize,
-        ),
-        this.findEnqueueCandidates(
-          {
-            status: WebhookStatus.FAILED,
-            nextEnqueueAt: { lte: now },
-          },
-          selectionWindowSize,
-        ),
-        this.findEnqueueCandidates(staleUserFacingQueuedWhere, selectionWindowSize),
-        this.findEnqueueCandidates(staleBackgroundQueuedWhere, selectionWindowSize),
-      ]);
+    const [
+      receivedCandidates,
+      failedCandidates,
+      staleUserFacingQueuedCandidates,
+      staleBackgroundQueuedCandidates,
+    ] = await Promise.all([
+      this.findEnqueueCandidates(
+        {
+          status: WebhookStatus.RECEIVED,
+          OR: [{ nextEnqueueAt: null }, { nextEnqueueAt: { lte: now } }],
+        },
+        selectionWindowSize,
+      ),
+      this.findEnqueueCandidates(
+        {
+          status: WebhookStatus.FAILED,
+          nextEnqueueAt: { lte: now },
+        },
+        selectionWindowSize,
+      ),
+      this.findEnqueueCandidates(staleUserFacingQueuedWhere, selectionWindowSize),
+      this.findEnqueueCandidates(staleBackgroundQueuedWhere, selectionWindowSize),
+    ]);
 
     return this.mergeEnqueueCandidates(
       [
@@ -280,7 +298,10 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private resolvePrioritySelectionWindowSize(): number {
     return Math.max(
       this.batchSize,
-      Math.min(this.batchSize * PRIORITY_SELECTION_WINDOW_MULTIPLIER, MAX_PRIORITY_SELECTION_WINDOW),
+      Math.min(
+        this.batchSize * PRIORITY_SELECTION_WINDOW_MULTIPLIER,
+        MAX_PRIORITY_SELECTION_WINDOW,
+      ),
     );
   }
 
@@ -448,19 +469,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
           { botId: event.botId },
         );
         const isManualCloseMessage = event.priority === WEBHOOK_JOB_PRIORITY.manualCloseMessage;
-        const targetQueueName =
-          isManualCloseMessage
-            ? WEBHOOK_QUEUE_CRITICAL
-            : event.status === WebhookStatus.QUEUED &&
-                typeof event.queueName === 'string' &&
-                ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
-              ? (event.queueName as AnyWebhookQueueName)
-              : queueName;
-        await this.enqueueOne(
-          event,
-          event.priority,
-          targetQueueName,
-        );
+        const targetQueueName = isManualCloseMessage
+          ? WEBHOOK_QUEUE_CRITICAL
+          : event.status === WebhookStatus.QUEUED &&
+              typeof event.queueName === 'string' &&
+              ANY_WEBHOOK_QUEUE_NAMES.has(event.queueName)
+            ? (event.queueName as AnyWebhookQueueName)
+            : queueName;
+        await this.enqueueOne(event, event.priority, targetQueueName);
       }
     };
 
@@ -543,10 +559,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     await this.handleExistingJob(event, existingJob.job);
   }
 
-  private async handleExistingJob(
-    event: WebhookEnqueueCandidate,
-    job: Job<ProcessWebhookJob>,
-  ) {
+  private async handleExistingJob(event: WebhookEnqueueCandidate, job: Job<ProcessWebhookJob>) {
     const { id: webhookEventId, enqueueAttempts } = event;
     const state = await job.getState();
     if (state === 'failed') {
@@ -867,30 +880,43 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.cleaning = true;
     try {
       const webhookCutoff = new Date(Date.now() - this.webhookRetentionDays * 24 * 60 * 60 * 1_000);
+      const failedWebhookCutoff = new Date(
+        Date.now() - this.webhookFailedRetentionHours * 60 * 60 * 1_000,
+      );
       const moderationCutoff = new Date(
         Date.now() - this.moderationRetentionDays * 24 * 60 * 60 * 1_000,
       );
-      const [webhookDeleted, moderationDeleted, violationsDeleted] = await Promise.all([
-        this.prisma.webhookEvent.deleteMany({
-          where: {
-            createdAt: { lt: webhookCutoff },
-            status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE, WebhookStatus.FAILED] },
-          },
-        }),
-        this.prisma.moderationEvent.deleteMany({
-          where: { createdAt: { lt: moderationCutoff } },
-        }),
-        this.prisma.violation.deleteMany({
-          where: { createdAt: { lt: moderationCutoff } },
-        }),
-      ]);
+      const [webhookDeleted, failedWebhookDeleted, moderationDeleted, violationsDeleted] =
+        await Promise.all([
+          this.prisma.webhookEvent.deleteMany({
+            where: {
+              createdAt: { lt: webhookCutoff },
+              status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
+            },
+          }),
+          this.prisma.webhookEvent.deleteMany({
+            where: {
+              createdAt: { lt: failedWebhookCutoff },
+              status: WebhookStatus.FAILED,
+              nextEnqueueAt: null,
+            },
+          }),
+          this.prisma.moderationEvent.deleteMany({
+            where: { createdAt: { lt: moderationCutoff } },
+          }),
+          this.prisma.violation.deleteMany({
+            where: { createdAt: { lt: moderationCutoff } },
+          }),
+        ]);
 
       this.logger.log(
         {
           webhookEvents: webhookDeleted.count,
+          failedWebhookEvents: failedWebhookDeleted.count,
           moderationEvents: moderationDeleted.count,
           violations: violationsDeleted.count,
           webhookRetentionDays: this.webhookRetentionDays,
+          webhookFailedRetentionHours: this.webhookFailedRetentionHours,
           moderationRetentionDays: this.moderationRetentionDays,
         },
         'Retention cleanup finished',

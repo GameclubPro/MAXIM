@@ -55,6 +55,7 @@ type EventsSection = 'activity' | 'moderation' | 'participants';
 
 const MUTE_DURATION_MIN_HOURS = 1;
 const MUTE_DURATION_MAX_HOURS = 336;
+const PARTICIPANTS_SEARCH_DEBOUNCE_MS = 350;
 
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
@@ -531,9 +532,10 @@ function ViolationModerationControls({
   const releaseAction = resolveReleaseAction(violation);
   const [muteDurationHours, setMuteDurationHours] = useState(6);
   const [muteExpanded, setMuteExpanded] = useState(false);
-  const [pendingAction, setPendingAction] = useState<
-    Extract<ManualModerationAction, 'BAN' | 'UNMUTE' | 'UNBAN'> | null
-  >(null);
+  const [pendingAction, setPendingAction] = useState<Extract<
+    ManualModerationAction,
+    'BAN' | 'UNMUTE' | 'UNBAN'
+  > | null>(null);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const mutePresets = [1, 6, 24, 168];
 
@@ -790,6 +792,22 @@ function getInitialSection(search: string): EventsSection {
   return 'moderation';
 }
 
+function useDebouncedValue(value: string, delayMs: number): string {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [delayMs, value]);
+
+  return debouncedValue;
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -805,6 +823,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     total: number;
   } | null>(null);
   const deferredParticipantsSearch = useDeferredValue(participantsSearch);
+  const debouncedParticipantsSearch = useDebouncedValue(
+    deferredParticipantsSearch.trim(),
+    PARTICIPANTS_SEARCH_DEBOUNCE_MS,
+  );
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const routeChatAvatarUrl = getRouteChatAvatarUrl(location.state);
@@ -915,7 +937,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const participantsFeed = useChatParticipantsFeed({
     enabled: Boolean(chatId) && section === 'participants',
     range,
-    search: deferredParticipantsSearch,
+    search: debouncedParticipantsSearch,
     initialPage: null,
     loadPage: (query, request) => getChatParticipantsPage(api, chatId ?? '', query, request),
   });

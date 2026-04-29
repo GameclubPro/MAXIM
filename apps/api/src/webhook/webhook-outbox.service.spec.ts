@@ -166,12 +166,14 @@ function createService(params?: {
 
   const prisma = {
     webhookEvent: {
-      findMany: jest.fn().mockImplementation(async (args?: { where?: Record<string, unknown>; take?: number }) =>
-        webhookRows
-          .filter((row) => matchesWebhookEventWhere(row, args?.where))
-          .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
-          .slice(0, args?.take ?? Number.POSITIVE_INFINITY),
-      ),
+      findMany: jest
+        .fn()
+        .mockImplementation(async (args?: { where?: Record<string, unknown>; take?: number }) =>
+          webhookRows
+            .filter((row) => matchesWebhookEventWhere(row, args?.where))
+            .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())
+            .slice(0, args?.take ?? Number.POSITIVE_INFINITY),
+        ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
@@ -195,9 +197,7 @@ function createService(params?: {
     job: JobMock | null | undefined,
   ): QueueMock => ({
     add: addError ? jest.fn().mockRejectedValue(addError) : jest.fn().mockResolvedValue(undefined),
-    getJob: jest
-      .fn()
-      .mockResolvedValue(params?.undefinedJobs ? undefined : (job ?? null)),
+    getJob: jest.fn().mockResolvedValue(params?.undefinedJobs ? undefined : (job ?? null)),
   });
 
   const criticalQueue = createQueue(params?.addError, params?.criticalJob);
@@ -230,6 +230,7 @@ function createService(params?: {
     ENQUEUE_CONCURRENCY: 25,
     ENQUEUE_MAX_ATTEMPTS: 120,
     WEBHOOK_RETENTION_DAYS: 7,
+    WEBHOOK_FAILED_RETENTION_HOURS: 24,
     MODERATION_RETENTION_DAYS: 90,
     ...(params?.configOverrides ?? {}),
   };
@@ -247,8 +248,9 @@ function createService(params?: {
     legacyQueue,
   };
   const webhookRoutingService = {
-    resolveQueueName: jest.fn(async (_eventId: string, payload: unknown) =>
-      params?.resolvedQueueName ?? resolveWebhookQueueName(payload),
+    resolveQueueName: jest.fn(
+      async (_eventId: string, payload: unknown) =>
+        params?.resolvedQueueName ?? resolveWebhookQueueName(payload),
     ),
   };
 
@@ -522,6 +524,32 @@ describe('WebhookOutboxService', () => {
     );
   });
 
+  it('uses shorter cleanup retention for exhausted failed webhook rows', async () => {
+    const { service, prisma } = createService({
+      configOverrides: {
+        WEBHOOK_RETENTION_DAYS: 7,
+        WEBHOOK_FAILED_RETENTION_HOURS: 24,
+        MODERATION_RETENTION_DAYS: 90,
+      },
+    });
+
+    await (service as unknown as { cleanupRetention: () => Promise<void> }).cleanupRetention();
+
+    expect(prisma.webhookEvent.deleteMany).toHaveBeenNthCalledWith(1, {
+      where: {
+        createdAt: { lt: expect.any(Date) },
+        status: { in: [WebhookStatus.PROCESSED, WebhookStatus.DUPLICATE] },
+      },
+    });
+    expect(prisma.webhookEvent.deleteMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        createdAt: { lt: expect.any(Date) },
+        status: WebhookStatus.FAILED,
+        nextEnqueueAt: null,
+      },
+    });
+  });
+
   it('assigns highest BullMQ priority to callback events', async () => {
     const { service, queues } = createService({
       findManyResult: [
@@ -554,9 +582,7 @@ describe('WebhookOutboxService', () => {
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
     expect(prisma.webhookEvent.findMany.mock.calls).toEqual(
-      expect.arrayContaining([
-        [expect.objectContaining({ take: 6 })],
-      ]),
+      expect.arrayContaining([[expect.objectContaining({ take: 6 })]]),
     );
   });
 

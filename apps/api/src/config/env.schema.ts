@@ -49,8 +49,16 @@ const envSchema = z.object({
   ENQUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().default(120),
   WEBHOOK_ROUTING_CHAT_ASSIGNMENT_TTL_SEC: z.coerce.number().int().positive().default(90),
   WEBHOOK_ROUTING_QUEUE_SNAPSHOT_MAX_AGE_MS: z.coerce.number().int().positive().default(1_000),
-  WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: z.coerce.number().int().positive().default(12_000),
-  WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE: z.coerce.number().min(0.5).max(1).default(0.7),
+  WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_MIN_AGE_MS: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(12_000),
+  WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_SHARE: z.coerce
+    .number()
+    .min(0.5)
+    .max(1)
+    .default(0.7),
   WEBHOOK_ROUTING_HOT_WORKER_REBALANCE_PRESSURE_MIN: z.coerce.number().int().positive().default(4),
   MAX_WEBHOOK_RECONCILE_INTERVAL_MS: z.coerce.number().int().positive().default(60_000),
   MAX_WEBHOOK_STALE_INGRESS_MS: z.coerce.number().int().positive().default(300_000),
@@ -81,6 +89,7 @@ const envSchema = z.object({
   DEGRADE_STABILIZE_SEC: z.coerce.number().int().positive().default(300),
   RAW_PAYLOAD_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.01),
   WEBHOOK_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
+  WEBHOOK_FAILED_RETENTION_HOURS: z.coerce.number().int().positive().default(24),
   MODERATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
   MAX_API_GLOBAL_RPS: z.coerce.number().int().positive().default(30),
   MAX_API_GLOBAL_RPS_CRITICAL: z.coerce.number().int().positive().optional(),
@@ -105,10 +114,18 @@ const envSchema = z.object({
   WEBHOOK_USER_FACING_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(60_000),
   MAX_MEMBERSHIP_LOOKUP_CHAT_BACKOFF_RESET_MS: z.coerce.number().int().positive().default(45_000),
-  MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(2),
+  MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_FAILURE_THRESHOLD: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(2),
   MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_WINDOW_MS: z.coerce.number().int().positive().default(45_000),
   MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_DURATION_SEC: z.coerce.number().int().positive().default(120),
-  MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_POSITIVE_TTL_SEC: z.coerce.number().int().positive().default(90),
+  MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_POSITIVE_TTL_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(90),
   MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_BATCH_WINDOW_MS: z.coerce.number().int().positive().default(25),
   MAX_API_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_WINDOW_SEC: z.coerce.number().int().positive().default(30),
@@ -208,9 +225,7 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
       ...additionalBots.map((bot) => bot.id),
     ]);
     const normalizedEntryBotId =
-      typeof parsed.data.MAX_ENTRY_BOT_ID === 'string'
-        ? parsed.data.MAX_ENTRY_BOT_ID.trim()
-        : '';
+      typeof parsed.data.MAX_ENTRY_BOT_ID === 'string' ? parsed.data.MAX_ENTRY_BOT_ID.trim() : '';
 
     if (normalizedEntryBotId) {
       if (!configuredBotIds.has(normalizedEntryBotId)) {
@@ -219,7 +234,8 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
         );
       }
 
-      const additionalEntryBot = additionalBots.find((bot) => bot.id === normalizedEntryBotId) ?? null;
+      const additionalEntryBot =
+        additionalBots.find((bot) => bot.id === normalizedEntryBotId) ?? null;
       if (additionalEntryBot && additionalEntryBot.state !== 'active') {
         throw new Error(
           `MAX_ENTRY_BOT_ID must reference an active bot; got "${normalizedEntryBotId}" with state "${additionalEntryBot.state}"`,
@@ -232,10 +248,7 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
         for (const [key, value] of [
           [`MAX_BOTS_JSON.${bot.id}.webhookSecretPath`, bot.webhookSecretPath],
           [`MAX_BOTS_JSON.${bot.id}.webhookHeaderSecret`, bot.webhookHeaderSecret],
-          [
-            `MAX_BOTS_JSON.${bot.id}.webhookHeaderSecretPrevious`,
-            bot.webhookHeaderSecretPrevious,
-          ],
+          [`MAX_BOTS_JSON.${bot.id}.webhookHeaderSecretPrevious`, bot.webhookHeaderSecretPrevious],
         ] as const) {
           if (!value) {
             continue;
@@ -255,9 +268,7 @@ export function validateEnv(config: Record<string, unknown>): EnvSchema {
     }
   } catch (error: unknown) {
     throw new Error(
-      `Environment validation failed: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Environment validation failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
