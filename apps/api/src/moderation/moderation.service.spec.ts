@@ -6283,12 +6283,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
-      trafficClass: 'interactive',
-      actionHealthLane: 'background',
-      timeoutMs: 2000,
-      ignoreFailureMetricStatuses: [403, 404],
-    });
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -6301,7 +6296,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('uses remote admin denial before deleting during manual group close when local allowlist is stale', async () => {
+  it('keeps manual group close deletion on the hot path when local allowlist is stale', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -6364,17 +6359,12 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
-      trafficClass: 'interactive',
-      actionHealthLane: 'background',
-      timeoutMs: 2000,
-      ignoreFailureMetricStatuses: [403, 404],
-    });
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
     expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
   });
 
-  it('skips manual close deletion in degrade mode when admin access is unresolved', async () => {
+  it('keeps manual close deletion in degrade mode without live admin lookup', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -6448,8 +6438,16 @@ describe('ModerationService', () => {
 
     expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
     expect(maxClient.getCurrentChatMemberAccess).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
   });
 
   it('sends scheduled night closed notice once per active window', async () => {
@@ -7993,7 +7991,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
-  it('does not apply manual close deletion to remote chat admins when local allowlist is stale', async () => {
+  it('does not apply manual close deletion to cached remote chat admins when local allowlist is stale', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8018,8 +8016,84 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      chatAdminAllowlist: {
-        upsert: jest.fn().mockResolvedValue(undefined),
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatMembersAccess: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const chatContextCache = {
+      getChatContext: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Chat 1',
+        settings: createSettings({
+          nightModeForceCloseEnabled: true,
+          nightModeForceCloseForever: true,
+        }),
+        domainAllowlist: [],
+        adminUserIds: ['existing-admin'],
+        rulesPublishedUrl: null,
+        rulesPublishedMessageId: null,
+      }),
+      getAdminAccess: jest.fn().mockResolvedValue('granted'),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      chatContextCache as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(chatContextCache.getAdminAccess).toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('deletes during manual close without waiting for remote admin access and schedules roster refresh', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+          }),
+          domains: [],
+          admins: [{ userId: 'existing-admin' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
       },
     };
     const ruleEngine = {
@@ -8032,23 +8106,14 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       deleteMessage: jest.fn(),
-      getChatMembersAccess: jest.fn().mockResolvedValue(
-        new Map([
-          [
-            'user-1',
-            {
-              userId: 'user-1',
-              isAdmin: true,
-              isOwner: false,
-              permissions: [],
-            },
-          ],
-        ]),
-      ),
+      getChatMembersAccess: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
+    };
+    const maxChatAdminRosterSyncService = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
     };
 
     const service = new ModerationService(
@@ -8056,110 +8121,38 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
     );
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith('chat-1', ['user-1'], {
-      trafficClass: 'interactive',
-      actionHealthLane: 'background',
-      timeoutMs: 2000,
-      ignoreFailureMetricStatuses: [403, 404],
-    });
-    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith({
-      where: {
-        chatId_userId: {
-          chatId: 'chat-1',
-          userId: 'user-1',
-        },
-      },
-      create: {
-        chatId: 'chat-1',
-        userId: 'user-1',
-      },
-      update: {},
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      botIds: [],
+      title: null,
+      entityType: 'chat',
+      source: 'moderation_destructive_path',
+      retryUntilMs: null,
     });
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expectImmediateDeleteMessage(maxClient.deleteMessage, 'chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
-  });
-
-  it('does not apply manual close deletion when remote admin access is unresolved', async () => {
-    jest.useFakeTimers();
-    try {
-      const prisma = {
-        chat: {
-          upsert: jest.fn().mockResolvedValue({
-            id: 'chat-1',
-            title: 'Chat 1',
-            settings: createSettings({
-              nightModeForceCloseEnabled: true,
-              nightModeForceCloseForever: true,
-            }),
-            domains: [],
-            admins: [{ userId: 'existing-admin' }],
-          }),
-        },
-        violation: {
-          create: jest.fn(),
-        },
-        moderationEvent: {
-          findFirst: jest.fn().mockResolvedValue(null),
-          create: jest.fn(),
-        },
-        webhookEvent: {
-          findUnique: jest.fn(),
-          update: jest.fn(),
-        },
-      };
-      const ruleEngine = {
-        detect: jest.fn().mockResolvedValue({
-          violations: [],
-        }),
-      };
-      const sanctionService = {
-        resolveAction: jest.fn(),
-      };
-      const maxClient = {
-        deleteMessage: jest.fn(),
-        getChatMembersAccess: jest.fn().mockImplementation(
-          () =>
-            new Promise<Map<string, unknown>>(() => {
-              // Intentionally unresolved within the destructive moderation soft timeout.
-            }),
-        ),
-        sendMessage: jest.fn(),
-        kickMember: jest.fn(),
-        banMember: jest.fn(),
-        notifyModerators: jest.fn(),
-      };
-
-      const service = new ModerationService(
-        prisma as never,
-        ruleEngine as never,
-        sanctionService as never,
-        maxClient as never,
-      );
-
-      const pendingUpdate = service.handleUpdate(createUpdate());
-      await jest.advanceTimersByTimeAsync(1_500);
-      await pendingUpdate;
-
-      expect(maxClient.getChatMembersAccess).toHaveBeenCalledTimes(1);
-      expect(ruleEngine.detect).not.toHaveBeenCalled();
-      expect(prisma.violation.create).not.toHaveBeenCalled();
-      expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
-      expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-      expect(maxClient.sendMessage).not.toHaveBeenCalled();
-      expect(maxClient.kickMember).not.toHaveBeenCalled();
-      expect(maxClient.banMember).not.toHaveBeenCalled();
-    } finally {
-      jest.useRealTimers();
-    }
   });
 
   it('skips moderation for remote chat admins when local allowlist is stale', async () => {

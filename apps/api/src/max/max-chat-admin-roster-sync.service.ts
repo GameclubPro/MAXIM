@@ -304,6 +304,7 @@ export class MaxChatAdminRosterSyncService {
       params?.source === 'webhook_bot_removed' ||
       params?.source === 'webhook_chat_title_changed' ||
       params?.source === 'webhook_membership_churn' ||
+      params?.source === 'moderation_destructive_path' ||
       params?.source === 'discovery_snapshot'
         ? params.source
         : null;
@@ -576,7 +577,7 @@ export class MaxChatAdminRosterSyncService {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS;
     }
 
-    if (job.source === 'webhook_membership_churn') {
+    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS;
     }
 
@@ -588,7 +589,7 @@ export class MaxChatAdminRosterSyncService {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_PRIORITY;
     }
 
-    if (job.source === 'webhook_membership_churn') {
+    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
       return CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_PRIORITY;
     }
 
@@ -611,7 +612,7 @@ export class MaxChatAdminRosterSyncService {
       };
     }
 
-    if (job.source === 'webhook_membership_churn') {
+    if (job.source === 'webhook_membership_churn' || job.source === 'moderation_destructive_path') {
       return {
         type: 'fixed',
         delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS,
@@ -631,7 +632,11 @@ export class MaxChatAdminRosterSyncService {
     sourceTag: string;
     timeoutMs: number;
   } {
-    if (job.source === 'webhook_bot_added' || job.source === 'webhook_membership_churn') {
+    if (
+      job.source === 'webhook_bot_added' ||
+      job.source === 'webhook_membership_churn' ||
+      job.source === 'moderation_destructive_path'
+    ) {
       return {
         botId,
         trafficClass: 'interactive',

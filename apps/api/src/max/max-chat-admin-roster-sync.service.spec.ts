@@ -328,6 +328,73 @@ describe('MaxChatAdminRosterSyncService', () => {
     );
   });
 
+  it('uses the interactive fast lane for destructive moderation roster refreshes', async () => {
+    const { service, queue, maxClient } = createService();
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100129',
+        botIds: ['bot-1'],
+        title: 'Closed chat',
+        entityType: 'chat',
+        source: 'moderation_destructive_path',
+      }),
+    ).resolves.toBe(true);
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'sync-chat-admin-roster',
+      expect.objectContaining({
+        chatId: '-100129',
+        source: 'moderation_destructive_path',
+      }),
+      expect.objectContaining({
+        attempts: 6,
+        priority: 2,
+        backoff: {
+          type: 'fixed',
+          delay: 3_000,
+        },
+      }),
+    );
+
+    maxClient.getCurrentChatMemberAccess.mockResolvedValue({
+      userId: 'bot-user-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['delete_messages'],
+    });
+    maxClient.getChatAdminIds.mockResolvedValue(['user-1']);
+
+    await expect(
+      service.processJob({
+        chatId: '-100129',
+        botIds: ['bot-1'],
+        title: 'Closed chat',
+        entityType: 'chat',
+        source: 'moderation_destructive_path',
+      }),
+    ).resolves.toBe(true);
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
+      '-100129',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: 1_500,
+      }),
+    );
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith(
+      '-100129',
+      expect.objectContaining({
+        botId: 'bot-1',
+        trafficClass: 'interactive',
+        actionHealthLane: 'background',
+        timeoutMs: 1_500,
+      }),
+    );
+  });
+
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);

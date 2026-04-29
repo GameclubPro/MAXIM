@@ -10,6 +10,7 @@ export type MaxChatAdminRosterSyncJob = {
     | 'webhook_bot_removed'
     | 'webhook_chat_title_changed'
     | 'webhook_membership_churn'
+    | 'moderation_destructive_path'
     | 'discovery_snapshot'
     | null;
   retryUntilMs?: number | null;

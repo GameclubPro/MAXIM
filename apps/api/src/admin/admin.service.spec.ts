@@ -1905,6 +1905,58 @@ describe('AdminService night mode settings normalization', () => {
     expect(closeUntil).toBeLessThanOrEqual(after + 26 * 60 * 60 * 1_000);
   });
 
+  it('prewarms the destructive moderation admin roster when closing a chat', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const maxChatAdminRosterSyncService = {
+      scheduleChatAdminRosterSync: jest.fn().mockResolvedValue(true),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      maxChatAdminRosterSyncService as never,
+    );
+
+    await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: true,
+      },
+    );
+
+    expect(maxChatAdminRosterSyncService.scheduleChatAdminRosterSync).toHaveBeenCalledWith({
+      chatId: 'chat-1',
+      entityType: 'chat',
+      source: 'moderation_destructive_path',
+      retryUntilMs: null,
+    });
+  });
+
   it('disables expired timed manual close while reading settings', async () => {
     const prisma = createPrismaMock();
     prisma.chat.upsert.mockResolvedValue({

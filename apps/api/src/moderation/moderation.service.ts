@@ -47,6 +47,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { MaxBotContextService } from '../max/max-bot-context.service';
+import { MaxChatAdminRosterSyncService } from '../max/max-chat-admin-roster-sync.service';
 import {
   isValidMaxBotStartPayload,
   isValidMaxMiniappStartPayload,
@@ -360,7 +361,7 @@ const NIGHT_MODE_TERMINAL_DELIVERY_FAILURE_METRIC_STATUSES = [403, 404] as const
 const CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS = 500;
-const CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS = 1_500;
+const DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS = 30_000;
 const CHAT_ADMIN_SOFT_TIMEOUT_BACKOFF_MS = 5_000;
 const CHAT_ADMIN_LOOKUP_BACKOFF_MS = 30_000;
 const DEFAULT_CHAT_ADMIN_LOOKUP_TIMEOUT_MS = 2_000;
@@ -587,6 +588,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly chatAdminLookupBackoffUntilMs = new Map<string, number>();
   private readonly chatAdminChatBackoffUntilMs = new Map<string, number>();
+  private readonly destructiveAdminRosterRefreshScheduledAtMs = new Map<string, number>();
   private readonly pendingChatAdminSharedCacheBatches = new Map<
     string,
     PendingChatAdminSharedCacheBatch
@@ -706,6 +708,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
     @Optional()
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
+    @Optional()
+    private readonly maxChatAdminRosterSyncService?: MaxChatAdminRosterSyncService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -1139,6 +1143,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const destructiveAccessGateActive = manualGroupCloseActiveNow || nightModeActiveNow;
       const forceSynchronousRemoteAdminLookup =
         this.shouldForceSynchronousRemoteAdminLookup(update);
+      const keepDestructiveAdminCheckOnHotPath =
+        destructiveAccessGateActive && !forceSynchronousRemoteAdminLookup;
       const rulesPublishedUrl = chat.rulesPublishedUrl;
       const rulesPublishedMessageId = chat.rulesPublishedMessageId;
 
@@ -1209,16 +1215,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chat.adminUserIds,
         senderId,
         {
-          allowRemoteLookup: !degradeMode && !hotChatBackoffActive,
+          allowRemoteLookup:
+            !degradeMode && !hotChatBackoffActive && !keepDestructiveAdminCheckOnHotPath,
           skipRemoteLookupWhenLocalAdminsKnown:
             hotChatBackoffActive ||
             degradeMode ||
+            keepDestructiveAdminCheckOnHotPath ||
             (!destructiveAccessGateActive && !forceSynchronousRemoteAdminLookup),
           remoteLookupSoftTimeoutMs:
-            !hotChatBackoffActive && !degradeMode && !forceSynchronousRemoteAdminLookup
-              ? destructiveAccessGateActive
-                ? CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS
-                : CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
+            !hotChatBackoffActive &&
+            !degradeMode &&
+            !keepDestructiveAdminCheckOnHotPath &&
+            !forceSynchronousRemoteAdminLookup
+              ? CHAT_ADMIN_NONCRITICAL_LOOKUP_SOFT_TIMEOUT_MS
               : undefined,
           prefetchRemoteLookupWhenLocalAdminsKnown:
             !hotChatBackoffActive &&
@@ -1243,22 +1252,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
 
-      let latestSenderChatAdminCheck = senderChatAdminCheck;
+      const latestSenderChatAdminCheck = senderChatAdminCheck;
       const ensureDestructiveModerationAllowed = async (stage: string): Promise<boolean> => {
-        if (
-          latestSenderChatAdminCheck.source === 'local_fallback' &&
-          !degradeMode &&
-          !hotChatBackoffActive
-        ) {
-          latestSenderChatAdminCheck = await this.recheckSenderChatAdminBeforeModeration(
+        if (latestSenderChatAdminCheck.source === 'local_fallback') {
+          this.scheduleDestructiveAdminRosterRefresh({
             chatId,
-            chat.adminUserIds,
-            senderId,
-            latestSenderChatAdminCheck,
-            {
-              maxWaitMs: CHAT_ADMIN_DESTRUCTIVE_LOOKUP_SOFT_TIMEOUT_MS,
-            },
-          );
+            chatTitle,
+            botId: update.botId ?? null,
+            entityType: update.message?.entityType ?? null,
+            stage,
+          });
         }
 
         if (latestSenderChatAdminCheck.isAdmin) {
@@ -1272,16 +1275,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             text,
             settings,
-            source: latestSenderChatAdminCheck.source,
-          });
-          return false;
-        }
-
-        if (this.shouldSkipDestructiveModerationForUnresolvedAdmin(latestSenderChatAdminCheck)) {
-          this.logSkippedDestructiveModerationForUnresolvedAdmin({
-            chatId,
-            userId: senderId,
-            stage,
             source: latestSenderChatAdminCheck.source,
           });
           return false;
@@ -11491,27 +11484,49 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private shouldSkipDestructiveModerationForUnresolvedAdmin(
-    adminCheck: ChatAdminCheckResult,
-  ): boolean {
-    return !adminCheck.isAdmin && adminCheck.source === 'local_fallback';
-  }
-
-  private logSkippedDestructiveModerationForUnresolvedAdmin(params: {
+  private scheduleDestructiveAdminRosterRefresh(params: {
     chatId: string;
-    userId: string;
+    chatTitle: string | undefined;
+    botId: string | null;
+    entityType: string | null;
     stage: string;
-    source: ChatAdminCheckSource;
   }): void {
-    this.logger.log(
-      {
-        chatId: params.chatId,
-        userId: params.userId,
-        stage: params.stage,
-        source: params.source,
-      },
-      'Skipped destructive moderation because chat admin access is unresolved',
-    );
+    if (typeof this.maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync !== 'function') {
+      return;
+    }
+
+    const chatId = params.chatId.trim();
+    if (!chatId) {
+      return;
+    }
+
+    const now = Date.now();
+    const lastScheduledAt = this.destructiveAdminRosterRefreshScheduledAtMs.get(chatId) ?? 0;
+    if (now - lastScheduledAt < DESTRUCTIVE_ADMIN_ROSTER_REFRESH_THROTTLE_MS) {
+      return;
+    }
+    this.destructiveAdminRosterRefreshScheduledAtMs.set(chatId, now);
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId,
+        botIds: params.botId ? [params.botId] : [],
+        title: params.chatTitle ?? null,
+        entityType: params.entityType === 'channel' ? 'channel' : 'chat',
+        source: 'moderation_destructive_path',
+        retryUntilMs: null,
+      })
+      .catch((error: unknown) => {
+        this.destructiveAdminRosterRefreshScheduledAtMs.delete(chatId);
+        this.logger.warn(
+          {
+            chatId,
+            stage: params.stage,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule destructive moderation admin roster refresh',
+        );
+      });
   }
 
   private async isOtherBotAdminModerationBypass(params: {

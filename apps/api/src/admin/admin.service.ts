@@ -22780,6 +22780,7 @@ export class AdminService implements OnModuleDestroy {
     settings: ChatSettings,
   ): Promise<void> {
     await this.refreshManagedEntityBotAccessSnapshots(chatId, 'chat', 'chat settings update');
+    this.scheduleDestructiveModerationAdminRosterWarmup(chatId, settings);
 
     if (!this.isRequiredSubscriptionCurrentlyActive(settings)) {
       return;
@@ -22789,6 +22790,35 @@ export class AdminService implements OnModuleDestroy {
       settings.requiredSubscriptionChannelIds,
       'required subscription settings update',
     );
+  }
+
+  private scheduleDestructiveModerationAdminRosterWarmup(
+    chatId: string,
+    settings: Pick<ChatSettings, 'nightModeEnabled' | 'nightModeForceCloseEnabled'>,
+  ): void {
+    if (
+      typeof this.maxChatAdminRosterSyncService?.scheduleChatAdminRosterSync !== 'function' ||
+      (!settings.nightModeEnabled && !settings.nightModeForceCloseEnabled)
+    ) {
+      return;
+    }
+
+    void this.maxChatAdminRosterSyncService
+      .scheduleChatAdminRosterSync({
+        chatId,
+        entityType: 'chat',
+        source: 'moderation_destructive_path',
+        retryUntilMs: null,
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to schedule destructive moderation admin roster warmup after settings update',
+        );
+      });
   }
 
   private async refreshExecutionReadinessAfterChannelSettingsUpdate(chatId: string): Promise<void> {
