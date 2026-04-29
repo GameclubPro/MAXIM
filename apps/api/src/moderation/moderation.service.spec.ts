@@ -13986,7 +13986,7 @@ describe('ModerationService', () => {
           maxBotLinkService as never,
         );
 
-        (service as any).rememberModerationActionBotBackoff(
+        await (service as any).rememberModerationActionBotBackoff(
           'chat-1',
           'delete_message',
           'id613002203036_4_bot',
@@ -14003,13 +14003,13 @@ describe('ModerationService', () => {
 
         expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledTimes(1);
         expect(operation).toHaveBeenCalledWith('id613002203036_4_bot');
-        expect(
+        await expect(
           (service as any).isModerationActionBotBackoffActive(
             'chat-1',
             'delete_message',
             'id613002203036_4_bot',
           ),
-        ).toBe(false);
+        ).resolves.toBe(false);
       });
 
       it('refreshes snapshots after a terminal moderation error and retries a newly eligible bot', async () => {

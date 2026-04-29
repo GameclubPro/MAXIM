@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
 import { ActionHealthService, type ActionHealthLane } from '../system/action-health.service';
+import { RuntimeDiagnosticsService } from '../system/runtime-diagnostics.service';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
@@ -356,6 +357,8 @@ export class MaxClientService implements OnModuleDestroy {
     @Optional()
     @InjectQueue('moderation-actions')
     private readonly actionQueue?: Queue<MaxActionJob>,
+    @Optional()
+    private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
@@ -3570,6 +3573,16 @@ export class MaxClientService implements OnModuleDestroy {
       if (isCritical) {
         this.registerCriticalFailure(bot.id);
       }
+      if (status === 429) {
+        await this.recordMaxApiProblemChat({
+          botId: bot.id,
+          chatId: options.chatId ?? null,
+          trafficClass,
+          sourceTag,
+          statusCode: status,
+          reason: this.extractErrorMessage(error) || 'MAX API 429 rate limit',
+        });
+      }
       throw error;
     }
   }
@@ -3827,6 +3840,13 @@ export class MaxClientService implements OnModuleDestroy {
       const elapsedMs = Date.now() - startedAtMs;
       const remainingWaitMs = maxWaitMs - elapsedMs;
       if (remainingWaitMs <= 0) {
+        await this.recordMaxApiProblemChat({
+          botId,
+          chatId,
+          trafficClass,
+          sourceTag,
+          reason: reservation.reason,
+        });
         throw new Error(reservation.reason);
       }
 
@@ -3889,6 +3909,30 @@ export class MaxClientService implements OnModuleDestroy {
         Math.trunc(rejectedKeyIndex),
       ),
     };
+  }
+
+  private async recordMaxApiProblemChat(params: {
+    botId: string;
+    chatId: string | null;
+    trafficClass: MaxApiTrafficClass;
+    sourceTag?: string | null;
+    reason: string;
+    statusCode?: number | null;
+  }): Promise<void> {
+    const chatId = this.readTrimmedString(params.chatId);
+    if (!chatId) {
+      return;
+    }
+
+    await this.runtimeDiagnosticsService?.recordProblemChat({
+      chatId,
+      botId: params.botId,
+      category: 'max_api_rate_limit',
+      severity: params.trafficClass === 'critical' ? 'critical' : 'warning',
+      action: this.normalizeMetricSourceTag(params.sourceTag) ?? params.trafficClass,
+      statusCode: params.statusCode ?? null,
+      reason: params.reason,
+    });
   }
 
   private async recordSourceRateLimitUsage(

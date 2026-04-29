@@ -2278,11 +2278,30 @@ export type SystemDashboardBackgroundBudgetPauseReason = z.infer<
   typeof systemDashboardBackgroundBudgetPauseReasonSchema
 >;
 
+export const systemDashboardBackgroundBudgetBotLoadSchema = z.object({
+  maxSmoothedLoad: z.number().min(0),
+  maxPeakLoad: z.number().min(0),
+  slowThreshold: z.number().min(0).max(1),
+  pauseThreshold: z.number().min(0).max(1),
+  topBots: z.array(
+    z.object({
+      botId: z.string(),
+      smoothedLoad: z.number().min(0),
+      peakLoad: z.number().min(0),
+      avgLoad: z.number().min(0),
+    }),
+  ),
+});
+export type SystemDashboardBackgroundBudgetBotLoad = z.infer<
+  typeof systemDashboardBackgroundBudgetBotLoadSchema
+>;
+
 export const systemDashboardBackgroundBudgetSchema = z.object({
   windowSec: z.number().int().positive(),
   backgroundShare: z.number().min(0).max(1),
   topSources: z.array(systemDashboardBackgroundBudgetSourceSchema),
   pauseReasons: z.array(systemDashboardBackgroundBudgetPauseReasonSchema),
+  botLoad: systemDashboardBackgroundBudgetBotLoadSchema.optional(),
 });
 export type SystemDashboardBackgroundBudget = z.infer<typeof systemDashboardBackgroundBudgetSchema>;
 
@@ -2316,6 +2335,50 @@ export const systemDashboardMembershipLookupSchema = z.object({
 });
 export type SystemDashboardMembershipLookup = z.infer<typeof systemDashboardMembershipLookupSchema>;
 
+export const systemDashboardProblemChatSeveritySchema = z.enum(['info', 'warning', 'critical']);
+export type SystemDashboardProblemChatSeverity = z.infer<
+  typeof systemDashboardProblemChatSeveritySchema
+>;
+
+export const systemDashboardProblemChatSchema = z.object({
+  chatId: z.string(),
+  botId: z.string().nullable(),
+  category: z.string(),
+  severity: systemDashboardProblemChatSeveritySchema,
+  action: z.string().nullable(),
+  statusCode: z.number().int().positive().nullable(),
+  reason: z.string(),
+  count: z.number().int().min(0),
+  lastObservedAt: z.string().datetime(),
+});
+export type SystemDashboardProblemChat = z.infer<typeof systemDashboardProblemChatSchema>;
+
+export const systemDashboardProblemChatsSchema = z.object({
+  windowSec: z.number().int().positive(),
+  items: z.array(systemDashboardProblemChatSchema),
+});
+export type SystemDashboardProblemChats = z.infer<typeof systemDashboardProblemChatsSchema>;
+
+export const systemDashboardWebhookSloStatusSchema = z.enum(['healthy', 'warning', 'critical']);
+export type SystemDashboardWebhookSloStatus = z.infer<typeof systemDashboardWebhookSloStatusSchema>;
+
+export const systemDashboardWebhookSloSchema = z.object({
+  status: systemDashboardWebhookSloStatusSchema,
+  windowSec: z.number().int().positive(),
+  targetProcessingMs: z.number().int().positive(),
+  totalEvents: z.number().int().min(0),
+  processedEvents: z.number().int().min(0),
+  failedEvents: z.number().int().min(0),
+  sampledProcessedEvents: z.number().int().min(0),
+  p95ProcessingMs: z.number().min(0).nullable(),
+  underTargetRatio: z.number().min(0).max(1).nullable(),
+  oldestUnprocessedLagSec: z.number().min(0),
+  oldestUnprocessedEventId: z.string().nullable(),
+  lastProcessedAt: z.string().datetime().nullable(),
+  generatedAt: z.string().datetime(),
+});
+export type SystemDashboardWebhookSlo = z.infer<typeof systemDashboardWebhookSloSchema>;
+
 export const systemDashboardResponseSchema = z.object({
   summary: systemDashboardSummarySchema,
   alerts: z.array(systemDashboardAlertSchema),
@@ -2328,6 +2391,8 @@ export const systemDashboardResponseSchema = z.object({
   hotChats: systemDashboardHotChatsSchema.optional(),
   backgroundBudget: systemDashboardBackgroundBudgetSchema.optional(),
   membershipLookup: systemDashboardMembershipLookupSchema.optional(),
+  problemChats: systemDashboardProblemChatsSchema.optional(),
+  webhookSlo: systemDashboardWebhookSloSchema.optional(),
 });
 export type SystemDashboardResponse = z.infer<typeof systemDashboardResponseSchema>;
 

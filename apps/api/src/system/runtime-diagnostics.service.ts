@@ -43,6 +43,20 @@ type MembershipLookupIssueSample = MembershipLookupSample & {
   kind: 'transient' | 'terminal';
 };
 
+type ProblemChatSeverity = 'info' | 'warning' | 'critical';
+
+type ProblemChatSummary = {
+  chatId: string;
+  botId: string | null;
+  category: string;
+  severity: ProblemChatSeverity;
+  action: string | null;
+  statusCode: number | null;
+  reason: string;
+  count: number;
+  lastObservedAt: string;
+};
+
 export type RuntimeDiagnosticsDashboardSnapshot = {
   burst: {
     active: boolean;
@@ -71,6 +85,10 @@ export type RuntimeDiagnosticsDashboardSnapshot = {
     backoffSample: MembershipLookupSample[];
     issueSample: MembershipLookupIssueSample[];
   };
+  problemChats: {
+    windowSec: number;
+    items: ProblemChatSummary[];
+  };
 };
 
 const HOT_PATH_BUCKET_PREFIX = 'runtime:diag:hot-path:v1';
@@ -82,6 +100,8 @@ const BACKGROUND_REASON_LAST_BUCKET_PREFIX = 'runtime:diag:bg:reason:last:v1';
 const MEMBERSHIP_HOT_PREFIX = 'runtime:diag:membership:hot:v1';
 const MEMBERSHIP_BACKOFF_PREFIX = 'runtime:diag:membership:backoff:v1';
 const MEMBERSHIP_ISSUE_PREFIX = 'runtime:diag:membership:issue:v1';
+const PROBLEM_CHAT_COUNT_BUCKET_PREFIX = 'runtime:diag:problem-chat:count:v1';
+const PROBLEM_CHAT_LAST_BUCKET_PREFIX = 'runtime:diag:problem-chat:last:v1';
 const BURST_STATE_KEY = 'runtime:diag:burst-state:v1';
 
 const BUCKET_SPAN_SEC = 60;
@@ -90,8 +110,10 @@ const DEFAULT_HOT_PATH_WINDOW_SEC = 15 * 60;
 const DEFAULT_HOT_CHAT_WINDOW_SEC = 30 * 60;
 const DEFAULT_BACKGROUND_REASON_WINDOW_SEC = 15 * 60;
 const DEFAULT_MEMBERSHIP_WINDOW_SEC = 15 * 60;
+const DEFAULT_PROBLEM_CHAT_WINDOW_SEC = 60 * 60;
 const DEFAULT_BURST_LAG_THRESHOLD_SEC = 2;
 const DEFAULT_REDIS_SCAN_COUNT = 250;
+const PROBLEM_CHAT_REASON_MAX_LENGTH = 180;
 
 @Injectable()
 export class RuntimeDiagnosticsService implements OnModuleDestroy {
@@ -101,6 +123,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
   private readonly hotChatWindowSec: number;
   private readonly backgroundReasonWindowSec: number;
   private readonly membershipWindowSec: number;
+  private readonly problemChatWindowSec: number;
   private readonly burstLagThresholdSec: number;
   private readonly redisScanCount: number;
 
@@ -121,6 +144,10 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     this.membershipWindowSec = this.readPositiveInt(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_MEMBERSHIP_WINDOW_SEC'),
       DEFAULT_MEMBERSHIP_WINDOW_SEC,
+    );
+    this.problemChatWindowSec = this.readPositiveInt(
+      configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_PROBLEM_CHAT_WINDOW_SEC'),
+      DEFAULT_PROBLEM_CHAT_WINDOW_SEC,
     );
     this.burstLagThresholdSec = this.readPositiveNumber(
       configService.get('SYSTEM_RUNTIME_DIAGNOSTICS_BURST_LAG_SEC'),
@@ -162,7 +189,9 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
 
     normalizedEntries.forEach((entry, index) => {
       const { stage, elapsedMs } = entry;
-      const existingMaxElapsedMs = this.parseNonNegativeInt(existingMaxElapsedValues[index] ?? null);
+      const existingMaxElapsedMs = this.parseNonNegativeInt(
+        existingMaxElapsedValues[index] ?? null,
+      );
       pipeline.hincrby(bucketKey, `${stage}|count`, 1);
       pipeline.hincrby(bucketKey, `${stage}|elapsedTotalMs`, elapsedMs);
       pipeline.hset(bucketKey, `${stage}|lastObservedAtMs`, String(now));
@@ -207,10 +236,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     await this.execPipeline(pipeline, 'recordHotPathStageOutcome');
   }
 
-  async recordHotChatMessage(params: {
-    chatId: string;
-    botId?: string | null;
-  }): Promise<void> {
+  async recordHotChatMessage(params: { chatId: string; botId?: string | null }): Promise<void> {
     const chatId = params.chatId.trim();
     if (!chatId) {
       return;
@@ -319,6 +345,33 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     });
   }
 
+  async recordProblemChat(params: {
+    chatId: string;
+    botId?: string | null;
+    category: string;
+    severity: ProblemChatSeverity;
+    action?: string | null;
+    statusCode?: number | null;
+    reason: string;
+  }): Promise<void> {
+    const descriptor = this.normalizeProblemChatDescriptor(params);
+    if (!descriptor) {
+      return;
+    }
+
+    const now = Date.now();
+    const countBucketKey = this.buildBucketKey(PROBLEM_CHAT_COUNT_BUCKET_PREFIX, now);
+    const lastBucketKey = this.buildBucketKey(PROBLEM_CHAT_LAST_BUCKET_PREFIX, now);
+    const ttlSec = this.resolveBucketTtlSec(this.problemChatWindowSec);
+    const field = JSON.stringify(descriptor);
+    const pipeline = this.redis.pipeline();
+    pipeline.hincrby(countBucketKey, field, 1);
+    pipeline.hset(lastBucketKey, field, String(now));
+    pipeline.expire(countBucketKey, ttlSec);
+    pipeline.expire(lastBucketKey, ttlSec);
+    await this.execPipeline(pipeline, 'recordProblemChat');
+  }
+
   async recordQueueLagSnapshot(params: {
     queues: Pick<
       QueueMetricsSnapshot,
@@ -367,11 +420,12 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
   }
 
   async getDashboardSnapshot(): Promise<RuntimeDiagnosticsDashboardSnapshot> {
-    const [burst, hotPath, hotChats, membershipLookup] = await Promise.all([
+    const [burst, hotPath, hotChats, membershipLookup, problemChats] = await Promise.all([
       this.getBurstSnapshot(),
       this.getHotPathSummary(),
       this.getHotChatsSummary(),
       this.getMembershipLookupSummary(),
+      this.getProblemChatsSummary(),
     ]);
 
     return {
@@ -379,6 +433,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       hotPath,
       hotChats,
       membershipLookup,
+      problemChats,
     };
   }
 
@@ -504,18 +559,16 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         const stage = field.slice(0, separatorIndex);
         const metric = field.slice(separatorIndex + 1);
         const numericValue = this.parseNonNegativeInt(rawValue);
-        const bucket =
-          stages.get(stage) ??
-          {
-            count: 0,
-            slowCount: 0,
-            timeoutCount: 0,
-            skipCount: 0,
-            failOpenCount: 0,
-            elapsedTotalMs: 0,
-            maxElapsedMs: 0,
-            lastObservedAtMs: 0,
-          };
+        const bucket = stages.get(stage) ?? {
+          count: 0,
+          slowCount: 0,
+          timeoutCount: 0,
+          skipCount: 0,
+          failOpenCount: 0,
+          elapsedTotalMs: 0,
+          maxElapsedMs: 0,
+          lastObservedAtMs: 0,
+        };
         if (metric === 'count') {
           bucket.count += numericValue;
         } else if (metric === 'slowCount') {
@@ -545,8 +598,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         timeoutCount: value.timeoutCount,
         skipCount: value.skipCount,
         failOpenCount: value.failOpenCount,
-        avgElapsedMs:
-          value.count > 0 ? Number((value.elapsedTotalMs / value.count).toFixed(1)) : 0,
+        avgElapsedMs: value.count > 0 ? Number((value.elapsedTotalMs / value.count).toFixed(1)) : 0,
         maxElapsedMs: value.maxElapsedMs,
         lastObservedAt:
           value.lastObservedAtMs > 0 ? new Date(value.lastObservedAtMs).toISOString() : null,
@@ -590,13 +642,11 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
 
     for (const hash of countHashes) {
       for (const [chatId, rawCount] of Object.entries(hash)) {
-        const entry =
-          aggregate.get(chatId) ??
-          {
-            count: 0,
-            lastObservedAtMs: 0,
-            botIds: new Set<string>(),
-          };
+        const entry = aggregate.get(chatId) ?? {
+          count: 0,
+          lastObservedAtMs: 0,
+          botIds: new Set<string>(),
+        };
         entry.count += this.parseNonNegativeInt(rawCount);
         aggregate.set(chatId, entry);
       }
@@ -604,13 +654,11 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
 
     for (const hash of lastHashes) {
       for (const [chatId, rawLastObservedAtMs] of Object.entries(hash)) {
-        const entry =
-          aggregate.get(chatId) ??
-          {
-            count: 0,
-            lastObservedAtMs: 0,
-            botIds: new Set<string>(),
-          };
+        const entry = aggregate.get(chatId) ?? {
+          count: 0,
+          lastObservedAtMs: 0,
+          botIds: new Set<string>(),
+        };
         entry.lastObservedAtMs = Math.max(
           entry.lastObservedAtMs,
           this.parseNonNegativeInt(rawLastObservedAtMs),
@@ -627,13 +675,11 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
         }
         const chatId = field.slice(0, separatorIndex);
         const botId = field.slice(separatorIndex + 1);
-        const entry =
-          aggregate.get(chatId) ??
-          {
-            count: 0,
-            lastObservedAtMs: 0,
-            botIds: new Set<string>(),
-          };
+        const entry = aggregate.get(chatId) ?? {
+          count: 0,
+          lastObservedAtMs: 0,
+          botIds: new Set<string>(),
+        };
         if (botId) {
           entry.botIds.add(botId);
         }
@@ -692,6 +738,68 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     };
   }
 
+  private async getProblemChatsSummary(): Promise<
+    RuntimeDiagnosticsDashboardSnapshot['problemChats']
+  > {
+    const [countHashes, lastHashes] = await Promise.all([
+      this.readHashes(
+        this.buildWindowBucketKeys(PROBLEM_CHAT_COUNT_BUCKET_PREFIX, this.problemChatWindowSec),
+      ),
+      this.readHashes(
+        this.buildWindowBucketKeys(PROBLEM_CHAT_LAST_BUCKET_PREFIX, this.problemChatWindowSec),
+      ),
+    ]);
+    const aggregate = new Map<
+      string,
+      {
+        descriptor: Omit<ProblemChatSummary, 'count' | 'lastObservedAt'>;
+        count: number;
+        lastObservedAtMs: number;
+      }
+    >();
+
+    for (let index = 0; index < countHashes.length; index += 1) {
+      const countHash = countHashes[index] ?? {};
+      const lastHash = lastHashes[index] ?? {};
+      for (const [field, rawCount] of Object.entries(countHash)) {
+        const descriptor = this.parseProblemChatDescriptor(field);
+        if (!descriptor) {
+          continue;
+        }
+        const existing = aggregate.get(field) ?? {
+          descriptor,
+          count: 0,
+          lastObservedAtMs: 0,
+        };
+        existing.count += this.parseNonNegativeInt(rawCount);
+        existing.lastObservedAtMs = Math.max(
+          existing.lastObservedAtMs,
+          this.parseNonNegativeInt(lastHash[field]),
+        );
+        aggregate.set(field, existing);
+      }
+    }
+
+    const items = [...aggregate.values()]
+      .map((entry) => ({
+        ...entry.descriptor,
+        count: entry.count,
+        lastObservedAt: new Date(entry.lastObservedAtMs || Date.now()).toISOString(),
+      }))
+      .sort(
+        (left, right) =>
+          this.problemSeverityRank(right.severity) - this.problemSeverityRank(left.severity) ||
+          right.count - left.count ||
+          Date.parse(right.lastObservedAt) - Date.parse(left.lastObservedAt),
+      )
+      .slice(0, 16);
+
+    return {
+      windowSec: this.problemChatWindowSec,
+      items,
+    };
+  }
+
   private async readMembershipSamples(
     keys: readonly string[],
     _kind: 'sample',
@@ -740,13 +848,16 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
   }
 
   private resolvePeakLagBotId(
-    bots: Record<
-      string,
-      {
-        effectiveLagSec?: number;
-        userFacingEffectiveLagSec?: number;
-      }
-    > | null | undefined,
+    bots:
+      | Record<
+          string,
+          {
+            effectiveLagSec?: number;
+            userFacingEffectiveLagSec?: number;
+          }
+        >
+      | null
+      | undefined,
   ): string | null {
     let bestBotId: string | null = null;
     let bestLag = Number.NEGATIVE_INFINITY;
@@ -813,9 +924,7 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     const windowBucketCount = Math.max(1, Math.ceil(windowSec / BUCKET_SPAN_SEC));
     const keys: string[] = [];
     for (let index = 0; index < windowBucketCount; index += 1) {
-      keys.push(
-        this.buildBucketKey(prefix, nowMs - index * BUCKET_SPAN_SEC * 1_000),
-      );
+      keys.push(this.buildBucketKey(prefix, nowMs - index * BUCKET_SPAN_SEC * 1_000));
     }
     return keys;
   }
@@ -927,7 +1036,9 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
     };
   }
 
-  private parseMembershipValue(raw: string | null): { observedAtMs: number; retryAfterMs: number | null } | null {
+  private parseMembershipValue(
+    raw: string | null,
+  ): { observedAtMs: number; retryAfterMs: number | null } | null {
     if (!raw) {
       return null;
     }
@@ -942,10 +1053,125 @@ export class RuntimeDiagnosticsService implements OnModuleDestroy {
       return {
         observedAtMs: parsed.observedAtMs,
         retryAfterMs:
-          typeof parsed.retryAfterMs === 'number' ? Math.max(0, Math.ceil(parsed.retryAfterMs)) : null,
+          typeof parsed.retryAfterMs === 'number'
+            ? Math.max(0, Math.ceil(parsed.retryAfterMs))
+            : null,
       };
     } catch {
       return null;
+    }
+  }
+
+  private normalizeProblemChatDescriptor(params: {
+    chatId: string;
+    botId?: string | null;
+    category: string;
+    severity: ProblemChatSeverity;
+    action?: string | null;
+    statusCode?: number | null;
+    reason: string;
+  }): Omit<ProblemChatSummary, 'count' | 'lastObservedAt'> | null {
+    const chatId = params.chatId.trim();
+    const category = this.normalizeProblemField(params.category, 'unknown');
+    const action = this.normalizeNullableProblemField(params.action);
+    const reason = this.truncateProblemReason(params.reason);
+    if (!chatId || !reason) {
+      return null;
+    }
+
+    const statusCode =
+      typeof params.statusCode === 'number' &&
+      Number.isInteger(params.statusCode) &&
+      params.statusCode > 0
+        ? params.statusCode
+        : null;
+
+    return {
+      chatId,
+      botId: this.normalizeNullableProblemField(params.botId),
+      category,
+      severity: params.severity,
+      action,
+      statusCode,
+      reason,
+    };
+  }
+
+  private parseProblemChatDescriptor(
+    raw: string,
+  ): Omit<ProblemChatSummary, 'count' | 'lastObservedAt'> | null {
+    try {
+      const parsed = JSON.parse(raw) as {
+        chatId?: unknown;
+        botId?: unknown;
+        category?: unknown;
+        severity?: unknown;
+        action?: unknown;
+        statusCode?: unknown;
+        reason?: unknown;
+      };
+      if (
+        typeof parsed.chatId !== 'string' ||
+        typeof parsed.category !== 'string' ||
+        (parsed.severity !== 'info' &&
+          parsed.severity !== 'warning' &&
+          parsed.severity !== 'critical') ||
+        typeof parsed.reason !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        chatId: parsed.chatId,
+        botId: typeof parsed.botId === 'string' ? parsed.botId : null,
+        category: parsed.category,
+        severity: parsed.severity,
+        action: typeof parsed.action === 'string' ? parsed.action : null,
+        statusCode:
+          typeof parsed.statusCode === 'number' &&
+          Number.isInteger(parsed.statusCode) &&
+          parsed.statusCode > 0
+            ? parsed.statusCode
+            : null,
+        reason: parsed.reason,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeProblemField(value: string, fallback: string): string {
+    const normalized = value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_.-]+/gu, '_');
+    return normalized || fallback;
+  }
+
+  private normalizeNullableProblemField(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = this.normalizeProblemField(value, '');
+    return normalized || null;
+  }
+
+  private truncateProblemReason(value: string): string {
+    const normalized = value.trim().replace(/\s+/gu, ' ');
+    if (normalized.length <= PROBLEM_CHAT_REASON_MAX_LENGTH) {
+      return normalized;
+    }
+    return `${normalized.slice(0, PROBLEM_CHAT_REASON_MAX_LENGTH - 3)}...`;
+  }
+
+  private problemSeverityRank(severity: ProblemChatSeverity): number {
+    switch (severity) {
+      case 'critical':
+        return 3;
+      case 'warning':
+        return 2;
+      case 'info':
+      default:
+        return 1;
     }
   }
 

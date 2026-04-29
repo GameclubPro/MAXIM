@@ -93,6 +93,15 @@ export class RedisCounterService {
     await this.redis.set(key, value, 'EX', Math.trunc(ttlSeconds));
   }
 
+  async deleteKey(key: string): Promise<number> {
+    const normalizedKey = key.trim();
+    if (!normalizedKey) {
+      return 0;
+    }
+
+    return this.redis.del(normalizedKey);
+  }
+
   async deleteKeysByPattern(pattern: string, scanCount = 200): Promise<number> {
     const normalizedPattern = pattern.trim();
     if (!normalizedPattern) {

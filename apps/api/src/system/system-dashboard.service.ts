@@ -12,6 +12,7 @@ import { BackgroundRuntimeGovernorService } from './background-runtime-governor.
 import { QueueMetricsService } from './queue-metrics.service';
 import { RuntimeDiagnosticsService } from './runtime-diagnostics.service';
 import { SystemModeService } from './system-mode.service';
+import { WebhookSloService, type WebhookSloSnapshot } from './webhook-slo.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
 const QUEUE_LAG_WARNING_SEC = 5;
@@ -42,6 +43,8 @@ export class SystemDashboardService {
     private readonly runtimeDiagnosticsService?: RuntimeDiagnosticsService,
     @Optional()
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
+    @Optional()
+    private readonly webhookSloService?: WebhookSloService,
   ) {
     this.queueLagCriticalThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
   }
@@ -63,9 +66,10 @@ export class SystemDashboardService {
       queues,
       mode,
     });
-    const [runtimeDiagnostics, backgroundBudget] = await Promise.all([
+    const [runtimeDiagnostics, backgroundBudget, webhookSlo] = await Promise.all([
       this.runtimeDiagnosticsService?.getDashboardSnapshot(),
       this.backgroundRuntimeGovernorService?.getDashboardBudgetSummary(),
+      this.webhookSloService?.getSnapshot(),
     ]);
     const alerts: SystemDashboardAlert[] = [];
     const queueLagSec = queues.userFacingEffectiveLagSec ?? queues.effectiveLagSec;
@@ -201,6 +205,16 @@ export class SystemDashboardService {
       alerts.push(ownershipCoverageAlert);
     }
 
+    const problemChatsAlert = this.buildProblemChatsAlert(runtimeDiagnostics?.problemChats);
+    if (problemChatsAlert) {
+      alerts.push(problemChatsAlert);
+    }
+
+    const webhookSloAlert = this.buildWebhookSloAlert(webhookSlo);
+    if (webhookSloAlert) {
+      alerts.push(webhookSloAlert);
+    }
+
     const status = this.resolveStatus({
       mode: mode.mode,
       queueLagSec,
@@ -208,6 +222,13 @@ export class SystemDashboardService {
       criticalRate,
       errorRate,
       webhookSubscriptionStatus: webhookSubscription.status,
+      problemChatsCritical:
+        runtimeDiagnostics?.problemChats?.items.some((item) => item.severity === 'critical') ??
+        false,
+      problemChatsWarning:
+        runtimeDiagnostics?.problemChats?.items.some((item) => item.severity === 'warning') ??
+        false,
+      webhookSloStatus: webhookSlo?.status ?? null,
     });
 
     return {
@@ -237,9 +258,13 @@ export class SystemDashboardService {
             hotPath: runtimeDiagnostics.hotPath,
             hotChats: runtimeDiagnostics.hotChats,
             membershipLookup: runtimeDiagnostics.membershipLookup,
+            ...(runtimeDiagnostics.problemChats
+              ? { problemChats: runtimeDiagnostics.problemChats }
+              : {}),
           }
         : {}),
       ...(backgroundBudget ? { backgroundBudget } : {}),
+      ...(webhookSlo ? { webhookSlo } : {}),
     };
   }
 
@@ -250,13 +275,18 @@ export class SystemDashboardService {
     criticalRate: number;
     errorRate: number;
     webhookSubscriptionStatus: WebhookSubscriptionSnapshot['status'];
+    problemChatsCritical?: boolean;
+    problemChatsWarning?: boolean;
+    webhookSloStatus?: WebhookSloSnapshot['status'] | null;
   }): SystemDashboardStatus {
     if (
       input.mode === 'degrade' ||
       input.queueLagSec > this.queueLagCriticalThresholdSec ||
       input.failedCount >= FAILED_EVENTS_CRITICAL_COUNT ||
       input.criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD ||
-      input.webhookSubscriptionStatus === 'critical'
+      input.webhookSubscriptionStatus === 'critical' ||
+      input.problemChatsCritical === true ||
+      input.webhookSloStatus === 'critical'
     ) {
       return 'critical';
     }
@@ -266,7 +296,9 @@ export class SystemDashboardService {
       input.failedCount > 0 ||
       input.criticalRate > ACTION_RATE_WARNING_THRESHOLD ||
       input.errorRate > ACTION_RATE_WARNING_THRESHOLD ||
-      input.webhookSubscriptionStatus === 'warning'
+      input.webhookSubscriptionStatus === 'warning' ||
+      input.problemChatsWarning === true ||
+      input.webhookSloStatus === 'warning'
     ) {
       return 'warning';
     }
@@ -435,6 +467,53 @@ export class SystemDashboardService {
     };
   }
 
+  private buildProblemChatsAlert(
+    problemChats:
+      | Awaited<ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>>['problemChats']
+      | undefined,
+  ): SystemDashboardAlert | null {
+    const items = problemChats?.items ?? [];
+    if (items.length === 0) {
+      return null;
+    }
+
+    const criticalCount = items.filter((item) => item.severity === 'critical').length;
+    const top = items[0];
+    return {
+      code: 'problem-chats',
+      level: criticalCount > 0 ? 'critical' : 'warning',
+      title:
+        criticalCount > 0 ? 'Есть чаты с критичными runtime-проблемами' : 'Есть проблемные чаты',
+      detail: `${items.length} чатов/сценариев за окно ${problemChats?.windowSec ?? 0} сек. Топ: ${top.chatId}, ${top.category}, ${top.reason}.`,
+      recommendedAction:
+        'Откройте system dashboard/problemChats или логи по chatId: чаще всего нужно восстановить права бота или снизить фоновые MAX-запросы.',
+    };
+  }
+
+  private buildWebhookSloAlert(
+    snapshot: WebhookSloSnapshot | undefined,
+  ): SystemDashboardAlert | null {
+    if (!snapshot || snapshot.status === 'healthy') {
+      return null;
+    }
+
+    const underTarget =
+      snapshot.underTargetRatio === null
+        ? 'n/a'
+        : `${(snapshot.underTargetRatio * 100).toFixed(1)}%`;
+    return {
+      code: 'webhook-slo',
+      level: snapshot.status === 'critical' ? 'critical' : 'warning',
+      title:
+        snapshot.status === 'critical'
+          ? 'Webhook SLO просел критично'
+          : 'Webhook SLO требует внимания',
+      detail: `p95 ${snapshot.p95ProcessingMs ?? 0} мс, under target ${underTarget}, failed ${snapshot.failedEvents}, oldest unprocessed ${snapshot.oldestUnprocessedLagSec.toFixed(1)} сек.`,
+      recommendedAction:
+        'Проверьте backlog, MAX API rate limit и последние failed webhook events до расширения фоновых задач.',
+    };
+  }
+
   private buildFallbackWebhookSubscriptionSnapshot(): WebhookSubscriptionSnapshot {
     return {
       status: 'warning',
@@ -589,7 +668,9 @@ export class SystemDashboardService {
   }
 
   private buildDefaultWorkerSkewAlert(
-    workerGroups?: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookDefaultWorkerGroups'],
+    workerGroups?: Awaited<
+      ReturnType<QueueMetricsService['getSnapshot']>
+    >['webhookDefaultWorkerGroups'],
   ): SystemDashboardAlert | null {
     if (!workerGroups) {
       return null;
@@ -689,7 +770,9 @@ export class SystemDashboardService {
   }
 
   private buildJoinBurstAlert(
-    joinCounters: Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookJoin'] | undefined,
+    joinCounters:
+      | Awaited<ReturnType<QueueMetricsService['getSnapshot']>>['webhookJoin']
+      | undefined,
     userFacingLagSec: number,
   ): SystemDashboardAlert | null {
     if (!joinCounters) {

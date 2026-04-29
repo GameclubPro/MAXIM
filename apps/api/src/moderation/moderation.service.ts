@@ -10782,7 +10782,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     for (const candidateBotId of candidateBotIds) {
       if (
         candidateBotId &&
-        this.isModerationActionBotBackoffActive(params.chatId, params.action, candidateBotId)
+        (await this.isModerationActionBotBackoffActive(
+          params.chatId,
+          params.action,
+          candidateBotId,
+        ))
       ) {
         skippedDueToBackoff = true;
         continue;
@@ -10795,7 +10799,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       try {
         await params.operation(candidateBotId ?? undefined);
         if (candidateBotId) {
-          this.clearModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
+          await this.clearModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
         }
         return { status: 'success' };
       } catch (error: unknown) {
@@ -10805,7 +10809,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
         terminalError = error;
         if (candidateBotId) {
-          this.rememberModerationActionBotBackoff(params.chatId, params.action, candidateBotId);
+          if (this.isTerminalModerationActionAccessError(error)) {
+            await this.rememberModerationActionBotBackoff(
+              params.chatId,
+              params.action,
+              candidateBotId,
+            );
+            await this.persistModerationActionBotAccessSnapshot(
+              params.chatId,
+              candidateBotId,
+              null,
+              {
+                action: params.action,
+                error,
+              },
+            );
+          }
+          await this.recordModerationActionProblemChat({
+            chatId: params.chatId,
+            action: params.action,
+            botId: candidateBotId,
+            error,
+          });
         }
       }
     }
@@ -10912,7 +10937,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (skippedBackoffClearBotIds.has(botId)) {
         continue;
       }
-      this.clearModerationActionBotBackoff(params.chatId, params.action, botId);
+      await this.clearModerationActionBotBackoff(params.chatId, params.action, botId);
     }
     return candidateBotIds;
   }
@@ -10934,20 +10959,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(params.chatId).finally(
-      () => {
-        this.moderationActionSnapshotRefreshInFlight.delete(refreshKey);
-        this.moderationActionSnapshotRefreshUntilMs.set(
-          refreshKey,
-          Date.now() + MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
-        );
-      },
-    );
+    const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(
+      params.chatId,
+      params.action,
+    ).finally(() => {
+      this.moderationActionSnapshotRefreshInFlight.delete(refreshKey);
+      this.moderationActionSnapshotRefreshUntilMs.set(
+        refreshKey,
+        Date.now() + MODERATION_ACTION_PERMISSION_REFRESH_MIN_INTERVAL_MS,
+      );
+    });
     this.moderationActionSnapshotRefreshInFlight.set(refreshKey, refreshPromise);
     await refreshPromise;
   }
 
-  private async refreshModerationActionBotSnapshotsInternal(chatId: string): Promise<void> {
+  private async refreshModerationActionBotSnapshotsInternal(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+  ): Promise<void> {
     const botIds = await this.loadModerationActionSnapshotRefreshBotIds(chatId);
     if (botIds.length === 0) {
       return;
@@ -10965,7 +10994,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.persistModerationActionBotAccessSnapshot(chatId, botId, access);
         } catch (error: unknown) {
           if (this.isTerminalModerationActionPermissionError(error)) {
-            await this.persistModerationActionBotAccessSnapshot(chatId, botId, null);
+            await this.persistModerationActionBotAccessSnapshot(chatId, botId, null, {
+              error,
+            });
+            await this.recordModerationActionProblemChat({
+              chatId,
+              action,
+              botId,
+              error,
+            });
             return;
           }
 
@@ -11048,6 +11085,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     botId: string,
     access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
+    issue?: {
+      action?: 'delete_message' | 'moderate_member';
+      error?: unknown;
+    },
   ): Promise<void> {
     if (typeof this.prisma.chatBotMembership?.updateMany !== 'function') {
       return;
@@ -11061,18 +11102,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         data: {
           ...(access ? { lastSeenAt: new Date() } : {}),
-          permissionsSnapshot: {
-            checkedAt: new Date().toISOString(),
-            isAdmin: access?.isAdmin === true,
-            isOwner: access?.isOwner === true,
-            permissions: Array.from(
-              new Set(
-                (access?.permissions ?? [])
-                  .map((permission) => permission.trim())
-                  .filter((permission) => permission.length > 0),
-              ),
-            ),
-          } satisfies Prisma.InputJsonValue,
+          permissionsSnapshot: this.buildModerationActionAccessSnapshot(access, issue),
         },
       });
     } catch (error: unknown) {
@@ -11095,6 +11125,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${chatId}:${action}:${botId}`;
   }
 
+  private buildModerationActionBotSharedBackoffKey(
+    chatId: string,
+    action: 'delete_message' | 'moderate_member',
+    botId: string,
+  ): string {
+    return `moderation-action-terminal-backoff:v1:${chatId}:${action}:${botId}`;
+  }
+
   private buildModerationActionSnapshotRefreshKey(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
@@ -11102,43 +11140,182 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${chatId}:${action}`;
   }
 
-  private isModerationActionBotBackoffActive(
+  private async isModerationActionBotBackoffActive(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
     botId: string,
-  ): boolean {
+  ): Promise<boolean> {
     const cacheKey = this.buildModerationActionBotBackoffKey(chatId, action, botId);
     const backoffUntilMs = this.moderationActionBotBackoffUntilMs.get(cacheKey) ?? 0;
-    if (backoffUntilMs <= Date.now()) {
-      if (backoffUntilMs > 0) {
-        this.moderationActionBotBackoffUntilMs.delete(cacheKey);
-      }
+    if (backoffUntilMs > Date.now()) {
+      return true;
+    }
+
+    if (backoffUntilMs > 0) {
+      this.moderationActionBotBackoffUntilMs.delete(cacheKey);
+    }
+
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (!getString || !this.redisCounter) {
       return false;
     }
 
-    return true;
+    try {
+      const sharedMarker = await getString.call(
+        this.redisCounter,
+        this.buildModerationActionBotSharedBackoffKey(chatId, action, botId),
+      );
+      if (sharedMarker === '1') {
+        this.moderationActionBotBackoffUntilMs.set(
+          cacheKey,
+          Date.now() + MODERATION_ACTION_PERMISSION_BACKOFF_MS,
+        );
+        return true;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          action,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to read shared moderation action terminal backoff marker',
+      );
+    }
+
+    return false;
   }
 
-  private rememberModerationActionBotBackoff(
+  private async rememberModerationActionBotBackoff(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
     botId: string,
-  ): void {
+  ): Promise<void> {
+    const localKey = this.buildModerationActionBotBackoffKey(chatId, action, botId);
     this.moderationActionBotBackoffUntilMs.set(
-      this.buildModerationActionBotBackoffKey(chatId, action, botId),
+      localKey,
       Date.now() + MODERATION_ACTION_PERMISSION_BACKOFF_MS,
     );
+
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (!setStringWithTtl || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        this.buildModerationActionBotSharedBackoffKey(chatId, action, botId),
+        '1',
+        Math.ceil(MODERATION_ACTION_PERMISSION_BACKOFF_MS / 1_000),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          action,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to write shared moderation action terminal backoff marker',
+      );
+    }
   }
 
-  private clearModerationActionBotBackoff(
+  private async clearModerationActionBotBackoff(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
     botId: string,
-  ): void {
+  ): Promise<void> {
     this.moderationActionBotBackoffUntilMs.delete(
       this.buildModerationActionBotBackoffKey(chatId, action, botId),
     );
+
+    const deleteKey = (this.redisCounter as Partial<RedisCounterService> | undefined)?.deleteKey;
+    if (!deleteKey || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await deleteKey.call(
+        this.redisCounter,
+        this.buildModerationActionBotSharedBackoffKey(chatId, action, botId),
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          action,
+          botId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to clear shared moderation action terminal backoff marker',
+      );
+    }
   }
+
+  private buildModerationActionAccessSnapshot(
+    access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
+    issue?: {
+      action?: 'delete_message' | 'moderate_member';
+      error?: unknown;
+    },
+  ): Prisma.InputJsonValue {
+    const statusCode = issue?.error ? this.extractStatusCode(issue.error) : null;
+    const code = issue?.error ? this.extractMaxErrorCode(issue.error) : null;
+    const message = issue?.error ? this.extractMaxErrorMessage(issue.error) : null;
+
+    return {
+      checkedAt: new Date().toISOString(),
+      isAdmin: access?.isAdmin === true,
+      isOwner: access?.isOwner === true,
+      permissions: Array.from(
+        new Set(
+          (access?.permissions ?? [])
+            .map((permission) => permission.trim())
+            .filter((permission) => permission.length > 0),
+        ),
+      ),
+      health: access ? 'ok' : 'access_limited',
+      ...(issue
+        ? {
+            lastIssue: {
+              kind: 'terminal_moderation_action',
+              observedAt: new Date().toISOString(),
+              action: issue.action ?? null,
+              statusCode,
+              code,
+              message,
+            },
+          }
+        : {}),
+    } satisfies Prisma.InputJsonValue;
+  }
+
+  private async recordModerationActionProblemChat(params: {
+    chatId: string;
+    action: 'delete_message' | 'moderate_member';
+    botId: string;
+    error: unknown;
+  }): Promise<void> {
+    await this.runtimeDiagnosticsService?.recordProblemChat({
+      chatId: params.chatId,
+      botId: params.botId,
+      category: 'moderation_action_terminal',
+      severity: this.extractStatusCode(params.error) === 404 ? 'warning' : 'critical',
+      action: params.action,
+      statusCode: this.extractStatusCode(params.error),
+      reason: this.extractMaxErrorMessage(params.error) || 'terminal moderation action error',
+    });
+  }
+
+  /*
+   * Legacy sync wrappers are intentionally not kept here: all moderation action
+   * permission backoff now goes through Redis when available, so every worker
+   * sees the same short suppression window.
+   */
 
   private isTerminalModerationActionPermissionError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
@@ -11165,6 +11342,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       message.includes('sufficient rights') ||
       message.includes('already been deleted') ||
       message.includes('already deleted')
+    );
+  }
+
+  private isTerminalModerationActionAccessError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found') ||
+      message.includes('sufficient rights')
     );
   }
 

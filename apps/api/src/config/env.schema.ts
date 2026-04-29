@@ -130,6 +130,16 @@ const envSchema = z.object({
   MAX_API_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_WINDOW_SEC: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_OPEN_SEC: z.coerce.number().int().positive().default(20),
+  BACKGROUND_GOVERNOR_BOT_LOAD_SLOW_THRESHOLD: z.coerce.number().min(0.05).max(1).default(0.35),
+  BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD: z.coerce.number().min(0.05).max(1).default(0.7),
+  SYSTEM_RUNTIME_DIAGNOSTICS_PROBLEM_CHAT_WINDOW_SEC: z.coerce
+    .number()
+    .int()
+    .positive()
+    .default(3600),
+  SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().default(900),
+  SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(1000),
+  SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
   MAX_ACTION_DISPATCH_ENABLED: z.coerce.boolean().default(true),
   APP_ROLE: z.enum(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']).default('all'),
   BOT_OWNERSHIP_FOUNDATION_ENABLED: z.coerce.boolean().default(true),

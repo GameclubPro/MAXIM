@@ -11,6 +11,7 @@ import { SystemController } from './system.controller';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
 import { WebhookDynamicLeaseStatusService } from './webhook-dynamic-lease-status.service';
+import { WebhookSloService } from './webhook-slo.service';
 import { WebhookSubscriptionStatusService } from './webhook-subscription-status.service';
 
 @Module({
@@ -29,6 +30,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,
+    WebhookSloService,
     WebhookSubscriptionStatusService,
   ],
   exports: [
@@ -40,6 +42,7 @@ import { WebhookSubscriptionStatusService } from './webhook-subscription-status.
     SystemModeService,
     SystemDashboardService,
     WebhookDynamicLeaseStatusService,
+    WebhookSloService,
     WebhookSubscriptionStatusService,
   ],
 })

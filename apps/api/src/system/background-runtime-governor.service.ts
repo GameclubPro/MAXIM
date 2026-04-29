@@ -22,6 +22,7 @@ type BackgroundPressureSnapshot = {
   mode: SystemModeSnapshot;
   queues: QueueMetricsSnapshot;
   backgroundShare: number;
+  botLoad: BackgroundBotLoadSnapshot;
   topSources: Array<{
     sourceTag: string;
     totalRequests: number;
@@ -34,6 +35,19 @@ type BackgroundPressureSnapshot = {
     totalPressure: number;
     share: number;
   };
+};
+
+type BackgroundBotLoadSnapshot = {
+  maxSmoothedLoad: number;
+  maxPeakLoad: number;
+  slowThreshold: number;
+  pauseThreshold: number;
+  topBots: Array<{
+    botId: string;
+    smoothedLoad: number;
+    peakLoad: number;
+    avgLoad: number;
+  }>;
 };
 
 export type BackgroundRuntimeBudgetSummary = {
@@ -53,6 +67,7 @@ export type BackgroundRuntimeBudgetSummary = {
     count: number;
     lastObservedAt: string | null;
   }>;
+  botLoad: BackgroundBotLoadSnapshot;
 };
 
 const DEFAULT_SOURCE_WINDOW_SEC = 10 * 60;
@@ -63,6 +78,8 @@ const DEFAULT_WORKER_SKEW_PRESSURE = 4;
 const DEFAULT_WORKER_SKEW_SHARE = 0.7;
 const DEFAULT_SLOW_RETRY_AFTER_MS = 20_000;
 const DEFAULT_PAUSE_RETRY_AFTER_MS = 60_000;
+const DEFAULT_BOT_LOAD_SLOW_THRESHOLD = 0.35;
+const DEFAULT_BOT_LOAD_PAUSE_THRESHOLD = 0.7;
 
 @Injectable()
 export class BackgroundRuntimeGovernorService {
@@ -75,6 +92,8 @@ export class BackgroundRuntimeGovernorService {
   private readonly workerSkewShare: number;
   private readonly slowRetryAfterMs: number;
   private readonly pauseRetryAfterMs: number;
+  private readonly botLoadSlowThreshold: number;
+  private readonly botLoadPauseThreshold: number;
   private cachedSnapshot: BackgroundPressureSnapshot | null = null;
   private cachedSnapshotAtMs = 0;
   private pendingSnapshot: Promise<BackgroundPressureSnapshot> | null = null;
@@ -118,6 +137,17 @@ export class BackgroundRuntimeGovernorService {
     this.pauseRetryAfterMs = this.readPositiveInt(
       configService.get('BACKGROUND_GOVERNOR_PAUSE_RETRY_AFTER_MS'),
       DEFAULT_PAUSE_RETRY_AFTER_MS,
+    );
+    this.botLoadSlowThreshold = this.readFraction(
+      configService.get('BACKGROUND_GOVERNOR_BOT_LOAD_SLOW_THRESHOLD'),
+      DEFAULT_BOT_LOAD_SLOW_THRESHOLD,
+    );
+    this.botLoadPauseThreshold = Math.max(
+      this.botLoadSlowThreshold,
+      this.readFraction(
+        configService.get('BACKGROUND_GOVERNOR_BOT_LOAD_PAUSE_THRESHOLD'),
+        DEFAULT_BOT_LOAD_PAUSE_THRESHOLD,
+      ),
     );
   }
 
@@ -173,6 +203,7 @@ export class BackgroundRuntimeGovernorService {
       backgroundShare: Number(snapshot.backgroundShare.toFixed(3)),
       topSources: snapshot.topSources,
       pauseReasons: pauseReasons?.pauseReasons ?? [],
+      botLoad: snapshot.botLoad,
     };
   }
 
@@ -223,6 +254,7 @@ export class BackgroundRuntimeGovernorService {
     const totalRequests = maxApi.overall.totalRequests;
     const backgroundRequests = maxApi.overall.trafficClasses.background.totalRequests;
     const backgroundShare = totalRequests > 0 ? backgroundRequests / totalRequests : 0;
+    const botLoad = await this.buildBotLoadSnapshot(queues);
 
     const workerGroups = Object.entries(queues.webhookDefaultWorkerGroups ?? {}).map(
       ([groupName, metrics]) => ({
@@ -257,6 +289,7 @@ export class BackgroundRuntimeGovernorService {
       mode,
       queues,
       backgroundShare,
+      botLoad,
       topSources,
       workerSkew: {
         groupName: primary.groupName,
@@ -274,7 +307,8 @@ export class BackgroundRuntimeGovernorService {
       allowQueueLagSlowPathBelowSec?: number;
     } = {},
   ): BackgroundRuntimeGovernorDecision {
-    const queueLagSec = snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
+    const queueLagSec =
+      snapshot.queues.userFacingEffectiveLagSec ?? snapshot.queues.effectiveLagSec;
     const allowRecoveryWindowRun =
       options.allowRecoveryWindowRun === true && queueLagSec < this.softQueueLagSec;
     const allowQueueLagSlowPath =
@@ -315,6 +349,22 @@ export class BackgroundRuntimeGovernorService {
       };
     }
 
+    if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadPauseThreshold) {
+      return {
+        action: 'pause',
+        retryAfterMs: this.pauseRetryAfterMs,
+        reason: `MAX API bot load ${(snapshot.botLoad.maxSmoothedLoad * 100).toFixed(1)}%`,
+      };
+    }
+
+    if (snapshot.botLoad.maxSmoothedLoad >= this.botLoadSlowThreshold) {
+      return {
+        action: 'slow',
+        retryAfterMs: this.slowRetryAfterMs,
+        reason: `MAX API bot load ${(snapshot.botLoad.maxSmoothedLoad * 100).toFixed(1)}%`,
+      };
+    }
+
     if (snapshot.backgroundShare >= this.backgroundShareThreshold) {
       return {
         action: 'slow',
@@ -338,6 +388,47 @@ export class BackgroundRuntimeGovernorService {
       action: 'run',
       retryAfterMs: 0,
       reason: 'background headroom available',
+    };
+  }
+
+  private async buildBotLoadSnapshot(
+    queues: QueueMetricsSnapshot,
+  ): Promise<BackgroundBotLoadSnapshot> {
+    const botIds = Object.keys(queues.bots ?? {}).filter((botId) => botId.trim().length > 0);
+    if (botIds.length === 0) {
+      return {
+        maxSmoothedLoad: 0,
+        maxPeakLoad: 0,
+        slowThreshold: this.botLoadSlowThreshold,
+        pauseThreshold: this.botLoadPauseThreshold,
+        topBots: [],
+      };
+    }
+
+    const snapshots = await this.maxApiMetricsService.getBotRateLimitSnapshot(botIds, {
+      windowSec: Math.min(60, this.sourceWindowSec),
+    });
+    const topBots = Object.entries(snapshots)
+      .map(([botId, snapshot]) => ({
+        botId,
+        smoothedLoad: snapshot.smoothedLoad,
+        peakLoad: snapshot.peakLoad,
+        avgLoad: snapshot.avgLoad,
+      }))
+      .sort(
+        (left, right) =>
+          right.smoothedLoad - left.smoothedLoad ||
+          right.peakLoad - left.peakLoad ||
+          left.botId.localeCompare(right.botId),
+      )
+      .slice(0, 5);
+
+    return {
+      maxSmoothedLoad: topBots[0]?.smoothedLoad ?? 0,
+      maxPeakLoad: topBots.reduce((max, bot) => Math.max(max, bot.peakLoad), 0),
+      slowThreshold: this.botLoadSlowThreshold,
+      pauseThreshold: this.botLoadPauseThreshold,
+      topBots,
     };
   }
 
