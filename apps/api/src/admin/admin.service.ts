@@ -1510,6 +1510,7 @@ export class AdminService implements OnModuleDestroy {
           const mergedFresh = await mergeWithLightweightBootstrap(fresh.items);
           const items = await this.attachManagedEntityBotAssignments(mergedFresh);
           this.scheduleManagedEntityHeaderHydration(user.userId, entityType, items);
+          this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
           return {
             items,
             refresh: fresh.refresh,
@@ -5619,6 +5620,25 @@ export class AdminService implements OnModuleDestroy {
         },
       );
 
+      if (options.revalidateCachedChats === true) {
+        const cachedChatIdsMissingFromRemoteSnapshot = [...cachedById.keys()].filter(
+          (chatId) => !remoteIndexByChatId.has(chatId),
+        );
+        if (cachedChatIdsMissingFromRemoteSnapshot.length > 0) {
+          await this.mapWithConcurrencyLimit(
+            cachedChatIdsMissingFromRemoteSnapshot,
+            LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+            async (chatId) => {
+              await this.prunePersistedChatAccessBestEffort(
+                chatId,
+                user.userId,
+                'fresh_remote_discovery_missing_chat',
+              );
+            },
+          );
+        }
+      }
+
       const removedChatIds = new Set(
         resolvedChats
           .filter(
@@ -5631,6 +5651,19 @@ export class AdminService implements OnModuleDestroy {
           )
           .map((item) => item.chatId),
       );
+      if (options.revalidateCachedChats === true && removedChatIds.size > 0) {
+        await this.mapWithConcurrencyLimit(
+          [...removedChatIds],
+          LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+          async (chatId) => {
+            await this.prunePersistedChatAccessBestEffort(
+              chatId,
+              user.userId,
+              'fresh_remote_discovery_denied_chat',
+            );
+          },
+        );
+      }
       const filtered = resolvedChats.filter(
         (
           item,
@@ -24270,6 +24303,32 @@ export class AdminService implements OnModuleDestroy {
     });
     this.forgetManagedEntitiesLastSuccessChat(userId, chatId);
     this.invalidateManagedEntitiesAllowlistCache(userId);
+  }
+
+  private async prunePersistedChatAccessBestEffort(
+    chatId: string,
+    userId: string,
+    source: string,
+  ): Promise<void> {
+    try {
+      await this.prunePersistedChatAccess(chatId, userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          source,
+          code:
+            error instanceof Prisma.PrismaClientKnownRequestError
+              ? error.code
+              : ((error as { code?: string } | null)?.code ?? null),
+          err: error instanceof Error ? error.message : String(error),
+        },
+        this.isPrismaKnownError(error, 'P2024')
+          ? 'Skipped persisted chat access prune because the Prisma pool is saturated'
+          : 'Failed to prune persisted chat access',
+      );
+    }
   }
 
   private schedulePersistedChatAccessPrune(

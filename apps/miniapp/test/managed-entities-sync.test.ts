@@ -9,6 +9,7 @@ import {
   resolveManagedEntitiesSettledPhase,
   resolveManagedEntitiesRefreshRequestOptions,
   resolveManagedEntitiesScopeTransitionState,
+  shouldUseFreshManagedEntitiesReload,
   shouldStartManagedEntitiesBackgroundRefresh,
 } from '../src/lib/use-managed-entities-sync';
 
@@ -148,6 +149,42 @@ test('recovery refresh also resumes the existing server cursor', () => {
       bypassRemoteCache: true,
       resetRefreshCursor: false,
     },
+  );
+});
+
+test('uses the fresh endpoint for manual reloads when requested', () => {
+  assert.equal(
+    shouldUseFreshManagedEntitiesReload({
+      forceRefreshSession: true,
+      freshOnManualReload: true,
+      requestedBackgroundRefresh: true,
+      freshOnBackgroundRefresh: false,
+    }),
+    true,
+  );
+});
+
+test('uses the fresh endpoint for first background refresh when requested', () => {
+  assert.equal(
+    shouldUseFreshManagedEntitiesReload({
+      forceRefreshSession: false,
+      freshOnManualReload: false,
+      requestedBackgroundRefresh: true,
+      freshOnBackgroundRefresh: true,
+    }),
+    true,
+  );
+});
+
+test('keeps the regular refresh endpoint for passive background refreshes by default', () => {
+  assert.equal(
+    shouldUseFreshManagedEntitiesReload({
+      forceRefreshSession: false,
+      freshOnManualReload: false,
+      requestedBackgroundRefresh: true,
+      freshOnBackgroundRefresh: false,
+    }),
+    false,
   );
 });
 

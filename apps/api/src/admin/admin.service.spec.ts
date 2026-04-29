@@ -8242,6 +8242,95 @@ describe('AdminService.listChannels', () => {
     ]);
   });
 
+  it('prunes cached managed entities missing from a fresh remote revalidation', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-keep',
+          title: 'Активный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+          primaryBotId: 'main-bot',
+          botId: 'main-bot',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-missing',
+          title: 'Бот больше не админ',
+          createdAt: new Date('2026-03-02T09:00:00.000Z'),
+          entityType: 'CHAT',
+          primaryBotId: 'main-bot',
+          botId: 'main-bot',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-keep',
+          title: 'Активный чат',
+          lastEventTime: 500,
+          entityType: 'chat' as const,
+          link: null,
+          botId: 'main-bot',
+          botIds: ['main-bot'],
+        },
+      ]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'resolveUserAndBotAdminAccess').mockResolvedValue({
+      status: 'granted',
+    });
+    jest
+      .spyOn(service as any, 'persistManagedEntityAccessBestEffort')
+      .mockResolvedValue(
+        createChatSummaryFixture({
+          id: 'chat-keep',
+          title: 'Активный чат',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: 'main-bot',
+        }),
+      );
+
+    const result = await (service as any).runManagedEntitiesDiscovery(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'chat',
+      (service as any).buildManagedEntitiesRefreshCooldownKey('admin-1', 'chat'),
+      {
+        fullScan: false,
+        includeRefreshState: true,
+        bypassRemoteCache: true,
+        revalidateCachedChats: true,
+        resetRefreshCursor: false,
+        throwOnFailure: true,
+      },
+    );
+
+    expect(result.items.map((item: ChatSummary) => item.id)).toEqual(['chat-keep']);
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-missing',
+        userId: 'admin-1',
+      },
+    });
+  });
+
   it('re-runs local discovery on repeated explicit refreshes even during success cooldown', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
 

@@ -27,7 +27,6 @@ import {
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
   MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
-  MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
   buildManagedEntitiesSettledMarker,
   useManagedEntitiesVisibilityRefresh,
 } from '../lib/use-managed-entities-visibility-refresh';
@@ -49,6 +48,7 @@ const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
+const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -175,6 +175,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     reloadBehavior: refreshRequestByTab.chat.behavior,
     resumeOnVisibilityReturn: true,
     backgroundRefreshOnFirstLoad: true,
+    freshOnBackgroundRefresh: true,
+    freshOnManualReload: true,
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
@@ -189,6 +191,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     reloadBehavior: refreshRequestByTab.channel.behavior,
     resumeOnVisibilityReturn: true,
     backgroundRefreshOnFirstLoad: true,
+    freshOnBackgroundRefresh: true,
+    freshOnManualReload: true,
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
@@ -275,10 +279,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     isSyncComplete: activeEntitiesState.isUserVisibleComplete,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     settledMarker: settledRefreshMarker,
-    minIntervalMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
+    minIntervalMs: HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
     minHiddenDurationMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
     onVisibilityReturnRefresh: () => {
-      handleRefresh();
+      handleRefresh(activeTab, 'recovery');
     },
   });
 

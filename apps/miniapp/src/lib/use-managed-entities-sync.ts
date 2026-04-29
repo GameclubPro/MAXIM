@@ -106,6 +106,19 @@ export function resolveManagedEntitiesRefreshRequestOptions(options: {
   };
 }
 
+export function shouldUseFreshManagedEntitiesReload(options: {
+  forceRefreshSession: boolean;
+  freshOnManualReload: boolean;
+  requestedBackgroundRefresh: boolean;
+  freshOnBackgroundRefresh: boolean;
+}): boolean {
+  if (options.forceRefreshSession) {
+    return options.freshOnManualReload;
+  }
+
+  return options.requestedBackgroundRefresh && options.freshOnBackgroundRefresh;
+}
+
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
   isLoading: boolean;
   isRefreshing: boolean;
@@ -611,6 +624,7 @@ export function useManagedEntitiesSync({
   backgroundRefreshOnFirstLoad = false,
   reloadOnMount = false,
   freshOnManualReload = false,
+  freshOnBackgroundRefresh = false,
   persistLocalCache = false,
   localCacheScope = 'default',
   preserveVisibleDataOnEmptyComplete = false,
@@ -629,6 +643,7 @@ export function useManagedEntitiesSync({
   backgroundRefreshOnFirstLoad?: boolean;
   reloadOnMount?: boolean;
   freshOnManualReload?: boolean;
+  freshOnBackgroundRefresh?: boolean;
   persistLocalCache?: boolean;
   localCacheScope?: string;
   preserveVisibleDataOnEmptyComplete?: boolean;
@@ -879,6 +894,13 @@ export function useManagedEntitiesSync({
     const shouldStartWithBackgroundRefresh = refreshRequestOptions.startWithBackgroundRefresh;
     const shouldContinueWithBackgroundRefreshAfterLoad =
       refreshRequestOptions.continueWithBackgroundRefreshAfterLoad;
+    const freshReloadUsesFreshEndpoint = shouldUseFreshManagedEntitiesReload({
+      forceRefreshSession,
+      freshOnManualReload,
+      requestedBackgroundRefresh:
+        shouldStartWithBackgroundRefresh || shouldContinueWithBackgroundRefreshAfterLoad,
+      freshOnBackgroundRefresh,
+    });
     setState((current) => ({
       ...current,
       error: hasCachedData ? null : current.error,
@@ -888,13 +910,12 @@ export function useManagedEntitiesSync({
     const syncEntities = async () => {
       try {
         let forceRefreshPending = forceRefreshSession;
-        const manualRefreshUsesFresh = forceRefreshPending && freshOnManualReload;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
 
-        if (!shouldStartWithBackgroundRefresh || manualRefreshUsesFresh) {
+        if (!shouldStartWithBackgroundRefresh || freshReloadUsesFreshEndpoint) {
           const initial = await loadManagedEntities(api, entityType, {
-            fresh: freshOnLoad || manualRefreshUsesFresh,
+            fresh: freshOnLoad || freshReloadUsesFreshEndpoint,
           });
           if (cancelled) {
             return;
@@ -923,7 +944,7 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          if (manualRefreshUsesFresh) {
+          if (freshReloadUsesFreshEndpoint) {
             latestSnapshotRef.current = null;
             setState({
               data: initialData,
@@ -1064,6 +1085,7 @@ export function useManagedEntitiesSync({
     enabled,
     entityType,
     backgroundRefreshOnFirstLoad,
+    freshOnBackgroundRefresh,
     freshOnLoad,
     freshOnManualReload,
     reloadNonce,
