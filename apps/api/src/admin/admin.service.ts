@@ -23176,15 +23176,23 @@ export class AdminService implements OnModuleDestroy {
         };
       }
 
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          botId: botId ?? 'legacy',
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Chat hidden: failed to validate bot/user admin access for candidate bot',
-      );
+      const logData = {
+        chatId,
+        userId,
+        botId: botId ?? 'legacy',
+        err: error instanceof Error ? error.message : String(error),
+      };
+      if (this.isMaxApiTimeoutError(error)) {
+        this.logger.log(
+          logData,
+          'Chat hidden after transient admin access validation timeout for candidate bot',
+        );
+      } else {
+        this.logger.warn(
+          logData,
+          'Chat hidden: failed to validate bot/user admin access for candidate bot',
+        );
+      }
       return {
         status: 'unknown',
         error,

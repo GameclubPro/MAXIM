@@ -12882,7 +12882,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     await this.writeNightModeDeliveryTerminalMarker(chatId);
-    this.logger.warn(
+    this.logger.log(
       {
         chatId,
         operation,
