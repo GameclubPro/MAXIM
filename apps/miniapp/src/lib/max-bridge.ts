@@ -234,10 +234,6 @@ function isMaxDeepLink(url: URL): boolean {
   return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
-function isMaxBotStartLink(url: URL): boolean {
-  return isMaxDeepLink(url) && url.searchParams.has('start') && !url.searchParams.has('startapp');
-}
-
 function isInlinePreviewUrl(url: URL): boolean {
   return url.protocol === 'data:' || url.protocol === 'blob:';
 }
@@ -262,10 +258,12 @@ export function closeMaxMiniApp(fallback?: () => void): void {
   fallback?.();
 }
 
-export function openMaxBotLink(url: string): void {
+type LinkOpenMethod = 'bridge-external' | 'bridge-max' | 'location' | 'popup' | 'noop';
+
+export function openMaxBotLink(url: string): LinkOpenMethod {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) {
-    return;
+    return 'noop';
   }
 
   const parsed = parseMaxUrl(normalizedUrl);
@@ -273,36 +271,31 @@ export function openMaxBotLink(url: string): void {
   const bridge = resolveBridge();
 
   if (isDeepLink) {
-    if (parsed && isMaxBotStartLink(parsed)) {
-      // MAX Bridge link methods require a user gesture; handoff links often open after async saves.
-      window.location.assign(normalizedUrl);
-      return;
-    }
-
     if (typeof bridge?.openMaxLink === 'function') {
       bridge.openMaxLink(normalizedUrl);
-      return;
+      return 'bridge-max';
     }
     window.location.assign(normalizedUrl);
-    return;
+    return 'location';
   }
 
   if (parsed && isInlinePreviewUrl(parsed)) {
     const openedWindow = window.open?.(normalizedUrl, '_blank', 'noopener,noreferrer');
     if (openedWindow) {
-      return;
+      return 'popup';
     }
 
     window.location.assign(normalizedUrl);
-    return;
+    return 'location';
   }
 
   if (typeof bridge?.openLink === 'function') {
     bridge.openLink(normalizedUrl);
-    return;
+    return 'bridge-external';
   }
 
   window.location.assign(normalizedUrl);
+  return 'location';
 }
 
 export function openMaxBotLinkAndClose(url: string): boolean {
@@ -311,10 +304,8 @@ export function openMaxBotLinkAndClose(url: string): boolean {
     return false;
   }
 
-  const parsed = parseMaxUrl(normalizedUrl);
-  const shouldCloseAfterOpen = !(parsed && isMaxBotStartLink(parsed));
-  openMaxBotLink(normalizedUrl);
-  if (shouldCloseAfterOpen) {
+  const openMethod = openMaxBotLink(normalizedUrl);
+  if (openMethod !== 'location' && openMethod !== 'noop') {
     scheduleMiniAppClose();
   }
   return true;

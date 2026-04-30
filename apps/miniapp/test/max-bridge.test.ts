@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isLegacyAndroidSettingsDrilldownUserAgent, openMaxBotLink } from '../src/lib/max-bridge';
+import {
+  isLegacyAndroidSettingsDrilldownUserAgent,
+  openMaxBotLink,
+  openMaxBotLinkAndClose,
+} from '../src/lib/max-bridge';
 
 type MockBridge = {
+  close?: () => void;
   openLink?: (url: string) => void;
   openMaxLink?: (url: string) => void;
 };
@@ -13,6 +18,7 @@ type MockWindow = {
     assign: (url: string) => void;
   };
   open?: (url: string, target?: string, features?: string) => unknown;
+  setTimeout: typeof setTimeout;
   MAX?: {
     WebApp?: MockBridge;
   };
@@ -31,12 +37,14 @@ function setMockWindow(bridge: MockBridge | null, assignedUrls: string[]): void 
   const nextWindow: MockWindow = bridge
     ? {
         location,
+        setTimeout,
         MAX: {
           WebApp: bridge,
         },
       }
     : {
         location,
+        setTimeout,
       };
 
   Object.assign(globalThis, {
@@ -72,6 +80,48 @@ test('openMaxBotLink opens MAX deep links inside bridge', () => {
   openMaxBotLink('https://max.ru/chats/chat-1/message/42');
   assert.deepEqual(opened, [{ kind: 'max', url: 'https://max.ru/chats/chat-1/message/42' }]);
   assert.deepEqual(assignedUrls, []);
+});
+
+test('openMaxBotLink opens bot start handoff links through MAX bridge', () => {
+  const assignedUrls: string[] = [];
+  const opened: Array<{ kind: 'max' | 'external'; url: string }> = [];
+  setMockWindow(
+    {
+      openMaxLink: (url) => opened.push({ kind: 'max', url }),
+      openLink: (url) => opened.push({ kind: 'external', url }),
+    },
+    assignedUrls,
+  );
+
+  openMaxBotLink('https://max.ru/777000_bot?start=broadcast_handoff');
+
+  assert.deepEqual(opened, [
+    { kind: 'max', url: 'https://max.ru/777000_bot?start=broadcast_handoff' },
+  ]);
+  assert.deepEqual(assignedUrls, []);
+});
+
+test('openMaxBotLinkAndClose closes miniapp after bot start handoff bridge open', async () => {
+  const assignedUrls: string[] = [];
+  const opened: string[] = [];
+  let closeCount = 0;
+  setMockWindow(
+    {
+      close: () => {
+        closeCount += 1;
+      },
+      openMaxLink: (url) => opened.push(url),
+    },
+    assignedUrls,
+  );
+
+  assert.equal(openMaxBotLinkAndClose('https://max.ru/777000_bot?start=broadcast_handoff'), true);
+
+  await new Promise((resolve) => setTimeout(resolve, 60));
+
+  assert.deepEqual(opened, ['https://max.ru/777000_bot?start=broadcast_handoff']);
+  assert.deepEqual(assignedUrls, []);
+  assert.equal(closeCount, 1);
 });
 
 test('openMaxBotLink opens external links through bridge browser API', () => {
