@@ -3410,7 +3410,7 @@ describe('ModerationService', () => {
     const maxClient = (service as unknown as { maxClient: { sendMessage: jest.Mock } }).maxClient;
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Откройте настройки чата'),
+      'Бот подключён. Чтобы начать, откройте настройки чата.',
       expect.objectContaining({
         buttons: [
           [

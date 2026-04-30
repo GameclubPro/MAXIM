@@ -9451,7 +9451,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       await sendMessage(
         chatId,
-        `Бот подключён${title}. Откройте настройки ${entityLabel} в приложении. Если права администратора только что выданы, приложение подтянет чат автоматически.`,
+        `Бот подключён${title}. Чтобы начать, откройте настройки ${entityLabel}.`,
         {
           buttons: [[button]],
           debugContext: {
