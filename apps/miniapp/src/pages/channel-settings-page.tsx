@@ -7,7 +7,16 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
-import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import {
+  Suspense,
+  lazy,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BroadcastSchedulePlanner,
@@ -122,6 +131,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   isDaySheetOpen: false,
   isConfirmed: false,
 };
+const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
 
 function formatDateTimeInTimeZone(
   value: string | null,
@@ -706,16 +716,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastListItem | null>(null);
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const searchParams = new URLSearchParams(location.search);
+  const focusSection = searchParams.get('focus');
+  const handoffRequested = searchParams.get('handoff') === '1';
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
     queryFn: ({ signal }) => getChannelSettingsScreen(api, chatId, { signal }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
+    ...(handoffRequested
+      ? {
+          retry: 7,
+          retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
+        }
+      : {}),
   });
-  const searchParams = new URLSearchParams(location.search);
-  const focusSection = searchParams.get('focus');
-  const handoffRequested = searchParams.get('handoff') === '1';
   const broadcastHandoffStateQuery = useQuery({
     queryKey: ['channel-broadcast-handoff', chatId],
     queryFn: () => getChannelBroadcastHandoffState(api, chatId ?? ''),
@@ -757,6 +773,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     error: settingsScreenQuery.error,
     refetch: settingsScreenQuery.refetch,
   };
+  const settingsHandoffRetryCount = settingsScreenQuery.failureCount;
+  const showSettingsHandoffPending =
+    Boolean(chatId) &&
+    handoffRequested &&
+    !settingsScreenQuery.data &&
+    !settingsScreenQuery.isError &&
+    (settingsScreenQuery.isPending || settingsHandoffRetryCount > 0);
+  const showSettingsHandoffError =
+    Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
   const channelHeader = settingsScreenQuery.data?.header ?? null;
   const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
@@ -1296,6 +1321,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             }
           />
         </GlassCard>
+      </div>
+    );
+  }
+
+  if (showSettingsHandoffPending) {
+    return (
+      <div className="page-stack page-enter">
+        <Suspense fallback={null}>
+          <LazySettingsHandoffState
+            entityType="channel"
+            mode="loading"
+            retryCount={settingsHandoffRetryCount}
+          />
+        </Suspense>
+      </div>
+    );
+  }
+
+  if (showSettingsHandoffError) {
+    return (
+      <div className="page-stack page-enter">
+        <Suspense fallback={null}>
+          <LazySettingsHandoffState
+            entityType="channel"
+            mode="error"
+            onRetry={() => void settingsQuery.refetch()}
+          />
+        </Suspense>
       </div>
     );
   }

@@ -229,6 +229,7 @@ const LazyBroadcastAudienceControls = lazy(() =>
     default: module.BroadcastAudienceControls,
   })),
 );
+const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
 
 const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
@@ -2272,6 +2273,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryFn: ({ signal }) => getSettingsScreen(api, chatId ?? '', { signal }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
+    ...(handoffRequested
+      ? {
+          retry: 7,
+          retryDelay: (failureCount: number) => Math.min(800 + failureCount * 400, 2600),
+        }
+      : {}),
   });
   const broadcastHandoffStateQuery = useQuery({
     queryKey: ['broadcast-handoff-state', chatId],
@@ -5075,6 +5082,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingAudienceChoicesError = chatsList.error
     ? formatApiError(chatsList.error) || 'Не удалось загрузить список чатов.'
     : null;
+  const settingsHandoffRetryCount = settingsScreenQuery.failureCount;
+  const showSettingsHandoffPending =
+    Boolean(chatId) &&
+    handoffRequested &&
+    !settingsScreenQuery.data &&
+    !settingsScreenQuery.isError &&
+    (settingsScreenQuery.isPending || settingsHandoffRetryCount > 0);
+  const showSettingsHandoffError =
+    Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
+  const settingsHandoffMode = showSettingsHandoffPending ? 'loading' : showSettingsHandoffError ? 'error' : null;
+  const managedChatsRoute = buildManagedEntitiesRoute('chat');
+  const refetchSettings = () => void settingsQuery.refetch();
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -5496,7 +5515,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="page-stack page-enter">
-      {settingsQuery.isLoading ? (
+      {settingsHandoffMode ? (
+        <Suspense fallback={null}>
+          <LazySettingsHandoffState
+            mode={settingsHandoffMode}
+            onRetry={refetchSettings}
+          />
+        </Suspense>
+      ) : null}
+
+      {settingsQuery.isLoading && !showSettingsHandoffPending ? (
         <section className="settings-sections" aria-label="Загрузка настроек">
           <GlassCard className="settings-section">
             <SkeletonCard lines={5} />
@@ -5504,7 +5532,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         </section>
       ) : null}
 
-      {settingsQuery.error ? (
+      {settingsQuery.error && !showSettingsHandoffError ? (
         <GlassCard>
           <StatusState
             tone="danger"
@@ -5514,7 +5542,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 className="button button--danger"
-                onClick={() => void settingsQuery.refetch()}
+                onClick={refetchSettings}
               >
                 Повторить
               </button>
@@ -5530,7 +5558,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           onClickCapture={handleDesktopToggleRowClick}
         >
           <CompactStickyHeader
-            backTo={buildManagedEntitiesRoute('chat')}
+            backTo={managedChatsRoute}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
             subtitle="Настройки чата"

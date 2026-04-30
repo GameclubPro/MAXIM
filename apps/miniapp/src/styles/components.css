@@ -1299,6 +1299,12 @@
   border-width: 2.4px;
 }
 
+@keyframes spinnerRotate {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .chat-card__header {
   display: flex;
   gap: var(--space-2);
