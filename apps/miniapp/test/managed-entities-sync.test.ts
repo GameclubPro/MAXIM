@@ -11,6 +11,7 @@ import {
   resolveManagedEntitiesScopeTransitionState,
   shouldUseFreshManagedEntitiesReload,
   shouldStartManagedEntitiesBackgroundRefresh,
+  shouldSettleManagedEntitiesFreshReload,
 } from '../src/lib/use-managed-entities-sync';
 
 function createItem(id: string, title: string, overrides: Partial<ChatSummary> = {}): ChatSummary {
@@ -185,6 +186,28 @@ test('keeps the regular refresh endpoint for passive background refreshes by def
       freshOnBackgroundRefresh: false,
     }),
     false,
+  );
+});
+
+test('continues background refresh after an empty cold-start fresh reload', () => {
+  assert.equal(
+    shouldSettleManagedEntitiesFreshReload({
+      freshReloadUsesFreshEndpoint: true,
+      continueWithBackgroundRefreshAfterLoad: true,
+      itemCount: 0,
+    }),
+    false,
+  );
+});
+
+test('settles fresh reloads once visible entities are present', () => {
+  assert.equal(
+    shouldSettleManagedEntitiesFreshReload({
+      freshReloadUsesFreshEndpoint: true,
+      continueWithBackgroundRefreshAfterLoad: true,
+      itemCount: 1,
+    }),
+    true,
   );
 });
 

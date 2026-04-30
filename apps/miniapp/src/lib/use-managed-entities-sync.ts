@@ -119,6 +119,18 @@ export function shouldUseFreshManagedEntitiesReload(options: {
   return options.requestedBackgroundRefresh && options.freshOnBackgroundRefresh;
 }
 
+export function shouldSettleManagedEntitiesFreshReload(options: {
+  freshReloadUsesFreshEndpoint: boolean;
+  continueWithBackgroundRefreshAfterLoad: boolean;
+  itemCount: number;
+}): boolean {
+  if (!options.freshReloadUsesFreshEndpoint) {
+    return false;
+  }
+
+  return !options.continueWithBackgroundRefreshAfterLoad || options.itemCount > 0;
+}
+
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
   isLoading: boolean;
   isRefreshing: boolean;
@@ -910,6 +922,7 @@ export function useManagedEntitiesSync({
     const syncEntities = async () => {
       try {
         let forceRefreshPending = forceRefreshSession;
+        let emptyFreshRecoveryPending = false;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
 
@@ -944,7 +957,13 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          if (freshReloadUsesFreshEndpoint) {
+          if (
+            shouldSettleManagedEntitiesFreshReload({
+              freshReloadUsesFreshEndpoint,
+              continueWithBackgroundRefreshAfterLoad: shouldContinueWithBackgroundRefreshAfterLoad,
+              itemCount: initialData.length,
+            })
+          ) {
             latestSnapshotRef.current = null;
             setState({
               data: initialData,
@@ -956,6 +975,8 @@ export function useManagedEntitiesSync({
             });
             return;
           }
+
+          emptyFreshRecoveryPending = freshReloadUsesFreshEndpoint;
 
           setState({
             data: initialData,
@@ -989,13 +1010,16 @@ export function useManagedEntitiesSync({
           }
 
           let next = await refreshManagedEntities(api, entityType, {
-            bypassRemoteCache: forceRefreshPending && forceRefreshUsesBypassRemoteCache,
-            resetRefreshCursor: resetRefreshCursor,
+            bypassRemoteCache:
+              (forceRefreshPending && forceRefreshUsesBypassRemoteCache) ||
+              emptyFreshRecoveryPending,
+            resetRefreshCursor: resetRefreshCursor || emptyFreshRecoveryPending,
             sinceVersion:
               latestDataRef.current !== null ? (latestSnapshotRef.current?.version ?? null) : null,
           });
           forceRefreshPending = false;
           resetRefreshCursor = false;
+          emptyFreshRecoveryPending = false;
           if (cancelled) {
             return;
           }
