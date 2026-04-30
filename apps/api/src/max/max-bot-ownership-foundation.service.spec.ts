@@ -1,8 +1,4 @@
-import {
-  ChatBotMembershipRole,
-  ChatBotMembershipStatus,
-  ChatEntityType,
-} from '@prisma/client';
+import { ChatBotMembershipRole, ChatBotMembershipStatus, ChatEntityType } from '@prisma/client';
 import { MaxBotOwnershipFoundationService } from './max-bot-ownership-foundation.service';
 
 const redisStore = new Map<string, string>();
@@ -42,12 +38,20 @@ type MembershipRow = {
   permissionsSnapshot?: unknown | null;
 };
 
+type LocalActivityRow = {
+  chatId: string;
+  botId: string | null;
+  lastEventAt: Date;
+};
+
 function createPrismaMock(params: {
   chats: ChatRow[];
   memberships: MembershipRow[];
+  localActivities?: LocalActivityRow[];
 }) {
   const chats = params.chats;
   const memberships = params.memberships;
+  const localActivities = params.localActivities ?? [];
 
   return {
     chat: {
@@ -59,24 +63,26 @@ function createPrismaMock(params: {
           primaryBotId: chat.primaryBotId,
         })),
       ),
-      update: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<ChatRow> }) => {
-        const row = chats.find((chat) => chat.id === where.id);
-        if (!row) {
-          throw new Error(`Chat ${where.id} not found`);
-        }
-        Object.assign(row, data);
-        return row;
-      }),
+      update: jest.fn(
+        async ({ where, data }: { where: { id: string }; data: Partial<ChatRow> }) => {
+          const row = chats.find((chat) => chat.id === where.id);
+          if (!row) {
+            throw new Error(`Chat ${where.id} not found`);
+          }
+          Object.assign(row, data);
+          return row;
+        },
+      ),
     },
     chatBotMembership: {
       findMany: jest.fn(async () =>
         memberships.map((membership) => ({
-            chatId: membership.chatId,
-            botId: membership.botId,
-            role: membership.role,
-            status: membership.status,
-            permissionsSnapshot: membership.permissionsSnapshot ?? null,
-          })),
+          chatId: membership.chatId,
+          botId: membership.botId,
+          role: membership.role,
+          status: membership.status,
+          permissionsSnapshot: membership.permissionsSnapshot ?? null,
+        })),
       ),
       upsert: jest.fn(
         async ({
@@ -131,6 +137,30 @@ function createPrismaMock(params: {
           }
           return { count };
         },
+      ),
+    },
+    managedEntityLocalActivity: {
+      findMany: jest.fn(
+        async ({ where }: { where: { chatId: { in: string[] }; botId: { in: string[] } } }) =>
+          localActivities
+            .filter(
+              (activity) =>
+                where.chatId.in.includes(activity.chatId) &&
+                activity.botId !== null &&
+                where.botId.in.includes(activity.botId),
+            )
+            .slice()
+            .sort((left, right) => {
+              if (left.chatId !== right.chatId) {
+                return left.chatId.localeCompare(right.chatId);
+              }
+              return right.lastEventAt.getTime() - left.lastEventAt.getTime();
+            })
+            .map((activity) => ({
+              chatId: activity.chatId,
+              botId: activity.botId,
+              lastEventAt: activity.lastEventAt,
+            })),
       ),
     },
     $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
@@ -207,6 +237,12 @@ describe('MaxBotOwnershipFoundationService', () => {
           botId: null,
           primaryBotId: 'unknown_bot',
         },
+        {
+          id: 'chat-local-activity',
+          entityType: ChatEntityType.CHAT,
+          botId: null,
+          primaryBotId: null,
+        },
       ],
       memberships: [
         {
@@ -226,6 +262,13 @@ describe('MaxBotOwnershipFoundationService', () => {
           botId: 'id613002203036_bot',
           role: ChatBotMembershipRole.STANDBY,
           status: ChatBotMembershipStatus.ACTIVE,
+        },
+      ],
+      localActivities: [
+        {
+          chatId: 'chat-local-activity',
+          botId: 'id613002203036_bot',
+          lastEventAt: new Date('2026-03-31T10:00:00.000Z'),
         },
       ],
     });
@@ -271,6 +314,15 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       }),
     );
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-local-activity' },
+        data: {
+          primaryBotId: 'id613002203036_bot',
+          botId: 'id613002203036_bot',
+        },
+      }),
+    );
     expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-legacy',
       'id613002203036_bot',
@@ -281,8 +333,8 @@ describe('MaxBotOwnershipFoundationService', () => {
       dormant: 1,
     });
     expect(snapshot.entities.total).toMatchObject({
-      total: 4,
-      withPrimary: 3,
+      total: 5,
+      withPrimary: 4,
       withoutPrimary: 1,
     });
     expect(snapshot.entities.channels).toMatchObject({
