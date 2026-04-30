@@ -205,6 +205,7 @@ function createPrismaMock() {
         chatId: 'channel-1',
         autoPostButtonsMode: 'OFF',
         postSuggestionsEnabled: false,
+        postSuggestionsEntryMode: 'BOT',
         postSuggestionsButtonText: 'Предложить пост',
         commentsEnabled: false,
         engagementPublishedMessageId: null,
@@ -1073,13 +1074,17 @@ async function publishSuggestDialogToken(
 
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const suggestButton = options.buttons?.[0]?.[0];
-  const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
-  const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
-  if (!parsedSuggestion) {
-    throw new Error('Expected bot suggestion start payload');
+  const suggestUrl = new URL(readButtonUrl(suggestButton));
+  const suggestStartParam = suggestUrl.searchParams.get('start');
+  if (suggestStartParam) {
+    const parsedSuggestion = service.parseChannelSuggestionStartPayload(suggestStartParam);
+    if (!parsedSuggestion) {
+      throw new Error('Expected bot suggestion start payload');
+    }
+    return parsedSuggestion.token;
   }
 
-  return parsedSuggestion.token;
+  return readDialogButtonToken(suggestButton);
 }
 
 describe('AdminService getMe', () => {
@@ -21158,6 +21163,70 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
+  it('publishes channel suggestion buttons as mini app links when mini app mode is selected', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.upsert.mockResolvedValueOnce({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'BOTH',
+      postSuggestionsEnabled: true,
+      postSuggestionsEntryMode: 'MINIAPP',
+      postSuggestionsButtonText: 'Предложить пост',
+      commentsEnabled: true,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-miniapp-1', url: null }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Нажмите кнопку ниже.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
+    const suggestButton = options.buttons?.[1]?.[0];
+    expect(suggestButton).toMatchObject({
+      type: 'link',
+      text: 'Предложить пост',
+    });
+    expect(suggestButton.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(new URL(suggestButton.url).searchParams.get('startapp')).toBeTruthy();
+    expect(new URL(suggestButton.url).searchParams.get('start')).toBeNull();
+
+    const publishAuditPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      suggestionEntryMode?: unknown;
+      suggestUrl?: unknown;
+    };
+    expect(publishAuditPayload.suggestionEntryMode).toBe('MINIAPP');
+    expect(String(publishAuditPayload.suggestUrl)).toContain('?startapp=');
+  });
+
   it('publishes only the selected engagement button rows', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -22407,7 +22476,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
-  it('accepts a suggestion from a thread-scoped button even when auto suggestions are disabled', async () => {
+  it('accepts a mini app suggestion from a thread-scoped button and still delivers it to admins in the bot', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -22416,6 +22485,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     prisma.channelSettings.findUnique.mockResolvedValue({
       postSuggestionsEnabled: false,
+      postSuggestionsEntryMode: 'MINIAPP',
     });
     prisma.$queryRaw.mockResolvedValue([
       {
@@ -22514,6 +22584,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     });
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Новая предложка'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+      expect.objectContaining({
+        botId: '777000_bot',
+        trafficClass: 'background',
+      }),
+    );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -22521,6 +22602,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           action: 'CHANNEL_DIALOG_SUGGESTION',
           payload: expect.objectContaining({
             threadId: suggestTokenPayload.d,
+            source: 'miniapp_dialog',
           }),
         }),
       }),

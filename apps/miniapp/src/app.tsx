@@ -23,7 +23,6 @@ import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
 import { PUBLIC_BASE_PATH, PUBLIC_ROUTER_BASENAME } from './lib/public-config';
 import {
   LazyChannelDialogPage,
-  LazyChannelSuggestDialogPage,
   LazyChannelSettingsPage,
   LazyChannelStatsPage,
   LazyChatsPage,
@@ -32,7 +31,6 @@ import {
   LazySettingsPage,
   LazySystemPage,
   preloadChannelDialogPage,
-  preloadChannelSuggestDialogPage,
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
   preloadEventsPage,
@@ -193,7 +191,7 @@ function preloadLaunchRouteModule(route: string): void {
   }
 
   if (/^\/channel\/[^/]+\/dialog\/suggest$/u.test(pathname)) {
-    void preloadChannelSuggestDialogPage();
+    void preloadChannelDialogPage();
     return;
   }
 
@@ -289,7 +287,7 @@ function AppRoutes({
             />
             <Route
               path="/channel/:chatId/dialog/suggest"
-              element={<LazyChannelSuggestDialogPage api={apiClient} />}
+              element={<LazyChannelDialogPage api={apiClient} />}
             />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
             <Route path="/system" element={<LazySystemPage api={apiClient} />} />

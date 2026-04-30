@@ -81,6 +81,11 @@ enum ChannelAutoPostButtonsMode {
   BOTH
 }
 
+enum ChannelSuggestionEntryMode {
+  BOT
+  MINIAPP
+}
+
 enum ManagedPollStatus {
   DRAFT
   ACTIVE
@@ -407,6 +412,7 @@ model ChannelSettings {
   postSuggestionsEnabled       Boolean                    @default(false) @map("post_suggestions_enabled")
   postSuggestionsText          String                     @default("") @map("post_suggestions_text")
   postSuggestionsDailyLimit    Int                        @default(10) @map("post_suggestions_daily_limit")
+  postSuggestionsEntryMode     ChannelSuggestionEntryMode @default(BOT) @map("post_suggestions_entry_mode")
   engagementMessageText        String                     @default("Есть идея или обратная связь? Нажмите кнопку ниже.") @map("engagement_message_text")
   postSuggestionsButtonEnabled Boolean                    @default(false) @map("post_suggestions_button_enabled")
   postSuggestionsButtonText    String                     @default("Предложить пост") @map("post_suggestions_button_text")

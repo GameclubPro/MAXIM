@@ -42,7 +42,6 @@ import {
   deleteChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
-  getChannelSuggestionRedirect,
   updateChatDialogMessage,
   updateChannelDialogMessage,
   toggleChannelDialogReaction,
@@ -142,8 +141,8 @@ function normalizeApiError(error: unknown): string {
   return normalized;
 }
 
-function resolveDialogType(mode: string | undefined): ChannelDialogType {
-  return mode === 'suggest' ? 'suggest' : 'comments';
+function resolveDialogType(pathname: string): ChannelDialogType {
+  return pathname.includes('/dialog/suggest') ? 'suggest' : 'comments';
 }
 
 function formatMessageTime(value: string): string {
@@ -1347,8 +1346,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
-  const dialogType: ChannelDialogType = 'comments';
+  const dialogType = resolveDialogType(location.pathname);
   const entityType = resolveDialogEntityType(location.pathname);
+  const viewModel = useMemo(() => buildViewModel(dialogType), [dialogType]);
   const [draft, setDraft] = useState('');
   const [draftAttachments, setDraftAttachments] = useState<CommentDraftAttachment[]>([]);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
@@ -1402,6 +1402,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const currentUserId = useMemo(() => getInitDataUserId(), []);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
+  const shouldLoadDialog = Boolean(chatId && token) && terminalDialogError === null;
 
   useEffect(() => {
     if (chatId) {
@@ -1415,7 +1416,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       entityType === 'channel'
         ? getChannelDialog(api, chatId, dialogType, token, { signal })
         : getChatDialog(api, chatId, dialogType, token, { signal }),
-    enabled: Boolean(chatId && token) && terminalDialogError === null,
+    enabled: shouldLoadDialog,
     retry: (failureCount, error) =>
       !isTerminalDialogApiMessage(normalizeApiError(error)) && failureCount < 1,
     refetchOnWindowFocus: terminalDialogError === null,
@@ -1560,7 +1561,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     [editingMessage?.attachments],
   );
   const composeMetaLabel = isPreparingAttachment
-    ? 'Готовим вложения'
+    ? dialogType === 'suggest'
+      ? 'Готовим фото'
+      : 'Готовим вложения'
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
       : draftAttachmentSummary;
@@ -2442,7 +2445,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
-            replyToMessageId,
+            replyToMessageId: dialogType === 'comments' ? replyToMessageId : null,
             attachments: payload.attachments.map((attachment) => ({
               type: attachment.type,
               base64: attachment.base64,
@@ -2455,7 +2458,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
             text: payload.text,
-            replyToMessageId,
+            replyToMessageId: dialogType === 'comments' ? replyToMessageId : null,
             attachments: payload.attachments.map((attachment) => ({
               type: attachment.type,
               base64: attachment.base64,
@@ -2472,7 +2475,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'success',
         title: 'Готово',
-        description: 'Комментарий отправлен.',
+        description: dialogType === 'suggest' ? 'Предложка отправлена.' : 'Комментарий отправлен.',
       });
       setDraft('');
       setReplyToMessageId(null);
@@ -2631,6 +2634,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       toggle?: boolean;
     },
   ) => {
+    if (dialogType !== 'comments') {
+      return;
+    }
+
     maxImpact(options?.haptic ?? 'light');
     setIsComposeEmojiOpen(false);
     clearSwipeReplyGesture();
@@ -2810,6 +2817,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     };
 
   const handleReply = (message: ChannelDialogMessage) => {
+    if (dialogType !== 'comments') {
+      return;
+    }
+
     maxImpact('soft');
     setEditingMessageId(null);
     setEditRestoreState(null);
@@ -3048,8 +3059,14 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className={cn('channel-dialog-shell', introText && 'has-thread-context')}>
-        {introText ? (
+      <div
+        className={cn(
+          'channel-dialog-shell',
+          dialogType === 'suggest' && 'channel-dialog-shell--suggest',
+          dialogType === 'comments' && introText && 'has-thread-context',
+        )}
+      >
+        {dialogType === 'comments' && introText ? (
           <div className="channel-dialog-thread-context channel-dialog-thread-context--summary">
             <p>{introText}</p>
           </div>
@@ -3057,221 +3074,287 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
         <section
           ref={scrollViewportRef}
-          className="channel-dialog-body"
+          className={cn('channel-dialog-body', dialogType === 'suggest' && 'channel-suggest-body')}
           onScroll={handleBodyScroll}
         >
-          {dialogQuery.isLoading ? (
-            <div className="channel-dialog-skeletons" aria-label="Загрузка">
-              {Array.from({ length: 3 }, (_, index) => (
-                <div key={index} className="channel-dialog-skeleton">
-                  <span className="channel-dialog-skeleton__avatar" />
-                  <div className="channel-dialog-skeleton__body">
-                    <span className="channel-dialog-skeleton__line is-short" />
-                    <span className="channel-dialog-skeleton__line" />
+          <>
+            {dialogQuery.isLoading ? (
+              <div className="channel-dialog-skeletons" aria-label="Загрузка">
+                {Array.from({ length: 3 }, (_, index) => (
+                  <div key={index} className="channel-dialog-skeleton">
+                    <span className="channel-dialog-skeleton__avatar" />
+                    <div className="channel-dialog-skeleton__body">
+                      <span className="channel-dialog-skeleton__line is-short" />
+                      <span className="channel-dialog-skeleton__line" />
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
+                ))}
+              </div>
+            ) : null}
 
-          {dialogQuery.error ? (
-            <div className="channel-dialog-error">
-              <StatusState
-                tone="danger"
-                title="Не удалось загрузить"
-                description={normalizeApiError(dialogQuery.error)}
-                action={
-                  <button
-                    type="button"
-                    className="button button--danger"
-                    onClick={() => void dialogQuery.refetch()}
-                  >
-                    Повторить
-                  </button>
-                }
-              />
-            </div>
-          ) : null}
+            {dialogQuery.error ? (
+              <div className="channel-dialog-error">
+                <StatusState
+                  tone="danger"
+                  title="Не удалось загрузить"
+                  description={normalizeApiError(dialogQuery.error)}
+                  action={
+                    <button
+                      type="button"
+                      className="button button--danger"
+                      onClick={() => void dialogQuery.refetch()}
+                    >
+                      Повторить
+                    </button>
+                  }
+                />
+              </div>
+            ) : null}
 
-          {!dialogQuery.isLoading && !dialogQuery.error ? (
-            <div className="channel-dialog-message-list">
-              {messages.length ? (
-                messages.map((message, index) => {
-                  const isOwnMessage = currentUserId === message.authorUserId;
-                  const isAdminMessage = message.isAdmin === true;
-                  const groupedWithPrevious = isGroupedWithPrevious(messages, index);
-                  const isActiveMessage = activeMessageId === message.id;
-                  const messageWidthTone = resolveMessageWidthTone(message);
-                  const replySourceMessageId =
-                    message.replyTo?.messageId ?? message.replyToMessageId ?? null;
-                  const canJumpToReplySource = Boolean(
-                    replySourceMessageId && messageIdSet.has(replySourceMessageId),
-                  );
-                  const isReactionPending = isCommentActionPending;
+            {!dialogQuery.isLoading && !dialogQuery.error ? (
+              dialogType === 'suggest' ? (
+                <div className="channel-suggest-list">
+                  {messages.length ? (
+                    messages.map((message) => {
+                      const status = resolveSuggestionStatus(message);
+                      const hasMedia =
+                        message.hasImage ||
+                        message.hasVideo ||
+                        Boolean(message.imageFileName || message.videoFileName);
 
-                  return (
-                    <Fragment key={message.id}>
-                      {unreadStartIndex === index ? (
-                        <div className="channel-dialog-new-comments" aria-label="Новые комментарии">
-                          <span className="channel-dialog-new-comments__pill">
-                            Новые комментарии
-                          </span>
-                        </div>
-                      ) : null}
-
-                      <article
-                        ref={(node) => {
-                          if (node) {
-                            messageNodeRefs.current.set(message.id, node);
-                            return;
-                          }
-                          messageNodeRefs.current.delete(message.id);
-                        }}
-                        className={cn(
-                          'channel-dialog-message',
-                          isOwnMessage && 'is-own',
-                          isAdminMessage && 'is-admin',
-                          groupedWithPrevious && 'is-grouped',
-                          highlightedMessageId === message.id && 'is-source-highlighted',
-                        )}
-                      >
-                        {groupedWithPrevious ? (
-                          <span className="channel-dialog-message__avatar-spacer" aria-hidden />
-                        ) : (
-                          <DialogAvatar
-                            avatarUrl={message.avatarUrl}
-                            label={message.authorDisplayName || message.authorUserId}
-                          />
-                        )}
-
-                        <div
-                          className={cn(
-                            'channel-dialog-message__content',
-                            messageWidthTone,
-                            swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
-                            swipeReplyPreview?.messageId === message.id &&
-                              swipeReplyPreview.armed &&
-                              'is-swipe-armed',
-                            isActiveMessage && 'is-context-open',
-                          )}
-                          data-message-id={message.id}
-                          style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
+                      return (
+                        <article
+                          key={message.id}
+                          ref={(node) => {
+                            if (node) {
+                              messageNodeRefs.current.set(message.id, node);
+                              return;
+                            }
+                            messageNodeRefs.current.delete(message.id);
+                          }}
+                          className={cn('channel-suggest-card', `is-${status.tone}`)}
                         >
-                          <div className="channel-dialog-message__swipe-indicator" aria-hidden>
-                            <span className="channel-dialog-message__swipe-indicator-icon">
-                              <ReplyArrowIcon />
+                          <div className="channel-suggest-card__head">
+                            <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
+                              {status.badge}
                             </span>
+                            <time dateTime={message.createdAt}>
+                              {formatMessageTime(message.createdAt)}
+                            </time>
                           </div>
 
-                          <div
+                          <p className={cn(!message.text.trim() && 'is-muted')}>
+                            {resolveSuggestionText(message)}
+                          </p>
+
+                          {hasMedia ? (
+                            <span className="channel-suggest-card__media">
+                              <IconoirAttachment aria-hidden focusable="false" />
+                              {resolveSuggestionAttachmentLabel(message)}
+                            </span>
+                          ) : null}
+
+                          {message.publishedUrl ? (
+                            <a
+                              className="channel-suggest-card__link"
+                              href={message.publishedUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Открыть
+                            </a>
+                          ) : null}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <div className="channel-suggest-empty">Пока пусто</div>
+                  )}
+                </div>
+              ) : (
+                <div className="channel-dialog-message-list">
+                  {messages.length ? (
+                    messages.map((message, index) => {
+                      const isOwnMessage = currentUserId === message.authorUserId;
+                      const isAdminMessage = message.isAdmin === true;
+                      const groupedWithPrevious = isGroupedWithPrevious(messages, index);
+                      const isActiveMessage = activeMessageId === message.id;
+                      const messageWidthTone = resolveMessageWidthTone(message);
+                      const replySourceMessageId =
+                        message.replyTo?.messageId ?? message.replyToMessageId ?? null;
+                      const canJumpToReplySource = Boolean(
+                        replySourceMessageId && messageIdSet.has(replySourceMessageId),
+                      );
+                      const isReactionPending = isCommentActionPending;
+
+                      return (
+                        <Fragment key={message.id}>
+                          {unreadStartIndex === index ? (
+                            <div
+                              className="channel-dialog-new-comments"
+                              aria-label="Новые комментарии"
+                            >
+                              <span className="channel-dialog-new-comments__pill">
+                                Новые комментарии
+                              </span>
+                            </div>
+                          ) : null}
+
+                          <article
+                            ref={(node) => {
+                              if (node) {
+                                messageNodeRefs.current.set(message.id, node);
+                                return;
+                              }
+                              messageNodeRefs.current.delete(message.id);
+                            }}
                             className={cn(
-                              'channel-dialog-message__stack',
-                              swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
+                              'channel-dialog-message',
+                              isOwnMessage && 'is-own',
+                              isAdminMessage && 'is-admin',
+                              groupedWithPrevious && 'is-grouped',
+                              highlightedMessageId === message.id && 'is-source-highlighted',
                             )}
                           >
+                            {groupedWithPrevious ? (
+                              <span className="channel-dialog-message__avatar-spacer" aria-hidden />
+                            ) : (
+                              <DialogAvatar
+                                avatarUrl={message.avatarUrl}
+                                label={message.authorDisplayName || message.authorUserId}
+                              />
+                            )}
+
                             <div
                               className={cn(
-                                'channel-dialog-message__bubble',
-                                'is-selectable',
-                                isAdminMessage && 'is-admin',
-                                isActiveMessage && 'is-active',
-                                groupedWithPrevious && 'is-grouped',
+                                'channel-dialog-message__content',
+                                messageWidthTone,
+                                swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
+                                swipeReplyPreview?.messageId === message.id &&
+                                  swipeReplyPreview.armed &&
+                                  'is-swipe-armed',
+                                isActiveMessage && 'is-context-open',
                               )}
-                              data-message-bubble-id={message.id}
-                              style={buildAdminBubbleStyle(isAdminMessage, isOwnMessage)}
-                              onClick={handleBubbleClick(message.id)}
-                              onKeyDown={handleBubbleKeyDown(message.id)}
-                              onPointerDown={handleBubblePointerDown(message, isOwnMessage)}
-                              onPointerMove={handleBubblePointerMove(message, isOwnMessage)}
-                              onPointerUp={handleBubblePointerUp(message)}
-                              onPointerCancel={handleBubblePointerCancel}
-                              onContextMenu={handleBubbleContextMenu(message.id)}
-                              role="button"
-                              tabIndex={0}
-                              aria-pressed={isActiveMessage}
-                              aria-haspopup="dialog"
+                              data-message-id={message.id}
+                              style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
                             >
-                              {!groupedWithPrevious ? (
-                                <div className="channel-dialog-message__meta">
-                                  <strong
-                                    style={buildAdminAuthorStyle(isAdminMessage, isOwnMessage)}
-                                  >
-                                    {getAuthorLabel(message)}
-                                  </strong>
-                                  <time dateTime={message.createdAt}>
-                                    {formatMessageTime(message.createdAt)}
-                                    {message.editedAt ? ' · ред.' : ''}
-                                  </time>
-                                </div>
-                              ) : null}
-
-                              {message.replyTo ? (
-                                canJumpToReplySource && replySourceMessageId ? (
-                                  <button
-                                    type="button"
-                                    className={cn('channel-dialog-message__reply', 'is-link')}
-                                    onPointerDown={(event) => event.stopPropagation()}
-                                    onKeyDown={(event) => event.stopPropagation()}
-                                    onClick={handleJumpToSource(replySourceMessageId)}
-                                    aria-label="Перейти к исходному комментарию"
-                                  >
-                                    <span>
-                                      {message.replyTo.authorDisplayName || 'Комментарий'}
-                                    </span>
-                                    <p>{summarizeReplyText(message.replyTo.text)}</p>
-                                  </button>
-                                ) : (
-                                  <div className="channel-dialog-message__reply">
-                                    <span>
-                                      {message.replyTo.authorDisplayName || 'Комментарий'}
-                                    </span>
-                                    <p>{summarizeReplyText(message.replyTo.text)}</p>
-                                  </div>
-                                )
-                              ) : null}
-
-                              <CommentMessageAttachments
-                                attachments={message.attachments}
-                                onOpenImageAlbum={openCommentImageAlbum}
-                              />
-                              {renderPlainTextParagraphs(message.text)}
-                            </div>
-
-                            {message.reactionGroups.length > 0 ? (
-                              <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
-                                <div className="channel-dialog-message__reactions">
-                                  {message.reactionGroups.map((group) => (
-                                    <button
-                                      key={group.emoji}
-                                      type="button"
-                                      className={cn(
-                                        'channel-dialog-reaction-pill',
-                                        group.reactedByMe && 'is-active',
-                                      )}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        handleReactionToggle(message.id, group.emoji);
-                                      }}
-                                      disabled={isReactionPending}
-                                    >
-                                      <b>{group.emoji}</b>
-                                      <span>{group.count}</span>
-                                    </button>
-                                  ))}
-                                </div>
+                              <div className="channel-dialog-message__swipe-indicator" aria-hidden>
+                                <span className="channel-dialog-message__swipe-indicator-icon">
+                                  <ReplyArrowIcon />
+                                </span>
                               </div>
-                            ) : null}
-                          </div>
-                        </div>
-                      </article>
-                    </Fragment>
-                  );
-                })
-              ) : (
-                <div className="channel-dialog-empty">Пока пусто</div>
-              )}
-            </div>
-          ) : null}
+
+                              <div
+                                className={cn(
+                                  'channel-dialog-message__stack',
+                                  swipeReplyPreview?.messageId === message.id && 'is-swipe-active',
+                                )}
+                              >
+                                <div
+                                  className={cn(
+                                    'channel-dialog-message__bubble',
+                                    'is-selectable',
+                                    isAdminMessage && 'is-admin',
+                                    isActiveMessage && 'is-active',
+                                    groupedWithPrevious && 'is-grouped',
+                                  )}
+                                  data-message-bubble-id={message.id}
+                                  style={buildAdminBubbleStyle(isAdminMessage, isOwnMessage)}
+                                  onClick={handleBubbleClick(message.id)}
+                                  onKeyDown={handleBubbleKeyDown(message.id)}
+                                  onPointerDown={handleBubblePointerDown(message, isOwnMessage)}
+                                  onPointerMove={handleBubblePointerMove(message, isOwnMessage)}
+                                  onPointerUp={handleBubblePointerUp(message)}
+                                  onPointerCancel={handleBubblePointerCancel}
+                                  onContextMenu={handleBubbleContextMenu(message.id)}
+                                  role="button"
+                                  tabIndex={0}
+                                  aria-pressed={isActiveMessage}
+                                  aria-haspopup="dialog"
+                                >
+                                  {!groupedWithPrevious ? (
+                                    <div className="channel-dialog-message__meta">
+                                      <strong
+                                        style={buildAdminAuthorStyle(isAdminMessage, isOwnMessage)}
+                                      >
+                                        {getAuthorLabel(message)}
+                                      </strong>
+                                      <time dateTime={message.createdAt}>
+                                        {formatMessageTime(message.createdAt)}
+                                        {message.editedAt ? ' · ред.' : ''}
+                                      </time>
+                                    </div>
+                                  ) : null}
+
+                                  {message.replyTo ? (
+                                    canJumpToReplySource && replySourceMessageId ? (
+                                      <button
+                                        type="button"
+                                        className={cn('channel-dialog-message__reply', 'is-link')}
+                                        onPointerDown={(event) => event.stopPropagation()}
+                                        onKeyDown={(event) => event.stopPropagation()}
+                                        onClick={handleJumpToSource(replySourceMessageId)}
+                                        aria-label="Перейти к исходному комментарию"
+                                      >
+                                        <span>
+                                          {message.replyTo.authorDisplayName || 'Комментарий'}
+                                        </span>
+                                        <p>{summarizeReplyText(message.replyTo.text)}</p>
+                                      </button>
+                                    ) : (
+                                      <div className="channel-dialog-message__reply">
+                                        <span>
+                                          {message.replyTo.authorDisplayName || 'Комментарий'}
+                                        </span>
+                                        <p>{summarizeReplyText(message.replyTo.text)}</p>
+                                      </div>
+                                    )
+                                  ) : null}
+
+                                  <CommentMessageAttachments
+                                    attachments={message.attachments}
+                                    onOpenImageAlbum={openCommentImageAlbum}
+                                  />
+                                  {renderPlainTextParagraphs(message.text)}
+                                </div>
+
+                                {message.reactionGroups.length > 0 ? (
+                                  <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
+                                    <div className="channel-dialog-message__reactions">
+                                      {message.reactionGroups.map((group) => (
+                                        <button
+                                          key={group.emoji}
+                                          type="button"
+                                          className={cn(
+                                            'channel-dialog-reaction-pill',
+                                            group.reactedByMe && 'is-active',
+                                          )}
+                                          onClick={(event) => {
+                                            event.stopPropagation();
+                                            handleReactionToggle(message.id, group.emoji);
+                                          }}
+                                          disabled={isReactionPending}
+                                        >
+                                          <b>{group.emoji}</b>
+                                          <span>{group.count}</span>
+                                        </button>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </div>
+                            </div>
+                          </article>
+                        </Fragment>
+                      );
+                    })
+                  ) : (
+                    <div className="channel-dialog-empty">Пока пусто</div>
+                  )}
+                </div>
+              )
+            ) : null}
+          </>
         </section>
 
         <section className="channel-dialog-compose">
@@ -3280,7 +3363,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               type="button"
               className="channel-dialog-jump-latest"
               onClick={handleJumpToLatest}
-              aria-label={`Перейти к ${unreadCount} новым комментариям`}
+              aria-label={`Перейти к ${unreadCount} ${
+                dialogType === 'suggest' ? 'новым предложкам' : 'новым комментариям'
+              }`}
             >
               <span className="channel-dialog-jump-latest__icon" aria-hidden>
                 <SendArrowIcon />
@@ -3354,17 +3439,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     }
                   }}
                 />
-                <CommentComposeFileList
-                  attachments={draftFileAttachments}
-                  removable
-                  onRemove={(filteredIndex) => {
-                    const attachment = draftFileAttachments[filteredIndex];
-                    const originalIndex = attachment ? draftAttachments.indexOf(attachment) : -1;
-                    if (originalIndex >= 0) {
-                      handleDraftAttachmentRemove(originalIndex);
-                    }
-                  }}
-                />
+                {dialogType === 'comments' ? (
+                  <CommentComposeFileList
+                    attachments={draftFileAttachments}
+                    removable
+                    onRemove={(filteredIndex) => {
+                      const attachment = draftFileAttachments[filteredIndex];
+                      const originalIndex = attachment ? draftAttachments.indexOf(attachment) : -1;
+                      if (originalIndex >= 0) {
+                        handleDraftAttachmentRemove(originalIndex);
+                      }
+                    }}
+                  />
+                ) : null}
               </>
             ) : null}
 
@@ -3443,48 +3530,50 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         />
                         <IconoirCamera aria-hidden focusable="false" />
                       </label>
-                      <label
-                        className={cn(
-                          'channel-dialog-compose__attach',
-                          'channel-dialog-compose__attach--icon',
-                          (isComposePending || isPreparingAttachment) &&
-                            'channel-dialog-compose__attach--disabled',
-                          draftAttachments.some((attachment) => attachment.type === 'file') &&
-                            'is-active',
-                        )}
-                        aria-label="Прикрепить файл"
-                        aria-disabled={isComposePending || isPreparingAttachment}
-                        role="button"
-                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                        onClick={() => {
-                          armDraftAttachmentInputWatcher('file');
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'Enter' && event.key !== ' ') {
-                            return;
-                          }
-                          event.preventDefault();
-                          armDraftAttachmentInputWatcher('file');
-                          fileInputRef.current?.click();
-                        }}
-                      >
-                        <input
-                          ref={fileInputRef}
-                          className="channel-dialog-compose__attach-input"
-                          type="file"
-                          disabled={isComposePending || isPreparingAttachment}
-                          onChange={handleDraftFilesChange}
-                          onInput={handleDraftFilesInput}
-                          onClickCapture={() => {
+                      {dialogType === 'comments' ? (
+                        <label
+                          className={cn(
+                            'channel-dialog-compose__attach',
+                            'channel-dialog-compose__attach--icon',
+                            (isComposePending || isPreparingAttachment) &&
+                              'channel-dialog-compose__attach--disabled',
+                            draftAttachments.some((attachment) => attachment.type === 'file') &&
+                              'is-active',
+                          )}
+                          aria-label="Прикрепить файл"
+                          aria-disabled={isComposePending || isPreparingAttachment}
+                          role="button"
+                          tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                          onClick={() => {
                             armDraftAttachmentInputWatcher('file');
                           }}
-                          onPointerDownCapture={() => {
+                          onKeyDown={(event) => {
+                            if (event.key !== 'Enter' && event.key !== ' ') {
+                              return;
+                            }
+                            event.preventDefault();
                             armDraftAttachmentInputWatcher('file');
+                            fileInputRef.current?.click();
                           }}
-                          tabIndex={-1}
-                        />
-                        <IconoirAttachment aria-hidden focusable="false" />
-                      </label>
+                        >
+                          <input
+                            ref={fileInputRef}
+                            className="channel-dialog-compose__attach-input"
+                            type="file"
+                            disabled={isComposePending || isPreparingAttachment}
+                            onChange={handleDraftFilesChange}
+                            onInput={handleDraftFilesInput}
+                            onClickCapture={() => {
+                              armDraftAttachmentInputWatcher('file');
+                            }}
+                            onPointerDownCapture={() => {
+                              armDraftAttachmentInputWatcher('file');
+                            }}
+                            tabIndex={-1}
+                          />
+                          <IconoirAttachment aria-hidden focusable="false" />
+                        </label>
+                      ) : null}
                     </>
                   ) : (
                     <>
@@ -3525,41 +3614,45 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         }}
                         tabIndex={-1}
                       />
-                      <button
-                        type="button"
-                        className={cn(
-                          'channel-dialog-compose__attach',
-                          'channel-dialog-compose__attach--icon',
-                          (isComposePending || isPreparingAttachment) &&
-                            'channel-dialog-compose__attach--disabled',
-                          draftAttachments.some((attachment) => attachment.type === 'file') &&
-                            'is-active',
-                        )}
-                        aria-label="Прикрепить файл"
-                        aria-disabled={isComposePending || isPreparingAttachment}
-                        disabled={isComposePending || isPreparingAttachment}
-                        onClick={() => {
-                          armDraftAttachmentInputWatcher('file');
-                          openFileInputPicker(fileInputRef.current);
-                        }}
-                      >
-                        <IconoirAttachment aria-hidden focusable="false" />
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        className="channel-dialog-compose__picker-input"
-                        type="file"
-                        disabled={isComposePending || isPreparingAttachment}
-                        onChange={handleDraftFilesChange}
-                        onInput={handleDraftFilesInput}
-                        onClickCapture={() => {
-                          armDraftAttachmentInputWatcher('file');
-                        }}
-                        onPointerDownCapture={() => {
-                          armDraftAttachmentInputWatcher('file');
-                        }}
-                        tabIndex={-1}
-                      />
+                      {dialogType === 'comments' ? (
+                        <>
+                          <button
+                            type="button"
+                            className={cn(
+                              'channel-dialog-compose__attach',
+                              'channel-dialog-compose__attach--icon',
+                              (isComposePending || isPreparingAttachment) &&
+                                'channel-dialog-compose__attach--disabled',
+                              draftAttachments.some((attachment) => attachment.type === 'file') &&
+                                'is-active',
+                            )}
+                            aria-label="Прикрепить файл"
+                            aria-disabled={isComposePending || isPreparingAttachment}
+                            disabled={isComposePending || isPreparingAttachment}
+                            onClick={() => {
+                              armDraftAttachmentInputWatcher('file');
+                              openFileInputPicker(fileInputRef.current);
+                            }}
+                          >
+                            <IconoirAttachment aria-hidden focusable="false" />
+                          </button>
+                          <input
+                            ref={fileInputRef}
+                            className="channel-dialog-compose__picker-input"
+                            type="file"
+                            disabled={isComposePending || isPreparingAttachment}
+                            onChange={handleDraftFilesChange}
+                            onInput={handleDraftFilesInput}
+                            onClickCapture={() => {
+                              armDraftAttachmentInputWatcher('file');
+                            }}
+                            onPointerDownCapture={() => {
+                              armDraftAttachmentInputWatcher('file');
+                            }}
+                            tabIndex={-1}
+                          />
+                        </>
+                      ) : null}
                     </>
                   )
                 ) : null}
@@ -3648,7 +3741,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         : 'Правка'
                       : replyTarget
                         ? 'Ответ'
-                        : 'Текст'
+                        : viewModel.placeholder
                   }
                   maxLength={COMMENT_DRAFT_MAX_LENGTH}
                 />

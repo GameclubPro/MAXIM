@@ -3,6 +3,7 @@ import type {
   ChannelAutoPostButtonsMode,
   ChannelSettings,
   ChannelSettingsScreenResponse,
+  ChannelSuggestionEntryMode,
   ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -34,6 +35,7 @@ import { ResetIcon } from '../components/ui/reset-icon';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
+import { SegmentedControl } from '../components/ui/segmented-control';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -101,6 +103,13 @@ type ChannelSettingsHintKey =
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+const CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS: Array<{
+  value: ChannelSuggestionEntryMode;
+  label: string;
+}> = [
+  { value: 'MINIAPP', label: 'Мини-апп' },
+  { value: 'BOT', label: 'Бот' },
+];
 const DESKTOP_TOGGLE_ROW_BLOCKERS = [
   'a',
   'button',
@@ -1483,10 +1492,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : draft.commentsModerationEnabled
       ? 'Модер'
       : 'Вкл';
+  const postSuggestionsEntryLabel =
+    draft.postSuggestionsEntryMode === 'MINIAPP' ? 'мини-апп' : 'бот';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
-    ? `авто-кнопка · лимит ${draft.postSuggestionsDailyLimit}/24ч`
+    ? `${postSuggestionsEntryLabel} · лимит ${draft.postSuggestionsDailyLimit}/24ч`
     : 'ручная публикация кнопки';
-  const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
+  const postSuggestionsCardStatus = draft.postSuggestionsEnabled
+    ? draft.postSuggestionsEntryMode === 'MINIAPP'
+      ? 'Апп'
+      : 'Бот'
+    : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0
       ? 'Календ'
@@ -1986,6 +2001,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   checked={draft.postSuggestionsEnabled}
                   onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
                 />
+
+                <div className="channel-settings-mode-card channel-settings-mode-card--suggestion">
+                  <span className="channel-settings-mode-card__label">Отправка</span>
+                  <SegmentedControl<ChannelSuggestionEntryMode>
+                    value={draft.postSuggestionsEntryMode}
+                    options={CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS}
+                    onChange={(value) => patchDraft('postSuggestionsEntryMode', value)}
+                    className="channel-settings-mode-card__control"
+                    ariaLabel="Способ отправки предложки"
+                  />
+                </div>
 
                 <div className="channel-settings-stack">
                   <label className="field">

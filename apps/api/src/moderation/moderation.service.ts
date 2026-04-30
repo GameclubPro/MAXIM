@@ -14803,6 +14803,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           autoPostButtonsMode: this.deriveChannelAutoPostButtonsMode(
             managedChannel.channelSettings,
           ),
+          suggestionEntryMode: managedChannel.channelSettings.postSuggestionsEntryMode,
           deliveryMode,
           linkType,
           replacementMessageId,
@@ -15019,6 +15020,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           threadId,
           settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
           botId,
+          settings.postSuggestionsEntryMode,
         ),
       ]);
     }
@@ -15266,8 +15268,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
     text: string,
     botId?: string | null,
+    suggestionEntryMode: PersistedChannelSettings['postSuggestionsEntryMode'] = 'BOT',
   ): MaxMessageButton {
-    if (type === 'suggest') {
+    if (type === 'suggest' && suggestionEntryMode !== 'MINIAPP') {
       const adminSuggestionPayloadBuilder = this.adminService as
         | {
             buildChannelSuggestionStartPayload?: (chatId: string, threadId: string) => string;

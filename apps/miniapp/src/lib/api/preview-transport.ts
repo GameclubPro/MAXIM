@@ -1863,6 +1863,7 @@ function createInitialState(): PreviewState {
     postSuggestionsEnabled: true,
     postSuggestionsText: 'Пришлите идею поста или важную новость для соседей.',
     postSuggestionsDailyLimit: 4,
+    postSuggestionsEntryMode: 'MINIAPP',
     postSuggestionsButtonEnabled: true,
     postSuggestionsButtonText: 'Предложить пост',
     postSuggestionsButtonUrl: 'https://maxim.play-team.ru/suggest',

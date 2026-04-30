@@ -7141,6 +7141,7 @@ export class AdminService implements OnModuleDestroy {
         engagementPublishedMessageId: true,
         engagementPublishedThreadId: true,
         engagementPublishedAt: true,
+        postSuggestionsEntryMode: true,
       },
     });
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
@@ -7156,8 +7157,10 @@ export class AdminService implements OnModuleDestroy {
     );
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
     const suggestUrl =
-      this.buildBotStartUrl(suggestPayload, resolvedBotId) ??
-      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId, resolvedBotId);
+      persistedSettings.postSuggestionsEntryMode === 'MINIAPP'
+        ? this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId, resolvedBotId)
+        : (this.buildBotStartUrl(suggestPayload, resolvedBotId) ??
+          this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId, resolvedBotId));
     const commentsButton = this.buildChannelDialogButton(
       chatId,
       'comments',
@@ -7171,6 +7174,7 @@ export class AdminService implements OnModuleDestroy {
       threadId,
       parsed.data.suggestButtonText,
       resolvedBotId,
+      persistedSettings.postSuggestionsEntryMode,
     );
     const buttons: MaxMessageButton[][] = [];
     if (parsed.data.includeCommentsButton) {
@@ -7268,6 +7272,7 @@ export class AdminService implements OnModuleDestroy {
           commentsUrl,
           suggestPayload,
           suggestUrl,
+          suggestionEntryMode: persistedSettings.postSuggestionsEntryMode,
           ...(resolvedBotId ? { botId: resolvedBotId } : {}),
         },
       },
@@ -7504,6 +7509,7 @@ export class AdminService implements OnModuleDestroy {
             includeSuggestButton: false,
             suggestButtonText: null,
             autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
+            suggestionEntryMode: 'BOT' as ChannelSettings['postSuggestionsEntryMode'],
           };
     const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
     const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
@@ -7543,6 +7549,7 @@ export class AdminService implements OnModuleDestroy {
             includeCommentsButton: published.includeCommentsButton,
             includeSuggestButton: published.includeSuggestButton,
             autoPostButtonsMode: published.autoPostButtonsMode,
+            suggestionEntryMode: published.suggestionEntryMode,
             source: 'suggestion_review',
             ...(published.botId ? { botId: published.botId } : {}),
             ...(published.suggestButtonText
@@ -13014,6 +13021,7 @@ export class AdminService implements OnModuleDestroy {
       select: {
         autoPostButtonsMode: true,
         postSuggestionsEnabled: true,
+        postSuggestionsEntryMode: true,
         postSuggestionsButtonText: true,
         commentsEnabled: true,
       },
@@ -13040,6 +13048,7 @@ export class AdminService implements OnModuleDestroy {
           threadId,
           channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
           botId,
+          channelSettings.postSuggestionsEntryMode,
         ),
       ]);
     }
@@ -13053,8 +13062,9 @@ export class AdminService implements OnModuleDestroy {
     threadId: string,
     text: string,
     botId?: string | null,
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'] = 'BOT',
   ): MaxMessageButton {
-    if (type === 'suggest') {
+    if (type === 'suggest' && suggestionEntryMode !== 'MINIAPP') {
       const startPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
       const botStartUrl = this.buildBotStartUrl(startPayload, botId);
       if (botStartUrl) {
@@ -13092,6 +13102,12 @@ export class AdminService implements OnModuleDestroy {
       text,
       url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
     };
+  }
+
+  private readChannelSuggestionEntryMode(
+    value: unknown,
+  ): ChannelSettings['postSuggestionsEntryMode'] {
+    return this.readTrimmedString(value)?.toUpperCase() === 'MINIAPP' ? 'MINIAPP' : 'BOT';
   }
 
   private resolveRulesImageFileName(fileName: string, mimeType: string): string {
@@ -20474,6 +20490,9 @@ export class AdminService implements OnModuleDestroy {
         const botId = this.readTrimmedString(payload.botId);
         const includeCommentsButton = payload.includeCommentsButton !== false;
         const includeSuggestButton = payload.includeSuggestButton === true;
+        const suggestionEntryMode = this.readChannelSuggestionEntryMode(
+          payload.suggestionEntryMode,
+        );
         if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
           continue;
         }
@@ -20500,6 +20519,7 @@ export class AdminService implements OnModuleDestroy {
               threadId,
               this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
               botId,
+              suggestionEntryMode,
             ),
           ]);
         }
@@ -20516,6 +20536,7 @@ export class AdminService implements OnModuleDestroy {
       const botId = this.readTrimmedString(payload.botId);
       const includeCommentsButton = payload.includeCommentsButton !== false;
       const includeSuggestButton = payload.includeSuggestButton === true;
+      const suggestionEntryMode = this.readChannelSuggestionEntryMode(payload.suggestionEntryMode);
       if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
         continue;
       }
@@ -20542,6 +20563,7 @@ export class AdminService implements OnModuleDestroy {
             threadId,
             this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
             botId,
+            suggestionEntryMode,
           ),
         ]);
       }
@@ -21200,6 +21222,7 @@ export class AdminService implements OnModuleDestroy {
     includeSuggestButton: boolean;
     suggestButtonText: string | null;
     autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
     botId: string | null;
   }> {
     const resolvedBotId = await this.resolveManualActionBotAssignment(chatId);
@@ -21261,6 +21284,7 @@ export class AdminService implements OnModuleDestroy {
       includeSuggestButton: buttonContext.includeSuggestButton,
       suggestButtonText: buttonContext.suggestButtonText,
       autoPostButtonsMode: buttonContext.autoPostButtonsMode,
+      suggestionEntryMode: buttonContext.suggestionEntryMode,
       botId: resolvedBotId ?? null,
     };
   }
@@ -21321,6 +21345,7 @@ export class AdminService implements OnModuleDestroy {
     includeSuggestButton: boolean;
     suggestButtonText: string | null;
     autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+    suggestionEntryMode: ChannelSettings['postSuggestionsEntryMode'];
   }> {
     const settings = await this.getPublicChannelSettings(chatId);
     const includeCommentsButton = settings.commentsEnabled;
@@ -21335,6 +21360,7 @@ export class AdminService implements OnModuleDestroy {
         includeSuggestButton,
         suggestButtonText: null,
         autoPostButtonsMode,
+        suggestionEntryMode: settings.postSuggestionsEntryMode,
       };
     }
 
@@ -21359,7 +21385,14 @@ export class AdminService implements OnModuleDestroy {
 
     if (includeSuggestButton) {
       buttons.push([
-        this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText, botId),
+        this.buildChannelDialogButton(
+          chatId,
+          'suggest',
+          threadId,
+          suggestButtonText,
+          botId,
+          settings.postSuggestionsEntryMode,
+        ),
       ]);
     }
 
@@ -21370,6 +21403,7 @@ export class AdminService implements OnModuleDestroy {
       includeSuggestButton,
       suggestButtonText: includeSuggestButton ? suggestButtonText : null,
       autoPostButtonsMode,
+      suggestionEntryMode: settings.postSuggestionsEntryMode,
     };
   }
 

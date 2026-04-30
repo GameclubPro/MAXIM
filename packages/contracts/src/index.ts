@@ -71,6 +71,7 @@ export const applySettingsSectionSchema = z.enum([
   'extra',
 ]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
+export const channelSuggestionEntryModeSchema = z.enum(['BOT', 'MINIAPP']);
 export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export const managedGiveawayStatusSchema = z.enum([
   'DRAFT',
@@ -101,6 +102,7 @@ export type ManagedEntityBotCapability = z.infer<typeof managedEntityBotCapabili
 export type ManagedEntitySharedMode = z.infer<typeof managedEntitySharedModeSchema>;
 export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
+export type ChannelSuggestionEntryMode = z.infer<typeof channelSuggestionEntryModeSchema>;
 export type ManagedPollStatus = z.infer<typeof managedPollStatusSchema>;
 export type ManagedGiveawayStatus = z.infer<typeof managedGiveawayStatusSchema>;
 export type GiveawayEligibilityState = z.infer<typeof giveawayEligibilityStateSchema>;
@@ -1478,6 +1480,7 @@ export const channelSettingsSchema = z
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
     postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),
+    postSuggestionsEntryMode: channelSuggestionEntryModeSchema.default('BOT'),
     engagementMessageText: botMessageTextSchema.default(
       'Есть идея или обратная связь? Нажмите кнопку ниже.',
     ),

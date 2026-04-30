@@ -134,6 +134,7 @@ describe('ModerationService channel auto post buttons', () => {
           channelSettings: {
             autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
+            postSuggestionsEntryMode: 'BOT',
             postSuggestionsButtonText: '📰 Предложить пост',
             commentsEnabled: true,
           },
@@ -212,6 +213,73 @@ describe('ModerationService channel auto post buttons', () => {
       }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('opens channel suggestions in the mini app when admins select mini app mode', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsEntryMode: 'MINIAPP',
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      createAdminServiceMock() as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    const options = maxClient.editMessageInlineKeyboard.mock.calls[0]?.[3];
+    const suggestButton = options?.buttons?.[1]?.[0];
+    expect(suggestButton).toMatchObject({
+      type: 'link',
+      text: '📰 Предложить пост',
+    });
+    expect(suggestButton?.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(new URL(suggestButton.url).searchParams.get('startapp')).toBeTruthy();
+    expect(new URL(suggestButton.url).searchParams.get('start')).toBeNull();
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            suggestionEntryMode: 'MINIAPP',
+          }),
+        }),
+      }),
+    );
   });
 
   it('does not auto-attach comments when channel settings are auto-created with fresh defaults', async () => {

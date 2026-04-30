@@ -8757,6 +8757,7 @@ export class PrivateControlService {
     if (section === 'post_suggestions') {
       return [
         `Предложка: ${this.describeBooleanCompact(settings.postSuggestionsEnabled)}`,
+        `Режим: ${settings.postSuggestionsEntryMode === 'MINIAPP' ? 'мини-апп' : 'бот'}`,
         `Кнопка: ${this.describeBooleanCompact(settings.postSuggestionsButtonEnabled)}`,
         `Текст для участников: ${settings.postSuggestionsText.trim() ? 'задан' : 'по умолчанию'}`,
       ];
