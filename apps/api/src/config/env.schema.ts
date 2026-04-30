@@ -205,6 +205,7 @@ const envSchema = z.object({
   CHANNEL_AUTO_POST_STARTUP_JITTER_MS: z.coerce.number().int().min(0).default(15_000),
   CHANNEL_AUTO_POST_MAX_NEW_MESSAGES_PER_SCAN: z.coerce.number().int().positive().default(3),
   CHANNEL_AUTO_POST_THROTTLE_BACKOFF_MAX_MS: z.coerce.number().int().positive().default(300_000),
+  MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS: z.coerce.number().int().positive().default(120_000),
   BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC: z.coerce.number().int().positive().default(5),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_PRESSURE: z.coerce.number().int().positive().default(4),
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE: z.coerce.number().min(0.5).max(1).default(0.75),

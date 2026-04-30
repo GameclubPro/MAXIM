@@ -47,11 +47,13 @@ describe('ModerationService manual group close polling', () => {
       createConfigMock({
         MANUAL_GROUP_CLOSE_SCAN_INTERVAL_MS: 3_000,
         MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS: 1_000,
+        MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS: 30_000,
       }) as never,
     );
 
     expect((service as any).manualGroupCloseScanIntervalMs).toBe(3_000);
     expect((service as any).manualGroupCloseStartupDelayMs).toBe(1_000);
+    expect((service as any).manualGroupCloseScanMaxMessageAgeMs).toBe(30_000);
   });
 
   it('deletes fresh non-admin messages in manually closed chats via background polling', async () => {
@@ -84,7 +86,7 @@ describe('ModerationService manual group close polling', () => {
     const maxClient = {
       listMessages: jest.fn().mockResolvedValue([
         {
-          timestamp: 1775258000000,
+          timestamp: new Date('2026-04-03T23:10:00.000Z').getTime(),
           body: {
             mid: 'mid-old-1',
             text: 'Старое сообщение',
@@ -94,7 +96,7 @@ describe('ModerationService manual group close polling', () => {
           },
         },
         {
-          timestamp: 1775260410000,
+          timestamp: new Date('2026-04-04T00:09:20.000Z').getTime(),
           body: {
             mid: 'mid-admin-1',
             text: 'Админ пишет',
@@ -104,7 +106,7 @@ describe('ModerationService manual group close polling', () => {
           },
         },
         {
-          timestamp: 1775260420000,
+          timestamp: new Date('2026-04-04T00:09:30.000Z').getTime(),
           body: {
             mid: 'mid-user-1',
             text: 'Тест 2',
@@ -170,6 +172,78 @@ describe('ModerationService manual group close polling', () => {
     dateNowSpy.mockRestore();
   });
 
+  it('does not delete stale post-close backlog during manual close polling', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: new Date('2026-04-04T00:05:00.000Z').getTime(),
+          body: {
+            mid: 'mid-stale-1',
+            text: 'Уже лежало в чате',
+          },
+          sender: {
+            user_id: 195714583,
+          },
+        },
+      ]),
+      getChatMembersAccess: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn(),
+      setAdminAccess: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      chatContextCache as never,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+
+    expect(chatContextCache.getAdminAccessBatch).not.toHaveBeenCalled();
+    expect(maxClient.getChatMembersAccess).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect((service as any).manualGroupCloseScanState.get('chat-1')).toEqual(
+      expect.objectContaining({
+        latestTimestampMs: new Date('2026-04-04T00:05:00.000Z').getTime(),
+      }),
+    );
+    dateNowSpy.mockRestore();
+  });
+
   it('does not delete manually closed chat messages from admins remembered in shared cache', async () => {
     const dateNowSpy = jest
       .spyOn(Date, 'now')
@@ -196,7 +270,7 @@ describe('ModerationService manual group close polling', () => {
     const maxClient = {
       listMessages: jest.fn().mockResolvedValue([
         {
-          timestamp: 1775260420000,
+          timestamp: new Date('2026-04-04T00:09:30.000Z').getTime(),
           body: {
             mid: 'mid-owner-1',
             text: 'Сообщение владельца',
@@ -267,7 +341,7 @@ describe('ModerationService manual group close polling', () => {
     const maxClient = {
       listMessages: jest.fn().mockResolvedValue([
         {
-          timestamp: 1775260410000,
+          timestamp: new Date('2026-04-04T00:09:20.000Z').getTime(),
           body: {
             mid: 'mid-owner-1',
             text: 'Сообщение владельца',
@@ -277,7 +351,7 @@ describe('ModerationService manual group close polling', () => {
           },
         },
         {
-          timestamp: 1775260420000,
+          timestamp: new Date('2026-04-04T00:09:30.000Z').getTime(),
           body: {
             mid: 'mid-user-1',
             text: 'Сообщение пользователя',
@@ -372,7 +446,7 @@ describe('ModerationService manual group close polling', () => {
     const maxClient = {
       listMessages: jest.fn().mockResolvedValue([
         {
-          timestamp: 1775260420000,
+          timestamp: new Date('2026-04-04T00:09:30.000Z').getTime(),
           body: {
             mid: 'mid-user-1',
             text: 'Тест 2',

@@ -431,6 +431,7 @@ const DEFAULT_MANUAL_GROUP_CLOSE_INTER_CHAT_DELAY_MS = 150;
 const DEFAULT_MANUAL_GROUP_CLOSE_IDLE_BACKOFF_MAX_MS = 2 * 60 * 1_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_STARTUP_DELAY_MS = 5_000;
 const DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN = 10;
+const DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS = 2 * 60 * 1_000;
 const MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS = 6 * 60 * 60 * 1_000;
 const MANUAL_GROUP_CLOSE_TERMINAL_TTL_SEC = Math.ceil(
   MANUAL_GROUP_CLOSE_TERMINAL_BACKOFF_MS / 1_000,
@@ -684,6 +685,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly manualGroupCloseIdleBackoffMaxMs: number;
   private readonly manualGroupCloseStartupDelayMs: number;
   private readonly manualGroupCloseMaxNewMessagesPerScan: number;
+  private readonly manualGroupCloseScanMaxMessageAgeMs: number;
   private readonly nightModeScheduledNoticeSpacingMs: number;
   private readonly requiredSubscriptionLookupConcurrency: number;
   private readonly chatAdminLookupTimeoutMs: number;
@@ -783,6 +785,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
     this.manualGroupCloseMaxNewMessagesPerScan =
       DEFAULT_MANUAL_GROUP_CLOSE_MAX_NEW_MESSAGES_PER_SCAN;
+    this.manualGroupCloseScanMaxMessageAgeMs = this.readPositiveConfigInt(
+      configService?.get<number>('MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS'),
+      DEFAULT_MANUAL_GROUP_CLOSE_SCAN_MAX_MESSAGE_AGE_MS,
+      this.manualGroupCloseScanIntervalMs,
+    );
     this.nightModeScheduledNoticeSpacingMs = this.readNonNegativeConfigInt(
       configService?.get<number>('NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS'),
       DEFAULT_NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS,
@@ -14242,21 +14249,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
     const normalizedMessages = messages
       .map((message) => this.parseManualGroupCloseListedMessage(message))
-      .filter(
-        (item): item is NonNullable<ReturnType<typeof this.parseManualGroupCloseListedMessage>> =>
-          item !== null,
-      )
+      .filter((item): item is ManualGroupCloseListedMessage => item !== null)
       .sort(
         (left, right) =>
           left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
       );
     let scanState = existingScanState;
+    const scanNowMs = Date.now();
     const protectedSenderIds = await this.resolveManualGroupCloseProtectedSenderIds({
       chatId,
       adminUserIds: params.adminUserIds,
       messages: normalizedMessages,
       scanState,
       closedAtMs: params.closedAtMs,
+      scanNowMs,
     });
     let sawNewMessages = false;
     let handledMessages = 0;
@@ -14267,7 +14273,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       sawNewMessages = true;
 
-      if (normalized.timestampMs < params.closedAtMs) {
+      if (
+        !this.isManualGroupCloseScanMessageEligibleForDeletion(
+          normalized,
+          params.closedAtMs,
+          scanNowMs,
+        )
+      ) {
         scanState = this.advanceManualGroupCloseScanState(scanState, normalized);
         this.manualGroupCloseScanState.set(chatId, scanState);
         continue;
@@ -14310,6 +14322,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messages: readonly ManualGroupCloseListedMessage[];
     scanState: ChannelAutoPostScanState | null;
     closedAtMs: number;
+    scanNowMs: number;
   }): Promise<Set<string>> {
     const protectedSenderIds = new Set<string>();
     for (const adminUserId of params.adminUserIds) {
@@ -14322,7 +14335,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           .filter(
             (message) =>
               message.senderId &&
-              message.timestampMs >= params.closedAtMs &&
+              this.isManualGroupCloseScanMessageEligibleForDeletion(
+                message,
+                params.closedAtMs,
+                params.scanNowMs,
+              ) &&
               this.isManualGroupCloseScanMessageNew(params.scanState, message) &&
               !this.isManualGroupCloseProtectedSender(protectedSenderIds, message.senderId),
           )
@@ -14379,6 +14396,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     return protectedSenderIds;
+  }
+
+  private isManualGroupCloseScanMessageEligibleForDeletion(
+    message: {
+      timestampMs: number;
+    },
+    closedAtMs: number,
+    nowMs: number,
+  ): boolean {
+    if (message.timestampMs < closedAtMs) {
+      return false;
+    }
+
+    return nowMs - message.timestampMs <= this.manualGroupCloseScanMaxMessageAgeMs;
   }
 
   private addManualGroupCloseProtectedSender(target: Set<string>, userId: string): void {
