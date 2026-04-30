@@ -5394,11 +5394,12 @@ export class PrivateControlService {
       }
 
       case 'broadcast_text': {
-        const formattedText = this.extractIncomingFormattedText(context.update, rawText);
-        session.broadcastDraft.text = formattedText;
-        session.broadcastDraft.textFormat = this.shouldUseMarkdown(formattedText)
-          ? 'markdown'
-          : 'plain';
+        const textPayload = this.extractIncomingFormattedTextPayload(context.update, rawText);
+        session.broadcastDraft.text = textPayload.text;
+        session.broadcastDraft.textFormat =
+          textPayload.textFormat === 'markdown' || this.shouldUseMarkdown(textPayload.text)
+            ? 'markdown'
+            : 'plain';
         session.pendingInput = null;
         session.screen = 'broadcast';
         const view = await this.renderBroadcastScreen(context, session);
@@ -6107,8 +6108,8 @@ export class PrivateControlService {
     session: PrivateSession,
     rawText: string,
   ): Promise<void> {
-    const formattedText = this.extractIncomingFormattedText(context.update, rawText);
-    const normalizedText = formattedText.trim();
+    const textPayload = this.extractIncomingFormattedTextPayload(context.update, rawText);
+    const normalizedText = textPayload.text.trim();
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
 
@@ -6121,10 +6122,11 @@ export class PrivateControlService {
     }
 
     if (normalizedText) {
-      session.broadcastDraft.text = formattedText;
-      session.broadcastDraft.textFormat = this.shouldUseMarkdown(formattedText)
-        ? 'markdown'
-        : 'plain';
+      session.broadcastDraft.text = textPayload.text;
+      session.broadcastDraft.textFormat =
+        textPayload.textFormat === 'markdown' || this.shouldUseMarkdown(textPayload.text)
+          ? 'markdown'
+          : 'plain';
     }
 
     if (imageSourceAttachment) {
@@ -10577,30 +10579,35 @@ export class PrivateControlService {
         continue;
       }
 
-      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(item, text.slice(start, end));
-      if (!delimiters) {
-        continue;
+      for (const segment of this.splitIncomingMarkupRangeByLines(text, start, end)) {
+        const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(
+          item,
+          text.slice(segment.start, segment.end),
+        );
+        if (!delimiters) {
+          continue;
+        }
+
+        const openBucket = openTags.get(segment.start) ?? [];
+        openBucket.push({
+          open: delimiters.open,
+          close: delimiters.close,
+          end: segment.end,
+          priority: delimiters.priority,
+        });
+        openTags.set(segment.start, openBucket);
+
+        const closeBucket = closeTags.get(segment.end) ?? [];
+        closeBucket.push({
+          close: delimiters.close,
+          start: segment.start,
+          end: segment.end,
+          priority: delimiters.priority,
+        });
+        closeTags.set(segment.end, closeBucket);
+        boundaries.add(segment.start);
+        boundaries.add(segment.end);
       }
-
-      const openBucket = openTags.get(start) ?? [];
-      openBucket.push({
-        open: delimiters.open,
-        close: delimiters.close,
-        end,
-        priority: delimiters.priority,
-      });
-      openTags.set(start, openBucket);
-
-      const closeBucket = closeTags.get(end) ?? [];
-      closeBucket.push({
-        close: delimiters.close,
-        start,
-        end,
-        priority: delimiters.priority,
-      });
-      closeTags.set(end, closeBucket);
-      boundaries.add(start);
-      boundaries.add(end);
     }
 
     if (openTags.size === 0 && closeTags.size === 0) {
@@ -10642,6 +10649,37 @@ export class PrivateControlService {
     }
 
     return markdown;
+  }
+
+  private splitIncomingMarkupRangeByLines(
+    text: string,
+    start: number,
+    end: number,
+  ): Array<{ start: number; end: number }> {
+    const segments: Array<{ start: number; end: number }> = [];
+    let segmentStart = start;
+
+    for (let index = start; index < end; index += 1) {
+      const char = text[index];
+      if (char !== '\n' && char !== '\r') {
+        continue;
+      }
+
+      if (segmentStart < index && text.slice(segmentStart, index).trim().length > 0) {
+        segments.push({ start: segmentStart, end: index });
+      }
+
+      if (char === '\r' && text[index + 1] === '\n' && index + 1 < end) {
+        index += 1;
+      }
+      segmentStart = index + 1;
+    }
+
+    if (segmentStart < end && text.slice(segmentStart, end).trim().length > 0) {
+      segments.push({ start: segmentStart, end });
+    }
+
+    return segments;
   }
 
   private resolveIncomingMarkupMarkdownDelimiters(

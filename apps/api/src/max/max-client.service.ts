@@ -3044,30 +3044,35 @@ export class MaxClientService implements OnModuleDestroy {
         continue;
       }
 
-      const delimiters = this.resolveMarkupMarkdownDelimiters(item, text.slice(start, end));
-      if (!delimiters) {
-        continue;
+      for (const segment of this.splitMarkupRangeByLines(text, start, end)) {
+        const delimiters = this.resolveMarkupMarkdownDelimiters(
+          item,
+          text.slice(segment.start, segment.end),
+        );
+        if (!delimiters) {
+          continue;
+        }
+
+        const openBucket = openTags.get(segment.start) ?? [];
+        openBucket.push({
+          open: delimiters.open,
+          close: delimiters.close,
+          end: segment.end,
+          priority: delimiters.priority,
+        });
+        openTags.set(segment.start, openBucket);
+
+        const closeBucket = closeTags.get(segment.end) ?? [];
+        closeBucket.push({
+          close: delimiters.close,
+          start: segment.start,
+          end: segment.end,
+          priority: delimiters.priority,
+        });
+        closeTags.set(segment.end, closeBucket);
+        boundaries.add(segment.start);
+        boundaries.add(segment.end);
       }
-
-      const openBucket = openTags.get(start) ?? [];
-      openBucket.push({
-        open: delimiters.open,
-        close: delimiters.close,
-        end,
-        priority: delimiters.priority,
-      });
-      openTags.set(start, openBucket);
-
-      const closeBucket = closeTags.get(end) ?? [];
-      closeBucket.push({
-        close: delimiters.close,
-        start,
-        end,
-        priority: delimiters.priority,
-      });
-      closeTags.set(end, closeBucket);
-      boundaries.add(start);
-      boundaries.add(end);
     }
 
     if (openTags.size === 0 && closeTags.size === 0) {
@@ -3110,6 +3115,37 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return markdown;
+  }
+
+  private splitMarkupRangeByLines(
+    text: string,
+    start: number,
+    end: number,
+  ): Array<{ start: number; end: number }> {
+    const segments: Array<{ start: number; end: number }> = [];
+    let segmentStart = start;
+
+    for (let index = start; index < end; index += 1) {
+      const char = text[index];
+      if (char !== '\n' && char !== '\r') {
+        continue;
+      }
+
+      if (segmentStart < index && text.slice(segmentStart, index).trim().length > 0) {
+        segments.push({ start: segmentStart, end: index });
+      }
+
+      if (char === '\r' && text[index + 1] === '\n' && index + 1 < end) {
+        index += 1;
+      }
+      segmentStart = index + 1;
+    }
+
+    if (segmentStart < end && text.slice(segmentStart, end).trim().length > 0) {
+      segments.push({ start: segmentStart, end });
+    }
+
+    return segments;
   }
 
   private resolveMarkupMarkdownDelimiters(

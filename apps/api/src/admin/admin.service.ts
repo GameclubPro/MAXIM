@@ -10909,7 +10909,7 @@ export class AdminService implements OnModuleDestroy {
     const hasMeaningfulText = normalizedSourceText.trim().length > 0;
     const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
     const messageText = shouldUseRichText
-      ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+      ? renderSupportedMarkdownAsHtml(normalizedSourceText, { blockMode: 'raw' })
       : hasMeaningfulText
         ? normalizedSourceText
         : hasMedia

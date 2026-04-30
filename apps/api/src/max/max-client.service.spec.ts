@@ -797,6 +797,40 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('splits multi-paragraph MAX markup when extracting markdown text', async () => {
+    const sourceText = 'Заголовок\n\nВторой абзац';
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            messages: [
+              {
+                body: {
+                  mid: 'mid-rules-markup-2',
+                  text: sourceText,
+                  markup: [
+                    {
+                      from: 0,
+                      type: 'strong',
+                      length: sourceText.length,
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getMessageTextAsMarkdown('mid-rules-markup-2');
+
+    expect(result).toBe('**Заголовок**\n\n**Второй абзац**');
+    await service.onModuleDestroy();
+  });
+
   it('falls back to direct message lookup when batch lookup returns a different message', async () => {
     const httpService = {
       request: jest

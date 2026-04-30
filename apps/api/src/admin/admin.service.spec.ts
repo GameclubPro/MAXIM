@@ -19200,7 +19200,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '<p><strong>Новый выпуск</strong> уже в канале.</p>',
+      '<strong>Новый выпуск</strong> уже в канале.',
       {
         textFormat: 'html',
         buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
@@ -19369,7 +19369,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '<p><strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.</p><p>&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;отступом</p>',
+      '<strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.\n\n&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;отступом',
       {
         textFormat: 'html',
       },
@@ -19445,7 +19445,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>',
+      '<strong>Анонс</strong> C++ [beta] (v2) _raw_',
       {
         textFormat: 'html',
       },
@@ -19578,7 +19578,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '<p><a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a></p>',
+      '<a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a>',
       {
         textFormat: 'html',
       },
@@ -19676,7 +19676,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
-    expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
+    expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
     expect(dispatch).toEqual({ immediate: true, botId: 'channel-bot-2' });
     expect(options).toMatchObject({
       textFormat: 'html',
@@ -19764,7 +19764,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
-    expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
+    expect(messageText).toBe('<strong>Новый выпуск</strong> уже в канале.');
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
       textFormat: 'html',

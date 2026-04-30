@@ -2336,6 +2336,46 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('preserves MAX markup spans that cover multiple broadcast paragraphs', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';
+    const expectedMarkdown = '**Важный анонс**\n\n**  Второй абзац с  пробелом**';
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate(sourceText, [
+        {
+          type: 'strong',
+          from: 0,
+          length: countMessageOffsetUnits(sourceText),
+        },
+      ]),
+    );
+
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain(expectedMarkdown);
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: expectedMarkdown,
+        textFormat: 'markdown',
+      }),
+      'private_bot',
+    );
+  });
+
   it('preserves emoji-prefixed formatted broadcast text with MAX string offsets', async () => {
     const { service, adminService, channels } = createHarness();
     const sourceText = '🔥MAX Docs';
