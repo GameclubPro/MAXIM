@@ -631,8 +631,8 @@ export class SystemDashboardService {
       ownership.anomalies.primaryBotUnknown +
       ownership.anomalies.legacyBotUnknown +
       ownership.anomalies.activeMembershipBotUnknown +
-      ownership.anomalies.primaryWithoutActiveMembership +
-      ownership.anomalies.primaryWithoutAdminAccess;
+      ownership.anomalies.primaryWithoutActiveMembership;
+    const rightsLimitedPrimaries = ownership.anomalies.primaryWithoutAdminAccess;
     const totalGaps = ownership.entities.total.withoutPrimary;
 
     if (totalGaps === 0 && unresolvedKnownIssues === 0) {
@@ -653,6 +653,9 @@ export class SystemDashboardService {
     if (unresolvedKnownIssues > 0) {
       parts.push(`known anomalies ${unresolvedKnownIssues}`);
     }
+    if (rightsLimitedPrimaries > 0) {
+      parts.push(`primary without admin access ${rightsLimitedPrimaries}`);
+    }
 
     return {
       code: 'ownership-foundation',
@@ -663,7 +666,7 @@ export class SystemDashboardService {
           : 'Ownership foundation ещё не доведён до полной coverage',
       detail: `${parts.join(', ')}.`,
       recommendedAction:
-        'Закройте recoverable ownership gaps и держите shared-chat rollout выключенным, пока unbound/unknown cases не станут понятными оператору.',
+        'Закройте recoverable ownership gaps и держите shared-chat rollout выключенным, пока unbound/unknown cases не станут понятными оператору. Отсутствие admin-доступа у primary-бота учитывайте как ограничение конкретного чата, а не как ownership blocker.',
     };
   }
 

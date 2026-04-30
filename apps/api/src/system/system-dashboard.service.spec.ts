@@ -819,4 +819,57 @@ describe('SystemDashboardService', () => {
       }),
     });
   });
+
+  it('does not treat primary bots without admin rights as ownership blockers', () => {
+    const service = new SystemDashboardService(
+      {} as never,
+      {} as never,
+      createConfigMock({ QUEUE_LAG_DEGRADE_SEC: 10 }),
+    );
+
+    const alert = (
+      service as unknown as {
+        buildOwnershipCoverageAlert: (ownership: unknown) => unknown;
+      }
+    ).buildOwnershipCoverageAlert({
+      generatedAt: '2026-03-31T00:10:00.000Z',
+      bots: {
+        configured: 2,
+        adminVisible: 2,
+        active: 2,
+        dormant: 0,
+        draining: 0,
+        disabled: 0,
+      },
+      entities: {
+        total: { total: 100, withPrimary: 100, withoutPrimary: 0, coverageRatio: 1 },
+        chats: { total: 90, withPrimary: 90, withoutPrimary: 0, coverageRatio: 1 },
+        channels: { total: 10, withPrimary: 10, withoutPrimary: 0, coverageRatio: 1 },
+      },
+      anomalies: {
+        noPrimary: 0,
+        recoverableLegacyOnly: 0,
+        recoverableFromMemberships: 0,
+        unbound: 0,
+        primaryBotUnknown: 0,
+        legacyBotUnknown: 0,
+        activeMembershipBotUnknown: 0,
+        primaryWithoutActiveMembership: 0,
+        primaryWithoutAdminAccess: 42,
+        sharedChats: 0,
+      },
+      repair: {
+        enabled: true,
+        activeOnThisRole: true,
+        intervalMs: 300_000,
+        lastRunAt: '2026-03-31T00:10:00.000Z',
+        lastSuccessAt: '2026-03-31T00:10:00.000Z',
+        lastError: null,
+        lastAppliedChanges: 0,
+        totalAppliedChanges: 0,
+      },
+    });
+
+    expect(alert).toBeNull();
+  });
 });
