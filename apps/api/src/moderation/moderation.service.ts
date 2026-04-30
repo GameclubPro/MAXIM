@@ -183,6 +183,13 @@ type ChannelAutoPostScanState = {
   terminalFailureReason: string | null;
 };
 
+type ManualGroupCloseListedMessage = {
+  messageId: string;
+  text: string | null;
+  timestampMs: number;
+  senderId: string | null;
+};
+
 type ChannelAutoPostExecutionPlan = {
   batchSize: number;
   interChannelDelayMs: number;
@@ -11994,6 +12001,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async loadRemoteChatAdminAccessBatch(
     chatId: string,
     userIds: readonly string[],
+    options: {
+      trafficClass?: 'interactive' | 'background';
+      sourceTag?: string;
+      timeoutMs?: number;
+    } = {},
   ): Promise<Map<string, RemoteChatAdminAccessState>> {
     const normalizedUserIds = Array.from(
       new Set(userIds.map((userId) => userId.trim()).filter((value) => value.length > 0)),
@@ -12005,10 +12017,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const resolvedBotId = await this.resolveChatReadBotId(chatId);
     const requestOptions = {
-      trafficClass: 'interactive' as const,
+      trafficClass: options.trafficClass ?? ('interactive' as const),
       actionHealthLane: 'background' as const,
       ignoreFailureMetricStatuses: CHAT_ADMIN_SOFT_LOOKUP_FAILURE_METRIC_STATUSES,
-      timeoutMs: this.chatAdminLookupTimeoutMs,
+      timeoutMs: options.timeoutMs ?? this.chatAdminLookupTimeoutMs,
+      ...(options.sourceTag ? { sourceTag: options.sourceTag } : {}),
       ...(resolvedBotId ? { botId: resolvedBotId } : {}),
     };
     const maxClientWithAccess = this.maxClient as Partial<MaxClientService>;
@@ -14113,6 +14126,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           left.timestampMs - right.timestampMs || left.messageId.localeCompare(right.messageId),
       );
     let scanState = existingScanState;
+    const protectedSenderIds = await this.resolveManualGroupCloseProtectedSenderIds({
+      chatId,
+      adminUserIds: params.adminUserIds,
+      messages: normalizedMessages,
+      scanState,
+      closedAtMs: params.closedAtMs,
+    });
     let sawNewMessages = false;
     let handledMessages = 0;
 
@@ -14127,7 +14147,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.manualGroupCloseScanState.set(chatId, scanState);
         continue;
       }
-      if (!normalized.senderId || params.adminUserIds.includes(normalized.senderId)) {
+      if (
+        !normalized.senderId ||
+        this.isManualGroupCloseProtectedSender(protectedSenderIds, normalized.senderId)
+      ) {
         scanState = this.advanceManualGroupCloseScanState(scanState, normalized);
         this.manualGroupCloseScanState.set(chatId, scanState);
         continue;
@@ -14156,12 +14179,104 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private parseManualGroupCloseListedMessage(message: Record<string, unknown>): {
-    messageId: string;
-    text: string | null;
-    timestampMs: number;
-    senderId: string | null;
-  } | null {
+  private async resolveManualGroupCloseProtectedSenderIds(params: {
+    chatId: string;
+    adminUserIds: readonly string[];
+    messages: readonly ManualGroupCloseListedMessage[];
+    scanState: ChannelAutoPostScanState | null;
+    closedAtMs: number;
+  }): Promise<Set<string>> {
+    const protectedSenderIds = new Set<string>();
+    for (const adminUserId of params.adminUserIds) {
+      this.addManualGroupCloseProtectedSender(protectedSenderIds, adminUserId);
+    }
+
+    const candidateSenderIds = Array.from(
+      new Set(
+        params.messages
+          .filter(
+            (message) =>
+              message.senderId &&
+              message.timestampMs >= params.closedAtMs &&
+              this.isManualGroupCloseScanMessageNew(params.scanState, message) &&
+              !this.isManualGroupCloseProtectedSender(protectedSenderIds, message.senderId),
+          )
+          .map((message) => message.senderId)
+          .filter((senderId): senderId is string => Boolean(senderId)),
+      ),
+    );
+    if (candidateSenderIds.length === 0) {
+      return protectedSenderIds;
+    }
+
+    const sharedStates = await this.loadSharedChatAdminAccessBatch(
+      params.chatId,
+      candidateSenderIds,
+    );
+    const remoteLookupSenderIds: string[] = [];
+    for (const senderId of candidateSenderIds) {
+      const sharedState = sharedStates.get(senderId) ?? null;
+      if (sharedState === 'granted') {
+        this.addManualGroupCloseProtectedSender(protectedSenderIds, senderId);
+        continue;
+      }
+      if (sharedState === 'user_denied') {
+        continue;
+      }
+      remoteLookupSenderIds.push(senderId);
+    }
+
+    if (remoteLookupSenderIds.length === 0) {
+      return protectedSenderIds;
+    }
+
+    const remoteStates = await this.loadRemoteChatAdminAccessBatch(
+      params.chatId,
+      remoteLookupSenderIds,
+      {
+        trafficClass: 'background',
+        sourceTag: MAX_API_SOURCE_TAGS.MANUAL_GROUP_CLOSE_SCAN,
+      },
+    );
+    await Promise.all(
+      remoteLookupSenderIds.map(async (senderId) => {
+        const state = remoteStates.get(senderId) ?? null;
+        if (!state) {
+          return;
+        }
+
+        await this.writeChatAdminAccessToSharedCache(params.chatId, senderId, state);
+        if (state === 'granted') {
+          this.addManualGroupCloseProtectedSender(protectedSenderIds, senderId);
+          await this.persistRemoteAdminGrant(params.chatId, senderId);
+        }
+      }),
+    );
+
+    return protectedSenderIds;
+  }
+
+  private addManualGroupCloseProtectedSender(target: Set<string>, userId: string): void {
+    for (const variant of this.buildUserIdVariants(userId)) {
+      target.add(variant);
+    }
+  }
+
+  private isManualGroupCloseProtectedSender(
+    protectedSenderIds: ReadonlySet<string>,
+    userId: string,
+  ): boolean {
+    for (const variant of this.buildUserIdVariants(userId)) {
+      if (protectedSenderIds.has(variant)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private parseManualGroupCloseListedMessage(
+    message: Record<string, unknown>,
+  ): ManualGroupCloseListedMessage | null {
     const body = this.asRecord(message.body);
     const messageIdCandidate =
       body?.mid ??

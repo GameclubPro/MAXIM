@@ -170,6 +170,182 @@ describe('ModerationService manual group close polling', () => {
     dateNowSpy.mockRestore();
   });
 
+  it('does not delete manually closed chat messages from admins remembered in shared cache', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1775260420000,
+          body: {
+            mid: 'mid-owner-1',
+            text: 'Сообщение владельца',
+          },
+          sender: {
+            user_id: 202057314,
+          },
+        },
+      ]),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest.fn().mockResolvedValue(new Map([['202057314', 'granted']])),
+      setAdminAccess: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      chatContextCache as never,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+
+    expect(chatContextCache.getAdminAccessBatch).toHaveBeenCalledWith(
+      'chat-1',
+      expect.arrayContaining(['202057314']),
+    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    dateNowSpy.mockRestore();
+  });
+
+  it('checks unknown manually closed chat senders with MAX before background deletion', async () => {
+    const dateNowSpy = jest
+      .spyOn(Date, 'now')
+      .mockReturnValue(new Date('2026-04-04T00:10:00.000Z').getTime());
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            updatedAt: new Date('2026-04-03T23:15:00.000Z'),
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: true,
+            nightModeForceCloseUntil: '',
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      chatAdminAllowlist: {
+        upsert: jest.fn().mockResolvedValue(undefined),
+      },
+      moderationEvent: {
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1775260410000,
+          body: {
+            mid: 'mid-owner-1',
+            text: 'Сообщение владельца',
+          },
+          sender: {
+            user_id: 202057314,
+          },
+        },
+        {
+          timestamp: 1775260420000,
+          body: {
+            mid: 'mid-user-1',
+            text: 'Сообщение пользователя',
+          },
+          sender: {
+            user_id: 195714583,
+          },
+        },
+      ]),
+      getChatMembersAccess: jest.fn().mockResolvedValue(
+        new Map([
+          ['202057314', { isAdmin: false, isOwner: true, permissions: [] }],
+          ['195714583', { isAdmin: false, isOwner: false, permissions: [] }],
+        ]),
+      ),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      notifyModerators: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+    };
+    const chatContextCache = {
+      getAdminAccessBatch: jest
+        .fn()
+        .mockResolvedValue(new Map<string, 'granted' | 'user_denied' | 'bot_denied' | null>()),
+      setAdminAccess: jest.fn().mockResolvedValue(undefined),
+      rememberChatAdminUser: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      chatContextCache as never,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processManualGroupCloseChats();
+
+    expect(maxClient.getChatMembersAccess).toHaveBeenCalledWith(
+      'chat-1',
+      ['202057314', '195714583'],
+      expect.objectContaining({
+        trafficClass: 'background',
+        sourceTag: 'manual_group_close_scan',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-user-1', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalledWith('chat-1', 'mid-owner-1', {
+      immediate: true,
+    });
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: '202057314',
+        }),
+      }),
+    );
+    expect(chatContextCache.rememberChatAdminUser).toHaveBeenCalledWith('chat-1', '202057314');
+    dateNowSpy.mockRestore();
+  });
+
   it('does not re-delete the same message after the scan state advances', async () => {
     const dateNowSpy = jest
       .spyOn(Date, 'now')
