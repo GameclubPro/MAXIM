@@ -1,14 +1,8 @@
 import type { BroadcastTargetMode } from '@maxim/contracts';
-import { buildHomeView } from './last-chat';
 
 export type BroadcastScopedTargetMode = Exclude<BroadcastTargetMode, 'all'>;
 
-function formatRussianCountLabel(
-  count: number,
-  one: string,
-  few: string,
-  many: string,
-): string {
+function formatRussianCountLabel(count: number, one: string, few: string, many: string): string {
   const normalized = Math.abs(count) % 100;
   const remainder = normalized % 10;
   if (normalized > 10 && normalized < 20) {
@@ -23,12 +17,12 @@ function formatRussianCountLabel(
   return `${count} ${many}`;
 }
 
-export function normalizeBroadcastAudienceTargetChatIds(targetChatIds: readonly string[]): string[] {
+export function normalizeBroadcastAudienceTargetChatIds(
+  targetChatIds: readonly string[],
+): string[] {
   return Array.from(
     new Set(
-      targetChatIds
-        .map((item) => item.trim())
-        .filter((item): item is string => item.length > 0),
+      targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
     ),
   );
 }
@@ -136,8 +130,39 @@ export function resolveBroadcastAudienceTargetLabel(params: {
 export function filterBroadcastAudienceChoices<
   T extends { id: string; title: string; link?: string | null },
 >(items: readonly T[], query: string): T[] {
-  return buildHomeView({
-    entities: items,
-    query,
-  })[0];
+  const queryTokens = normalizeBroadcastAudienceSearchText(query).split(' ').filter(Boolean);
+  if (queryTokens.length === 0) {
+    return [...items];
+  }
+
+  return items.filter((item) => {
+    const searchable = buildBroadcastAudienceSearchDocument(item);
+    return queryTokens.every(
+      (token) => searchable.text.includes(token) || searchable.compact.includes(token),
+    );
+  });
+}
+
+function normalizeBroadcastAudienceSearchText(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/gu, '')
+    .replace(/[Ёё]/gu, 'е')
+    .toLowerCase()
+    .replace(/https?:\/\/|www\.max\.ru|max\.ru|maxru|@/gu, ' ')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()
+    .replace(/\s+/gu, ' ');
+}
+
+function buildBroadcastAudienceSearchDocument<
+  T extends { id: string; title: string; link?: string | null },
+>(item: T): { text: string; compact: string } {
+  const text = normalizeBroadcastAudienceSearchText(
+    [item.title, item.id, item.link?.trim() ?? ''].join(' '),
+  );
+  return {
+    text,
+    compact: text.replace(/\s+/gu, ''),
+  };
 }

@@ -16,12 +16,17 @@ type BroadcastAudienceSheetProps = {
   selection: string[];
   disabled?: boolean;
   loading?: boolean;
+  refreshing?: boolean;
   error?: string | null;
   onClose: () => void;
   onApply: (nextSelection: string[]) => void;
+  onRefresh?: () => void;
 };
 
-function dedupeAudienceChoices(choices: readonly ChatSummary[], currentChatId: string): ChatSummary[] {
+function dedupeAudienceChoices(
+  choices: readonly ChatSummary[],
+  currentChatId: string,
+): ChatSummary[] {
   const byId = new Map<string, ChatSummary>();
   for (const choice of choices) {
     byId.set(choice.id, choice);
@@ -49,12 +54,7 @@ function SearchIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden>
       <circle cx="9" cy="9" r="5.75" stroke="currentColor" strokeWidth="1.7" />
-      <path
-        d="M13.5 13.5L17 17"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
+      <path d="M13.5 13.5L17 17" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
     </svg>
   );
 }
@@ -66,9 +66,11 @@ export function BroadcastAudienceSheet({
   selection,
   disabled = false,
   loading = false,
+  refreshing = false,
   error = null,
   onClose,
   onApply,
+  onRefresh,
 }: BroadcastAudienceSheetProps) {
   const [draftSelection, setDraftSelection] = useState<string[]>(() =>
     normalizeBroadcastAudienceTargetChatIds(selection),
@@ -122,12 +124,11 @@ export function BroadcastAudienceSheet({
     targetMode: 'selected',
     targetChatIds: orderedChoices.map((chat) => chat.id),
   });
+  const canRefresh = typeof onRefresh === 'function';
 
   function toggleSelection(chatId: string) {
     setDraftSelection((current) =>
-      current.includes(chatId)
-        ? current.filter((item) => item !== chatId)
-        : [...current, chatId],
+      current.includes(chatId) ? current.filter((item) => item !== chatId) : [...current, chatId],
     );
   }
 
@@ -224,6 +225,16 @@ export function BroadcastAudienceSheet({
               >
                 Очистить
               </button>
+              {canRefresh ? (
+                <button
+                  type="button"
+                  className="broadcast-audience-sheet__quick-pill"
+                  disabled={disabled || loading || refreshing}
+                  onClick={onRefresh}
+                >
+                  {refreshing ? 'Обновляем' : 'Обновить'}
+                </button>
+              ) : null}
             </div>
           </div>
 
@@ -245,6 +256,16 @@ export function BroadcastAudienceSheet({
             <div className="broadcast-audience-sheet__state-shell">
               <div className="broadcast-audience-sheet__state">
                 <strong>{searchValue.trim() ? 'Ничего не найдено' : 'Активных чатов нет'}</strong>
+                {canRefresh ? (
+                  <button
+                    type="button"
+                    className="broadcast-audience-sheet__state-action"
+                    disabled={disabled || refreshing}
+                    onClick={onRefresh}
+                  >
+                    {refreshing ? 'Обновляем' : 'Обновить'}
+                  </button>
+                ) : null}
               </div>
             </div>
           ) : null}
@@ -290,7 +311,9 @@ export function BroadcastAudienceSheet({
 
                           <span className="broadcast-audience-sheet__option-meta">
                             {isCurrentChat ? (
-                              <span className="broadcast-audience-sheet__option-chip">Этот чат</span>
+                              <span className="broadcast-audience-sheet__option-chip">
+                                Этот чат
+                              </span>
                             ) : null}
                           </span>
                         </span>

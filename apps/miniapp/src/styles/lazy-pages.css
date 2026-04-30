@@ -9515,7 +9515,9 @@
   color: #617a93;
   text-align: center;
   display: grid;
+  gap: 12px;
   place-items: center;
+  align-content: center;
   font-size: 0.84rem;
   line-height: 1.45;
 }
@@ -9524,6 +9526,24 @@
   display: block;
   color: #10273d;
   font-size: 0.96rem;
+}
+
+.broadcast-audience-sheet__state-action {
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid rgba(11, 132, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #0b66b6;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 780;
+  letter-spacing: 0;
+}
+
+.broadcast-audience-sheet__state-action:disabled {
+  opacity: 0.62;
+  cursor: default;
 }
 
 .broadcast-audience-sheet__state.is-danger {

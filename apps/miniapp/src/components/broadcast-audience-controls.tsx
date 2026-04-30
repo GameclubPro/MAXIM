@@ -13,6 +13,7 @@ type BroadcastAudienceControlsProps = {
   targetChatIds: string[];
   choices: ChatSummary[];
   loading?: boolean;
+  refreshing?: boolean;
   remoteError?: string | null;
   validationError?: string | null;
   disabled?: boolean;
@@ -20,6 +21,7 @@ type BroadcastAudienceControlsProps = {
   onChangeScopedMode: (mode: BroadcastScopedTargetMode) => void;
   onApplySelection: (nextSelection: string[]) => void;
   onClearValidationError: () => void;
+  onRefreshChoices?: () => void;
 };
 
 export function BroadcastAudienceControls({
@@ -28,6 +30,7 @@ export function BroadcastAudienceControls({
   targetChatIds,
   choices,
   loading = false,
+  refreshing = false,
   remoteError = null,
   validationError = null,
   disabled = false,
@@ -35,6 +38,7 @@ export function BroadcastAudienceControls({
   onChangeScopedMode,
   onApplySelection,
   onClearValidationError,
+  onRefreshChoices,
 }: BroadcastAudienceControlsProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
   const scopedTargetMode: BroadcastScopedTargetMode =
@@ -117,7 +121,9 @@ export function BroadcastAudienceControls({
                   <strong>Активные чаты</strong>
                   <small>{triggerLabel}</small>
                 </span>
-                <span className="broadcast-audience-card__trigger-badge">{targetChatIds.length}</span>
+                <span className="broadcast-audience-card__trigger-badge">
+                  {targetChatIds.length}
+                </span>
               </button>
             ) : null}
           </>
@@ -133,12 +139,14 @@ export function BroadcastAudienceControls({
         selection={targetChatIds}
         disabled={disabled}
         loading={loading}
+        refreshing={refreshing}
         error={remoteError}
         onClose={() => setSheetOpen(false)}
         onApply={(nextSelection) => {
           onApplySelection(nextSelection);
           setSheetOpen(false);
         }}
+        onRefresh={onRefreshChoices}
       />
     </>
   );

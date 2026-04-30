@@ -13,6 +13,32 @@ const DISALLOWED_PRODUCTION_WEBHOOK_SECRETS = new Set([
   'replace-with-random-url-safe-secret',
 ]);
 
+const BOOLEAN_TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const BOOLEAN_FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+function envBoolean(defaultValue: boolean) {
+  return z
+    .preprocess((value) => {
+      if (typeof value !== 'string') {
+        return value;
+      }
+
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) {
+        return undefined;
+      }
+      if (BOOLEAN_TRUE_VALUES.has(normalized)) {
+        return true;
+      }
+      if (BOOLEAN_FALSE_VALUES.has(normalized)) {
+        return false;
+      }
+
+      return value;
+    }, z.boolean().optional())
+    .transform((value) => value ?? defaultValue);
+}
+
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3001),
@@ -108,7 +134,7 @@ const envSchema = z.object({
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_INTERACTIVE: z.coerce.number().int().positive().default(3_000),
   MAX_MEMBERSHIP_LOOKUP_TIMEOUT_MS_BACKGROUND: z.coerce.number().int().positive().default(5_000),
   CHAT_ADMIN_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(2_000),
-  CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN: z.coerce.boolean().default(false),
+  CHAT_ADMIN_SYNC_REMOTE_LOOKUP_WHEN_LOCAL_ADMINS_KNOWN: envBoolean(false),
   SHARED_CHAT_EXECUTION_LOOKUP_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
   SHARED_CHAT_EXECUTION_LOCK_TIMEOUT_MS: z.coerce.number().int().positive().default(1_000),
   WEBHOOK_USER_FACING_TIMEOUT_MS: z.coerce.number().int().positive().default(10_000),
@@ -140,14 +166,14 @@ const envSchema = z.object({
   SYSTEM_WEBHOOK_SLO_WINDOW_SEC: z.coerce.number().int().positive().default(900),
   SYSTEM_WEBHOOK_SLO_TARGET_MS: z.coerce.number().int().positive().default(1000),
   SYSTEM_WEBHOOK_SLO_SAMPLE_LIMIT: z.coerce.number().int().positive().default(5000),
-  MAX_ACTION_DISPATCH_ENABLED: z.coerce.boolean().default(true),
+  MAX_ACTION_DISPATCH_ENABLED: envBoolean(true),
   APP_ROLE: z.enum(['all', 'ingress', 'admin', 'enqueue', 'moderation', 'action']).default('all'),
-  BOT_OWNERSHIP_FOUNDATION_ENABLED: z.coerce.boolean().default(true),
+  BOT_OWNERSHIP_FOUNDATION_ENABLED: envBoolean(true),
   BOT_OWNERSHIP_REPAIR_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
   BOT_OWNERSHIP_REPAIR_LOCK_TTL_MS: z.coerce.number().int().positive().default(60_000),
   BOT_OWNERSHIP_REPAIR_BATCH_SIZE: z.coerce.number().int().positive().default(250),
   MODERATION_ENABLED_QUEUES: z.string().optional(),
-  MODERATION_BACKGROUND_TASKS_ENABLED: z.coerce.boolean().default(true),
+  MODERATION_BACKGROUND_TASKS_ENABLED: envBoolean(true),
   MODERATION_CONCURRENCY_LEGACY: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_CRITICAL: z.coerce.number().int().positive().optional(),
   MODERATION_CONCURRENCY_JOIN: z.coerce.number().int().positive().optional(),
@@ -184,7 +210,7 @@ const envSchema = z.object({
   BACKGROUND_WORK_SOFT_PAUSE_WORKER_SHARE: z.coerce.number().min(0.5).max(1).default(0.75),
   NIGHT_MODE_SCHEDULED_NOTICE_SPACING_MS: z.coerce.number().int().min(0).default(150),
   ACTION_CONCURRENCY: z.coerce.number().int().positive().default(8),
-  CHANNEL_STATS_STARTUP_SYNC_ENABLED: z.coerce.boolean().default(false),
+  CHANNEL_STATS_STARTUP_SYNC_ENABLED: envBoolean(false),
   CHANNEL_STATS_STARTUP_MAX_CHANNELS: z.coerce.number().int().min(0).default(6),
   CHANNEL_STATS_STARTUP_STALE_MS: z.coerce.number().int().positive().default(21_600_000),
   CHANNEL_STATS_STARTUP_DELAY_MS: z.coerce.number().int().min(0).default(30_000),

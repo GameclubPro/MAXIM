@@ -125,16 +125,30 @@ test('filters audience choices by title link and id', () => {
     { id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' },
   ];
 
-  assert.deepEqual(
-    filterBroadcastAudienceChoices(items, 'сап'),
-    [{ id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' }],
-  );
-  assert.deepEqual(
-    filterBroadcastAudienceChoices(items, 'main'),
-    [{ id: 'chat-1', title: 'Главный чат', link: 'https://max.ru/main' }],
-  );
-  assert.deepEqual(
-    filterBroadcastAudienceChoices(items, 'chat-2'),
-    [{ id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' }],
-  );
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'сап'), [
+    { id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'main'), [
+    { id: 'chat-1', title: 'Главный чат', link: 'https://max.ru/main' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'chat-2'), [
+    { id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' },
+  ]);
+});
+
+test('filters audience choices with normalized punctuation and russian letters', () => {
+  const items = [
+    { id: '-100', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
+    { id: '-200', title: 'Новости района', link: 'https://max.ru/rayon_news' },
+  ];
+
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'жилье ремонт'), [
+    { id: '-100', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, '@rayon news'), [
+    { id: '-200', title: 'Новости района', link: 'https://max.ru/rayon_news' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'maxru/home'), [
+    { id: '-100', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
+  ]);
 });

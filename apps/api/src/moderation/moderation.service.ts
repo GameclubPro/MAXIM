@@ -815,7 +815,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       1_000,
     );
     this.backgroundTasksEnabled = moderationBackgroundTasksEnabled(
-      configService?.get<string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
+      configService?.get<boolean | string>('MODERATION_BACKGROUND_TASKS_ENABLED'),
     );
     this.backgroundWorkSoftPauseQueueLagSec = this.readPositiveConfigInt(
       configService?.get<number>('BACKGROUND_WORK_SOFT_PAUSE_QUEUE_LAG_SEC'),

@@ -2140,7 +2140,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
-  const [chatsListReloadNonce, setChatsListReloadNonce] = useState(0);
+  const [chatsListRefreshRequest, setChatsListRefreshRequest] = useState<{
+    nonce: number;
+    behavior: 'default' | 'manual' | 'recovery';
+  }>({
+    nonce: 0,
+    behavior: 'default',
+  });
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
@@ -2290,7 +2296,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatsList = useManagedEntitiesSync({
     api,
     entityType: 'chat',
-    reloadNonce: chatsListReloadNonce,
+    reloadNonce: chatsListRefreshRequest.nonce,
+    reloadBehavior: chatsListRefreshRequest.behavior,
     backgroundRefreshOnFirstLoad: true,
     persistLocalCache: true,
     localCacheScope: 'home',
@@ -2352,7 +2359,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     minHiddenDurationMs: MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_HIDDEN_MS,
     onVisibilityReturnRefresh: () => {
       startTransition(() => {
-        setChatsListReloadNonce((current) => current + 1);
+        setChatsListRefreshRequest((current) => ({
+          nonce: current.nonce + 1,
+          behavior: 'recovery',
+        }));
       });
     },
   });
@@ -4230,6 +4240,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingLastScopedTargetMode('selected');
     setMailingTargetMode('selected');
     setMailingAudienceError('');
+  }
+
+  function handleRefreshMailingAudienceChoices() {
+    startTransition(() => {
+      setChatsListRefreshRequest((current) => ({
+        nonce: current.nonce + 1,
+        behavior: 'manual',
+      }));
+    });
   }
 
   function reportMailingAudienceApiError(error: unknown) {
@@ -10142,6 +10161,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     targetChatIds={mailingAudiencePayload.targetChatIds}
                                     choices={mailingAudienceChoices}
                                     loading={mailingAudienceChoicesLoading}
+                                    refreshing={chatsList.isRefreshing}
                                     remoteError={mailingAudienceChoicesError}
                                     validationError={mailingAudienceError || null}
                                     disabled={isMailingBusy}
@@ -10149,6 +10169,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     onChangeScopedMode={handleMailingScopedTargetModeChange}
                                     onApplySelection={handleApplyMailingAudienceSelection}
                                     onClearValidationError={() => setMailingAudienceError('')}
+                                    onRefreshChoices={handleRefreshMailingAudienceChoices}
                                   />
                                 </Suspense>
                               </div>
