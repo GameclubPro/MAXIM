@@ -9,7 +9,12 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { Star as IconoirStar } from 'iconoir-react';
+import {
+  RefreshDouble as IconoirRefreshDouble,
+  Search as IconoirSearch,
+  Star as IconoirStar,
+  Xmark as IconoirXmark,
+} from 'iconoir-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -298,7 +303,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isNoEntitiesForTab = hasNoActiveEntities && isSyncSettled && !showTransientEmptyState;
   const showRefreshStatusLabel =
     Boolean(refreshStatusLabel) &&
-    (hasNoActiveEntities || activeEntitiesState.isBackoffActive || Boolean(queryError));
+    (isFetching ||
+      isSyncPending ||
+      isManualRefreshBlocked ||
+      hasNoActiveEntities ||
+      activeEntitiesState.isBackoffActive ||
+      Boolean(queryError));
 
   const [filteredEntities, visibleEntitiesCount] = useMemo(() => {
     const [matchingEntities, matchingCount] = buildHomeView({
@@ -311,7 +321,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       matchingCount,
     ] as const;
   }, [activeEntities, activeTab, homeEntityFavorites, query]);
-  const showSearchCard = !isNoEntitiesForTab;
+  const totalEntitiesCount = Array.isArray(activeEntities) ? activeEntities.length : 0;
+  const favoriteEntitiesCount = useMemo(() => {
+    if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
+      return 0;
+    }
+
+    return activeEntities.filter((entity) =>
+      isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id),
+    ).length;
+  }, [activeEntities, activeTab, homeEntityFavorites]);
+  const hasSearchQuery = query.trim().length > 0;
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
@@ -481,79 +501,71 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showSystemCard = canAccessSystem;
 
   return (
-    <div className="page-stack page-enter">
-      {showSearchCard ? (
-        <GlassCard
-          className={cn('chats-search-card', isFetching && 'is-syncing')}
-          padding="sm"
-          elevated
-        >
-          <div className="chats-search-card__head">
-            <div className="chats-search-card__title">
-              <div className="chats-search-card__title-row">
+    <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
+      <GlassCard
+        className={cn('chats-search-card', isFetching && 'is-syncing')}
+        padding="sm"
+        elevated
+      >
+        <div className="chats-search-card__head">
+          <div className="chats-search-card__title">
+            <div className="chats-search-card__title-row">
+              <div className="chats-search-card__heading">
+                <span className="chats-search-card__eyebrow">MAXIM</span>
                 <h1>{tabLabel}</h1>
-                <div className="chats-search-card__meta">
-                  <span className={cn('chats-search-card__sync-chip', `is-${homeSyncStatus.tone}`)}>
-                    <span className="chats-search-card__sync-dot" aria-hidden />
-                    {homeSyncStatus.label}
-                  </span>
-                  <button
-                    type="button"
-                    className="button button--ghost chats-search-card__refresh"
-                    onClick={() => handleRefresh(activeTab, 'manual')}
-                    disabled={isFetching || isManualRefreshBlocked}
-                    aria-label="Обновить"
-                  >
-                    <svg
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
-                      className={isFetching ? 'is-spinning' : undefined}
-                    >
-                      <path
-                        d="M20 12a8 8 0 1 1-2.34-5.66"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.8"
-                      />
-                      <path
-                        d="M20 4v5h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="1.8"
-                      />
-                    </svg>
-                  </button>
-                  <span
-                    className="chats-search-card__count"
-                    aria-label={`Найдено ${visibleEntitiesCount}`}
-                  >
-                    {visibleEntitiesCount}
-                  </span>
-                </div>
               </div>
-              {showRefreshStatusLabel ? (
-                <p className="chats-search-card__status">{refreshStatusLabel}</p>
-              ) : null}
-              {refreshProgressPercent !== null ? (
-                <div
-                  className="chats-search-card__progress"
-                  aria-label={`Синхронизация ${refreshProgressPercent}%`}
-                  style={
-                    {
-                      '--chats-sync-progress': `${refreshProgressPercent}%`,
-                    } as CSSProperties
-                  }
-                />
-              ) : null}
+              <div className="chats-search-card__meta">
+                <span className={cn('chats-search-card__sync-chip', `is-${homeSyncStatus.tone}`)}>
+                  <span className="chats-search-card__sync-dot" aria-hidden />
+                  {homeSyncStatus.label}
+                </span>
+                <button
+                  type="button"
+                  className="button button--ghost chats-search-card__refresh"
+                  onClick={() => handleRefresh(activeTab, 'manual')}
+                  disabled={isFetching || isManualRefreshBlocked}
+                  aria-label="Обновить"
+                  title="Обновить"
+                >
+                  <IconoirRefreshDouble
+                    aria-hidden
+                    className={isFetching ? 'is-spinning' : undefined}
+                  />
+                </button>
+              </div>
             </div>
+            {showRefreshStatusLabel ? (
+              <p className="chats-search-card__status">{refreshStatusLabel}</p>
+            ) : null}
+            {refreshProgressPercent !== null ? (
+              <div
+                className="chats-search-card__progress"
+                aria-label={`Синхронизация ${refreshProgressPercent}%`}
+                style={
+                  {
+                    '--chats-sync-progress': `${refreshProgressPercent}%`,
+                  } as CSSProperties
+                }
+              />
+            ) : null}
           </div>
+        </div>
 
-          <label className="field field--search chats-search-card__field" htmlFor="chat-search">
-            <span>{searchLabel}</span>
+        <div className="chats-search-card__metrics" aria-label="Сводка">
+          <span className="chats-search-card__metric">
+            <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
+            <span>{hasSearchQuery ? 'Найдено' : 'В списке'}</span>
+          </span>
+          <span className="chats-search-card__metric">
+            <strong>{favoriteEntitiesCount}</strong>
+            <span>Избранное</span>
+          </span>
+        </div>
+
+        <label className="field field--search chats-search-card__field" htmlFor="chat-search">
+          <span>{searchLabel}</span>
+          <div className="chats-search-card__field-shell">
+            <IconoirSearch aria-hidden className="chats-search-card__search-icon" />
             <input
               id="chat-search"
               type="search"
@@ -561,9 +573,20 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               onChange={(event) => setQuery(event.target.value)}
               placeholder={searchPlaceholder}
             />
-          </label>
-        </GlassCard>
-      ) : null}
+            {hasSearchQuery ? (
+              <button
+                type="button"
+                className="chats-search-card__clear"
+                onClick={() => setQuery('')}
+                aria-label="Очистить поиск"
+                title="Очистить поиск"
+              >
+                <IconoirXmark aria-hidden />
+              </button>
+            ) : null}
+          </div>
+        </label>
+      </GlassCard>
 
       {showSystemCard ? (
         <Suspense fallback={null}>
@@ -703,7 +726,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               'chat-card',
               favorite && 'is-favorite',
               staggerIndex !== null && 'stagger-in',
-              isFetching && 'is-syncing',
               homeSyncStatus.tone === 'cache' && 'is-from-cache',
               homeSyncStatus.tone === 'warning' && 'is-paused',
             );
