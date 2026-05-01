@@ -9251,6 +9251,79 @@ describe('AdminService.listChats', () => {
     );
   });
 
+  it('updates an existing published snapshot while a full refresh cursor is still in progress', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Первый чат',
+          createdAt: new Date('2026-04-05T00:20:07.272Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Новый чат',
+          createdAt: new Date('2026-04-05T00:21:07.272Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-05T00:22:00.000Z',
+        lastSyncedAt: null,
+        itemCount: 1,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Первый чат',
+            createdAt: '2026-04-05T00:20:07.272Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+      getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(20),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).rebuildManagedEntitiesPublishedSnapshot('admin-1', 'chat');
+
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        itemCount: 2,
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Первый чат',
+            createdAt: '2026-04-05T00:20:07.272Z',
+            entityType: 'chat',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-2',
+            title: 'Новый чат',
+            createdAt: '2026-04-05T00:21:07.272Z',
+            entityType: 'chat',
+          }),
+        ],
+      }),
+      expect.any(Number),
+    );
+  });
+
   it('keeps the persisted chat title when the managed-entity header cache only has a fallback title', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([

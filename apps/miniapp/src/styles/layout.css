@@ -914,6 +914,27 @@ body.settings-home-page-open .bottom-nav__label {
   line-height: 1.24;
 }
 
+.chats-search-card__progress {
+  --chats-sync-progress: 0%;
+  width: min(180px, 100%);
+  height: 3px;
+  margin-top: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(205, 219, 232, 0.7);
+}
+
+.chats-search-card__progress::before {
+  content: '';
+  display: block;
+  width: var(--chats-sync-progress);
+  min-width: 18px;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #0b84ff, #1fa97e);
+  transition: width 220ms ease;
+}
+
 .chats-search-card__refresh {
   width: 42px;
   min-width: 42px;
@@ -1021,6 +1042,11 @@ body.settings-home-page-open .bottom-nav__label {
   .chats-search-card__title p,
   .chats-search-card__status {
     font-size: 0.76rem;
+  }
+
+  .chats-search-card__progress {
+    width: min(132px, 100%);
+    margin-top: 6px;
   }
 
   .chats-search-card__refresh {

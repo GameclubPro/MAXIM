@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
@@ -200,8 +201,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     reloadBehavior: refreshRequestByTab.chat.behavior,
     resumeOnVisibilityReturn: true,
     backgroundRefreshOnFirstLoad: true,
-    freshOnBackgroundRefresh: true,
-    freshOnManualReload: true,
+    freshOnBackgroundRefresh: false,
+    freshOnManualReload: false,
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
@@ -215,8 +216,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     reloadBehavior: refreshRequestByTab.channel.behavior,
     resumeOnVisibilityReturn: true,
     backgroundRefreshOnFirstLoad: true,
-    freshOnBackgroundRefresh: true,
-    freshOnManualReload: true,
+    freshOnBackgroundRefresh: false,
+    freshOnManualReload: false,
     persistLocalCache: true,
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
@@ -263,6 +264,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     isSyncComplete: activeEntitiesState.isSyncComplete,
   });
+  const refreshProgressPercent =
+    !activeEntitiesState.isSyncComplete &&
+    !activeEntitiesState.isBackoffActive &&
+    typeof refreshState?.progressPercent === 'number'
+      ? Math.max(0, Math.min(100, refreshState.progressPercent))
+      : null;
 
   const hasNoActiveEntities =
     !isLoading && !queryError && Array.isArray(activeEntities) && activeEntities.length === 0;
@@ -486,6 +493,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               </div>
               {showRefreshStatusLabel ? (
                 <p className="chats-search-card__status">{refreshStatusLabel}</p>
+              ) : null}
+              {refreshProgressPercent !== null ? (
+                <div
+                  className="chats-search-card__progress"
+                  aria-label={`Синхронизация ${refreshProgressPercent}%`}
+                  style={
+                    {
+                      '--chats-sync-progress': `${refreshProgressPercent}%`,
+                    } as CSSProperties
+                  }
+                />
               ) : null}
             </div>
           </div>

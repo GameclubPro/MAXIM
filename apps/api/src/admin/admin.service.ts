@@ -954,6 +954,7 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesPublishedSnapshotRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesCatalogSyncCursorByScope = new Map<string, number>();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
   private managedEntitiesDegradePauseLogAtMs = 0;
@@ -2261,19 +2262,6 @@ export class AdminService implements OnModuleDestroy {
       typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot === 'function'
         ? await this.chatContextCache.getManagedEntitiesPublishedSnapshot(userId, entityType)
         : null;
-    const refreshCursor =
-      typeof this.chatContextCache.getManagedEntitiesRefreshCursor === 'function'
-        ? await this.chatContextCache.getManagedEntitiesRefreshCursor(userId, entityType)
-        : null;
-    if (
-      currentSnapshot &&
-      typeof refreshCursor === 'number' &&
-      refreshCursor >= 0 &&
-      refreshCursor !== MANAGED_ENTITIES_REFRESH_CURSOR_DONE
-    ) {
-      return;
-    }
-
     const allowlist = await this.listChatsFromAllowlistUncached(userId, entityType, {
       allowLastSuccessFallback: false,
     });
@@ -2851,6 +2839,7 @@ export class AdminService implements OnModuleDestroy {
       return null;
     }
 
+    this.scheduleManagedEntitiesPublishedSnapshotRebuild(user.userId, entityType);
     return {
       continueAfterMs: Math.max(
         0,
@@ -4082,6 +4071,20 @@ export class AdminService implements OnModuleDestroy {
           this.readTrimmedString(persistedChat.primaryBotId ?? persistedChat.botId) ?? null,
       });
       this.rememberManagedEntitiesLastSuccessChats(params.userId, [summary]);
+      try {
+        await this.upsertManagedEntitiesPublishedSnapshotItem(params.userId, summary);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: summary.id,
+            entityType: summary.entityType,
+            userId: params.userId,
+            source: params.source,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to patch managed entities published snapshot after access discovery',
+        );
+      }
 
       return summary;
     } catch (error: unknown) {
@@ -5562,6 +5565,12 @@ export class AdminService implements OnModuleDestroy {
           : options.revalidateCachedChats === true
             ? supportedCandidateChats
             : uncachedCandidates.slice(0, MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE);
+      if (options.fullScan === true && candidateSlice.length > 0) {
+        this.scheduleManagedEntitiesCatalogSync(candidateSlice, discoveryTrafficClass, {
+          exhaustiveWindow: true,
+          scopeKey: `${entityType}:full-window`,
+        });
+      }
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
@@ -5885,15 +5894,27 @@ export class AdminService implements OnModuleDestroy {
   private scheduleManagedEntitiesCatalogSync(
     chats: readonly MaxBotChat[],
     trafficClass: 'critical' | 'interactive' | 'background',
+    options: {
+      exhaustiveWindow?: boolean;
+      scopeKey?: string;
+    } = {},
   ): void {
     if (!this.maxChatAdminRosterSyncService || chats.length === 0) {
       return;
     }
 
-    const syncCandidates =
+    const syncWindowSize =
       trafficClass === 'background'
-        ? chats.slice(0, MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE)
-        : chats.slice(0, MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE);
+        ? MANAGED_ENTITIES_BACKGROUND_CATALOG_SYNC_WINDOW_SIZE
+        : MANAGED_ENTITIES_DELTA_DISCOVERY_WINDOW_SIZE;
+    const syncCandidates =
+      options.exhaustiveWindow === true
+        ? chats
+        : this.selectManagedEntitiesCatalogSyncWindow(
+            chats,
+            syncWindowSize,
+            options.scopeKey ?? trafficClass,
+          );
     if (syncCandidates.length === 0) {
       return;
     }
@@ -5915,6 +5936,31 @@ export class AdminService implements OnModuleDestroy {
           'Failed to enqueue managed entities catalog sync after discovery snapshot',
         );
       });
+  }
+
+  private selectManagedEntitiesCatalogSyncWindow<T>(
+    items: readonly T[],
+    windowSize: number,
+    scopeKey: string,
+  ): T[] {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const boundedWindowSize = Math.max(1, Math.min(items.length, Math.trunc(windowSize)));
+    const cursorKey = `managed-entities-catalog:${scopeKey}:${items.length}`;
+    const startIndex =
+      (this.managedEntitiesCatalogSyncCursorByScope.get(cursorKey) ?? 0) % items.length;
+    const selected: T[] = [];
+    for (let offset = 0; offset < boundedWindowSize; offset += 1) {
+      selected.push(items[(startIndex + offset) % items.length]);
+    }
+
+    this.managedEntitiesCatalogSyncCursorByScope.set(
+      cursorKey,
+      (startIndex + boundedWindowSize) % items.length,
+    );
+    return selected;
   }
 
   async getChannelStats(
