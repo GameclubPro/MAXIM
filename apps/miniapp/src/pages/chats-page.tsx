@@ -37,6 +37,7 @@ import {
 } from '../lib/home-entity-favorites';
 import { getInitDataUserId } from '../lib/init-data';
 import {
+  buildManagedEntitiesRoute,
   buildHomeView,
   normalizeEntityType,
   readLastEntityType,
@@ -58,6 +59,12 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
+type ManagedHomeEntity = {
+  id: string;
+  title: string;
+  link?: string | null;
+  avatarUrl?: string | null;
+};
 type ManagedEntitiesReloadRequest = {
   nonce: number;
   behavior: 'default' | 'manual' | 'recovery';
@@ -66,6 +73,7 @@ type ManagedEntitiesReloadRequest = {
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
+const FAVORITE_DOCK_LIMIT = 10;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
@@ -142,6 +150,59 @@ function buildHomeSyncStatus(options: {
   }
 
   return { label: 'Синк', tone: 'syncing' };
+}
+
+function buildEntitySettingsRoute(entityType: ManagedTab, entityId: string): string {
+  return entityType === 'channel' ? `/channel/${entityId}/settings` : `/chat/${entityId}/settings`;
+}
+
+function buildEntityActivityRoute(entityType: ManagedTab, entityId: string): string {
+  return entityType === 'channel' ? `/channel/${entityId}/stats` : `/chat/${entityId}/events`;
+}
+
+function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity) {
+  if (entityType === 'channel') {
+    return {
+      chatTitle: entity.title,
+      chatLink: entity.link ?? '',
+      avatarUrl: entity.avatarUrl ?? null,
+    };
+  }
+
+  return {
+    chatTitle: entity.title,
+    avatarUrl: entity.avatarUrl ?? null,
+  };
+}
+
+function DashboardGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden>
+      <path d="M5 13.5h5.2v5H5z" />
+      <path d="M13.8 5H19v13.5h-5.2z" />
+      <path d="M5 5h5.2v5.2H5z" />
+    </svg>
+  );
+}
+
+function ActivityGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden>
+      <path d="M5 17V9.8" />
+      <path d="M10 17V7" />
+      <path d="M15 17v-4.6" />
+      <path d="M20 17V5" />
+      <path d="M4.5 19h15.8" />
+    </svg>
+  );
+}
+
+function ChevronGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden className="chat-card__chevron">
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  );
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
@@ -267,6 +328,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id),
     ).length;
   }, [activeEntities, activeTab, homeEntityFavorites]);
+  const favoriteEntities = useMemo(() => {
+    if (!Array.isArray(activeEntities) || activeEntities.length === 0) {
+      return [];
+    }
+
+    return activeEntities
+      .filter((entity) => isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id))
+      .slice(0, FAVORITE_DOCK_LIMIT);
+  }, [activeEntities, activeTab, homeEntityFavorites]);
   const hasSearchQuery = query.trim().length > 0;
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
@@ -346,6 +416,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeTab]);
 
   useEffect(() => {
+    document.body.classList.add('chats-home-page-open');
+
+    return () => {
+      document.body.classList.remove('chats-home-page-open');
+    };
+  }, []);
+
+  useEffect(() => {
     const previousScope = favoriteStorageScopeRef.current;
     if (previousScope === favoriteStorageScope) {
       return;
@@ -410,6 +488,29 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     preloadChannelSettingsPage();
   }
 
+  function rememberEntity(entityType: ManagedTab, entity: ManagedHomeEntity) {
+    saveLastEntityId(entityType, entity.id);
+    saveChatTitle(entity.id, entity.title);
+  }
+
+  function prefetchEntitySettings(entityType: ManagedTab, entityId: string) {
+    if (entityType === 'channel') {
+      prefetchChannelSettings(entityId);
+      return;
+    }
+
+    prefetchChatSettings(entityId);
+  }
+
+  function prefetchEntityActivity(entityType: ManagedTab, entityId: string) {
+    if (entityType === 'channel') {
+      prefetchChannelStats(entityId);
+      return;
+    }
+
+    prefetchChatEvents(entityId);
+  }
+
   function handleToggleHomeEntityFavorite(entityType: ManagedTab, entityId: string) {
     setHomeEntityFavorites((current) => {
       const next = toggleHomeEntityFavorite(current, entityType, entityId).favorites;
@@ -433,97 +534,132 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
-  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
+  const searchPlaceholder = 'Поиск';
   const showSystemCard = canAccessSystem;
 
   return (
     <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
-      <GlassCard
-        className={cn('chats-search-card', isFetching && 'is-syncing')}
-        padding="sm"
-        elevated
-      >
-        <div className="chats-search-card__head">
-          <div className="chats-search-card__title">
-            <div className="chats-search-card__title-row">
-              <div className="chats-search-card__heading">
-                <h1>{tabLabel}</h1>
-              </div>
-              <div className="chats-search-card__meta">
-                <span className={cn('chats-search-card__sync-chip', `is-${homeSyncStatus.tone}`)}>
-                  <span className="chats-search-card__sync-dot" aria-hidden />
-                  {homeSyncStatus.label}
-                </span>
+      <GlassCard className={cn('chats-command', isFetching && 'is-syncing')} padding="sm" elevated>
+        <h1 className="chats-command__sr">{tabLabel}</h1>
+        <div className="chats-command__topline">
+          <nav className="chats-command__tabs" aria-label="Раздел">
+            {(['chat', 'channel'] as const).map((tab) => (
+              <Link
+                key={tab}
+                to={buildManagedEntitiesRoute(tab)}
+                className={cn('chats-command__tab', activeTab === tab && 'is-active')}
+                aria-current={activeTab === tab ? 'page' : undefined}
+              >
+                {tab === 'chat' ? 'Чаты' : 'Каналы'}
+              </Link>
+            ))}
+          </nav>
+
+          <div className="chats-command__meta">
+            <span className={cn('chats-command__sync-chip', `is-${homeSyncStatus.tone}`)}>
+              <span className="chats-command__sync-dot" aria-hidden />
+              {homeSyncStatus.label}
+            </span>
+            <button
+              type="button"
+              className="chats-command__icon-button"
+              onClick={() => handleRefresh(activeTab, 'manual')}
+              disabled={isFetching || isManualRefreshBlocked}
+              aria-label="Обновить"
+              title="Обновить"
+            >
+              <IconoirRefreshDouble
+                aria-hidden
+                className={isFetching ? 'is-spinning' : undefined}
+              />
+            </button>
+          </div>
+        </div>
+
+        {refreshProgressPercent !== null ? (
+          <div
+            className="chats-command__progress"
+            aria-label={`Синхронизация ${refreshProgressPercent}%`}
+            style={
+              {
+                '--chats-sync-progress': `${refreshProgressPercent}%`,
+              } as CSSProperties
+            }
+          />
+        ) : null}
+
+        <div className="chats-command__search-row">
+          <label className="field field--search chats-command__field" htmlFor="chat-search">
+            <span>{searchLabel}</span>
+            <div className="chats-command__field-shell">
+              <IconoirSearch aria-hidden className="chats-command__search-icon" />
+              <input
+                id="chat-search"
+                type="search"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={searchPlaceholder}
+              />
+              {hasSearchQuery ? (
                 <button
                   type="button"
-                  className="button button--ghost chats-search-card__refresh"
-                  onClick={() => handleRefresh(activeTab, 'manual')}
-                  disabled={isFetching || isManualRefreshBlocked}
-                  aria-label="Обновить"
-                  title="Обновить"
+                  className="chats-command__clear"
+                  onClick={() => setQuery('')}
+                  aria-label="Очистить поиск"
+                  title="Очистить поиск"
                 >
-                  <IconoirRefreshDouble
-                    aria-hidden
-                    className={isFetching ? 'is-spinning' : undefined}
-                  />
+                  <IconoirXmark aria-hidden />
                 </button>
-              </div>
+              ) : null}
             </div>
-            {refreshProgressPercent !== null ? (
-              <div
-                className="chats-search-card__progress"
-                aria-label={`Синхронизация ${refreshProgressPercent}%`}
-                style={
-                  {
-                    '--chats-sync-progress': `${refreshProgressPercent}%`,
-                  } as CSSProperties
-                }
-              />
-            ) : null}
+          </label>
+
+          <div className="chats-command__metrics" aria-label="Сводка">
+            <span className="chats-command__metric" title={hasSearchQuery ? 'Найдено' : 'В списке'}>
+              <DashboardGlyph />
+              <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
+            </span>
+            <span className="chats-command__metric" title="Избранное">
+              <IconoirStar aria-hidden />
+              <strong>{favoriteEntitiesCount}</strong>
+            </span>
           </div>
         </div>
-
-        <div className="chats-search-card__metrics" aria-label="Сводка">
-          <span className="chats-search-card__metric">
-            <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
-            <span>{hasSearchQuery ? 'Найдено' : 'В списке'}</span>
-          </span>
-          <span className="chats-search-card__metric">
-            <strong>{favoriteEntitiesCount}</strong>
-            <span>Избранное</span>
-          </span>
-        </div>
-
-        <label className="field field--search chats-search-card__field" htmlFor="chat-search">
-          <span>{searchLabel}</span>
-          <div className="chats-search-card__field-shell">
-            <IconoirSearch aria-hidden className="chats-search-card__search-icon" />
-            <input
-              id="chat-search"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder={searchPlaceholder}
-            />
-            {hasSearchQuery ? (
-              <button
-                type="button"
-                className="chats-search-card__clear"
-                onClick={() => setQuery('')}
-                aria-label="Очистить поиск"
-                title="Очистить поиск"
-              >
-                <IconoirXmark aria-hidden />
-              </button>
-            ) : null}
-          </div>
-        </label>
       </GlassCard>
 
-      {showSystemCard ? (
-        <Suspense fallback={null}>
-          <LazySystemEntryCard api={api} />
-        </Suspense>
+      {!hasSearchQuery && favoriteEntities.length > 0 ? (
+        <section className="favorite-dock" aria-label="Избранное">
+          <div className="favorite-dock__rail">
+            {favoriteEntities.map((entity, index) => (
+              <Link
+                key={entity.id}
+                to={buildEntitySettingsRoute(activeTab, entity.id)}
+                className="favorite-dock__item"
+                state={buildEntityRouteState(activeTab, entity)}
+                onClick={() => rememberEntity(activeTab, entity)}
+                onPointerEnter={(event) => {
+                  if (shouldPrefetchFromPointerEvent(event)) {
+                    prefetchEntitySettings(activeTab, entity.id);
+                  }
+                }}
+                aria-label={`${tabLabel}: ${entity.title}`}
+                title={entity.title}
+                style={
+                  {
+                    '--favorite-dock-index': index,
+                  } as CSSProperties
+                }
+              >
+                <EntityAvatar
+                  title={entity.title}
+                  entityType={activeTab}
+                  avatarUrl={entity.avatarUrl ?? null}
+                  className="favorite-dock__avatar"
+                />
+              </Link>
+            ))}
+          </div>
+        </section>
       ) : null}
 
       {showTransientEmptyState ? (
@@ -665,9 +801,26 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               staggerIndex === null
                 ? undefined
                 : { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
+            const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
+            const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
+            const routeState = buildEntityRouteState(activeTab, entity);
+            const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
 
             return (
               <GlassCard as="article" key={entity.id} className={className} style={style}>
+                <Link
+                  to={settingsRoute}
+                  className="chat-card__primary-link"
+                  state={routeState}
+                  onClick={() => rememberEntity(activeTab, entity)}
+                  onPointerEnter={(event) => {
+                    if (shouldPrefetchFromPointerEvent(event)) {
+                      prefetchEntitySettings(activeTab, entity.id);
+                    }
+                  }}
+                  aria-label={`Открыть настройки: ${entity.title}`}
+                />
+
                 <div className="chat-card__header">
                   <div className="chat-card__identity">
                     <EntityAvatar
@@ -680,6 +833,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       <h3>{entity.title}</h3>
                     </div>
                   </div>
+                  <ChevronGlyph />
+                </div>
+
+                <div className="chat-card__quick-actions">
                   <button
                     type="button"
                     className={cn('chat-card__favorite', favorite && 'is-active')}
@@ -690,88 +847,36 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   >
                     <IconoirStar aria-hidden />
                   </button>
-                </div>
 
-                {activeTab === 'chat' ? (
-                  <div className="chat-card__actions">
-                    <Link
-                      to={`/chat/${entity.id}/settings`}
-                      className="button button--accent"
-                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                      onClick={() => {
-                        saveLastEntityId('chat', entity.id);
-                        saveChatTitle(entity.id, entity.title);
-                      }}
-                      onPointerEnter={(event) => {
-                        if (shouldPrefetchFromPointerEvent(event)) {
-                          prefetchChatSettings(entity.id);
-                        }
-                      }}
-                    >
-                      Настройки
-                    </Link>
-                    <Link
-                      to={`/chat/${entity.id}/events`}
-                      className="button button--ghost"
-                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                      onClick={() => {
-                        prefetchChatEvents(entity.id);
-                        saveLastEntityId('chat', entity.id);
-                        saveChatTitle(entity.id, entity.title);
-                      }}
-                      onPointerEnter={(event) => {
-                        if (shouldPrefetchFromPointerEvent(event)) {
-                          prefetchChatEvents(entity.id);
-                        }
-                      }}
-                    >
-                      События
-                    </Link>
-                  </div>
-                ) : (
-                  <div className="chat-card__actions">
-                    <Link
-                      to={`/channel/${entity.id}/settings`}
-                      className="button button--accent"
-                      state={{
-                        chatTitle: entity.title,
-                        chatLink: entity.link ?? '',
-                        avatarUrl: entity.avatarUrl ?? null,
-                      }}
-                      onClick={() => {
-                        saveLastEntityId('channel', entity.id);
-                        saveChatTitle(entity.id, entity.title);
-                      }}
-                      onPointerEnter={(event) => {
-                        if (shouldPrefetchFromPointerEvent(event)) {
-                          prefetchChannelSettings(entity.id);
-                        }
-                      }}
-                    >
-                      Настройки
-                    </Link>
-                    <Link
-                      to={`/channel/${entity.id}/stats`}
-                      className="button button--ghost"
-                      state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                      onClick={() => {
-                        saveLastEntityId('channel', entity.id);
-                        saveChatTitle(entity.id, entity.title);
-                      }}
-                      onPointerEnter={(event) => {
-                        if (shouldPrefetchFromPointerEvent(event)) {
-                          prefetchChannelStats(entity.id);
-                        }
-                      }}
-                    >
-                      Статистика
-                    </Link>
-                  </div>
-                )}
+                  <Link
+                    to={activityRoute}
+                    className="chat-card__action"
+                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+                    onClick={() => {
+                      rememberEntity(activeTab, entity);
+                      prefetchEntityActivity(activeTab, entity.id);
+                    }}
+                    onPointerEnter={(event) => {
+                      if (shouldPrefetchFromPointerEvent(event)) {
+                        prefetchEntityActivity(activeTab, entity.id);
+                      }
+                    }}
+                    aria-label={activityLabel}
+                    title={activityLabel}
+                  >
+                    <ActivityGlyph />
+                  </Link>
+                </div>
               </GlassCard>
             );
           })}
         </section>
+      ) : null}
+
+      {showSystemCard ? (
+        <Suspense fallback={null}>
+          <LazySystemEntryCard api={api} />
+        </Suspense>
       ) : null}
     </div>
   );
