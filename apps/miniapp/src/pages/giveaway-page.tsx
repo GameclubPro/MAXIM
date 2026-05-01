@@ -137,25 +137,6 @@ function resolveClaimCountdownPresentation(
   };
 }
 
-function buildWinnerStatusLabel(status: string | null | undefined): string | null {
-  if (status === 'SELECTED') {
-    return 'Ждёт';
-  }
-  if (status === 'CLAIMED') {
-    return 'Подтверждён';
-  }
-  if (status === 'DELIVERED') {
-    return 'Выдан';
-  }
-  if (status === 'EXPIRED') {
-    return 'Истёк';
-  }
-  if (status === 'REROLLED') {
-    return 'Заменён';
-  }
-  return null;
-}
-
 function buildGiveawayChannels(giveaway: ManagedGiveawayPublic): GiveawayChannelCard[] {
   return [
     {
@@ -222,16 +203,12 @@ function buildModalPresentation(params: {
 
   if (participant?.isWinner) {
     const winnerStatus = participant.winnerStatus;
-    const prizeTitle =
-      participant.prizeTitle && participant.prizePosition
-        ? `${participant.prizePosition}. ${participant.prizeTitle}`
-        : 'Приз зафиксирован';
     if (winnerStatus === 'EXPIRED') {
       return {
         tone: 'danger',
         glyph: 'clock',
         badge: 'Срок истёк',
-        title: prizeTitle,
+        title: 'Срок истёк',
         description: null,
       };
     }
@@ -240,7 +217,7 @@ function buildModalPresentation(params: {
         tone: 'success',
         glyph: 'gift',
         badge: winnerStatus === 'DELIVERED' ? 'Приз выдан' : 'Приз подтверждён',
-        title: prizeTitle,
+        title: winnerStatus === 'DELIVERED' ? 'Приз выдан' : 'Приз подтверждён',
         description: null,
       };
     }
@@ -249,7 +226,7 @@ function buildModalPresentation(params: {
       tone: 'success',
       glyph: 'gift',
       badge: 'Вы выиграли',
-      title: prizeTitle,
+      title: 'Вы выиграли',
       description: null,
     };
   }
@@ -259,7 +236,7 @@ function buildModalPresentation(params: {
       tone: 'muted',
       glyph: 'check',
       badge: 'Итоги готовы',
-      title: participant?.joined ? 'В этот раз без выигрыша' : 'Приём заявок завершён',
+      title: 'Итоги готовы',
       description: null,
     };
   }
@@ -288,8 +265,8 @@ function buildModalPresentation(params: {
     return {
       tone: 'danger',
       glyph: 'cross',
-      badge: 'Нужно условие',
-      title: missingChannelsCount > 1 ? 'Завершите подписку' : 'Подпишитесь и вернитесь',
+      badge: 'Условия',
+      title: missingChannelsCount > 1 ? 'Нужны подписки' : 'Нужна подписка',
       description: missingChannelsCount > 0 ? null : participant.eligibilityReason?.trim() || null,
     };
   }
@@ -299,8 +276,8 @@ function buildModalPresentation(params: {
       return {
         tone: 'success',
         glyph: 'check',
-        badge: 'Вы участвуете',
-        title: 'Заявка принята',
+        badge: 'Готово',
+        title: 'Условия выполнены',
         description: null,
       };
     }
@@ -309,7 +286,7 @@ function buildModalPresentation(params: {
       tone: 'warning',
       glyph: 'spark',
       badge: 'Проверяем',
-      title: 'Заявка уже отправлена',
+      title: 'Проверяем условия',
       description: null,
     };
   }
@@ -318,8 +295,8 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'spark',
-      badge: 'Розыгрыш открыт',
-      title: 'Участвовать?',
+      badge: 'Условия',
+      title: 'Проверка условий',
       description: null,
     };
   }
@@ -557,7 +534,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     tone: 'muted',
     glyph: 'clock',
     badge: 'Открываем',
-    title: 'Подготавливаем розыгрыш',
+    title: 'Проверка условий',
     description: null,
   };
 
@@ -571,8 +548,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const participantLoadingPresentation: GiveawayModalPresentation = {
     tone: 'muted',
     glyph: 'clock',
-    badge: 'Проверяем статус',
-    title: 'Уточняем участие',
+    badge: 'Проверяем',
+    title: 'Проверяем условия',
     description: null,
   };
 
@@ -594,20 +571,13 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const activeCountdown = claimCountdown ?? countdown;
   const giveawayChannels = giveaway ? buildGiveawayChannels(giveaway) : [];
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
-  const visiblePrizeList = giveaway?.prizes ?? [];
-  const visibleWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
-  const showGiveawayKicker = Boolean(
-    giveaway?.title &&
-    giveaway.imageEnabled &&
-    giveaway.imageBase64 &&
-    giveaway.imageMimeType &&
+  const showConditionChecklist = Boolean(
+    giveaway &&
     !participant?.isWinner &&
-    displayPhase !== 'COMPLETED',
+    displayPhase !== 'COMPLETED' &&
+    displayPhase !== 'CANCELED' &&
+    giveawayChannels.length > 0,
   );
-  const visibleGiveawayDescription =
-    giveaway && !participant?.isWinner && displayPhase !== 'COMPLETED'
-      ? giveaway.description.trim()
-      : '';
 
   const syncParticipantState = async (nextParticipant: ManagedGiveawayParticipantState) => {
     queryClient.setQueryData(participantQueryKey, nextParticipant);
@@ -642,7 +612,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'success',
         title: 'Подписка подтверждена',
-        description: 'Можно продолжать участие.',
       });
       return;
     }
@@ -654,10 +623,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'info',
         title: mode === 'manual' ? 'Подписка ещё не обновилась' : 'MAX ещё обновляет подписку',
-        description:
-          mode === 'manual'
-            ? 'Откройте канал ещё раз, если MAX не успел синхронизировать статус.'
-            : 'Нажмите «Проверить снова», если подписка уже оформлена.',
       });
       return;
     }
@@ -665,10 +630,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     pushToast({
       tone: 'info',
       title: mode === 'manual' ? 'Проверка ещё не завершена' : 'MAX ещё проверяет участие',
-      description:
-        mode === 'manual'
-          ? 'Подождите пару секунд и нажмите «Проверить снова».'
-          : 'Если статус не обновится, нажмите «Проверить снова».',
     });
   };
 
@@ -968,89 +929,17 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             ×
           </button>
 
-          <div className="giveaway-page__overlay-hero">
-            <div className="giveaway-page__overlay-hero-head">
-              <div className="giveaway-page__overlay-hero-copy">
-                {giveaway?.sourceTitle ? (
-                  <small className="giveaway-page__overlay-source">{giveaway.sourceTitle}</small>
-                ) : null}
-                <span className={cn('giveaway-page__status', `is-${presentation.tone}`)}>
-                  {presentation.badge}
-                </span>
-              </div>
-              {activeCountdown ? (
-                <div className="giveaway-page__overlay-hero-timer">
-                  <span>{activeCountdown.label}</span>
-                  <strong>{activeCountdown.value}</strong>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="giveaway-page__overlay-visual">
-              {giveaway?.imageEnabled && giveaway.imageBase64 && giveaway.imageMimeType ? (
-                <img
-                  className="giveaway-page__overlay-cover"
-                  src={`data:${giveaway.imageMimeType};base64,${giveaway.imageBase64}`}
-                  alt={giveaway.title}
-                />
-              ) : (
-                <div className="giveaway-page__overlay-art">
-                  <div className="giveaway-page__overlay-art-card">
-                    <span>Розыгрыш</span>
-                    <strong>{giveaway?.title ?? 'Розыгрыш'}</strong>
-                    <small>
-                      {giveaway
-                        ? `${giveaway.prizes.length} мест · ${giveaway.requiredChannels.length + 1} каналов`
-                        : 'Подготавливаем'}
-                    </small>
-                  </div>
-                </div>
-              )}
-
-              <div className="giveaway-page__overlay-visual-chips">
-                {giveaway ? (
-                  <>
-                    <span className="giveaway-page__status is-muted">
-                      {giveaway.prizes.length} мест
-                    </span>
-                    <span className="giveaway-page__status is-muted">
-                      {giveaway.requiredChannels.length + 1} каналов
-                    </span>
-                  </>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="giveaway-page__overlay-copy">
-              {showGiveawayKicker ? (
-                <small className="giveaway-page__overlay-kicker">{giveaway?.title}</small>
-              ) : null}
-              <strong id="giveaway-overlay-title">{presentation.title}</strong>
-            </div>
-
-            {giveaway ? (
-              <div className="giveaway-page__overlay-stat-grid">
-                <div className="giveaway-page__overlay-stat">
-                  <span>Участники</span>
-                  <strong>{giveaway.entriesCount}</strong>
-                </div>
-                <div className="giveaway-page__overlay-stat">
-                  <span>Призы</span>
-                  <strong>{giveaway.prizes.length}</strong>
-                </div>
-                <div className="giveaway-page__overlay-stat">
-                  <span>Условия</span>
-                  <strong>{giveawayChannels.length}</strong>
-                </div>
-              </div>
-            ) : null}
+          <div className="giveaway-page__overlay-head">
+            <span className={cn('giveaway-page__status', `is-${presentation.tone}`)}>
+              {presentation.badge}
+            </span>
           </div>
 
           <div className="giveaway-page__overlay-body">
             <div className={cn('giveaway-page__overlay-state-block', `is-${presentation.tone}`)}>
               <GiveawayGlyphIcon tone={presentation.tone} glyph={presentation.glyph} />
               <div className="giveaway-page__overlay-state-copy">
-                <strong>{presentation.badge}</strong>
+                <strong id="giveaway-overlay-title">{presentation.title}</strong>
                 {presentation.description ? <p>{presentation.description}</p> : null}
               </div>
             </div>
@@ -1071,23 +960,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
 
-            {visibleGiveawayDescription ? (
-              <div className="giveaway-page__overlay-note">
-                <p>{visibleGiveawayDescription}</p>
-              </div>
-            ) : null}
-
             {missingChannelCards.length > 0 ? (
               <>
                 {totalChannelSteps > 1 ? (
                   <div className="giveaway-page__overlay-progress">
-                    <div className="giveaway-page__overlay-progress-head">
-                      <strong>
-                        Шаг {Math.min(completedChannelSteps + 1, totalChannelSteps)} из{' '}
-                        {totalChannelSteps}
-                      </strong>
-                    </div>
-
                     <div
                       className="giveaway-page__overlay-progress-rail"
                       style={{ '--giveaway-progress-count': totalChannelSteps } as CSSProperties}
@@ -1106,61 +982,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                     </div>
                   </div>
                 ) : null}
-
-                {nextMissingChannel ? (
-                  nextMissingChannel.link ? (
-                    <button
-                      type="button"
-                      className="giveaway-page__overlay-channel giveaway-page__overlay-channel--focus"
-                      onClick={() => {
-                        openMissingChannel(nextMissingChannel.link ?? '');
-                      }}
-                    >
-                      <span>Канал</span>
-                      <strong>{nextMissingChannel.title}</strong>
-                    </button>
-                  ) : (
-                    <div className="giveaway-page__overlay-channel is-disabled giveaway-page__overlay-channel--focus">
-                      <span>Канал</span>
-                      <strong>{nextMissingChannel.title}</strong>
-                      <small>Нет ссылки</small>
-                    </div>
-                  )
-                ) : null}
               </>
             ) : null}
 
-            {visiblePrizeList.length > 0 ? (
+            {showConditionChecklist ? (
               <div className="giveaway-page__overlay-section">
-                <div className="giveaway-page__section-head">
-                  <div className="giveaway-page__section-copy">
-                    <h2>Призы</h2>
-                  </div>
-                </div>
-                <div className="giveaway-page__prize-rail">
-                  {visiblePrizeList.map((prize) => (
-                    <div
-                      key={`giveaway-prize-${prize.id}`}
-                      className="giveaway-page__chip giveaway-page__chip--prize"
-                    >
-                      <strong>{prize.position}</strong>
-                      <span>{prize.title}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {giveawayChannels.length > 0 ? (
-              <div className="giveaway-page__overlay-section">
-                <div className="giveaway-page__section-head">
-                  <div className="giveaway-page__section-copy">
-                    <h2>Условия</h2>
-                  </div>
-                  <span className="giveaway-page__status is-muted">
-                    {completedChannelSteps}/{totalChannelSteps}
-                  </span>
-                </div>
                 <div className="giveaway-page__requirement-list">
                   {giveawayChannels.map((channel, index) => {
                     const isMissing = missingChannelIds.has(channel.id);
@@ -1197,7 +1023,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                                 isMissing ? 'is-danger' : 'is-muted',
                               )}
                             >
-                              {isMissing ? 'Нужно открыть' : 'Готово'}
+                              {isMissing ? 'Открыть' : 'Готово'}
                             </span>
                           </span>
                         </button>
@@ -1231,44 +1057,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                       </div>
                     );
                   })}
-                </div>
-              </div>
-            ) : null}
-
-            {visibleWinners.length > 0 ? (
-              <div className="giveaway-page__overlay-section">
-                <div className="giveaway-page__section-head">
-                  <div className="giveaway-page__section-copy">
-                    <h2>Победители</h2>
-                  </div>
-                </div>
-                <div className="giveaway-page__winner-list">
-                  {visibleWinners.map((winner) => (
-                    <div
-                      key={`giveaway-winner-${winner.prizePosition}`}
-                      className="giveaway-page__winner-row"
-                    >
-                      <span className="giveaway-page__winner-rank">{winner.prizePosition}</span>
-                      <span className="giveaway-page__winner-copy">
-                        <span className="giveaway-page__winner-prize">{winner.prizeTitle}</span>
-                        <strong className="giveaway-page__winner-name">
-                          {winner.displayName?.trim() || 'Победитель определён'}
-                        </strong>
-                      </span>
-                      <span
-                        className={cn(
-                          'giveaway-page__requirement-pill',
-                          winner.status === 'DELIVERED'
-                            ? 'is-muted'
-                            : winner.status === 'EXPIRED'
-                              ? 'is-danger'
-                              : undefined,
-                        )}
-                      >
-                        {buildWinnerStatusLabel(winner.status) ?? 'Результат готов'}
-                      </span>
-                    </div>
-                  ))}
                 </div>
               </div>
             ) : null}
