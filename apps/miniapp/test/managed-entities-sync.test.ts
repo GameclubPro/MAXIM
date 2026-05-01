@@ -317,7 +317,7 @@ test('switches the visible list when refresh returns a new snapshot version', ()
   );
 });
 
-test('treats a user-visible refresh state as settled for home screens', () => {
+test('can treat a user-visible refresh state as settled when explicitly configured', () => {
   const refreshState = createRefreshState({
     userVisibleComplete: true,
   });

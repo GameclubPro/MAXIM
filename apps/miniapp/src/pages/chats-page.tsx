@@ -158,7 +158,7 @@ function buildHomeSyncStatus(options: {
   isBackoffActive: boolean;
   hasLoadedFromServer: boolean;
   snapshotStale: boolean | null | undefined;
-  isUserVisibleComplete: boolean;
+  isSyncComplete: boolean;
 }): { label: string; tone: HomeSyncTone } {
   if (options.isBackoffActive) {
     return { label: 'Пауза', tone: 'warning' };
@@ -169,7 +169,7 @@ function buildHomeSyncStatus(options: {
   if (!options.hasLoadedFromServer) {
     return { label: 'Кеш', tone: 'cache' };
   }
-  if (options.isUserVisibleComplete) {
+  if (options.isSyncComplete) {
     return { label: 'Готово', tone: 'ready' };
   }
 
@@ -206,7 +206,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
-    treatUserVisibleCompleteAsSettled: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -222,7 +221,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     localCacheScope: 'home',
     preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
-    treatUserVisibleCompleteAsSettled: true,
   });
 
   const activeEntities = useMemo(() => {
@@ -240,8 +238,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     refreshState.manualRefreshRetryAfterMs > 0
       ? Math.max(1, Math.ceil(refreshState.manualRefreshRetryAfterMs / 1_000))
       : null;
-  const isSyncSettled =
-    activeEntitiesState.isUserVisibleComplete || activeEntitiesState.isBackoffActive;
+  const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
   const isSyncPending = !isLoading && !queryError && !isSyncSettled;
   const isRefreshTemporarilyBlocked =
     manualRefreshBlockedReason === 'backoff' && (manualRefreshRetryAfterSec ?? 0) > 0;
@@ -250,21 +247,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isManualRefreshInProgressByState =
     manualRefreshBlockedReason === 'in_progress' &&
     !activeEntitiesState.isRefreshing &&
-    !activeEntitiesState.isUserVisibleComplete;
+    !activeEntitiesState.isSyncComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
   const refreshStatusLabel = buildRefreshStatusLabel({
     refreshState,
     isRefreshing: isFetching,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-    isUserVisibleComplete: activeEntitiesState.isUserVisibleComplete,
+    isUserVisibleComplete: activeEntitiesState.isSyncComplete,
   });
   const homeSyncStatus = buildHomeSyncStatus({
     isRefreshing: isFetching,
     isBackoffActive: activeEntitiesState.isBackoffActive,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
-    isUserVisibleComplete: activeEntitiesState.isUserVisibleComplete,
+    isSyncComplete: activeEntitiesState.isSyncComplete,
   });
 
   const hasNoActiveEntities =
@@ -292,7 +289,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       buildManagedEntitiesSettledMarker({
         scopeKey: activeTab,
         hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-        isSyncComplete: activeEntitiesState.isUserVisibleComplete,
+        isSyncComplete: activeEntitiesState.isSyncComplete,
         isBackoffActive: activeEntitiesState.isBackoffActive,
         snapshotVersion: activeEntitiesState.snapshot?.version,
         snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
@@ -301,7 +298,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     [
       activeEntitiesState.hasLoadedFromServer,
       activeEntitiesState.isBackoffActive,
-      activeEntitiesState.isUserVisibleComplete,
+      activeEntitiesState.isSyncComplete,
       activeEntitiesState.refreshState?.lastSyncedAt,
       activeEntitiesState.snapshot?.builtAt,
       activeEntitiesState.snapshot?.version,
@@ -313,7 +310,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     isLoading: activeEntitiesState.isLoading,
     isRefreshing: activeEntitiesState.isRefreshing,
-    isSyncComplete: activeEntitiesState.isUserVisibleComplete,
+    isSyncComplete: activeEntitiesState.isSyncComplete,
     snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
     settledMarker: settledRefreshMarker,
     minIntervalMs: HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS,
