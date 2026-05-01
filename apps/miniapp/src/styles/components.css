@@ -3390,24 +3390,26 @@ body.chats-home-page-open::after {
 
 body.chats-home-page-open .app-shell {
   --bottom-nav-height: 76px;
-  --bottom-nav-offset: 0px;
-  padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 10px);
+  --bottom-nav-offset: 7px;
+  padding-bottom: calc(
+    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 12px
+  );
 }
 
 body.chats-home-page-open .bottom-nav {
-  bottom: 0;
-  width: min(100%, var(--app-shell-max-width));
-  padding: 7px 8px max(7px, calc(var(--app-safe-bottom) + 7px));
-  border-width: 1px 1px 0;
-  border-radius: 28px 28px 0 0;
+  bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+  width: min(calc(100% - 14px), calc(var(--app-shell-max-width) + 10px));
+  padding: 6px;
+  border-width: 1px;
+  border-radius: 28px;
   border-color: rgba(255, 255, 255, 0.86);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(239, 247, 254, 0.94)),
     linear-gradient(92deg, rgba(11, 132, 255, 0.1), rgba(31, 169, 126, 0.08) 52%, transparent),
     rgba(255, 255, 255, 0.92);
   box-shadow:
-    0 -18px 42px rgba(18, 47, 73, 0.13),
-    0 -3px 18px rgba(11, 132, 255, 0.09),
+    0 18px 42px rgba(18, 47, 73, 0.16),
+    0 6px 18px rgba(11, 132, 255, 0.1),
     0 1px 0 rgba(255, 255, 255, 0.82) inset;
   backdrop-filter: blur(20px) saturate(170%);
   -webkit-backdrop-filter: blur(20px) saturate(170%);
@@ -3417,22 +3419,22 @@ body.chats-home-page-open .bottom-nav {
 body.chats-home-page-open .bottom-nav::before {
   content: '';
   position: absolute;
-  top: 5px;
+  top: 4px;
   left: 50%;
-  width: 42px;
+  width: 56px;
   height: 3px;
   border-radius: 999px;
-  background: rgba(89, 116, 139, 0.2);
+  background: linear-gradient(90deg, transparent, rgba(11, 132, 255, 0.22), transparent);
   transform: translateX(-50%);
   pointer-events: none;
 }
 
 body.chats-home-page-open .bottom-nav__item {
   position: relative;
-  min-height: 60px;
+  min-height: 58px;
   border-radius: 22px;
   gap: 4px;
-  padding: 10px 3px 8px;
+  padding: 9px 3px 7px;
   color: rgba(46, 71, 91, 0.66);
   overflow: hidden;
 }
@@ -3471,9 +3473,9 @@ body.chats-home-page-open .bottom-nav__item.is-active::before {
 body.chats-home-page-open .bottom-nav__item.is-active::after {
   content: '';
   position: absolute;
-  right: 20%;
-  bottom: 7px;
-  left: 20%;
+  top: 7px;
+  right: 34%;
+  left: 34%;
   height: 3px;
   border-radius: 999px;
   background: linear-gradient(90deg, #0b84ff, #1fa97e);
@@ -4131,19 +4133,23 @@ body.chats-home-page-open .bottom-nav__label {
 @media (max-width: 380px) {
   body.chats-home-page-open .app-shell {
     --bottom-nav-height: 70px;
-    padding-bottom: calc(var(--bottom-nav-height) + var(--app-safe-bottom) + 8px);
+    --bottom-nav-offset: 5px;
+    padding-bottom: calc(
+      var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + 10px
+    );
   }
 
   body.chats-home-page-open .bottom-nav {
-    width: min(100%, var(--app-shell-max-width));
-    padding: 6px 6px max(6px, calc(var(--app-safe-bottom) + 6px));
-    border-radius: 24px 24px 0 0;
+    bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
+    width: min(calc(100% - 10px), calc(var(--app-shell-max-width) + 10px));
+    padding: 5px;
+    border-radius: 24px;
     gap: 4px;
   }
 
   body.chats-home-page-open .bottom-nav::before {
     top: 4px;
-    width: 34px;
+    width: 42px;
     height: 2px;
   }
 
@@ -4168,9 +4174,9 @@ body.chats-home-page-open .bottom-nav__label {
   }
 
   body.chats-home-page-open .bottom-nav__item.is-active::after {
-    right: 24%;
-    bottom: 5px;
-    left: 24%;
+    top: 6px;
+    right: 34%;
+    left: 34%;
     height: 2px;
   }
 
