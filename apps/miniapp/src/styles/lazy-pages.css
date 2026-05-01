@@ -9408,7 +9408,7 @@
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 10px 8px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom, 0px));
 }
 
 .broadcast-audience-sheet__backdrop {
@@ -9426,6 +9426,10 @@
   z-index: 1;
   width: min(100%, 720px);
   max-width: 100%;
+  height: min(96dvh, 900px);
+  min-height: min(620px, 96dvh);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .broadcast-audience-sheet__grabber {
@@ -9442,7 +9446,7 @@
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
   padding: 14px;
-  max-height: min(90dvh, 840px);
+  height: 100%;
   overflow: hidden;
   border-radius: 30px;
   border: 1px solid rgba(116, 149, 181, 0.16);

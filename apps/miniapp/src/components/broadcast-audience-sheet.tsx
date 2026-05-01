@@ -1,5 +1,5 @@
 import type { ChatSummary } from '@maxim/contracts';
-import { useDeferredValue, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
   normalizeBroadcastAudienceTargetChatIds,
@@ -67,7 +67,7 @@ export function BroadcastAudienceSheet({
     normalizeBroadcastAudienceTargetChatIds(selection),
   );
   const [searchValue, setSearchValue] = useState('');
-  const deferredSearchValue = useDeferredValue(searchValue);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (!open) {
@@ -90,6 +90,14 @@ export function BroadcastAudienceSheet({
     };
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !scrollRef.current) {
+      return;
+    }
+
+    scrollRef.current.scrollTop = 0;
+  }, [open, searchValue]);
+
   const orderedChoices = useMemo(
     () =>
       orderBroadcastAudienceChoices(choices, {
@@ -99,8 +107,8 @@ export function BroadcastAudienceSheet({
     [choices, currentChatId, favoriteChatIds],
   );
   const filteredChoices = useMemo(
-    () => filterBroadcastAudienceChoices(orderedChoices, deferredSearchValue),
-    [deferredSearchValue, orderedChoices],
+    () => filterBroadcastAudienceChoices(orderedChoices, searchValue),
+    [orderedChoices, searchValue],
   );
 
   if (!open || typeof document === 'undefined') {
@@ -182,12 +190,15 @@ export function BroadcastAudienceSheet({
 
               <input
                 id="broadcast-audience-search"
-                type="search"
+                type="text"
+                inputMode="search"
                 placeholder="Поиск чата"
                 aria-label="Поиск чата"
                 value={searchValue}
-                onChange={(event) => setSearchValue(event.target.value)}
+                onInput={(event) => setSearchValue(event.currentTarget.value)}
+                onChange={(event) => setSearchValue(event.currentTarget.value)}
                 autoComplete="off"
+                spellCheck={false}
                 disabled={disabled}
               />
 
@@ -266,7 +277,7 @@ export function BroadcastAudienceSheet({
           ) : null}
 
           {!loading && !error && filteredChoices.length > 0 ? (
-            <div className="broadcast-audience-sheet__scroll">
+            <div className="broadcast-audience-sheet__scroll" ref={scrollRef}>
               <div className="broadcast-audience-sheet__list" aria-label="Список активных чатов">
                 {filteredChoices.map((chat) => {
                   const checked = draftSelection.includes(chat.id);
