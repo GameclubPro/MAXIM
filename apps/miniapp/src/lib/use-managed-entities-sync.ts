@@ -121,14 +121,21 @@ export function shouldUseFreshManagedEntitiesReload(options: {
 
 export function shouldSettleManagedEntitiesFreshReload(options: {
   freshReloadUsesFreshEndpoint: boolean;
+  startWithBackgroundRefresh: boolean;
   continueWithBackgroundRefreshAfterLoad: boolean;
-  itemCount: number;
+  forceRefreshSession: boolean;
 }): boolean {
   if (!options.freshReloadUsesFreshEndpoint) {
     return false;
   }
 
-  return options.itemCount > 0;
+  // A fresh reload is a fast, partial MAX revalidation. It can return a small
+  // visible subset before the durable background refresh reaches the full allowlist.
+  return (
+    !options.forceRefreshSession &&
+    !options.startWithBackgroundRefresh &&
+    !options.continueWithBackgroundRefreshAfterLoad
+  );
 }
 
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
@@ -979,8 +986,9 @@ export function useManagedEntitiesSync({
           if (
             shouldSettleManagedEntitiesFreshReload({
               freshReloadUsesFreshEndpoint,
+              startWithBackgroundRefresh: shouldStartWithBackgroundRefresh,
               continueWithBackgroundRefreshAfterLoad: shouldContinueWithBackgroundRefreshAfterLoad,
-              itemCount: initial.length,
+              forceRefreshSession,
             })
           ) {
             latestSnapshotRef.current = null;

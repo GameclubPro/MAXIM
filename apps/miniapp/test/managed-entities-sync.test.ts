@@ -194,32 +194,35 @@ test('continues background refresh after an empty cold-start fresh reload', () =
   assert.equal(
     shouldSettleManagedEntitiesFreshReload({
       freshReloadUsesFreshEndpoint: true,
+      startWithBackgroundRefresh: false,
       continueWithBackgroundRefreshAfterLoad: true,
-      itemCount: 0,
+      forceRefreshSession: false,
     }),
     false,
   );
 });
 
-test('continues background refresh after an empty fresh reload even when visible data is preserved', () => {
+test('continues manual refresh after an empty fresh reload even when visible data is preserved', () => {
   assert.equal(
     shouldSettleManagedEntitiesFreshReload({
       freshReloadUsesFreshEndpoint: true,
+      startWithBackgroundRefresh: true,
       continueWithBackgroundRefreshAfterLoad: false,
-      itemCount: 0,
+      forceRefreshSession: true,
     }),
     false,
   );
 });
 
-test('settles fresh reloads once visible entities are present', () => {
+test('continues background refresh after a non-empty fresh reload because it can be partial', () => {
   assert.equal(
     shouldSettleManagedEntitiesFreshReload({
       freshReloadUsesFreshEndpoint: true,
+      startWithBackgroundRefresh: false,
       continueWithBackgroundRefreshAfterLoad: true,
-      itemCount: 1,
+      forceRefreshSession: false,
     }),
-    true,
+    false,
   );
 });
 
