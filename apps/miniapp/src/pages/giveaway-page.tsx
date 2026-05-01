@@ -13,6 +13,13 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
+  isGiveawayEntryOpen,
+  resolveGiveawayDisplayPhase,
+  resolveNextGiveawayBoundaryMs,
+  shouldPollGiveawayFinalization,
+  type GiveawayDisplayPhase,
+} from '../lib/giveaway-state';
+import {
   closeMaxMiniApp,
   maxImpact,
   maxNotify,
@@ -98,12 +105,13 @@ function formatCountdownValue(remainingMs: number): string {
 function resolveCountdownPresentation(
   giveaway: ManagedGiveawayPublic | null,
   nowMs: number,
+  displayPhase: GiveawayDisplayPhase | null,
 ): GiveawayCountdownPresentation | null {
   if (!giveaway) {
     return null;
   }
 
-  if (giveaway.status === 'SCHEDULED' && giveaway.startsAt) {
+  if (displayPhase === 'SCHEDULED' && giveaway.startsAt) {
     const startsAtMs = new Date(giveaway.startsAt).getTime();
     if (Number.isFinite(startsAtMs) && startsAtMs > nowMs) {
       return {
@@ -114,7 +122,7 @@ function resolveCountdownPresentation(
     }
   }
 
-  if (giveaway.status === 'ACTIVE' && giveaway.endsAt) {
+  if (displayPhase === 'ACTIVE' && giveaway.endsAt) {
     const endsAtMs = new Date(giveaway.endsAt).getTime();
     if (Number.isFinite(endsAtMs) && endsAtMs > nowMs) {
       return {
@@ -191,8 +199,15 @@ function buildModalPresentation(params: {
   participant: ManagedGiveawayParticipantState | null;
   missingChannelsCount: number;
   participantStatusUnavailable: boolean;
+  displayPhase: GiveawayDisplayPhase;
 }): GiveawayModalPresentation {
-  const { giveaway, participant, missingChannelsCount, participantStatusUnavailable } = params;
+  const {
+    giveaway,
+    participant,
+    missingChannelsCount,
+    participantStatusUnavailable,
+    displayPhase,
+  } = params;
 
   if (participantStatusUnavailable) {
     return {
@@ -217,6 +232,36 @@ function buildModalPresentation(params: {
         participant.winnerStatus === 'EXPIRED'
           ? 'Место можно перевыбрать через админа.'
           : 'Победителю уже написал бот.',
+    };
+  }
+
+  if (displayPhase === 'COMPLETED') {
+    return {
+      tone: 'muted',
+      glyph: 'check',
+      badge: 'Итоги готовы',
+      title: participant?.joined ? 'В этот раз без выигрыша' : 'Приём заявок завершён',
+      description: giveaway.resultsUrl ? 'Итоги уже в ленте.' : 'Итоги уже зафиксированы.',
+    };
+  }
+
+  if (displayPhase === 'DRAWING') {
+    return {
+      tone: 'warning',
+      glyph: 'clock',
+      badge: 'Подводим итоги',
+      title: 'Приём заявок завершён',
+      description: 'MAX выбирает победителей. Страница обновится автоматически.',
+    };
+  }
+
+  if (displayPhase === 'CANCELED') {
+    return {
+      tone: 'danger',
+      glyph: 'lock',
+      badge: 'Остановлен',
+      title: 'Розыгрыш отменён',
+      description: 'Действий больше нет.',
     };
   }
 
@@ -253,7 +298,7 @@ function buildModalPresentation(params: {
     };
   }
 
-  if (giveaway.status === 'ACTIVE') {
+  if (displayPhase === 'ACTIVE') {
     return {
       tone: 'warning',
       glyph: 'spark',
@@ -263,23 +308,13 @@ function buildModalPresentation(params: {
     };
   }
 
-  if (giveaway.status === 'SCHEDULED') {
+  if (displayPhase === 'SCHEDULED') {
     return {
       tone: 'muted',
       glyph: 'clock',
       badge: 'Скоро старт',
       title: 'Розыгрыш ещё не начался',
       description: 'Кнопка участия появится после старта.',
-    };
-  }
-
-  if (giveaway.status === 'CANCELED') {
-    return {
-      tone: 'danger',
-      glyph: 'lock',
-      badge: 'Остановлен',
-      title: 'Розыгрыш отменён',
-      description: 'Действий больше нет.',
     };
   }
 
@@ -452,6 +487,9 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   });
 
   const giveaway = giveawayQuery.data ?? null;
+  const displayPhase = giveaway ? resolveGiveawayDisplayPhase(giveaway, nowMs) : null;
+  const entryWindowOpen = giveaway ? isGiveawayEntryOpen(giveaway, nowMs) : false;
+  const shouldPollFinalization = giveaway ? shouldPollGiveawayFinalization(giveaway, nowMs) : false;
   const participant = participantQuery.data ?? null;
   const missingChannelCards =
     giveaway && !participantQuery.error
@@ -469,12 +507,12 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     participant?.eligibilityState === 'REJECTED' && missingChannelCards.length > 0;
 
   const canRetryRejectedParticipation =
-    giveaway?.status === 'ACTIVE' && participant?.eligibilityState === 'REJECTED';
+    entryWindowOpen && participant?.eligibilityState === 'REJECTED';
   const canManualEligibilityRecheck =
-    giveaway?.status === 'ACTIVE' &&
+    entryWindowOpen &&
     (participant?.eligibilityState === 'PENDING' || participant?.eligibilityState === 'REJECTED');
   const canEnterParticipation =
-    giveaway?.status === 'ACTIVE' && (!participant?.joined || canRetryRejectedParticipation);
+    entryWindowOpen && (!participant?.joined || canRetryRejectedParticipation);
 
   const loadingPresentation: GiveawayModalPresentation = {
     tone: 'muted',
@@ -505,13 +543,14 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       ? loadingPresentation
       : isParticipantStatusPending
         ? participantLoadingPresentation
-      : buildModalPresentation({
-          giveaway,
-          participant,
-          missingChannelsCount: missingChannelCards.length,
-          participantStatusUnavailable: Boolean(participantQuery.error),
-        });
-  const countdown = resolveCountdownPresentation(giveaway, nowMs);
+        : buildModalPresentation({
+            giveaway,
+            participant,
+            missingChannelsCount: missingChannelCards.length,
+            participantStatusUnavailable: Boolean(participantQuery.error),
+            displayPhase: displayPhase ?? giveaway.status,
+          });
+  const countdown = resolveCountdownPresentation(giveaway, nowMs, displayPhase);
   const giveawayChannels = giveaway ? buildGiveawayChannels(giveaway) : [];
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
   const visiblePrizeList = giveaway?.prizes ?? [];
@@ -525,6 +564,15 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     ]);
     return nextParticipant;
   };
+
+  const refetchCurrentGiveawayState = useEffectEvent(() => {
+    const tasks: Array<Promise<unknown>> = [giveawayQuery.refetch()];
+    if (participantBootstrapReady) {
+      tasks.push(participantQuery.refetch());
+    }
+
+    void Promise.all(tasks);
+  });
 
   const waitForSubscriptionSync = async (delayMs: number) => {
     await new Promise<void>((resolve) => {
@@ -552,8 +600,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     if (nextParticipant.eligibilityState === 'REJECTED') {
       pushToast({
         tone: 'info',
-        title:
-          mode === 'manual' ? 'Подписка ещё не обновилась' : 'MAX ещё обновляет подписку',
+        title: mode === 'manual' ? 'Подписка ещё не обновилась' : 'MAX ещё обновляет подписку',
         description:
           mode === 'manual'
             ? 'Откройте канал ещё раз, если MAX не успел синхронизировать статус.'
@@ -648,74 +695,73 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             disabled: true,
             onClick: () => undefined,
           }
-      : participantQuery.error
-        ? {
-            label: 'Обновить статус',
-            disabled: participantQuery.isLoading,
-            onClick: () => {
-              void participantQuery.refetch();
-            },
-          }
-        : canManualEligibilityRecheck &&
-            (participant?.eligibilityState === 'PENDING' ||
-              subscriptionNeedsManualRetry ||
-              !nextMissingChannel?.link)
+        : participantQuery.error
           ? {
-              label:
-                subscriptionRecheckPending
+              label: 'Обновить статус',
+              disabled: participantQuery.isLoading,
+              onClick: () => {
+                void participantQuery.refetch();
+              },
+            }
+          : canManualEligibilityRecheck &&
+              (participant?.eligibilityState === 'PENDING' ||
+                subscriptionNeedsManualRetry ||
+                !nextMissingChannel?.link)
+            ? {
+                label: subscriptionRecheckPending
                   ? 'Проверяем статус…'
                   : participant?.eligibilityState === 'PENDING'
                     ? 'Обновить проверку'
                     : 'Проверить снова',
-              disabled: subscriptionRecheckPending,
-              onClick: () => {
-                void recheckParticipationEligibility('manual').then((nextParticipant) => {
-                  if (!nextParticipant) {
-                    return;
-                  }
-
-                  applyEligibilityRecheckResult(nextParticipant, 'manual');
-                });
-              },
-            }
-          : isSubscriptionFlow && nextMissingChannel?.link
-            ? {
-                label:
-                  awaitingSubscriptionReturn || subscriptionRecheckPending
-                    ? 'Проверяем подписку…'
-                    : missingChannelCards.length > 1
-                      ? 'Открыть следующий канал'
-                      : 'Открыть канал',
-                disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
+                disabled: subscriptionRecheckPending,
                 onClick: () => {
-                  openMissingChannel(nextMissingChannel.link ?? '');
+                  void recheckParticipationEligibility('manual').then((nextParticipant) => {
+                    if (!nextParticipant) {
+                      return;
+                    }
+
+                    applyEligibilityRecheckResult(nextParticipant, 'manual');
+                  });
                 },
               }
-            : isSubscriptionFlow
-              ? null
-              : canEnterParticipation
-                ? {
-                    label: enterMutation.isPending
+            : isSubscriptionFlow && nextMissingChannel?.link
+              ? {
+                  label:
+                    awaitingSubscriptionReturn || subscriptionRecheckPending
+                      ? 'Проверяем подписку…'
+                      : missingChannelCards.length > 1
+                        ? 'Открыть следующий канал'
+                        : 'Открыть канал',
+                  disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
+                  onClick: () => {
+                    openMissingChannel(nextMissingChannel.link ?? '');
+                  },
+                }
+              : isSubscriptionFlow
+                ? null
+                : canEnterParticipation
+                  ? {
+                      label: enterMutation.isPending
                         ? canRetryRejectedParticipation
                           ? 'Проверяем…'
                           : 'Входим…'
-                      : canRetryRejectedParticipation
-                        ? 'Проверить снова'
-                        : 'Участвовать',
-                    disabled: enterMutation.isPending || participantQuery.isLoading,
-                    onClick: () => {
-                      void enterMutation.mutateAsync();
-                    },
-                  }
-                : giveaway.resultsUrl
-                  ? {
-                      label: 'Открыть итоги',
-                      disabled: false,
+                        : canRetryRejectedParticipation
+                          ? 'Проверить снова'
+                          : 'Участвовать',
+                      disabled: enterMutation.isPending || participantQuery.isLoading,
                       onClick: () => {
-                        openMaxBotLink(giveaway.resultsUrl ?? '');
+                        void enterMutation.mutateAsync();
                       },
                     }
-                  : null;
+                  : giveaway.resultsUrl
+                    ? {
+                        label: 'Открыть итоги',
+                        disabled: false,
+                        onClick: () => {
+                          openMaxBotLink(giveaway.resultsUrl ?? '');
+                        },
+                      }
+                    : null;
 
   const openSupportBot = () => {
     maxSelectionChanged();
@@ -749,6 +795,52 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('visibilitychange', handleVisible);
     };
   }, [awaitingSubscriptionReturn, handleSubscriptionReturnVisible]);
+
+  useEffect(() => {
+    if (!giveaway || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const now = Date.now();
+    const boundaryMs = resolveNextGiveawayBoundaryMs(giveaway, now);
+    if (boundaryMs === null) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(
+      () => {
+        setNowMs(Date.now());
+        refetchCurrentGiveawayState();
+      },
+      Math.max(0, boundaryMs - now) + 600,
+    );
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [
+    giveaway?.id,
+    giveaway?.status,
+    giveaway?.startsAt,
+    giveaway?.endsAt,
+    refetchCurrentGiveawayState,
+  ]);
+
+  useEffect(() => {
+    if (!shouldPollFinalization || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    refetchCurrentGiveawayState();
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
+      refetchCurrentGiveawayState();
+    }, 5_000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [shouldPollFinalization, refetchCurrentGiveawayState]);
 
   useEffect(() => {
     if (!countdown || typeof window === 'undefined') {
@@ -961,7 +1053,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 </div>
                 <div className="giveaway-page__prize-rail">
                   {visiblePrizeList.map((prize) => (
-                    <div key={`giveaway-prize-${prize.id}`} className="giveaway-page__chip giveaway-page__chip--prize">
+                    <div
+                      key={`giveaway-prize-${prize.id}`}
+                      className="giveaway-page__chip giveaway-page__chip--prize"
+                    >
                       <strong>{prize.position}</strong>
                       <span>{prize.title}</span>
                     </div>
@@ -1070,7 +1165,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 </div>
                 <div className="giveaway-page__winner-list">
                   {visibleWinners.map((winner) => (
-                    <div key={`giveaway-winner-${winner.prizePosition}`} className="giveaway-page__winner-row">
+                    <div
+                      key={`giveaway-winner-${winner.prizePosition}`}
+                      className="giveaway-page__winner-row"
+                    >
                       <span className="giveaway-page__winner-rank">{winner.prizePosition}</span>
                       <span className="giveaway-page__winner-copy">
                         <span className="giveaway-page__winner-prize">{winner.prizeTitle}</span>
