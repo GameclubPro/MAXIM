@@ -897,7 +897,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('uses the source chat bot binding for giveaway mini app buttons', async () => {
+  it('uses the source chat bot binding for giveaway mini app deep links', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:35:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -942,7 +942,11 @@ describe('ManagedGiveawayService', () => {
     await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
 
     expect(maxBotLinkService.resolveBotIdForRead).toHaveBeenCalledWith({ chatId: 'source-1' });
-    expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('id613002203036_4_bot');
+    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^gg-/u),
+      'id613002203036_4_bot',
+    );
+    expect(maxBotLinkService.resolveContactIdSync).not.toHaveBeenCalled();
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
       'Текст публикации',
@@ -950,10 +954,11 @@ describe('ManagedGiveawayService', () => {
         buttons: [
           [
             expect.objectContaining({
-              type: 'open_app',
+              type: 'link',
               text: 'Участвовать · 0',
-              webApp: 'https://maxim.play-team.ru/app/giveaways/giveaway-1',
-              contactId: '613002203040',
+              url: expect.stringContaining(
+                'https://max.ru/id613002203036_4_bot?startapp=gg-',
+              ),
             }),
           ],
         ],
@@ -1022,10 +1027,26 @@ describe('ManagedGiveawayService', () => {
       chatId: 'source-route-1',
     });
     expect(maxBotLinkService.resolveBotIdForRead).not.toHaveBeenCalled();
+    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.stringMatching(/^gg-/u),
+      'id613002203036_4_bot',
+    );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-route-1',
       'Текст публикации',
-      expect.any(Object),
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: 'Участвовать · 0',
+              url: expect.stringContaining(
+                'https://max.ru/id613002203036_4_bot?startapp=gg-',
+              ),
+            }),
+          ],
+        ],
+      }),
       { botId: 'id613002203036_4_bot' },
     );
   });
