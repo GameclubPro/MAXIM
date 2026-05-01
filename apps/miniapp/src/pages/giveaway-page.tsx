@@ -40,7 +40,6 @@ type GiveawayChannelCard = {
 type GiveawayModalPresentation = {
   tone: GiveawayTone;
   glyph: GiveawayGlyph;
-  badge: string;
   title: string;
   description: string | null;
 };
@@ -195,7 +194,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'clock',
-      badge: 'Статус недоступен',
       title: 'Повторите позже',
       description: null,
     };
@@ -207,7 +205,6 @@ function buildModalPresentation(params: {
       return {
         tone: 'danger',
         glyph: 'clock',
-        badge: 'Срок истёк',
         title: 'Срок истёк',
         description: null,
       };
@@ -216,7 +213,6 @@ function buildModalPresentation(params: {
       return {
         tone: 'success',
         glyph: 'gift',
-        badge: winnerStatus === 'DELIVERED' ? 'Приз выдан' : 'Приз подтверждён',
         title: winnerStatus === 'DELIVERED' ? 'Приз выдан' : 'Приз подтверждён',
         description: null,
       };
@@ -225,7 +221,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'success',
       glyph: 'gift',
-      badge: 'Вы выиграли',
       title: 'Вы выиграли',
       description: null,
     };
@@ -235,7 +230,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'muted',
       glyph: 'check',
-      badge: 'Итоги готовы',
       title: 'Итоги готовы',
       description: null,
     };
@@ -245,7 +239,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'clock',
-      badge: 'Итоги',
       title: 'Подводим итоги',
       description: null,
     };
@@ -255,7 +248,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'danger',
       glyph: 'lock',
-      badge: 'Остановлен',
       title: 'Розыгрыш отменён',
       description: null,
     };
@@ -265,7 +257,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'danger',
       glyph: 'cross',
-      badge: 'Условия',
       title: missingChannelsCount > 1 ? 'Нужны подписки' : 'Нужна подписка',
       description: missingChannelsCount > 0 ? null : participant.eligibilityReason?.trim() || null,
     };
@@ -276,7 +267,6 @@ function buildModalPresentation(params: {
       return {
         tone: 'success',
         glyph: 'check',
-        badge: 'Готово',
         title: 'Условия выполнены',
         description: null,
       };
@@ -285,7 +275,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'spark',
-      badge: 'Проверяем',
       title: 'Проверяем условия',
       description: null,
     };
@@ -295,7 +284,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'spark',
-      badge: 'Условия',
       title: 'Проверка условий',
       description: null,
     };
@@ -305,7 +293,6 @@ function buildModalPresentation(params: {
     return {
       tone: 'muted',
       glyph: 'clock',
-      badge: 'Скоро старт',
       title: 'Розыгрыш ещё не начался',
       description: null,
     };
@@ -314,7 +301,6 @@ function buildModalPresentation(params: {
   return {
     tone: 'muted',
     glyph: 'check',
-    badge: 'Итоги готовы',
     title: 'Приём заявок завершён',
     description: null,
   };
@@ -533,7 +519,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const loadingPresentation: GiveawayModalPresentation = {
     tone: 'muted',
     glyph: 'clock',
-    badge: 'Открываем',
     title: 'Проверка условий',
     description: null,
   };
@@ -541,14 +526,12 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const errorPresentation: GiveawayModalPresentation = {
     tone: 'danger',
     glyph: 'cross',
-    badge: 'Ошибка',
     title: 'Не удалось открыть розыгрыш',
     description: formatApiError(giveawayQuery.error),
   };
   const participantLoadingPresentation: GiveawayModalPresentation = {
     tone: 'muted',
     glyph: 'clock',
-    badge: 'Проверяем',
     title: 'Проверяем условия',
     description: null,
   };
@@ -928,12 +911,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           >
             ×
           </button>
-
-          <div className="giveaway-page__overlay-head">
-            <span className={cn('giveaway-page__status', `is-${presentation.tone}`)}>
-              {presentation.badge}
-            </span>
-          </div>
 
           <div className="giveaway-page__overlay-body">
             <div className={cn('giveaway-page__overlay-state-block', `is-${presentation.tone}`)}>
