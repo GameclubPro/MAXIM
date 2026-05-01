@@ -858,26 +858,6 @@ body.settings-home-page-open .bottom-nav__label {
   gap: 3px;
 }
 
-.chats-search-card__eyebrow {
-  width: max-content;
-  max-width: min(100%, 220px);
-  display: inline-flex;
-  align-items: center;
-  min-height: 20px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(11, 132, 255, 0.14);
-  background: rgba(225, 241, 255, 0.72);
-  color: #086cc6;
-  font-size: 0.62rem;
-  font-weight: 900;
-  line-height: 1;
-  letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .chats-search-card__sync-dot {
   width: 7px;
   height: 7px;

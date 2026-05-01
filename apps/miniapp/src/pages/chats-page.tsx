@@ -69,7 +69,6 @@ const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
-const HOME_BOT_BADGE_LABEL = import.meta.env.VITE_APP_NAME?.trim() || 'Майор Максимов';
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -448,9 +447,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <div className="chats-search-card__title">
             <div className="chats-search-card__title-row">
               <div className="chats-search-card__heading">
-                <span className="chats-search-card__eyebrow" title={HOME_BOT_BADGE_LABEL}>
-                  {HOME_BOT_BADGE_LABEL}
-                </span>
                 <h1>{tabLabel}</h1>
               </div>
               <div className="chats-search-card__meta">
