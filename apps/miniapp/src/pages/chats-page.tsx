@@ -69,6 +69,7 @@ const CHAT_CARD_STAGGER_THRESHOLD = 24;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
+const HOME_BOT_BADGE_LABEL = import.meta.env.VITE_APP_NAME?.trim() || 'Майор Максимов';
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -101,56 +102,6 @@ function formatRefreshProgress(refreshState: ManagedEntitiesRefreshState | null)
   }
 
   return null;
-}
-
-function formatRefreshTime(value: string | null | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-
-  const timestamp = Date.parse(value);
-  if (!Number.isFinite(timestamp)) {
-    return null;
-  }
-
-  return new Date(timestamp).toLocaleTimeString('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function buildRefreshStatusLabel(options: {
-  refreshState: ManagedEntitiesRefreshState | null;
-  isRefreshing: boolean;
-  hasLoadedFromServer: boolean;
-  isUserVisibleComplete: boolean;
-}): string | null {
-  const { refreshState, isRefreshing, hasLoadedFromServer, isUserVisibleComplete } = options;
-  const progress = formatRefreshProgress(refreshState);
-
-  if (!hasLoadedFromServer) {
-    return 'Проверяем список на сервере.';
-  }
-  if (isRefreshing) {
-    return progress ? `Фоновый синк: ${progress}.` : 'Фоновый синк списка.';
-  }
-  if (refreshState?.backoffActive) {
-    return 'MAX временно ограничил синк. Продолжим автоматически.';
-  }
-  if (refreshState?.manualRefreshBlockedReason === 'recent_sync') {
-    const syncedAt = formatRefreshTime(refreshState.lastSyncedAt);
-    return syncedAt ? `Синхронизировано в ${syncedAt}.` : 'Недавно синхронизировано.';
-  }
-  if (refreshState?.complete) {
-    const syncedAt = formatRefreshTime(refreshState.lastSyncedAt);
-    return syncedAt ? `Обновлено в ${syncedAt}.` : 'Список синхронизирован.';
-  }
-  if (isUserVisibleComplete) {
-    const syncedAt = formatRefreshTime(refreshState?.lastSyncedAt);
-    return syncedAt ? `Список готов. Последний полный синк в ${syncedAt}.` : 'Список готов.';
-  }
-
-  return progress ? `Синк: ${progress}.` : null;
 }
 
 function buildPendingSyncDescription(options: {
@@ -277,12 +228,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     !activeEntitiesState.isSyncComplete;
   const isManualRefreshBlocked =
     isRefreshTemporarilyBlocked || isManualRefreshCoolingDown || isManualRefreshInProgressByState;
-  const refreshStatusLabel = buildRefreshStatusLabel({
-    refreshState,
-    isRefreshing: isFetching,
-    hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-    isUserVisibleComplete: activeEntitiesState.isSyncComplete,
-  });
   const homeSyncStatus = buildHomeSyncStatus({
     isRefreshing: isFetching,
     isBackoffActive: activeEntitiesState.isBackoffActive,
@@ -301,14 +246,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     !isLoading && !queryError && Array.isArray(activeEntities) && activeEntities.length === 0;
   const showTransientEmptyState = hasNoActiveEntities && activeEntitiesState.isBackoffActive;
   const isNoEntitiesForTab = hasNoActiveEntities && isSyncSettled && !showTransientEmptyState;
-  const showRefreshStatusLabel =
-    Boolean(refreshStatusLabel) &&
-    (isFetching ||
-      isSyncPending ||
-      isManualRefreshBlocked ||
-      hasNoActiveEntities ||
-      activeEntitiesState.isBackoffActive ||
-      Boolean(queryError));
 
   const [filteredEntities, visibleEntitiesCount] = useMemo(() => {
     const [matchingEntities, matchingCount] = buildHomeView({
@@ -511,7 +448,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <div className="chats-search-card__title">
             <div className="chats-search-card__title-row">
               <div className="chats-search-card__heading">
-                <span className="chats-search-card__eyebrow">MAXIM</span>
+                <span className="chats-search-card__eyebrow" title={HOME_BOT_BADGE_LABEL}>
+                  {HOME_BOT_BADGE_LABEL}
+                </span>
                 <h1>{tabLabel}</h1>
               </div>
               <div className="chats-search-card__meta">
@@ -534,9 +473,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
             </div>
-            {showRefreshStatusLabel ? (
-              <p className="chats-search-card__status">{refreshStatusLabel}</p>
-            ) : null}
             {refreshProgressPercent !== null ? (
               <div
                 className="chats-search-card__progress"

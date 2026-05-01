@@ -860,6 +860,7 @@ body.settings-home-page-open .bottom-nav__label {
 
 .chats-search-card__eyebrow {
   width: max-content;
+  max-width: min(100%, 220px);
   display: inline-flex;
   align-items: center;
   min-height: 20px;
@@ -872,6 +873,9 @@ body.settings-home-page-open .bottom-nav__label {
   font-weight: 900;
   line-height: 1;
   letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .chats-search-card__sync-dot {
