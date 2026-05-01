@@ -4,6 +4,7 @@ import type { ChatSummary, ManagedEntitiesRefreshState } from '@maxim/contracts'
 import {
   applyManagedEntitiesResponseDiff,
   isManagedEntitiesUserVisibleComplete,
+  mergeManagedEntitiesInitialItems,
   mergeManagedEntitiesRefreshItems,
   readManagedEntitiesLocalCacheUserScopeFromInitData,
   resolveManagedEntitiesSettledPhase,
@@ -200,6 +201,17 @@ test('continues background refresh after an empty cold-start fresh reload', () =
   );
 });
 
+test('continues background refresh after an empty fresh reload even when visible data is preserved', () => {
+  assert.equal(
+    shouldSettleManagedEntitiesFreshReload({
+      freshReloadUsesFreshEndpoint: true,
+      continueWithBackgroundRefreshAfterLoad: false,
+      itemCount: 0,
+    }),
+    false,
+  );
+});
+
 test('settles fresh reloads once visible entities are present', () => {
   assert.equal(
     shouldSettleManagedEntitiesFreshReload({
@@ -358,10 +370,7 @@ test('applies a published snapshot patch using the canonical server order', () =
     },
   });
 
-  assert.deepEqual(next, [
-    createItem('3', 'Chat 3'),
-    createItem('2', 'Chat 2 updated'),
-  ]);
+  assert.deepEqual(next, [createItem('3', 'Chat 3'), createItem('2', 'Chat 2 updated')]);
 });
 
 test('rejects a published snapshot patch when the ordered ids cannot reconstruct the next list', () => {
@@ -473,5 +482,31 @@ test('can keep the already visible home list when a complete refresh returns emp
       preservePreviousOnEmptyComplete: true,
     }).map((item) => item.id),
     ['1', '2'],
+  );
+});
+
+test('keeps already visible entities while a fresh reload returns an empty bootstrap response', () => {
+  const previous = [createItem('1', 'Chat 1'), createItem('2', 'Chat 2')];
+
+  assert.deepEqual(
+    mergeManagedEntitiesInitialItems({
+      previous,
+      next: [],
+      preservePreviousOnEmpty: true,
+    }).map((item) => item.id),
+    ['1', '2'],
+  );
+});
+
+test('allows a normal empty initial load to stay empty', () => {
+  const previous = [createItem('1', 'Chat 1')];
+
+  assert.deepEqual(
+    mergeManagedEntitiesInitialItems({
+      previous,
+      next: [],
+      preservePreviousOnEmpty: false,
+    }),
+    [],
   );
 });

@@ -3084,6 +3084,9 @@
   gap: 12px;
   padding: 14px;
   border-radius: 22px;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   border-color: rgba(212, 225, 238, 0.88);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(249, 252, 255, 0.92)),
@@ -3091,6 +3094,92 @@
   box-shadow:
     0 10px 24px rgba(28, 61, 92, 0.07),
     0 1px 0 rgba(255, 255, 255, 0.76) inset;
+  transition:
+    border-color 0.2s ease,
+    box-shadow 0.2s ease,
+    transform 0.2s ease;
+}
+
+.chat-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    112deg,
+    transparent 0%,
+    transparent 32%,
+    rgba(11, 132, 255, 0.08) 46%,
+    rgba(31, 169, 126, 0.07) 52%,
+    transparent 64%,
+    transparent 100%
+  );
+  transform: translateX(-112%);
+}
+
+.chat-card::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  z-index: 0;
+  width: 3px;
+  border-radius: 999px;
+  opacity: 0;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.chat-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.chat-card.is-syncing {
+  border-color: rgba(11, 132, 255, 0.18);
+  box-shadow:
+    0 12px 28px rgba(28, 61, 92, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.78) inset;
+}
+
+.chat-card.is-syncing::before {
+  opacity: 1;
+  animation: chats-sync-sweep 1.8s ease-in-out infinite;
+}
+
+.chat-card.is-syncing::after {
+  opacity: 0.9;
+}
+
+.chat-card.is-from-cache {
+  border-color: rgba(102, 124, 144, 0.2);
+}
+
+.chat-card.is-from-cache::after {
+  opacity: 0.55;
+  background: #7a8fa2;
+}
+
+.chat-card.is-paused {
+  border-color: rgba(240, 164, 43, 0.26);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 241, 0.96), rgba(255, 255, 255, 0.91)),
+    rgba(255, 244, 222, 0.76);
+}
+
+.chat-card.is-paused::after {
+  opacity: 0.85;
+  background: var(--warning);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chats-search-card.is-syncing::after,
+  .chat-card.is-syncing::before,
+  .chats-search-card__sync-chip.is-syncing .chats-search-card__sync-dot,
+  .chats-search-card__sync-chip.is-warning .chats-search-card__sync-dot {
+    animation: none;
+  }
 }
 
 .chat-card__identity {
@@ -3106,7 +3195,7 @@
 .chat-card__header h3 {
   font-size: 1rem;
   line-height: 1.18;
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .chat-card__actions {

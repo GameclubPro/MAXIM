@@ -17,6 +17,7 @@ import { describeApiError } from '../lib/api-error';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
+import { cn } from '../lib/cn';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -38,6 +39,7 @@ import {
 } from './lazy-pages';
 
 type ManagedTab = 'chat' | 'channel';
+type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
 type ManagedEntitiesReloadRequest = {
   nonce: number;
   behavior: 'default' | 'manual' | 'recovery';
@@ -151,6 +153,29 @@ function buildPendingSyncDescription(options: {
   return 'Обновляем локальный список и сверяем права администратора в MAX.';
 }
 
+function buildHomeSyncStatus(options: {
+  isRefreshing: boolean;
+  isBackoffActive: boolean;
+  hasLoadedFromServer: boolean;
+  snapshotStale: boolean | null | undefined;
+  isUserVisibleComplete: boolean;
+}): { label: string; tone: HomeSyncTone } {
+  if (options.isBackoffActive) {
+    return { label: 'Пауза', tone: 'warning' };
+  }
+  if (options.isRefreshing || options.snapshotStale === true) {
+    return { label: 'Синк', tone: 'syncing' };
+  }
+  if (!options.hasLoadedFromServer) {
+    return { label: 'Кеш', tone: 'cache' };
+  }
+  if (options.isUserVisibleComplete) {
+    return { label: 'Готово', tone: 'ready' };
+  }
+
+  return { label: 'Синк', tone: 'syncing' };
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -234,13 +259,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
     isUserVisibleComplete: activeEntitiesState.isUserVisibleComplete,
   });
+  const homeSyncStatus = buildHomeSyncStatus({
+    isRefreshing: isFetching,
+    isBackoffActive: activeEntitiesState.isBackoffActive,
+    hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+    snapshotStale: activeEntitiesState.snapshot?.stale ?? null,
+    isUserVisibleComplete: activeEntitiesState.isUserVisibleComplete,
+  });
 
-  const isNoEntitiesForTab =
-    !isLoading &&
-    !queryError &&
-    isSyncSettled &&
-    Array.isArray(activeEntities) &&
-    activeEntities.length === 0;
+  const hasNoActiveEntities =
+    !isLoading && !queryError && Array.isArray(activeEntities) && activeEntities.length === 0;
+  const showTransientEmptyState = hasNoActiveEntities && activeEntitiesState.isBackoffActive;
+  const isNoEntitiesForTab = hasNoActiveEntities && isSyncSettled && !showTransientEmptyState;
+  const showRefreshStatusLabel =
+    Boolean(refreshStatusLabel) &&
+    (hasNoActiveEntities || activeEntitiesState.isBackoffActive || Boolean(queryError));
 
   const [filteredEntities, visibleEntitiesCount] = useMemo(
     () =>
@@ -254,23 +287,27 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
-  const settledRefreshMarker = useMemo(() => buildManagedEntitiesSettledMarker({
-    scopeKey: activeTab,
-    hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
-    isSyncComplete: activeEntitiesState.isUserVisibleComplete,
-    isBackoffActive: activeEntitiesState.isBackoffActive,
-    snapshotVersion: activeEntitiesState.snapshot?.version,
-    snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
-    lastSyncedAt: activeEntitiesState.refreshState?.lastSyncedAt,
-  }), [
-    activeEntitiesState.hasLoadedFromServer,
-    activeEntitiesState.isBackoffActive,
-    activeEntitiesState.isUserVisibleComplete,
-    activeEntitiesState.refreshState?.lastSyncedAt,
-    activeEntitiesState.snapshot?.builtAt,
-    activeEntitiesState.snapshot?.version,
-    activeTab,
-  ]);
+  const settledRefreshMarker = useMemo(
+    () =>
+      buildManagedEntitiesSettledMarker({
+        scopeKey: activeTab,
+        hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
+        isSyncComplete: activeEntitiesState.isUserVisibleComplete,
+        isBackoffActive: activeEntitiesState.isBackoffActive,
+        snapshotVersion: activeEntitiesState.snapshot?.version,
+        snapshotBuiltAt: activeEntitiesState.snapshot?.builtAt,
+        lastSyncedAt: activeEntitiesState.refreshState?.lastSyncedAt,
+      }),
+    [
+      activeEntitiesState.hasLoadedFromServer,
+      activeEntitiesState.isBackoffActive,
+      activeEntitiesState.isUserVisibleComplete,
+      activeEntitiesState.refreshState?.lastSyncedAt,
+      activeEntitiesState.snapshot?.builtAt,
+      activeEntitiesState.snapshot?.version,
+      activeTab,
+    ],
+  );
   const { noteRefreshRequested } = useManagedEntitiesVisibilityRefresh({
     enabled: true,
     hasLoadedFromServer: activeEntitiesState.hasLoadedFromServer,
@@ -398,12 +435,20 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   return (
     <div className="page-stack page-enter">
       {showSearchCard ? (
-        <GlassCard className="chats-search-card" padding="sm" elevated>
+        <GlassCard
+          className={cn('chats-search-card', isFetching && 'is-syncing')}
+          padding="sm"
+          elevated
+        >
           <div className="chats-search-card__head">
             <div className="chats-search-card__title">
               <div className="chats-search-card__title-row">
                 <h1>{tabLabel}</h1>
                 <div className="chats-search-card__meta">
+                  <span className={cn('chats-search-card__sync-chip', `is-${homeSyncStatus.tone}`)}>
+                    <span className="chats-search-card__sync-dot" aria-hidden />
+                    {homeSyncStatus.label}
+                  </span>
                   <button
                     type="button"
                     className="button button--ghost chats-search-card__refresh"
@@ -442,7 +487,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                   </span>
                 </div>
               </div>
-              {refreshStatusLabel ? (
+              {showRefreshStatusLabel ? (
                 <p className="chats-search-card__status">{refreshStatusLabel}</p>
               ) : null}
             </div>
@@ -465,6 +510,30 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <Suspense fallback={null}>
           <LazySystemEntryCard api={api} />
         </Suspense>
+      ) : null}
+
+      {showTransientEmptyState ? (
+        <GlassCard className="chats-transient-state">
+          <StatusState
+            tone="warning"
+            title="MAX на паузе"
+            description={
+              manualRefreshRetryAfterSec
+                ? `Повтор через ${manualRefreshRetryAfterSec} сек.`
+                : 'Список восстановится автоматически.'
+            }
+            action={
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => handleRefresh(activeTab, 'recovery')}
+                disabled={isFetching || isRefreshTemporarilyBlocked}
+              >
+                Проверить
+              </button>
+            }
+          />
+        </GlassCard>
       ) : null}
 
       {isLoading ? (
@@ -570,7 +639,13 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           {filteredEntities.map((entity, index) => {
             const staggerIndex =
               limitedStagger === null ? index : index < limitedStagger ? index : null;
-            const className = staggerIndex === null ? 'chat-card' : 'chat-card stagger-in';
+            const className = cn(
+              'chat-card',
+              staggerIndex !== null && 'stagger-in',
+              isFetching && 'is-syncing',
+              homeSyncStatus.tone === 'cache' && 'is-from-cache',
+              homeSyncStatus.tone === 'warning' && 'is-paused',
+            );
             const style =
               staggerIndex === null
                 ? undefined

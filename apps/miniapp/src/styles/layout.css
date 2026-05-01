@@ -161,12 +161,16 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 .bottom-nav__label {
+  min-width: 0;
   width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   font-size: 0.7rem;
   line-height: 1.1;
   letter-spacing: 0.01em;
   text-align: center;
-  text-wrap: balance;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .bottom-nav__item.is-active {
@@ -803,6 +807,9 @@ body.settings-home-page-open .bottom-nav__label {
   gap: 12px;
   padding: 15px 14px 14px;
   border-radius: 24px;
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   border-color: rgba(211, 224, 237, 0.88);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(248, 252, 255, 0.92)),
@@ -812,9 +819,93 @@ body.settings-home-page-open .bottom-nav__label {
     0 1px 0 rgba(255, 255, 255, 0.78) inset;
 }
 
+.chats-search-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: linear-gradient(
+    112deg,
+    transparent 0%,
+    transparent 36%,
+    rgba(11, 132, 255, 0.1) 46%,
+    rgba(31, 169, 126, 0.08) 52%,
+    transparent 64%,
+    transparent 100%
+  );
+  transform: translateX(-112%);
+}
+
+.chats-search-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.chats-search-card.is-syncing::after {
+  opacity: 1;
+  animation: chats-sync-sweep 1.55s ease-in-out infinite;
+}
+
+.chats-search-card__sync-chip {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 850;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.74) inset;
+}
+
+.chats-search-card__sync-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 13%, transparent);
+}
+
+.chats-search-card__sync-chip.is-ready {
+  color: #0f7e5d;
+  border-color: rgba(31, 169, 126, 0.2);
+  background: rgba(31, 169, 126, 0.1);
+}
+
+.chats-search-card__sync-chip.is-syncing {
+  color: #086cc6;
+  border-color: rgba(11, 132, 255, 0.18);
+  background: rgba(225, 241, 255, 0.78);
+}
+
+.chats-search-card__sync-chip.is-cache {
+  color: #4f6578;
+  border-color: rgba(102, 124, 144, 0.18);
+  background: rgba(232, 239, 246, 0.82);
+}
+
+.chats-search-card__sync-chip.is-warning {
+  color: #9a5f00;
+  border-color: rgba(240, 164, 43, 0.24);
+  background: rgba(255, 244, 222, 0.86);
+}
+
+.chats-search-card__sync-chip.is-syncing .chats-search-card__sync-dot,
+.chats-search-card__sync-chip.is-warning .chats-search-card__sync-dot {
+  animation: chats-status-pulse 1.05s ease-in-out infinite;
+}
+
 .chats-search-card__title h1 {
   font-size: clamp(1.34rem, 1.18rem + 0.72vw, 1.62rem);
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
 }
 
 .chats-search-card__title p,
@@ -846,8 +937,42 @@ body.settings-home-page-open .bottom-nav__label {
   font-size: 0.96rem;
 }
 
+.chats-transient-state {
+  border-color: rgba(240, 164, 43, 0.24);
+  background:
+    linear-gradient(180deg, rgba(255, 250, 240, 0.96), rgba(255, 255, 255, 0.9)),
+    rgba(255, 244, 222, 0.78);
+  box-shadow:
+    0 12px 28px rgba(152, 98, 10, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.78) inset;
+}
+
 .chat-grid {
   gap: 8px;
+}
+
+@keyframes chats-sync-sweep {
+  0% {
+    transform: translateX(-112%);
+  }
+
+  58%,
+  100% {
+    transform: translateX(112%);
+  }
+}
+
+@keyframes chats-status-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.8;
+  }
+
+  50% {
+    transform: scale(1.28);
+    opacity: 1;
+  }
 }
 
 @media (min-width: 720px) {
@@ -908,6 +1033,12 @@ body.settings-home-page-open .bottom-nav__label {
   .chats-search-card__count {
     min-width: 38px;
     min-height: 30px;
+  }
+
+  .chats-search-card__sync-chip {
+    min-height: 30px;
+    padding: 0 8px;
+    font-size: 0.72rem;
   }
 
   .chats-search-card__field input {
