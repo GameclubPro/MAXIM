@@ -50,6 +50,11 @@ type GiveawayCountdownPresentation = {
   targetAt: string;
 };
 
+type GiveawayStatusPresentation = {
+  label: string;
+  tone: GiveawayTone;
+};
+
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Не удалось выполнить действие.';
@@ -134,6 +139,49 @@ function resolveClaimCountdownPresentation(
     value: formatCountdownValue(claimDeadlineMs - nowMs),
     targetAt: participant.claimDeadlineAt,
   };
+}
+
+function resolveStatusPresentation(
+  displayPhase: GiveawayDisplayPhase | null,
+): GiveawayStatusPresentation {
+  switch (displayPhase) {
+    case 'ACTIVE':
+      return { label: 'Активен', tone: 'success' };
+    case 'SCHEDULED':
+      return { label: 'Скоро', tone: 'muted' };
+    case 'DRAWING':
+      return { label: 'Итоги', tone: 'warning' };
+    case 'COMPLETED':
+      return { label: 'Готово', tone: 'success' };
+    case 'CANCELED':
+      return { label: 'Отменён', tone: 'danger' };
+    default:
+      return { label: 'Розыгрыш', tone: 'muted' };
+  }
+}
+
+function formatCompactCount(value: number): string {
+  if (value >= 1_000_000) {
+    return `${Math.floor(value / 100_000) / 10}м`;
+  }
+
+  if (value >= 10_000) {
+    return `${Math.floor(value / 1_000)}к`;
+  }
+
+  if (value >= 1_000) {
+    return `${Math.floor(value / 100) / 10}к`;
+  }
+
+  return String(value);
+}
+
+function getGiveawayImageSource(giveaway: ManagedGiveawayPublic): string | null {
+  if (!giveaway.imageEnabled || !giveaway.imageBase64 || !giveaway.imageMimeType) {
+    return null;
+  }
+
+  return `data:${giveaway.imageMimeType};base64,${giveaway.imageBase64}`;
 }
 
 function buildGiveawayChannels(giveaway: ManagedGiveawayPublic): GiveawayChannelCard[] {
@@ -553,6 +601,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const claimCountdown = resolveClaimCountdownPresentation(participant, nowMs);
   const activeCountdown = claimCountdown ?? countdown;
   const giveawayChannels = giveaway ? buildGiveawayChannels(giveaway) : [];
+  const statusPresentation = resolveStatusPresentation(displayPhase);
+  const giveawayImageSource = giveaway ? getGiveawayImageSource(giveaway) : null;
+  const visiblePrizes = giveaway?.prizes.slice(0, 2) ?? [];
+  const hiddenPrizeCount = Math.max(0, (giveaway?.prizes.length ?? 0) - visiblePrizes.length);
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
   const showConditionChecklist = Boolean(
     giveaway &&
@@ -913,6 +965,74 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           </button>
 
           <div className="giveaway-page__overlay-body">
+            {giveaway ? (
+              <div className="giveaway-page__spotlight">
+                <div className="giveaway-page__spotlight-head">
+                  <div className="giveaway-page__spotlight-copy">
+                    <span
+                      className={cn(
+                        'giveaway-page__spotlight-status',
+                        `is-${statusPresentation.tone}`,
+                      )}
+                    >
+                      {statusPresentation.label}
+                    </span>
+                    <h1>{giveaway.title}</h1>
+                  </div>
+                  {activeCountdown ? (
+                    <div
+                      className="giveaway-page__spotlight-timer"
+                      aria-label={activeCountdown.label}
+                    >
+                      <span>{activeCountdown.label}</span>
+                      <strong>{activeCountdown.value}</strong>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="giveaway-page__spotlight-meta" aria-label="Параметры розыгрыша">
+                  <span>
+                    <strong>{formatCompactCount(giveaway.entriesCount)}</strong>
+                    <small>Участники</small>
+                  </span>
+                  <span>
+                    <strong>{formatCompactCount(giveaway.prizes.length)}</strong>
+                    <small>Призы</small>
+                  </span>
+                  <span>
+                    <strong>{formatCompactCount(giveaway.winnersCount)}</strong>
+                    <small>Победители</small>
+                  </span>
+                </div>
+
+                {giveawayImageSource ? (
+                  <img
+                    className="giveaway-page__spotlight-image"
+                    src={giveawayImageSource}
+                    alt=""
+                    loading="eager"
+                  />
+                ) : null}
+
+                {visiblePrizes.length > 0 ? (
+                  <div className="giveaway-page__spotlight-prizes" aria-label="Призы">
+                    {visiblePrizes.map((prize) => (
+                      <span key={prize.id} className="giveaway-page__spotlight-prize">
+                        <small>{prize.position}</small>
+                        <strong>{prize.title}</strong>
+                      </span>
+                    ))}
+                    {hiddenPrizeCount > 0 ? (
+                      <span className="giveaway-page__spotlight-prize giveaway-page__spotlight-prize--more">
+                        <small>+</small>
+                        <strong>{hiddenPrizeCount}</strong>
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <div className={cn('giveaway-page__overlay-state-block', `is-${presentation.tone}`)}>
               <GiveawayGlyphIcon tone={presentation.tone} glyph={presentation.glyph} />
               <div className="giveaway-page__overlay-state-copy">
