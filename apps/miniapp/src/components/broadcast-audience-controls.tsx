@@ -1,9 +1,16 @@
 import type { BroadcastTargetMode, ChatSummary } from '@maxim/contracts';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   resolveBroadcastAudienceTargetLabel,
   type BroadcastScopedTargetMode,
 } from '../lib/broadcast-audience';
+import {
+  getHomeEntityFavoritesFallbackScope,
+  mergeHomeEntityFavorites,
+  readHomeEntityFavorites,
+  saveHomeEntityFavorites,
+} from '../lib/home-entity-favorites';
+import { getInitDataUserId } from '../lib/init-data';
 import { BroadcastAudienceSheet } from './broadcast-audience-sheet';
 import { SegmentedControl } from './ui/segmented-control';
 
@@ -11,6 +18,8 @@ type BroadcastAudienceControlsProps = {
   targetMode: BroadcastTargetMode;
   currentChatId: string;
   targetChatIds: string[];
+  favoriteChatIds?: readonly string[];
+  favoriteUserId?: string | null;
   choices: ChatSummary[];
   loading?: boolean;
   refreshing?: boolean;
@@ -28,6 +37,8 @@ export function BroadcastAudienceControls({
   targetMode,
   currentChatId,
   targetChatIds,
+  favoriteChatIds,
+  favoriteUserId = null,
   choices,
   loading = false,
   refreshing = false,
@@ -41,8 +52,17 @@ export function BroadcastAudienceControls({
   onRefreshChoices,
 }: BroadcastAudienceControlsProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
+  const favoriteStorageScope = useMemo(() => {
+    const normalizedUserId = favoriteUserId?.trim() || getInitDataUserId()?.trim() || '';
+    return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
+  }, [favoriteUserId]);
+  const [storedFavoriteChatIds, setStoredFavoriteChatIds] = useState(() =>
+    readHomeEntityFavorites(favoriteStorageScope).chat,
+  );
+  const favoriteStorageScopeRef = useRef(favoriteStorageScope);
   const scopedTargetMode: BroadcastScopedTargetMode =
     targetMode === 'selected' ? 'selected' : 'current';
+  const effectiveFavoriteChatIds = favoriteChatIds ?? storedFavoriteChatIds;
   const activeAudienceLabel = resolveBroadcastAudienceTargetLabel({
     targetMode,
     targetChatIds,
@@ -69,6 +89,30 @@ export function BroadcastAudienceControls({
       setSheetOpen(true);
     }
   }, [targetMode, validationError]);
+
+  useEffect(() => {
+    const previousScope = favoriteStorageScopeRef.current;
+    if (previousScope === favoriteStorageScope) {
+      if (sheetOpen) {
+        setStoredFavoriteChatIds(readHomeEntityFavorites(favoriteStorageScope).chat);
+      }
+      return;
+    }
+
+    const storedFavorites = readHomeEntityFavorites(favoriteStorageScope);
+    const nextFavorites =
+      previousScope === getHomeEntityFavoritesFallbackScope() &&
+      favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
+        ? mergeHomeEntityFavorites(storedFavorites, readHomeEntityFavorites(previousScope))
+        : storedFavorites;
+
+    if (nextFavorites !== storedFavorites) {
+      saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
+    }
+
+    favoriteStorageScopeRef.current = favoriteStorageScope;
+    setStoredFavoriteChatIds(nextFavorites.chat);
+  }, [favoriteStorageScope, sheetOpen]);
 
   return (
     <>
@@ -135,6 +179,7 @@ export function BroadcastAudienceControls({
       <BroadcastAudienceSheet
         open={sheetOpen}
         currentChatId={currentChatId}
+        favoriteChatIds={effectiveFavoriteChatIds}
         choices={choices}
         selection={targetChatIds}
         disabled={disabled}

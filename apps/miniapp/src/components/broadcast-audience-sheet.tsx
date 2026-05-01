@@ -2,16 +2,20 @@ import type { ChatSummary } from '@maxim/contracts';
 import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  filterBroadcastAudienceChoices,
   normalizeBroadcastAudienceTargetChatIds,
   resolveBroadcastAudienceTargetLabel,
 } from '../lib/broadcast-audience';
+import {
+  filterBroadcastAudienceChoices,
+  orderBroadcastAudienceChoices,
+} from '../lib/broadcast-audience-search';
 import { cn } from '../lib/cn';
 import { EntityAvatar } from './ui/entity-avatar';
 
 type BroadcastAudienceSheetProps = {
   open: boolean;
   currentChatId: string;
+  favoriteChatIds?: readonly string[];
   choices: ChatSummary[];
   selection: string[];
   disabled?: boolean;
@@ -22,20 +26,6 @@ type BroadcastAudienceSheetProps = {
   onApply: (nextSelection: string[]) => void;
   onRefresh?: () => void;
 };
-
-function dedupeAudienceChoices(
-  choices: readonly ChatSummary[],
-  currentChatId: string,
-): ChatSummary[] {
-  const byId = new Map<string, ChatSummary>();
-  for (const choice of choices) {
-    byId.set(choice.id, choice);
-  }
-
-  const current = byId.get(currentChatId);
-  const ordered = [...choices.filter((choice) => choice.id !== currentChatId)];
-  return current ? [current, ...ordered] : ordered;
-}
 
 function CloseIcon() {
   return (
@@ -62,6 +52,7 @@ function SearchIcon() {
 export function BroadcastAudienceSheet({
   open,
   currentChatId,
+  favoriteChatIds = [],
   choices,
   selection,
   disabled = false,
@@ -100,8 +91,12 @@ export function BroadcastAudienceSheet({
   }, [open]);
 
   const orderedChoices = useMemo(
-    () => dedupeAudienceChoices(choices, currentChatId),
-    [choices, currentChatId],
+    () =>
+      orderBroadcastAudienceChoices(choices, {
+        currentChatId,
+        favoriteChatIds,
+      }),
+    [choices, currentChatId, favoriteChatIds],
   );
   const filteredChoices = useMemo(
     () => filterBroadcastAudienceChoices(orderedChoices, deferredSearchValue),

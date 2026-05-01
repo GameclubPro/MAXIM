@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  filterBroadcastAudienceChoices,
   normalizeBroadcastAudienceTargetChatIds,
   resolveBroadcastAudienceLastScopedMode,
   resolveBroadcastAudiencePayload,
   resolveBroadcastAudienceTargetLabel,
   restoreBroadcastAudienceModeFromAll,
 } from '../src/lib/broadcast-audience';
+import {
+  filterBroadcastAudienceChoices,
+  orderBroadcastAudienceChoices,
+} from '../src/lib/broadcast-audience-search';
 
 test('normalizes selected audience ids with trim and dedupe', () => {
   assert.deepEqual(
@@ -151,4 +154,43 @@ test('filters audience choices with normalized punctuation and russian letters',
   assert.deepEqual(filterBroadcastAudienceChoices(items, 'maxru/home'), [
     { id: '-100', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
   ]);
+});
+
+test('filters audience choices by transliteration and wrong keyboard layout', () => {
+  const items = [
+    { id: 'chat-1', title: 'Главный чат', link: 'https://max.ru/main' },
+    { id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' },
+    { id: 'chat-3', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
+  ];
+
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'cfggjhn'), [
+    { id: 'chat-2', title: 'Саппорт', link: 'https://max.ru/help' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'zhile remont'), [
+    { id: 'chat-3', title: 'Жильё / ремонт', link: 'https://max.ru/home-repair' },
+  ]);
+  assert.deepEqual(filterBroadcastAudienceChoices(items, 'glavny chat'), [
+    { id: 'chat-1', title: 'Главный чат', link: 'https://max.ru/main' },
+  ]);
+});
+
+test('orders audience choices by favorites before current and dedupes ids', () => {
+  const items = [
+    { id: 'chat-1', title: 'Первый' },
+    { id: 'chat-2', title: 'Второй' },
+    { id: 'chat-3', title: 'Третий' },
+    { id: 'chat-2', title: 'Второй обновленный' },
+  ];
+
+  assert.deepEqual(
+    orderBroadcastAudienceChoices(items, {
+      currentChatId: 'chat-1',
+      favoriteChatIds: ['chat-3', 'missing', 'chat-2'],
+    }),
+    [
+      { id: 'chat-3', title: 'Третий' },
+      { id: 'chat-2', title: 'Второй обновленный' },
+      { id: 'chat-1', title: 'Первый' },
+    ],
+  );
 });

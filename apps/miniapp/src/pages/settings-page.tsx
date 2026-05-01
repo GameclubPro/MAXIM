@@ -10187,6 +10187,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     targetMode={mailingTargetMode}
                                     currentChatId={chatId ?? ''}
                                     targetChatIds={mailingAudiencePayload.targetChatIds}
+                                    favoriteUserId={meQuery.data?.userId ?? null}
                                     choices={mailingAudienceChoices}
                                     loading={mailingAudienceChoicesLoading}
                                     refreshing={chatsList.isRefreshing}
