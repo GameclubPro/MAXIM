@@ -4,10 +4,12 @@ import {
   lazy,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
+import { Star as IconoirStar } from 'iconoir-react';
 import { Link, useSearchParams } from 'react-router-dom';
 import type { ManagedEntitiesRefreshState } from '@maxim/contracts';
 import { EntityAvatar } from '../components/ui/entity-avatar';
@@ -19,6 +21,16 @@ import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { cn } from '../lib/cn';
+import {
+  getHomeEntityFavoritesFallbackScope,
+  isHomeEntityFavorite,
+  mergeHomeEntityFavorites,
+  orderHomeEntitiesByFavorites,
+  readHomeEntityFavorites,
+  saveHomeEntityFavorites,
+  toggleHomeEntityFavorite,
+} from '../lib/home-entity-favorites';
+import { getInitDataUserId } from '../lib/init-data';
 import {
   buildHomeView,
   normalizeEntityType,
@@ -182,6 +194,15 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [canAccessSystem, setCanAccessSystem] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
+  const favoriteStorageScope = useMemo(() => {
+    const normalizedUserId = currentUserId?.trim();
+    return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
+  }, [currentUserId]);
+  const favoriteStorageScopeRef = useRef(favoriteStorageScope);
+  const [homeEntityFavorites, setHomeEntityFavorites] = useState(() =>
+    readHomeEntityFavorites(favoriteStorageScope),
+  );
   const [refreshRequestByTab, setRefreshRequestByTab] = useState<
     Record<ManagedTab, ManagedEntitiesReloadRequest>
   >({
@@ -279,14 +300,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     Boolean(refreshStatusLabel) &&
     (hasNoActiveEntities || activeEntitiesState.isBackoffActive || Boolean(queryError));
 
-  const [filteredEntities, visibleEntitiesCount] = useMemo(
-    () =>
-      buildHomeView({
-        entities: activeEntities,
-        query,
-      }),
-    [activeEntities, query],
-  );
+  const [filteredEntities, visibleEntitiesCount] = useMemo(() => {
+    const [matchingEntities, matchingCount] = buildHomeView({
+      entities: activeEntities,
+      query,
+    });
+
+    return [
+      orderHomeEntitiesByFavorites(matchingEntities, homeEntityFavorites[activeTab]),
+      matchingCount,
+    ] as const;
+  }, [activeEntities, activeTab, homeEntityFavorites, query]);
   const showSearchCard = !isNoEntitiesForTab;
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
@@ -366,11 +390,33 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeTab]);
 
   useEffect(() => {
+    const previousScope = favoriteStorageScopeRef.current;
+    if (previousScope === favoriteStorageScope) {
+      return;
+    }
+
+    const storedFavorites = readHomeEntityFavorites(favoriteStorageScope);
+    const nextFavorites =
+      previousScope === getHomeEntityFavoritesFallbackScope() &&
+      favoriteStorageScope !== getHomeEntityFavoritesFallbackScope()
+        ? mergeHomeEntityFavorites(storedFavorites, readHomeEntityFavorites(previousScope))
+        : storedFavorites;
+
+    if (nextFavorites !== storedFavorites) {
+      saveHomeEntityFavorites(favoriteStorageScope, nextFavorites);
+    }
+
+    favoriteStorageScopeRef.current = favoriteStorageScope;
+    setHomeEntityFavorites(nextFavorites);
+  }, [favoriteStorageScope]);
+
+  useEffect(() => {
     const controller = new AbortController();
 
     void getMe(api, { signal: controller.signal })
       .then((me) => {
         if (!controller.signal.aborted) {
+          setCurrentUserId(me.userId);
           setCanAccessSystem(me.canAccessSystem === true);
         }
       })
@@ -406,6 +452,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   function prefetchChannelSettings(chatId: string) {
     void chatId;
     preloadChannelSettingsPage();
+  }
+
+  function handleToggleHomeEntityFavorite(entityType: ManagedTab, entityId: string) {
+    setHomeEntityFavorites((current) => {
+      const next = toggleHomeEntityFavorite(current, entityType, entityId).favorites;
+      saveHomeEntityFavorites(favoriteStorageScope, next);
+      return next;
+    });
   }
 
   function prefetchChannelStats(chatId: string) {
@@ -642,10 +696,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (
         <section className="chat-grid" aria-label="Список">
           {filteredEntities.map((entity, index) => {
+            const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
             const staggerIndex =
               limitedStagger === null ? index : index < limitedStagger ? index : null;
             const className = cn(
               'chat-card',
+              favorite && 'is-favorite',
               staggerIndex !== null && 'stagger-in',
               isFetching && 'is-syncing',
               homeSyncStatus.tone === 'cache' && 'is-from-cache',
@@ -670,6 +726,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       <h3>{entity.title}</h3>
                     </div>
                   </div>
+                  <button
+                    type="button"
+                    className={cn('chat-card__favorite', favorite && 'is-active')}
+                    onClick={() => handleToggleHomeEntityFavorite(activeTab, entity.id)}
+                    aria-pressed={favorite}
+                    aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+                    title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+                  >
+                    <IconoirStar aria-hidden />
+                  </button>
                 </div>
 
                 {activeTab === 'chat' ? (
