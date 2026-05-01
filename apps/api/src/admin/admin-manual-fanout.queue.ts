@@ -29,7 +29,7 @@ export type AdminManualBanFanoutJob = {
   sourceChatId: string;
   targetUserId: string;
   actor: AdminManualFanoutActor;
-  source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+  source: Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>;
 };
 
 export type AdminManualGroupModerationCommandJob = {

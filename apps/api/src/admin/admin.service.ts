@@ -304,6 +304,8 @@ type ManagedEntityBotProfileSnapshot = {
 
 type AssertChatAdminOptions = {
   syncPersistedAccess?: boolean;
+  trafficClass?: 'critical' | 'interactive' | 'background';
+  timeoutMs?: number;
 };
 
 type AdminReadBypassOptions = {
@@ -14673,13 +14675,19 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (parsed.data.action === 'BAN') {
-      await this.assertManualMemberModerationPreconditions(
-        chatId,
-        targetUserId,
-        'BAN',
-        resolvedBotId,
-      );
-      const executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
+      let executionMode: ManualBanExecutionMode;
+      try {
+        await this.assertManualMemberModerationPreconditions(
+          chatId,
+          targetUserId,
+          'BAN',
+          resolvedBotId,
+        );
+        executionMode = await this.resolveManualBanExecutionMode(chatId, resolvedBotId);
+      } catch (error: unknown) {
+        this.throwManualModerationTransientMaxError(error);
+        throw error;
+      }
 
       try {
         try {
@@ -14713,6 +14721,7 @@ export class AdminService implements OnModuleDestroy {
           });
         }
       } catch (error: unknown) {
+        this.throwManualModerationTransientMaxError(error);
         const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
           chatId,
           targetUserId,
@@ -14840,13 +14849,19 @@ export class AdminService implements OnModuleDestroy {
 
     let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId, resolvedBotId);
     if (unbanMode !== 'ALREADY_PRESENT') {
-      await this.assertBotCanManageMembers(chatId, 'UNBAN', resolvedBotId);
+      try {
+        await this.assertBotCanManageMembers(chatId, 'UNBAN', resolvedBotId);
+      } catch (error: unknown) {
+        this.throwManualModerationTransientMaxError(error);
+        throw error;
+      }
       try {
         await this.maxClient.unbanMember(chatId, targetUserId, {
           immediate: true,
           ...(resolvedBotId ? { botId: resolvedBotId } : {}),
         });
       } catch (error: unknown) {
+        this.throwManualModerationTransientMaxError(error);
         const maxApiMessage = this.extractMaxApiErrorMessage(error);
         if (this.isAlreadyPresentMemberAddError(maxApiMessage)) {
           unbanMode = 'ALREADY_PRESENT';
@@ -14945,12 +14960,17 @@ export class AdminService implements OnModuleDestroy {
         botId: resolvedBotId,
       },
     );
-    await this.assertManualMemberModerationPreconditions(
-      chatId,
-      targetUserId,
-      'BAN',
-      resolvedBotId,
-    );
+    try {
+      await this.assertManualMemberModerationPreconditions(
+        chatId,
+        targetUserId,
+        'BAN',
+        resolvedBotId,
+      );
+    } catch (error: unknown) {
+      this.throwManualModerationTransientMaxError(error);
+      throw error;
+    }
 
     try {
       if (resolvedBotId) {
@@ -14977,6 +14997,7 @@ export class AdminService implements OnModuleDestroy {
         ...(resolvedBotId ? { botId: resolvedBotId } : {}),
       });
     } catch (error: unknown) {
+      this.throwManualModerationTransientMaxError(error);
       const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
         chatId,
         targetUserId,
@@ -15175,8 +15196,9 @@ export class AdminService implements OnModuleDestroy {
     job: AdminManualGroupModerationCommandJob,
   ): Promise<void> {
     const actor = this.buildManualFanoutActor(job.actor);
+    let result: ManualModerationActionResult;
     try {
-      const result =
+      result =
         job.action === 'BAN'
           ? await this.applyManualSystemBan(
               job.sourceChatId,
@@ -15199,23 +15221,6 @@ export class AdminService implements OnModuleDestroy {
               },
               'group_command',
             );
-
-      await this.deleteManualGroupCommandTargetMessage(job);
-      await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId);
-
-      const targetLabel = this.formatManualGroupCommandUserLabel(
-        job.targetSenderName,
-        job.targetUserId,
-      );
-      await this.sendManualGroupCommandNotice({
-        chatId: job.sourceChatId,
-        text:
-          job.action === 'BAN'
-            ? `Пользователь ${targetLabel} забанен.`
-            : `${result.message}\nПользователь: ${targetLabel}`,
-        deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
-      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -15228,6 +15233,10 @@ export class AdminService implements OnModuleDestroy {
         'Failed to apply queued group admin moderation command',
       );
 
+      if (this.shouldRetryManualGroupCommandSilently(error)) {
+        throw error;
+      }
+
       await this.sendManualGroupCommandNotice({
         chatId: job.sourceChatId,
         text: `Не удалось применить ${job.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMarkdownPlainText(
@@ -15236,7 +15245,25 @@ export class AdminService implements OnModuleDestroy {
         deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
       });
+      return;
     }
+
+    await this.deleteManualGroupCommandTargetMessage(job);
+    await this.deleteManualGroupCommandMessage(job.sourceChatId, job.commandMessageId);
+
+    const targetLabel = this.formatManualGroupCommandUserLabel(
+      job.targetSenderName,
+      job.targetUserId,
+    );
+    await this.sendManualGroupCommandNotice({
+      chatId: job.sourceChatId,
+      text:
+        job.action === 'BAN'
+          ? `Пользователь ${targetLabel} забанен.`
+          : `${result.message}\nПользователь: ${targetLabel}`,
+      deleteBotMessagesEnabled: job.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: job.deleteBotMessagesDelayMinutes,
+    });
   }
 
   private buildManualFanoutActor(actor: {
@@ -15309,12 +15336,22 @@ export class AdminService implements OnModuleDestroy {
       deleteBotMessagesDelayMinutes: params.deleteBotMessagesDelayMinutes,
     });
 
-    await this.maxClient.sendMessage(
-      params.chatId,
-      params.text,
-      { textFormat: 'markdown' },
-      dispatchOptions,
-    );
+    try {
+      await this.maxClient.sendMessage(
+        params.chatId,
+        params.text,
+        { textFormat: 'markdown' },
+        dispatchOptions,
+      );
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send manual group command notice',
+      );
+    }
   }
 
   private buildManualGroupCommandNoticeDispatchOptions(params: {
@@ -15364,6 +15401,21 @@ export class AdminService implements OnModuleDestroy {
       this.extractMaxApiErrorMessage(error) ||
       this.extractHttpErrorMessage(error) ||
       (error instanceof Error ? error.message : 'Unknown error')
+    );
+  }
+
+  private shouldRetryManualGroupCommandSilently(error: unknown): boolean {
+    if (this.isManualModerationTransientMaxError(error)) {
+      return true;
+    }
+
+    const message = this.extractManualGroupCommandErrorMessage(error).toLowerCase();
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('circuit breaker') ||
+      message.includes('timeout') ||
+      message.includes('временно огранич') ||
+      message.includes('повторите попытку')
     );
   }
 
@@ -15451,19 +15503,17 @@ export class AdminService implements OnModuleDestroy {
     sourceMessageCleanup: ReturnType<AdminService['summarizeManualModerationCleanup']>;
     crossChatFanout: ReturnType<AdminService['summarizeManualBanFanout']>;
   }> {
-    if (params.source === 'group_command' || params.source === 'private_command') {
-      const queuedJob = this.buildManualBanFanoutJob({
-        sourceChatId: params.sourceChatId,
-        targetUserId: params.targetUserId,
-        actor: params.actor,
-        source: params.source,
-      });
-      if (await this.enqueueManualModerationFanout(queuedJob)) {
-        return {
-          sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
-          crossChatFanout: this.buildQueuedManualBanFanoutSummary(queuedJob.jobId),
-        };
-      }
+    const queuedJob = this.buildManualBanFanoutJob({
+      sourceChatId: params.sourceChatId,
+      targetUserId: params.targetUserId,
+      actor: params.actor,
+      source: params.source,
+    });
+    if (await this.enqueueManualModerationFanout(queuedJob)) {
+      return {
+        sourceMessageCleanup: this.buildQueuedManualModerationCleanupSummary(queuedJob.jobId),
+        crossChatFanout: this.buildQueuedManualBanFanoutSummary(queuedJob.jobId),
+      };
     }
 
     const sourceCleanup = await this.runManualBanSourceCleanup(
@@ -15615,7 +15665,7 @@ export class AdminService implements OnModuleDestroy {
     sourceChatId: string;
     targetUserId: string;
     actor: AuthUser;
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>;
+    source: ManualBanFollowUpSource;
   }): AdminManualBanFanoutJob {
     return {
       kind: 'manual_ban_fanout',
@@ -15642,7 +15692,7 @@ export class AdminService implements OnModuleDestroy {
     kind: AdminManualFanoutJob['kind'],
     sourceChatId: string,
     targetUserId: string,
-    source: Extract<AdminActionSource, 'group_command' | 'private_command'>,
+    source: Extract<AdminActionSource, 'miniapp' | 'group_command' | 'private_command'>,
   ): string {
     return `${kind}__${source}__${sourceChatId}__${targetUserId}__${randomUUID()}`;
   }
@@ -16233,7 +16283,9 @@ export class AdminService implements OnModuleDestroy {
     targetUserIdRaw: string,
     user: AuthUser,
   ): Promise<string> {
-    await this.assertChatAdmin(chatId, user.userId);
+    await this.assertChatAdmin(chatId, user.userId, null, {
+      trafficClass: 'critical',
+    });
     const targetUserId = targetUserIdRaw.trim();
     if (!targetUserId) {
       throw new BadRequestException('User ID is required');
@@ -16272,6 +16324,7 @@ export class AdminService implements OnModuleDestroy {
     let botAccess: MaxChatMemberAccess;
     try {
       botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId, {
+        trafficClass: 'critical',
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         ...(botId ? { botId } : {}),
       } as never);
@@ -16326,6 +16379,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId, {
+      trafficClass: 'critical',
       actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
       ...(botId ? { botId } : {}),
     } as never);
@@ -16389,6 +16443,7 @@ export class AdminService implements OnModuleDestroy {
 
     try {
       const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId, {
+        trafficClass: 'critical',
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         ...(botId ? { botId } : {}),
       } as never);
@@ -16425,6 +16480,7 @@ export class AdminService implements OnModuleDestroy {
         chatId,
         targetUserId,
         {
+          trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           ...(botId ? { botId } : {}),
         } as never,
@@ -16503,6 +16559,38 @@ export class AdminService implements OnModuleDestroy {
     }
 
     return 'MAX отклонил возврат участника в чат. Проверьте тип чата, статус цели и права бота.';
+  }
+
+  private throwManualModerationTransientMaxError(error: unknown): void {
+    if (!this.isManualModerationTransientMaxError(error)) {
+      return;
+    }
+
+    throw new ServiceUnavailableException(
+      'MAX API временно занят. Действие не выполнено, повторите через несколько секунд.',
+    );
+  }
+
+  private isManualModerationTransientMaxError(error: unknown): boolean {
+    if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+      return true;
+    }
+
+    const message = (
+      this.extractMaxApiErrorMessage(error) ||
+      this.extractHttpErrorMessage(error) ||
+      (error instanceof Error ? error.message : String(error))
+    )
+      .trim()
+      .toLowerCase();
+
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('circuit breaker') ||
+      message.includes('timeout') ||
+      message.includes('временно огранич') ||
+      (message.includes('max') && message.includes('повторите'))
+    );
   }
 
   private isAmbiguousMaxMemberModerationError(message: string): boolean {
@@ -17143,6 +17231,8 @@ export class AdminService implements OnModuleDestroy {
   ) {
     const access = await this.resolveUserAndBotAdminAccess(chatId, userId, {
       bypassNegativeCache: true,
+      trafficClass: options.trafficClass,
+      timeoutMs: options.timeoutMs,
     });
     if (access.status === 'denied') {
       if (access.reason === 'bot_not_admin') {
@@ -18691,7 +18781,7 @@ export class AdminService implements OnModuleDestroy {
 
     try {
       const profiles = await loadProfiles(normalizedChatId, [normalizedTargetUserId], {
-        trafficClass: 'interactive',
+        trafficClass: 'background',
         actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
         ignoreFailureMetricStatuses: ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES,
         ...(options.botId ? { botId: options.botId } : {}),
@@ -22817,7 +22907,7 @@ export class AdminService implements OnModuleDestroy {
       seenBotIds.add(persistedBotId);
       try {
         const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
-          trafficClass: 'interactive',
+          trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: persistedBotId,
         });
@@ -22833,6 +22923,18 @@ export class AdminService implements OnModuleDestroy {
           'Persisted chat bot assignment is no longer admin-capable for manual action',
         );
       } catch (error: unknown) {
+        if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+          this.logger.debug(
+            {
+              chatId: normalizedChatId,
+              botId: persistedBotId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Using persisted chat bot assignment after transient MAX API pressure',
+          );
+          return persistedBotId;
+        }
+
         if (!this.isBotAdminLookupDeniedError(error)) {
           this.logger.debug(
             {
@@ -22853,7 +22955,7 @@ export class AdminService implements OnModuleDestroy {
       seenBotIds.add(bot.id);
       try {
         const access = await this.maxClient.getCurrentChatMemberAccess(normalizedChatId, {
-          trafficClass: 'interactive',
+          trafficClass: 'critical',
           actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
           botId: bot.id,
         });
@@ -22895,6 +22997,18 @@ export class AdminService implements OnModuleDestroy {
       } catch (error: unknown) {
         if (this.isBotAdminLookupDeniedError(error)) {
           continue;
+        }
+
+        if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+          this.logger.debug(
+            {
+              chatId: normalizedChatId,
+              botId: bot.id,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Stopped probing actionable bots for manual action after transient MAX API pressure',
+          );
+          return fallbackBotId;
         }
 
         this.logger.debug(

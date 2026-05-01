@@ -5281,6 +5281,99 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('queues miniapp manual ban cleanup and fanout when the background queue is available', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminManualFanoutQueue = {
+      add: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminManualFanoutQueue as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN' },
+    );
+
+    expect(adminManualFanoutQueue.add).toHaveBeenCalledWith(
+      'execute-admin-manual-fanout',
+      expect.objectContaining({
+        kind: 'manual_ban_fanout',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-3',
+        source: 'miniapp',
+      }),
+      expect.objectContaining({
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+      }),
+    );
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledTimes(1);
+    expect(maxClient.banMember).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            sourceMessageCleanup: expect.objectContaining({
+              mode: 'queued',
+              candidateCount: 0,
+              deletedCount: 0,
+            }),
+            crossChatFanout: expect.objectContaining({
+              mode: 'queued',
+              removedChatsCount: 0,
+              removedChatIds: [],
+              deletedMessageCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-3',
+        message: 'Пользователь забанен.',
+      }),
+    );
+  });
+
   it('falls back to removal-only permanent manual ban for closed chats without link', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -5706,14 +5799,14 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'critical',
         botId: 'bot-1',
       }),
     );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'critical',
         botId: 'bot-2',
       }),
     );
@@ -5801,14 +5894,14 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'critical',
         botId: 'bot-1',
       }),
     );
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith(
       'chat-1',
       expect.objectContaining({
-        trafficClass: 'interactive',
+        trafficClass: 'critical',
         botId: 'bot-2',
       }),
     );
@@ -6497,6 +6590,50 @@ describe('AdminService.applyManualSystemBan', () => {
         autoDeleteDelayMs: 3 * 60 * 1000,
       },
     );
+  });
+
+  it('retries transient queued group moderation failures without sending an error notice', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(service, 'applyManualSystemBan')
+      .mockRejectedValue(new Error('MAX API critical rate limit exceeded'));
+
+    await expect(
+      service.processManualModerationFanoutJob({
+        kind: 'manual_group_moderation_command',
+        jobId: 'job-command-1',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-target-1',
+        commandMessageId: 'mid-command-1',
+        actor: {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatId: 'chat-1',
+          chatTitle: 'Chat 1',
+        },
+        action: 'BAN',
+        muteDurationHours: null,
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+      }),
+    ).rejects.toThrow('MAX API critical rate limit exceeded');
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('processes queued primary group permanent mute commands outside the webhook hot path', async () => {

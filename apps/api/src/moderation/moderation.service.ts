@@ -5245,6 +5245,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to apply forwarded admin moderation command',
       );
 
+      if (this.shouldSuppressGroupAdminCommandErrorNotice(error)) {
+        return true;
+      }
+
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
@@ -5881,13 +5885,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
     text: string;
   }): Promise<void> {
-    await this.sendBotMessageWithOptionalAutoDelete({
-      chatId: params.chatId,
-      text: params.text,
-      deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-      immediate: true,
-    });
+    try {
+      await this.sendBotMessageWithOptionalAutoDelete({
+        chatId: params.chatId,
+        text: params.text,
+        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+        immediate: true,
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId: params.chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send group admin command notice',
+      );
+    }
   }
 
   private extractGroupAdminCommandErrorMessage(error: unknown): string {
@@ -5910,6 +5924,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return 'Попробуйте ещё раз через несколько секунд.';
+  }
+
+  private shouldSuppressGroupAdminCommandErrorNotice(error: unknown): boolean {
+    if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
+      return true;
+    }
+
+    const message = this.extractGroupAdminCommandErrorMessage(error).toLowerCase();
+    return (
+      message.includes('rate limit exceeded') ||
+      message.includes('circuit breaker') ||
+      message.includes('timeout') ||
+      message.includes('временно огранич') ||
+      (message.includes('max') && message.includes('повторите'))
+    );
   }
 
   private async handleActiveMuteMessage(params: {
