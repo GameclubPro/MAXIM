@@ -139,7 +139,10 @@ const PREVIEW_STANDBY_BOT_ID = '777001_bot';
 const PREVIEW_STANDBY_BOT_LABEL = 'MAXIM 2';
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
-type PreviewGiveawayParticipantVariant = PreviewGiveawayVariant | 'blocked-entered';
+type PreviewGiveawayParticipantVariant =
+  | PreviewGiveawayVariant
+  | 'blocked-entered'
+  | 'winner-claimed';
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -920,7 +923,8 @@ function readPreviewGiveawayEnterResult(): PreviewGiveawayParticipantVariant | n
     value === 'blocked-entered' ||
     value === 'joined' ||
     value === 'winner' ||
-    value === 'completed'
+    value === 'completed' ||
+    value === 'winner-claimed'
   ) {
     return value;
   }
@@ -936,12 +940,23 @@ function buildPreviewGiveawayRuntimeStateKey(): string {
 
 function readPreviewGiveawayParticipantVariant(): PreviewGiveawayParticipantVariant {
   const queryVariant = readPreviewGiveawayVariant();
-  if (typeof window === 'undefined' || queryVariant !== 'blocked') {
+  if (typeof window === 'undefined') {
     return queryVariant;
   }
 
   const override = window.sessionStorage.getItem(buildPreviewGiveawayRuntimeStateKey());
-  return override === 'blocked-entered' ? 'blocked-entered' : queryVariant;
+  if (
+    override === 'blocked' ||
+    override === 'joined' ||
+    override === 'winner' ||
+    override === 'completed' ||
+    override === 'blocked-entered' ||
+    override === 'winner-claimed'
+  ) {
+    return override;
+  }
+
+  return queryVariant;
 }
 
 function writePreviewGiveawayParticipantVariant(variant: PreviewGiveawayParticipantVariant): void {
@@ -1027,7 +1042,9 @@ function buildPreviewGiveawayParticipantState(
 ): ManagedGiveawayParticipantState {
   const now = new Date();
 
-  if (variant === 'winner') {
+  if (variant === 'winner' || variant === 'winner-claimed') {
+    const isClaimed = variant === 'winner-claimed';
+    const claimDeadlineAt = addHours(now, 36).toISOString();
     return managedGiveawayParticipantStateSchema.parse({
       joined: true,
       entryId: 'preview-entry-winner',
@@ -1037,12 +1054,12 @@ function buildPreviewGiveawayParticipantState(
       joinedAt: addHours(now, -12).toISOString(),
       isWinner: true,
       winnerId: 'preview-winner-1',
-      winnerStatus: 'CLAIMED',
-      claimDeadlineAt: null,
+      winnerStatus: isClaimed ? 'CLAIMED' : 'SELECTED',
+      claimDeadlineAt: isClaimed ? null : claimDeadlineAt,
       prizePosition: 1,
       prizeTitle: 'Подарочный бокс MAX',
-      canClaim: false,
-      claimBotUrl: null,
+      canClaim: !isClaimed,
+      claimBotUrl: isClaimed ? null : 'https://max.ru/777000_bot?start=preview-claim',
     });
   }
 
@@ -4066,6 +4083,7 @@ export function createPreviewApiTransport(): ApiTransport {
         }
 
         if (segments[2] === 'claim' && method === 'POST') {
+          writePreviewGiveawayParticipantVariant('winner-claimed');
           return null;
         }
       }

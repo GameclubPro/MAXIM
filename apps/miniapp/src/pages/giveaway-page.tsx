@@ -6,6 +6,7 @@ import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useToast } from '../components/ui/toast';
 import {
+  claimGiveaway,
   enterGiveaway,
   getGiveawayParticipantState,
   getPublicGiveaway,
@@ -50,8 +51,6 @@ type GiveawayCountdownPresentation = {
   targetAt: string;
 };
 
-const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_bot';
-
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {
     return 'Не удалось выполнить действие.';
@@ -68,24 +67,6 @@ function formatApiError(error: unknown): string {
   }
 
   return text;
-}
-
-function formatCountdownTarget(value: string | null): string {
-  if (!value) {
-    return 'без срока';
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
 }
 
 function formatCountdownValue(remainingMs: number): string {
@@ -136,21 +117,41 @@ function resolveCountdownPresentation(
   return null;
 }
 
+function resolveClaimCountdownPresentation(
+  participant: ManagedGiveawayParticipantState | null,
+  nowMs: number,
+): GiveawayCountdownPresentation | null {
+  if (!participant?.canClaim || !participant.claimDeadlineAt) {
+    return null;
+  }
+
+  const claimDeadlineMs = new Date(participant.claimDeadlineAt).getTime();
+  if (!Number.isFinite(claimDeadlineMs) || claimDeadlineMs <= nowMs) {
+    return null;
+  }
+
+  return {
+    label: 'Забрать до',
+    value: formatCountdownValue(claimDeadlineMs - nowMs),
+    targetAt: participant.claimDeadlineAt,
+  };
+}
+
 function buildWinnerStatusLabel(status: string | null | undefined): string | null {
   if (status === 'SELECTED') {
-    return 'Победитель объявлен';
+    return 'Ждёт';
   }
   if (status === 'CLAIMED') {
-    return 'Победитель объявлен';
+    return 'Подтверждён';
   }
   if (status === 'DELIVERED') {
-    return 'Приз выдан';
+    return 'Выдан';
   }
   if (status === 'EXPIRED') {
-    return 'Нужен реролл';
+    return 'Истёк';
   }
   if (status === 'REROLLED') {
-    return 'Победитель заменён';
+    return 'Заменён';
   }
   return null;
 }
@@ -214,24 +215,42 @@ function buildModalPresentation(params: {
       tone: 'warning',
       glyph: 'clock',
       badge: 'Статус недоступен',
-      title: 'Не удалось проверить участие',
-      description: 'Повторите позже.',
+      title: 'Повторите позже',
+      description: null,
     };
   }
 
   if (participant?.isWinner) {
+    const winnerStatus = participant.winnerStatus;
+    const prizeTitle =
+      participant.prizeTitle && participant.prizePosition
+        ? `${participant.prizePosition}. ${participant.prizeTitle}`
+        : 'Приз зафиксирован';
+    if (winnerStatus === 'EXPIRED') {
+      return {
+        tone: 'danger',
+        glyph: 'clock',
+        badge: 'Срок истёк',
+        title: prizeTitle,
+        description: null,
+      };
+    }
+    if (winnerStatus === 'CLAIMED' || winnerStatus === 'DELIVERED') {
+      return {
+        tone: 'success',
+        glyph: 'gift',
+        badge: winnerStatus === 'DELIVERED' ? 'Приз выдан' : 'Приз подтверждён',
+        title: prizeTitle,
+        description: null,
+      };
+    }
+
     return {
-      tone: participant.winnerStatus === 'EXPIRED' ? 'danger' : 'success',
-      glyph: participant.winnerStatus === 'EXPIRED' ? 'clock' : 'gift',
-      badge: buildWinnerStatusLabel(participant.winnerStatus) ?? 'Есть результат',
-      title:
-        participant.prizeTitle && participant.prizePosition
-          ? `Выигрыш: ${participant.prizePosition}. ${participant.prizeTitle}`
-          : 'Результат уже зафиксирован',
-      description:
-        participant.winnerStatus === 'EXPIRED'
-          ? 'Место можно перевыбрать через админа.'
-          : 'Победителю уже написал бот.',
+      tone: 'success',
+      glyph: 'gift',
+      badge: 'Вы выиграли',
+      title: prizeTitle,
+      description: null,
     };
   }
 
@@ -241,7 +260,7 @@ function buildModalPresentation(params: {
       glyph: 'check',
       badge: 'Итоги готовы',
       title: participant?.joined ? 'В этот раз без выигрыша' : 'Приём заявок завершён',
-      description: giveaway.resultsUrl ? 'Итоги уже в ленте.' : 'Итоги уже зафиксированы.',
+      description: null,
     };
   }
 
@@ -249,9 +268,9 @@ function buildModalPresentation(params: {
     return {
       tone: 'warning',
       glyph: 'clock',
-      badge: 'Подводим итоги',
-      title: 'Приём заявок завершён',
-      description: 'MAX выбирает победителей. Страница обновится автоматически.',
+      badge: 'Итоги',
+      title: 'Подводим итоги',
+      description: null,
     };
   }
 
@@ -261,7 +280,7 @@ function buildModalPresentation(params: {
       glyph: 'lock',
       badge: 'Остановлен',
       title: 'Розыгрыш отменён',
-      description: 'Действий больше нет.',
+      description: null,
     };
   }
 
@@ -271,10 +290,7 @@ function buildModalPresentation(params: {
       glyph: 'cross',
       badge: 'Нужно условие',
       title: missingChannelsCount > 1 ? 'Завершите подписку' : 'Подпишитесь и вернитесь',
-      description:
-        missingChannelsCount > 0
-          ? null
-          : participant.eligibilityReason?.trim() || 'Попробуйте снова после выполнения условий.',
+      description: missingChannelsCount > 0 ? null : participant.eligibilityReason?.trim() || null,
     };
   }
 
@@ -294,7 +310,7 @@ function buildModalPresentation(params: {
       glyph: 'spark',
       badge: 'Проверяем',
       title: 'Заявка уже отправлена',
-      description: 'MAX ещё проверяет условия.',
+      description: null,
     };
   }
 
@@ -303,8 +319,8 @@ function buildModalPresentation(params: {
       tone: 'warning',
       glyph: 'spark',
       badge: 'Розыгрыш открыт',
-      title: 'Вступить в розыгрыш?',
-      description: 'MAX проверит условия автоматически.',
+      title: 'Участвовать?',
+      description: null,
     };
   }
 
@@ -314,7 +330,7 @@ function buildModalPresentation(params: {
       glyph: 'clock',
       badge: 'Скоро старт',
       title: 'Розыгрыш ещё не начался',
-      description: 'Кнопка участия появится после старта.',
+      description: null,
     };
   }
 
@@ -323,7 +339,7 @@ function buildModalPresentation(params: {
     glyph: 'check',
     badge: 'Итоги готовы',
     title: 'Приём заявок завершён',
-    description: giveaway.resultsUrl ? 'Итоги уже в ленте.' : 'Итоги уже зафиксированы.',
+    description: null,
   };
 }
 
@@ -486,6 +502,29 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const claimMutation = useMutation({
+    mutationFn: () => claimGiveaway(api, giveawayId),
+    onSuccess: async () => {
+      maxNotify('success');
+      pushToast({
+        tone: 'success',
+        title: 'Приз подтверждён',
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+        queryClient.invalidateQueries({ queryKey: participantQueryKey }),
+      ]);
+    },
+    onError: (error) => {
+      maxNotify('error');
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось забрать приз',
+        description: formatApiError(error),
+      });
+    },
+  });
+
   const giveaway = giveawayQuery.data ?? null;
   const displayPhase = giveaway ? resolveGiveawayDisplayPhase(giveaway, nowMs) : null;
   const entryWindowOpen = giveaway ? isGiveawayEntryOpen(giveaway, nowMs) : false;
@@ -519,7 +558,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     glyph: 'clock',
     badge: 'Открываем',
     title: 'Подготавливаем розыгрыш',
-    description: 'Пара секунд.',
+    description: null,
   };
 
   const errorPresentation: GiveawayModalPresentation = {
@@ -534,7 +573,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     glyph: 'clock',
     badge: 'Проверяем статус',
     title: 'Уточняем участие',
-    description: 'Проверяем участие и условия.',
+    description: null,
   };
 
   const presentation = giveawayQuery.error
@@ -551,10 +590,24 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             displayPhase: displayPhase ?? giveaway.status,
           });
   const countdown = resolveCountdownPresentation(giveaway, nowMs, displayPhase);
+  const claimCountdown = resolveClaimCountdownPresentation(participant, nowMs);
+  const activeCountdown = claimCountdown ?? countdown;
   const giveawayChannels = giveaway ? buildGiveawayChannels(giveaway) : [];
   const missingChannelIds = new Set(missingChannelCards.map((channel) => channel.id));
   const visiblePrizeList = giveaway?.prizes ?? [];
   const visibleWinners = giveaway?.winners.filter((winner) => winner.status !== 'REROLLED') ?? [];
+  const showGiveawayKicker = Boolean(
+    giveaway?.title &&
+    giveaway.imageEnabled &&
+    giveaway.imageBase64 &&
+    giveaway.imageMimeType &&
+    !participant?.isWinner &&
+    displayPhase !== 'COMPLETED',
+  );
+  const visibleGiveawayDescription =
+    giveaway && !participant?.isWinner && displayPhase !== 'COMPLETED'
+      ? giveaway.description.trim()
+      : '';
 
   const syncParticipantState = async (nextParticipant: ManagedGiveawayParticipantState) => {
     queryClient.setQueryData(participantQueryKey, nextParticipant);
@@ -703,70 +756,73 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 void participantQuery.refetch();
               },
             }
-          : canManualEligibilityRecheck &&
-              (participant?.eligibilityState === 'PENDING' ||
-                subscriptionNeedsManualRetry ||
-                !nextMissingChannel?.link)
+          : participant?.canClaim
             ? {
-                label: subscriptionRecheckPending
-                  ? 'Проверяем статус…'
-                  : participant?.eligibilityState === 'PENDING'
-                    ? 'Обновить проверку'
-                    : 'Проверить снова',
-                disabled: subscriptionRecheckPending,
+                label: claimMutation.isPending ? 'Подтверждаем…' : 'Забрать приз',
+                disabled: claimMutation.isPending,
                 onClick: () => {
-                  void recheckParticipationEligibility('manual').then((nextParticipant) => {
-                    if (!nextParticipant) {
-                      return;
-                    }
-
-                    applyEligibilityRecheckResult(nextParticipant, 'manual');
-                  });
+                  void claimMutation.mutateAsync();
                 },
               }
-            : isSubscriptionFlow && nextMissingChannel?.link
+            : canManualEligibilityRecheck &&
+                (participant?.eligibilityState === 'PENDING' ||
+                  subscriptionNeedsManualRetry ||
+                  !nextMissingChannel?.link)
               ? {
-                  label:
-                    awaitingSubscriptionReturn || subscriptionRecheckPending
-                      ? 'Проверяем подписку…'
-                      : missingChannelCards.length > 1
-                        ? 'Открыть следующий канал'
-                        : 'Открыть канал',
-                  disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
+                  label: subscriptionRecheckPending
+                    ? 'Проверяем статус…'
+                    : participant?.eligibilityState === 'PENDING'
+                      ? 'Обновить проверку'
+                      : 'Проверить снова',
+                  disabled: subscriptionRecheckPending,
                   onClick: () => {
-                    openMissingChannel(nextMissingChannel.link ?? '');
+                    void recheckParticipationEligibility('manual').then((nextParticipant) => {
+                      if (!nextParticipant) {
+                        return;
+                      }
+
+                      applyEligibilityRecheckResult(nextParticipant, 'manual');
+                    });
                   },
                 }
-              : isSubscriptionFlow
-                ? null
-                : canEnterParticipation
-                  ? {
-                      label: enterMutation.isPending
-                        ? canRetryRejectedParticipation
-                          ? 'Проверяем…'
-                          : 'Входим…'
-                        : canRetryRejectedParticipation
-                          ? 'Проверить снова'
-                          : 'Участвовать',
-                      disabled: enterMutation.isPending || participantQuery.isLoading,
-                      onClick: () => {
-                        void enterMutation.mutateAsync();
-                      },
-                    }
-                  : giveaway.resultsUrl
+              : isSubscriptionFlow && nextMissingChannel?.link
+                ? {
+                    label:
+                      awaitingSubscriptionReturn || subscriptionRecheckPending
+                        ? 'Проверяем подписку…'
+                        : missingChannelCards.length > 1
+                          ? 'Открыть следующий канал'
+                          : 'Открыть канал',
+                    disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
+                    onClick: () => {
+                      openMissingChannel(nextMissingChannel.link ?? '');
+                    },
+                  }
+                : isSubscriptionFlow
+                  ? null
+                  : canEnterParticipation
                     ? {
-                        label: 'Открыть итоги',
-                        disabled: false,
+                        label: enterMutation.isPending
+                          ? canRetryRejectedParticipation
+                            ? 'Проверяем…'
+                            : 'Входим…'
+                          : canRetryRejectedParticipation
+                            ? 'Проверить снова'
+                            : 'Участвовать',
+                        disabled: enterMutation.isPending || participantQuery.isLoading,
                         onClick: () => {
-                          openMaxBotLink(giveaway.resultsUrl ?? '');
+                          void enterMutation.mutateAsync();
                         },
                       }
-                    : null;
-
-  const openSupportBot = () => {
-    maxSelectionChanged();
-    openMaxBotLink(SUPPORT_BOT_URL);
-  };
+                    : giveaway.resultsUrl
+                      ? {
+                          label: 'Открыть итоги',
+                          disabled: false,
+                          onClick: () => {
+                            openMaxBotLink(giveaway.resultsUrl ?? '');
+                          },
+                        }
+                      : null;
 
   useEffect(() => {
     if (
@@ -843,7 +899,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   }, [shouldPollFinalization, refetchCurrentGiveawayState]);
 
   useEffect(() => {
-    if (!countdown || typeof window === 'undefined') {
+    if (!activeCountdown || typeof window === 'undefined') {
       return undefined;
     }
 
@@ -855,7 +911,30 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     return () => {
       window.clearInterval(timerId);
     };
-  }, [countdown?.targetAt]);
+  }, [activeCountdown?.targetAt]);
+
+  useEffect(() => {
+    if (!participant?.canClaim || !participant.claimDeadlineAt || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const claimDeadlineMs = new Date(participant.claimDeadlineAt).getTime();
+    if (!Number.isFinite(claimDeadlineMs)) {
+      return undefined;
+    }
+
+    const timerId = window.setTimeout(
+      () => {
+        setNowMs(Date.now());
+        refetchCurrentGiveawayState();
+      },
+      Math.max(0, claimDeadlineMs - Date.now()) + 600,
+    );
+
+    return () => {
+      window.clearTimeout(timerId);
+    };
+  }, [participant?.canClaim, participant?.claimDeadlineAt, refetchCurrentGiveawayState]);
 
   return (
     <div className="giveaway-page giveaway-page--modal-only">
@@ -899,10 +978,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                   {presentation.badge}
                 </span>
               </div>
-              {countdown ? (
+              {activeCountdown ? (
                 <div className="giveaway-page__overlay-hero-timer">
-                  <span>{countdown.label}</span>
-                  <strong>{countdown.value}</strong>
+                  <span>{activeCountdown.label}</span>
+                  <strong>{activeCountdown.value}</strong>
                 </div>
               ) : null}
             </div>
@@ -917,11 +996,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               ) : (
                 <div className="giveaway-page__overlay-art">
                   <div className="giveaway-page__overlay-art-card">
-                    <span>MAX Giveaway</span>
+                    <span>Розыгрыш</span>
                     <strong>{giveaway?.title ?? 'Розыгрыш'}</strong>
                     <small>
                       {giveaway
-                        ? `${giveaway.prizes.length} мест · ${giveaway.requiredChannels.length + 1} условий`
+                        ? `${giveaway.prizes.length} мест · ${giveaway.requiredChannels.length + 1} каналов`
                         : 'Подготавливаем'}
                     </small>
                   </div>
@@ -943,8 +1022,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             </div>
 
             <div className="giveaway-page__overlay-copy">
-              {giveaway?.title ? (
-                <small className="giveaway-page__overlay-kicker">{giveaway.title}</small>
+              {showGiveawayKicker ? (
+                <small className="giveaway-page__overlay-kicker">{giveaway?.title}</small>
               ) : null}
               <strong id="giveaway-overlay-title">{presentation.title}</strong>
             </div>
@@ -976,10 +1055,25 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </div>
             </div>
 
-            {giveaway?.description.trim() ? (
+            {primaryAction ? (
+              <div className="giveaway-page__overlay-actions">
+                <button
+                  type="button"
+                  className="button button--accent"
+                  disabled={primaryAction.disabled}
+                  onClick={() => {
+                    maxImpact('medium');
+                    primaryAction.onClick();
+                  }}
+                >
+                  {primaryAction.label}
+                </button>
+              </div>
+            ) : null}
+
+            {visibleGiveawayDescription ? (
               <div className="giveaway-page__overlay-note">
-                <span>Описание</span>
-                <p>{giveaway.description.trim()}</p>
+                <p>{visibleGiveawayDescription}</p>
               </div>
             ) : null}
 
@@ -992,7 +1086,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                         Шаг {Math.min(completedChannelSteps + 1, totalChannelSteps)} из{' '}
                         {totalChannelSteps}
                       </strong>
-                      <span>Осталось {missingChannelCards.length}</span>
                     </div>
 
                     <div
@@ -1023,21 +1116,14 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                         openMissingChannel(nextMissingChannel.link ?? '');
                       }}
                     >
-                      <span>Следующий канал</span>
+                      <span>Канал</span>
                       <strong>{nextMissingChannel.title}</strong>
-                      <small>
-                        {subscriptionNeedsManualRetry
-                          ? 'Откройте ещё раз при необходимости.'
-                          : awaitingSubscriptionReturn || subscriptionRecheckPending
-                            ? 'Вернитесь после подписки.'
-                            : 'Откройте и подпишитесь.'}
-                      </small>
                     </button>
                   ) : (
                     <div className="giveaway-page__overlay-channel is-disabled giveaway-page__overlay-channel--focus">
-                      <span>Следующий канал</span>
+                      <span>Канал</span>
                       <strong>{nextMissingChannel.title}</strong>
-                      <small>У канала нет публичной ссылки.</small>
+                      <small>Нет ссылки</small>
                     </div>
                   )
                 ) : null}
@@ -1069,8 +1155,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               <div className="giveaway-page__overlay-section">
                 <div className="giveaway-page__section-head">
                   <div className="giveaway-page__section-copy">
-                    <h2>Условия участия</h2>
-                    <small>Источник проверяется автоматически.</small>
+                    <h2>Условия</h2>
                   </div>
                   <span className="giveaway-page__status is-muted">
                     {completedChannelSteps}/{totalChannelSteps}
@@ -1104,9 +1189,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                           <span className="giveaway-page__requirement-copy">
                             <span>{channel.eyebrow}</span>
                             <strong>{channel.title}</strong>
-                            <small>
-                              {isMissing ? 'Откройте и подпишитесь.' : 'Условие выполнено.'}
-                            </small>
                           </span>
                           <span className="giveaway-page__requirement-trailing">
                             <span
@@ -1135,9 +1217,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                         <span className="giveaway-page__requirement-copy">
                           <span>{channel.eyebrow}</span>
                           <strong>{channel.title}</strong>
-                          <small>
-                            {isMissing ? 'Нет публичной ссылки.' : 'Условие выполнено.'}
-                          </small>
                         </span>
                         <span className="giveaway-page__requirement-trailing">
                           <span
@@ -1194,47 +1273,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
           </div>
-
-          <div className="giveaway-page__overlay-actions">
-            {primaryAction ? (
-              <button
-                type="button"
-                className="button button--accent"
-                disabled={primaryAction.disabled}
-                onClick={() => {
-                  maxImpact('medium');
-                  primaryAction.onClick();
-                }}
-              >
-                {primaryAction.label}
-              </button>
-            ) : null}
-
-            {countdown ? (
-              <div
-                className="giveaway-page__overlay-timer"
-                aria-label={`${countdown.label}: ${countdown.value}. ${formatCountdownTarget(countdown.targetAt)}.`}
-              >
-                <span>{countdown.label}</span>
-                <strong>{countdown.value}</strong>
-                <small>{formatCountdownTarget(countdown.targetAt)}</small>
-              </div>
-            ) : null}
-          </div>
-
-          <p className="giveaway-page__overlay-footnote">
-            Поддержка:{' '}
-            <a
-              href={SUPPORT_BOT_URL}
-              className="giveaway-page__overlay-inline-link"
-              onClick={(event) => {
-                event.preventDefault();
-                openSupportBot();
-              }}
-            >
-              Чат поддержки
-            </a>
-          </p>
         </section>
       </div>
     </div>

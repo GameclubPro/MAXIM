@@ -4062,6 +4062,73 @@ describe('PrivateControlService', () => {
     expect(managedGiveawayService.claimGiveaway).not.toHaveBeenCalled();
   });
 
+  it('confirms a selected giveaway winner from the private deep link flow', async () => {
+    const { service, maxClient, managedGiveawayService } = createHarness();
+    const selectedClaim = {
+      giveaway: createGiveaway({
+        status: 'COMPLETED',
+        winnersCount: 1,
+        winners: [createGiveawayWinner({ status: 'SELECTED' })],
+      }),
+      winner: createGiveawayWinner({ status: 'SELECTED' }),
+    };
+    const confirmedClaim = {
+      giveaway: createGiveaway({
+        status: 'COMPLETED',
+        winnersCount: 1,
+        winners: [
+          createGiveawayWinner({
+            status: 'CLAIMED',
+            claimedAt: new Date().toISOString(),
+          }),
+        ],
+      }),
+      winner: createGiveawayWinner({
+        status: 'CLAIMED',
+        claimedAt: new Date().toISOString(),
+      }),
+    };
+    managedGiveawayService.getGiveawayClaimContext
+      .mockResolvedValueOnce(selectedClaim)
+      .mockResolvedValueOnce(selectedClaim)
+      .mockResolvedValueOnce(confirmedClaim);
+
+    await service.handleBotStarted(createBotStartedGiveawayClaimUpdate());
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .some(
+          (button) =>
+            typeof button === 'object' &&
+            button !== null &&
+            'text' in button &&
+            button.text === 'Подтвердить приз',
+        ),
+    ).toBe(true);
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|giveaway_claim_confirm|giveaway-1|winner-1'),
+    );
+
+    expect(managedGiveawayService.claimGiveaway).toHaveBeenCalledWith(
+      'giveaway-1',
+      expect.objectContaining({ userId: 'user-1' }),
+      'private_claim',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Приз подтверждён');
+    expect(
+      getLastEditedButtons(maxClient)
+        .flat()
+        .some(
+          (button) =>
+            typeof button === 'object' &&
+            button !== null &&
+            'text' in button &&
+            button.text === 'Подтвердить приз',
+        ),
+    ).toBe(false);
+  });
+
   it('keeps key private screens under a safe inline-button count', async () => {
     const { service, maxClient, chats } = createHarness();
 

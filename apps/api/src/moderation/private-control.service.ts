@@ -39,10 +39,7 @@ import {
   containsSupportedMarkdownSyntax,
   renderSupportedMarkdownAsHtml,
 } from '../common/max-markdown.util';
-import {
-  renderMaxTextMarkupAsHtml,
-  type MaxTextMarkup,
-} from '../common/max-text-markup.util';
+import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   buildCompactGiveawayHandoffStartPayload,
@@ -2863,10 +2860,30 @@ export class PrivateControlService {
         return;
       }
 
-      const view = this.renderGiveawayClaimView(currentClaim, 'Подтверждение больше не требуется.');
+      if (currentClaim.winner.status !== 'SELECTED') {
+        const view = this.renderGiveawayClaimView(
+          currentClaim,
+          'Подтверждение больше не требуется.',
+        );
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Подтверждение больше не нужно',
+        });
+        return;
+      }
+
+      await this.managedGiveawayService.claimGiveaway(giveawayId, context.actor, 'private_claim');
+      const refreshedClaim = await this.managedGiveawayService.getGiveawayClaimContext(
+        giveawayId,
+        winnerId,
+        context.actor.userId,
+      );
+      const view = refreshedClaim
+        ? this.renderGiveawayClaimView(refreshedClaim, 'Приз подтверждён.')
+        : this.renderUnavailableGiveawayClaimView();
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
-        notification: 'Подтверждение больше не нужно',
+        notification: 'Приз подтверждён',
       });
       return;
     }
@@ -6248,9 +6265,7 @@ export class PrivateControlService {
   ): string[] {
     const normalized = Array.from(
       new Set(
-        targetChatIds
-          .map((item) => item.trim())
-          .filter((item): item is string => item.length > 0),
+        targetChatIds.map((item) => item.trim()).filter((item): item is string => item.length > 0),
       ),
     );
     if (normalized.length > 0) {
@@ -8178,7 +8193,9 @@ export class PrivateControlService {
         ? 'Приз выдан'
         : winner.status === 'EXPIRED'
           ? 'Место ждёт реролл'
-          : 'Победитель зафиксирован';
+          : winner.status === 'SELECTED'
+            ? 'Ожидает подтверждения'
+            : 'Победитель зафиксирован';
     const lines = [
       this.markdownTitle('Розыгрыш'),
       '',
@@ -8207,6 +8224,15 @@ export class PrivateControlService {
     }
     if (linkRow.length > 0) {
       rows.push(linkRow);
+    }
+    if (winner.status === 'SELECTED') {
+      rows.push([
+        this.callbackButton(
+          'Подтвердить приз',
+          this.cb('giveaway_claim_confirm', giveaway.id, winner.id),
+          'positive',
+        ),
+      ]);
     }
     rows.push([this.callbackButton('Главный экран', this.cb('home'))]);
 
@@ -10809,15 +10835,10 @@ export class PrivateControlService {
     timeoutMs?: number,
   ): Promise<void> {
     try {
-      await this.maxClient.answerCallback(
-        callbackId,
-        notification,
-        undefined,
-        {
-          ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
-          ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
-        },
-      );
+      await this.maxClient.answerCallback(callbackId, notification, undefined, {
+        ignoreFailureMetricStatuses: CALLBACK_TERMINAL_FAILURE_METRIC_STATUSES,
+        ...(typeof timeoutMs === 'number' ? { timeoutMs } : {}),
+      });
     } catch (error: unknown) {
       this.logger.debug(
         {

@@ -824,6 +824,7 @@ model ManagedGiveawayWinner {
 
   @@index([giveawayId, status], map: "managed_giveaway_winners_giveaway_id_status_idx")
   @@index([giveawayId, prizeId], map: "managed_giveaway_winners_giveaway_id_prize_id_idx")
+  @@index([status, claimDeadlineAt], map: "managed_giveaway_winners_status_claim_deadline_at_idx")
   @@index([entryId], map: "managed_giveaway_winners_entry_id_idx")
   @@map("managed_giveaway_winners")
 }
