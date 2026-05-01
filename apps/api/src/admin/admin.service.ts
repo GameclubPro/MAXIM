@@ -306,6 +306,7 @@ type AssertChatAdminOptions = {
   syncPersistedAccess?: boolean;
   trafficClass?: 'critical' | 'interactive' | 'background';
   timeoutMs?: number;
+  allowPersistedFallback?: boolean;
 };
 
 type AdminReadBypassOptions = {
@@ -575,6 +576,8 @@ const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 3_000;
 const MANAGED_ENTITIES_REFRESH_DEGRADE_PAUSE_RETRY_MS = 15_000;
 const MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC = 30;
 const MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
+const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_COOLDOWN_MS = 60_000;
+const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_CONCURRENCY = 24;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 8;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
@@ -847,6 +850,7 @@ const RECENT_BOT_ADDED_BOOTSTRAP_ADMIN_TIMEOUT_MS = 250;
 const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_RESPONSE_BUDGET_MS = 200;
 const RECENT_BOT_ADDED_BOOTSTRAP_HEADER_TIMEOUT_MS = 350;
 const RECENT_BOT_ADDED_FAST_LANE_RETRY_WINDOW_MS = 45_000;
+const SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS = 1_500;
 const MANAGED_ENTITIES_LOCAL_CANDIDATE_LIMIT = 250;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_LOOKBACK_MS = 180 * TWENTY_FOUR_HOURS_MS;
 const MANAGED_ENTITIES_LOCAL_ACTIVITY_EVENT_TYPES = [
@@ -954,6 +958,8 @@ export class AdminService implements OnModuleDestroy {
   private readonly managedEntitiesAllowlistWarmupRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesColdStartRefreshScheduleRuns = new Map<string, Promise<void>>();
   private readonly managedEntitiesPublishedSnapshotRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesDiscoveryHeaderPrimeRuns = new Map<string, Promise<void>>();
+  private readonly managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesCatalogSyncCursorByScope = new Map<string, number>();
   private readonly pendingPersistedChatAccessPrunes = new Set<string>();
   private persistedChatAccessPruneChain: Promise<void> = Promise.resolve();
@@ -1571,26 +1577,33 @@ export class AdminService implements OnModuleDestroy {
         };
       }
 
-      const warmupPromise = this.startManagedEntitiesResponseWarmup(user, entityType, {
-        bypassRemoteCache: options.bypassRemoteCache === true,
-        resetRefreshCursor: options.resetRefreshCursor === true,
-        includeRefreshState: options.includeRefreshState === true,
-      });
-      const discovered = await this.awaitManagedEntitiesResponseValueWithinBudget(warmupPromise, {
-        fallback: {
-          items: [],
-          refresh: null,
-        },
-        budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
-        timeoutMessage:
-          'Detached managed entities discovery warmup from default response after response budget exceeded',
-        failureMessage: 'Managed entities discovery warmup failed during default response',
-        logData: {
-          entityType,
-          source: 'default',
-          userId: user.userId,
-        },
-      });
+      const warmupPromise = this.shouldRunManagedEntitiesRemoteResponseWarmup()
+        ? this.startManagedEntitiesResponseWarmup(user, entityType, {
+            bypassRemoteCache: options.bypassRemoteCache === true,
+            resetRefreshCursor: options.resetRefreshCursor === true,
+            includeRefreshState: options.includeRefreshState === true,
+          })
+        : null;
+      const discovered = warmupPromise
+        ? await this.awaitManagedEntitiesResponseValueWithinBudget(warmupPromise, {
+            fallback: {
+              items: [],
+              refresh: null,
+            },
+            budgetMs: MANAGED_ENTITIES_RESPONSE_WARMUP_BUDGET_MS,
+            timeoutMessage:
+              'Detached managed entities discovery warmup from default response after response budget exceeded',
+            failureMessage: 'Managed entities discovery warmup failed during default response',
+            logData: {
+              entityType,
+              source: 'default',
+              userId: user.userId,
+            },
+          })
+        : {
+            items: [],
+            refresh: null,
+          };
       const discoveredItems = this.mergeManagedEntityGroups(initial, discovered.items);
       const items =
         discoveredItems.length > 0
@@ -1607,7 +1620,8 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const eagerWarmupPromise =
-      options.bypassRemoteCache === true || options.resetRefreshCursor === true
+      this.shouldRunManagedEntitiesRemoteResponseWarmup() &&
+      (options.bypassRemoteCache === true || options.resetRefreshCursor === true)
         ? this.startManagedEntitiesResponseWarmup(user, entityType, {
             bypassRemoteCache: options.bypassRemoteCache === true,
             resetRefreshCursor: options.resetRefreshCursor === true,
@@ -1667,7 +1681,7 @@ export class AdminService implements OnModuleDestroy {
     );
     const responseWarmupPromise =
       eagerWarmupPromise ??
-      (cached.length === 0
+      (cached.length === 0 && this.shouldRunManagedEntitiesRemoteResponseWarmup()
         ? this.startManagedEntitiesResponseWarmup(user, entityType, {
             bypassRemoteCache: options.bypassRemoteCache === true,
             resetRefreshCursor: options.resetRefreshCursor === true,
@@ -2460,11 +2474,14 @@ export class AdminService implements OnModuleDestroy {
       recentBotAdded: ChatSummary[];
     },
   ): Promise<ChatSummary[]> {
+    const snapshotItems = await this.hydrateManagedEntities(
+      items.map((item) => this.cloneManagedEntitySummary(item)),
+    );
     const snapshotIds = new Set(items.map((item) => item.id));
     const recentBotAdded = bootstrap.recentBotAdded.filter((chat) => !snapshotIds.has(chat.id));
     const bootstrapCandidates = this.mergeManagedEntityGroups(recentBotAdded);
     if (bootstrapCandidates.length === 0) {
-      return items.map((item) => this.cloneManagedEntitySummary(item));
+      return snapshotItems;
     }
 
     const hydratedBootstrap = await this.attachManagedEntityBotAssignments(
@@ -2472,7 +2489,7 @@ export class AdminService implements OnModuleDestroy {
     );
     const hydratedById = new Map(hydratedBootstrap.map((item) => [item.id, item]));
 
-    return this.mergeManagedEntitiesWithLightweightBootstrap(items, {
+    return this.mergeManagedEntitiesWithLightweightBootstrap(snapshotItems, {
       recentBotAdded: recentBotAdded.map((chat) => hydratedById.get(chat.id) ?? chat),
     });
   }
@@ -2990,6 +3007,10 @@ export class AdminService implements OnModuleDestroy {
     entityType: ManagedEntityTypeFilter,
   ): string {
     return `${userId}:${entityType}:last-success`;
+  }
+
+  private shouldRunManagedEntitiesRemoteResponseWarmup(): boolean {
+    return !this.adminManagedEntitiesRefreshQueue;
   }
 
   private buildManagedEntitiesRuntimeChatScopeFilter(): {
@@ -5855,6 +5876,7 @@ export class AdminService implements OnModuleDestroy {
       const supportedChats = candidateChats.filter(
         (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
       );
+      this.scheduleManagedEntitiesDiscoveryHeaderPrime(supportedChats, `legacy:${entityType}`);
       this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
 
       return supportedChats;
@@ -5887,8 +5909,106 @@ export class AdminService implements OnModuleDestroy {
     const supportedChats = candidateChats.filter(
       (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
     );
+    this.scheduleManagedEntitiesDiscoveryHeaderPrime(supportedChats, `multi:${entityType}`);
     this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
     return supportedChats;
+  }
+
+  private scheduleManagedEntitiesDiscoveryHeaderPrime(
+    chats: readonly MaxBotChat[],
+    scopeKey: string,
+  ): void {
+    if (chats.length === 0 || typeof this.chatContextCache.setManagedEntityHeader !== 'function') {
+      return;
+    }
+
+    const candidates = chats.filter((chat) => {
+      return (
+        this.readTrimmedString(chat.chatId) !== null &&
+        (this.readTrimmedString(chat.title) !== null ||
+          this.readTrimmedString(chat.link) !== null ||
+          this.readTrimmedString(chat.avatarUrl) !== null)
+      );
+    });
+    if (candidates.length === 0) {
+      return;
+    }
+
+    const now = Date.now();
+    const cooldownUntilMs =
+      this.managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs.get(scopeKey) ?? 0;
+    if (cooldownUntilMs > now || this.managedEntitiesDiscoveryHeaderPrimeRuns.has(scopeKey)) {
+      return;
+    }
+
+    this.managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs.set(
+      scopeKey,
+      now + MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_COOLDOWN_MS,
+    );
+
+    const snapshot = candidates.map((chat) => ({ ...chat }));
+    const pending = this.runManagedEntitiesDiscoveryHeaderPrime(snapshot)
+      .catch((error: unknown) => {
+        this.logger.warn(
+          {
+            scopeKey,
+            candidateChats: snapshot.length,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to prime managed entity headers from discovery snapshot',
+        );
+      })
+      .finally(() => {
+        if (this.managedEntitiesDiscoveryHeaderPrimeRuns.get(scopeKey) === pending) {
+          this.managedEntitiesDiscoveryHeaderPrimeRuns.delete(scopeKey);
+        }
+      });
+
+    this.managedEntitiesDiscoveryHeaderPrimeRuns.set(scopeKey, pending);
+  }
+
+  private async runManagedEntitiesDiscoveryHeaderPrime(
+    chats: readonly MaxBotChat[],
+  ): Promise<void> {
+    await this.mapWithConcurrencyLimit(
+      [...chats],
+      MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_CONCURRENCY,
+      async (chat) => {
+        const chatId = this.readTrimmedString(chat.chatId);
+        if (!chatId) {
+          return null;
+        }
+
+        const existingHeader =
+          (await this.chatContextCache.getManagedEntityHeader?.(chatId, chat.entityType)) ?? null;
+        const title =
+          this.resolvePresentableManagedEntityTitle(chatId, chat.title, existingHeader?.title) ??
+          (chat.entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`);
+        const link =
+          this.readTrimmedString(chat.link) ?? this.readTrimmedString(existingHeader?.link) ?? null;
+        const avatarUrl =
+          this.readTrimmedString(chat.avatarUrl) ??
+          this.readTrimmedString(existingHeader?.avatarUrl);
+        const primaryBotId =
+          this.normalizeRuntimeManagedEntityBotId(chat.botId) ??
+          this.normalizeRuntimeManagedEntityBotId(existingHeader?.primaryBotId);
+        await this.chatContextCache.setManagedEntityHeader?.(
+          this.createManagedEntityHeader({
+            id: chatId,
+            title,
+            entityType: chat.entityType,
+            link,
+            participantsCount: existingHeader?.participantsCount ?? null,
+            avatarUrl,
+            primaryBotId,
+            assignedBots: existingHeader?.assignedBots,
+            sharedMode: existingHeader?.sharedMode,
+          }),
+        );
+
+        return null;
+      },
+    );
   }
 
   private scheduleManagedEntitiesCatalogSync(
@@ -6375,8 +6495,16 @@ export class AdminService implements OnModuleDestroy {
     return fallback;
   }
 
-  async getChatSettingsScreen(chatId: string, user: AuthUser): Promise<ChatSettingsScreenResponse> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat');
+  async getChatSettingsScreen(
+    chatId: string,
+    user: AuthUser,
+    options: { liveAdminCheck?: boolean } = {},
+  ): Promise<ChatSettingsScreenResponse> {
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'chat', {
+      forceRemote: options.liveAdminCheck !== false,
+      timeoutMs:
+        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+    });
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
@@ -7085,8 +7213,13 @@ export class AdminService implements OnModuleDestroy {
   async getChannelSettingsScreen(
     chatId: string,
     user: AuthUser,
+    options: { liveAdminCheck?: boolean } = {},
   ): Promise<ChannelSettingsScreenResponse> {
-    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel');
+    await this.assertReadOnlyChatAdmin(chatId, user.userId, 'channel', {
+      forceRemote: options.liveAdminCheck !== false,
+      timeoutMs:
+        options.liveAdminCheck === false ? undefined : SETTINGS_SCREEN_ADMIN_CHECK_TIMEOUT_MS,
+    });
     await this.ensureEntityType(chatId, user.userId, 'channel');
 
     const [settings, header, managedBroadcasts] = await Promise.all([
@@ -17279,6 +17412,7 @@ export class AdminService implements OnModuleDestroy {
       bypassNegativeCache: true,
       trafficClass: options.trafficClass,
       timeoutMs: options.timeoutMs,
+      allowPersistedFallback: options.allowPersistedFallback,
     });
     if (access.status === 'denied') {
       if (access.reason === 'bot_not_admin') {
@@ -17318,22 +17452,31 @@ export class AdminService implements OnModuleDestroy {
     chatId: string,
     userId: string,
     entityType: ManagedEntityType | null = null,
+    options: {
+      forceRemote?: boolean;
+      timeoutMs?: number;
+    } = {},
   ): Promise<void> {
-    const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
-    if (cached === 'granted') {
-      return;
-    }
+    if (options.forceRemote !== true) {
+      const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
+      if (cached === 'granted') {
+        return;
+      }
 
-    if (
-      (await this.hasPersistedChatAccess(chatId, userId)) &&
-      (await this.canUsePersistedChatAccessFallback(chatId))
-    ) {
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
-      return;
+      if (
+        (await this.hasPersistedChatAccess(chatId, userId)) &&
+        (await this.canUsePersistedChatAccessFallback(chatId))
+      ) {
+        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'granted');
+        return;
+      }
     }
 
     await this.assertChatAdmin(chatId, userId, entityType, {
       syncPersistedAccess: false,
+      trafficClass: options.forceRemote === true ? 'interactive' : undefined,
+      timeoutMs: options.timeoutMs,
+      allowPersistedFallback: options.forceRemote === true ? false : undefined,
     });
   }
 
@@ -23646,6 +23789,7 @@ export class AdminService implements OnModuleDestroy {
       trafficClass?: 'critical' | 'interactive' | 'background';
       sourceTag?: string;
       timeoutMs?: number;
+      allowPersistedFallback?: boolean;
     } = {},
   ): Promise<AdminAccessResolution> {
     const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
@@ -23675,7 +23819,9 @@ export class AdminService implements OnModuleDestroy {
     const key = this.buildAdminAccessCheckKey(chatId, userId, options);
     const inFlight = this.adminAccessChecks.get(key);
     if (inFlight) {
-      return this.withAllowlistFallback(chatId, userId, inFlight);
+      return options.allowPersistedFallback === false
+        ? inFlight
+        : this.withAllowlistFallback(chatId, userId, inFlight);
     }
 
     const pending = this.loadRemoteAdminAccess(chatId, userId, {
@@ -23686,7 +23832,9 @@ export class AdminService implements OnModuleDestroy {
     this.adminAccessChecks.set(key, pending);
 
     try {
-      return await this.withAllowlistFallback(chatId, userId, pending);
+      return await (options.allowPersistedFallback === false
+        ? pending
+        : this.withAllowlistFallback(chatId, userId, pending));
     } finally {
       this.adminAccessChecks.delete(key);
     }

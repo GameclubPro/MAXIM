@@ -1,5 +1,5 @@
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
-import { of, throwError } from 'rxjs';
+import { from, of, throwError } from 'rxjs';
 import Redis from 'ioredis';
 
 jest.mock('ioredis', () => {
@@ -755,31 +755,31 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             messages: [
-                {
-                  body: {
-                    mid: 'mid-rules-markup-1',
-                    text: '🔥MAX Docs',
-                    markup: [
-                      {
-                        from: 2,
-                        type: 'strong',
-                        length: 8,
-                      },
-                      {
-                        from: 2,
-                        type: 'emphasized',
-                        length: 8,
-                      },
-                      {
-                        from: 2,
-                        type: 'underline',
-                        length: 8,
-                      },
-                      {
-                        from: 2,
-                        type: 'link',
-                        length: 8,
-                        url: 'https://dev.max.ru/docs-api',
+              {
+                body: {
+                  mid: 'mid-rules-markup-1',
+                  text: '🔥MAX Docs',
+                  markup: [
+                    {
+                      from: 2,
+                      type: 'strong',
+                      length: 8,
+                    },
+                    {
+                      from: 2,
+                      type: 'emphasized',
+                      length: 8,
+                    },
+                    {
+                      from: 2,
+                      type: 'underline',
+                      length: 8,
+                    },
+                    {
+                      from: 2,
+                      type: 'link',
+                      length: 8,
+                      url: 'https://dev.max.ru/docs-api',
                     },
                   ],
                 },
@@ -2437,6 +2437,64 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('shares an in-flight bot chat discovery request for the same bot', async () => {
+    let resolveResponse!: (value: { status: number; data: Record<string, unknown> }) => void;
+    const response = new Promise<{ status: number; data: Record<string, unknown> }>((resolve) => {
+      resolveResponse = resolve;
+    });
+    const request = jest.fn().mockReturnValue(from(response));
+    const service = createService({ request });
+
+    const first = service.listBotChats({ bypassCache: true });
+    const second = service.listBotChats({ bypassCache: true });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(request).toHaveBeenCalledTimes(1);
+
+    resolveResponse({
+      status: 200,
+      data: {
+        chats: [
+          {
+            chat_id: 'chat-1',
+            title: 'Chat 1',
+            type: 'chat',
+          },
+        ],
+        marker: null,
+      },
+    });
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      [
+        {
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          lastEventTime: null,
+          entityType: 'chat',
+          link: null,
+          avatarUrl: null,
+          botId: '777000_bot',
+          botIds: ['777000_bot'],
+        },
+      ],
+      [
+        {
+          chatId: 'chat-1',
+          title: 'Chat 1',
+          lastEventTime: null,
+          entityType: 'chat',
+          link: null,
+          avatarUrl: null,
+          botId: '777000_bot',
+          botIds: ['777000_bot'],
+        },
+      ],
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
   it('bypasses cached chat snapshot when explicitly requested', async () => {
     const httpService = {
       request: jest
@@ -2698,14 +2756,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
     ).actionHealthService;
 
     await expect(
-      service.sendMessageImmediateWithId(
-        'chat-1',
-        'Фоновое сообщение',
-        undefined,
-        {
-          actionHealthLane: 'background',
-        } as never,
-      ),
+      service.sendMessageImmediateWithId('chat-1', 'Фоновое сообщение', undefined, {
+        actionHealthLane: 'background',
+      } as never),
     ).resolves.toEqual(
       expect.objectContaining({
         messageId: 'mid-1',
@@ -2928,8 +2981,7 @@ describe('MaxClientService delayed member actions', () => {
             webhookHeaderSecret: 'secondary-header-secret',
             webhookUrl:
               'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/secondary-secret',
-            maskedWebhookUrl:
-              'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/***',
+            maskedWebhookUrl: 'https://maxim.play-team.ru/api/webhook/max/id613002203036_4_bot/***',
           };
         }
 

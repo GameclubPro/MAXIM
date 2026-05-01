@@ -384,13 +384,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [api]);
 
   function prefetchChatSettings(chatId: string) {
+    void chatId;
     preloadSettingsPage();
-    void queryClient
-      .prefetchQuery({
-        queryKey: ['settings-screen', chatId],
-        queryFn: () => api.request(`/chats/${chatId}/settings-screen`),
-      })
-      .catch(() => undefined);
   }
 
   function prefetchChatEvents(chatId: string) {
@@ -409,13 +404,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }
 
   function prefetchChannelSettings(chatId: string) {
+    void chatId;
     preloadChannelSettingsPage();
-    void queryClient
-      .prefetchQuery({
-        queryKey: ['channel-settings-screen', chatId],
-        queryFn: () => api.request(`/channels/${chatId}/settings-screen`),
-      })
-      .catch(() => undefined);
   }
 
   function prefetchChannelStats(chatId: string) {

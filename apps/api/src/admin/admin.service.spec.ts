@@ -3390,7 +3390,7 @@ describe('AdminService required subscription settings', () => {
       greetingBotMessageText: 'Привет!',
     });
 
-    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    const assertChatAdminSpy = jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
     jest
       .spyOn(
         service as unknown as {
@@ -8867,6 +8867,66 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
+  it('overlays globally refreshed headers onto published snapshot responses', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue({
+        id: 'chat-1',
+        title: 'Живое название',
+        entityType: 'chat',
+        link: 'https://max.ru/chat-1',
+        participantsCount: 42,
+        avatarUrl: 'https://cdn.max.ru/chat-1.webp',
+        primaryBotId: null,
+        assignedBots: [],
+        sharedMode: 'owned',
+      }),
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 1,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-1',
+            title: 'Старое название',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      createChatSummaryFixture({
+        id: 'chat-1',
+        title: 'Живое название',
+        createdAt: '2026-04-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: 'https://max.ru/chat-1',
+        avatarUrl: 'https://cdn.max.ru/chat-1.webp',
+        primaryBotId: '777000_bot',
+      }),
+    ]);
+  });
+
   it('returns a noop diff when refresh already targets the current published snapshot version', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({
@@ -10899,10 +10959,12 @@ describe('AdminService.listChats', () => {
     );
 
     jest.spyOn(service as any, 'bootstrapRecentBotAddedEntities').mockResolvedValue([]);
-    jest.spyOn(service as any, 'startManagedEntitiesResponseWarmup').mockResolvedValue({
-      items: [],
-      refresh: null,
-    });
+    const responseWarmupSpy = jest
+      .spyOn(service as any, 'startManagedEntitiesResponseWarmup')
+      .mockResolvedValue({
+        items: [],
+        refresh: null,
+      });
 
     try {
       await expect(
@@ -10932,6 +10994,7 @@ describe('AdminService.listChats', () => {
           priority: 10,
         }),
       );
+      expect(responseWarmupSpy).not.toHaveBeenCalled();
     } finally {
       managedEntitiesRefreshEnqueue.resolve(undefined);
       await flushAsyncTasks();
@@ -14239,7 +14302,7 @@ describe('AdminService settings screen endpoints', () => {
     const listManagedBroadcastsSpy = jest
       .spyOn(service, 'listManagedBroadcasts')
       .mockResolvedValue([]);
-    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    const assertChatAdminSpy = jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
     jest.spyOn(service as any, 'ensureEntityType').mockResolvedValue(undefined);
 
     const result = await service.getChatSettingsScreen('chat-1', {
@@ -14298,6 +14361,12 @@ describe('AdminService settings screen endpoints', () => {
       expect.objectContaining({ userId: 'admin-1' }),
       { skipAdminCheck: true, skipEntityCheck: true },
     );
+    expect(assertChatAdminSpy).toHaveBeenCalledWith('chat-1', 'admin-1', 'chat', {
+      syncPersistedAccess: false,
+      trafficClass: 'interactive',
+      timeoutMs: 1_500,
+      allowPersistedFallback: false,
+    });
   });
 
   it('routes section apply-to-all through partial settings keys', async () => {

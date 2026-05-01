@@ -347,6 +347,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private readonly circuitOpenUntilMsByBot = new Map<string, number>();
+  private readonly listBotChatsInFlight = new Map<string, Promise<MaxBotChat[]>>();
 
   constructor(
     private readonly httpService: HttpService,
@@ -1798,6 +1799,28 @@ export class MaxClientService implements OnModuleDestroy {
       }
     }
 
+    const inFlightKey = `${botId}:${options.bypassCache === true ? 'bypass' : 'cache'}`;
+    const existingInFlight = this.listBotChatsInFlight.get(inFlightKey);
+    if (existingInFlight) {
+      const chats = await existingInFlight;
+      return chats.map((chat) => ({ ...chat }));
+    }
+
+    const pending = this.fetchBotChatsUncached(botId, options).finally(() => {
+      if (this.listBotChatsInFlight.get(inFlightKey) === pending) {
+        this.listBotChatsInFlight.delete(inFlightKey);
+      }
+    });
+    this.listBotChatsInFlight.set(inFlightKey, pending);
+
+    const chats = await pending;
+    return chats.map((chat) => ({ ...chat }));
+  }
+
+  private async fetchBotChatsUncached(
+    botId: string,
+    options: MaxApiRequestOptions,
+  ): Promise<MaxBotChat[]> {
     const results: MaxBotChat[] = [];
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;

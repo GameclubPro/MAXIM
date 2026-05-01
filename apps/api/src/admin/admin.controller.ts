@@ -194,8 +194,14 @@ export class AdminController {
   }
 
   @Get('chats/:chatId/settings-screen')
-  getChatSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChatSettingsScreen(chatId, user);
+  getChatSettingsScreen(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('prefetch') prefetch?: string,
+  ) {
+    return this.adminService.getChatSettingsScreen(chatId, user, {
+      liveAdminCheck: prefetch !== '1',
+    });
   }
 
   @Post('chats/:chatId/required-subscription/channels/resolve')
@@ -307,8 +313,14 @@ export class AdminController {
   }
 
   @Get('channels/:chatId/settings-screen')
-  getChannelSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChannelSettingsScreen(chatId, user);
+  getChannelSettingsScreen(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query('prefetch') prefetch?: string,
+  ) {
+    return this.adminService.getChannelSettingsScreen(chatId, user, {
+      liveAdminCheck: prefetch !== '1',
+    });
   }
 
   @Put('channels/:chatId/settings')
