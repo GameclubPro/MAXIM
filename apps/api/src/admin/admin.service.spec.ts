@@ -5337,6 +5337,7 @@ describe('AdminService.applyManualModerationAction', () => {
         source: 'miniapp',
       }),
       expect.objectContaining({
+        priority: 20,
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -6406,6 +6407,7 @@ describe('AdminService.applyManualSystemBan', () => {
         source: 'group_command',
       }),
       expect.objectContaining({
+        priority: 20,
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -6510,6 +6512,7 @@ describe('AdminService.applyManualSystemBan', () => {
         }),
       }),
       expect.objectContaining({
+        priority: 1,
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -6839,6 +6842,7 @@ describe('AdminService.applyManualSystemBan', () => {
         source: 'group_command',
       }),
       expect.objectContaining({
+        priority: 20,
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,

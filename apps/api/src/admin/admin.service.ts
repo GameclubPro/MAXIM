@@ -583,6 +583,8 @@ const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 8;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
 const ADMIN_FALLBACK_READ_FAILURE_METRIC_STATUSES = [403, 404] as const;
 const ADMIN_ACTION_HEALTH_LANE = 'background' as const;
+const ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY = 1;
+const ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY = 20;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_CONCURRENCY = 2;
 const APPLY_SETTINGS_TO_ALL_READINESS_REFRESH_SPACING_MS =
@@ -15884,6 +15886,7 @@ export class AdminService implements OnModuleDestroy {
     try {
       await this.adminManualFanoutQueue.add('execute-admin-manual-fanout', job, {
         jobId: job.jobId,
+        priority: this.resolveManualModerationFanoutQueuePriority(job),
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
@@ -15906,6 +15909,12 @@ export class AdminService implements OnModuleDestroy {
       );
       return false;
     }
+  }
+
+  private resolveManualModerationFanoutQueuePriority(job: AdminManualFanoutJob): number {
+    return job.kind === 'manual_group_moderation_command'
+      ? ADMIN_MANUAL_GROUP_COMMAND_QUEUE_PRIORITY
+      : ADMIN_MANUAL_FANOUT_QUEUE_PRIORITY;
   }
 
   private buildQueuedManualMuteFanoutSummary(jobId: string) {

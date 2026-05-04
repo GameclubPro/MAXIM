@@ -5198,6 +5198,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings,
     });
     if (queued) {
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: this.buildQueuedGroupAdminCommandAcceptedNotice(command, target),
+      });
       return true;
     }
 
@@ -5259,6 +5264,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return true;
+  }
+
+  private buildQueuedGroupAdminCommandAcceptedNotice(
+    command: Exclude<AdminForwardedModerationCommand, { action: 'RULES' }>,
+    target: ForwardedModerationTarget,
+  ): string {
+    const targetLabel = this.formatUserLabel(target.senderName ?? undefined, target.userId);
+    if (command.action === 'BAN') {
+      return `Принял команду: выполняю бан для ${targetLabel}.`;
+    }
+
+    if (command.mutePermanent) {
+      return `Принял команду: выполняю мут бессрочно для ${targetLabel}.`;
+    }
+
+    return `Принял команду: выполняю мут на ${
+      command.muteDurationHours ?? DEFAULT_MUTE_DURATION_HOURS
+    }ч для ${targetLabel}.`;
   }
 
   private async enqueueAdminForwardedModerationCommand(params: {

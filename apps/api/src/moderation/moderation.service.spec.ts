@@ -8503,7 +8503,15 @@ describe('ModerationService', () => {
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Принял команду: выполняю бан'),
+      { textFormat: 'markdown' },
+      expect.objectContaining({
+        immediate: true,
+        autoDeleteDelayMs: 3 * 60 * 1000,
+      }),
+    );
   });
 
   it('lets chat admins mute a replied sender with the default duration', async () => {
