@@ -35,6 +35,7 @@ import {
   type ManagedEntityAssignedBot,
   type ManagedBroadcastDetails,
   type ManagedEntityHeader,
+  type SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
@@ -54,10 +55,7 @@ import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
-import {
-  BroadcastSchedulePlanner,
-  type BroadcastSchedulePlannerSelectionState,
-} from '../components/broadcast-schedule-planner';
+import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -90,6 +88,7 @@ import {
   resetPublishedRules,
   retryManagedBroadcast,
   scheduleDomainRemoval,
+  sendBroadcast,
   updateManagedBroadcast,
   updateRules,
   updateSettings,
@@ -118,6 +117,11 @@ import {
   sortAndUniqueBroadcastSlots,
   type BroadcastQuickPreset,
 } from '../lib/broadcast-schedule';
+import {
+  loadBroadcastComposerDraft,
+  saveBroadcastComposerDraft,
+  type BroadcastComposerDraft,
+} from '../lib/broadcast-composer-draft';
 import { cn } from '../lib/cn';
 import {
   normalizeBroadcastAudienceTargetChatIds,
@@ -229,6 +233,12 @@ const LazyBroadcastAudienceControls = lazy(() =>
     default: module.BroadcastAudienceControls,
   })),
 );
+const LazyBroadcastSchedulePlanner = lazy(() =>
+  import('../components/broadcast-schedule-planner').then((module) => ({
+    default: module.BroadcastSchedulePlanner,
+  })),
+);
+const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-content-composer'));
 const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
 
 const AUTO_SAVE_DELAY_MS = 650;
@@ -1257,6 +1267,22 @@ function formatRemovalDateTime(value: string | null, timeZone?: string | null): 
   );
 }
 
+function formatMiniappBroadcastResultDescription(result: SendBroadcastResult): string {
+  if (result.sentChats === 0 && result.nextSendAt) {
+    return `Первый слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
+  }
+
+  if (result.failedChats > 0) {
+    return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
+  }
+
+  if (result.nextSendAt && result.scheduledOccurrences > 0) {
+    return `Следующий слот: ${formatRemovalDateTime(result.nextSendAt, result.scheduleTimezone)}.`;
+  }
+
+  return `Отправлено: ${result.sentChats}/${result.targetChats}.`;
+}
+
 function formatAllowlistModeLabel(matchType: AllowlistMatchType): string {
   return matchType === 'DOMAIN' ? 'Весь домен' : 'Точная ссылка';
 }
@@ -2000,6 +2026,20 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   isConfirmed: false,
 };
 
+function areBroadcastPlannerStatesEqual(
+  left: BroadcastSchedulePlannerSelectionState,
+  right: BroadcastSchedulePlannerSelectionState,
+): boolean {
+  return (
+    left.pickedDayCount === right.pickedDayCount &&
+    left.selectedDayCount === right.selectedDayCount &&
+    left.slotCount === right.slotCount &&
+    left.futureSlotCount === right.futureSlotCount &&
+    left.isDaySheetOpen === right.isDaySheetOpen &&
+    left.isConfirmed === right.isConfirmed
+  );
+}
+
 function WarnMessageEditor({
   editorKey,
   botSpeechStyle,
@@ -2083,6 +2123,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageBase64, setMailingImageBase64] = useState('');
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
   const [mailingImageFileName, setMailingImageFileName] = useState('');
+  const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
   const [mailingQuickPreset, setMailingQuickPreset] = useState<BroadcastQuickPreset | null>(null);
   const [mailingScheduleTimezone, setMailingScheduleTimezone] = useState(() =>
@@ -2097,11 +2138,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [, setMailingCycleEnabled] = useState(false);
   const [, setMailingCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
   const [, setMailingCycleCount] = useState(2);
-  const [, setMailingTextError] = useState('');
+  const [mailingTextError, setMailingTextError] = useState('');
   const [mailingButtonErrors, setMailingButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>(
     [],
   );
-  const [, setMailingImageError] = useState('');
+  const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [, setMailingCycleError] = useState('');
   const [requiredSubscriptionExternalChannelValue, setRequiredSubscriptionExternalChannelValue] =
@@ -2225,6 +2266,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingVideoCleared(false);
     setMailingQuickPreset(null);
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -2246,6 +2288,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setMailingWorkspaceView('compose');
+    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('chat', chatId) : null;
+    if (savedBroadcastDraft) {
+      setMailingTargetMode(savedBroadcastDraft.targetMode);
+      setMailingTargetChatIds(
+        savedBroadcastDraft.targetChatIds.length > 0
+          ? savedBroadcastDraft.targetChatIds
+          : chatId
+            ? [chatId]
+            : [],
+      );
+      setMailingLastScopedTargetMode(savedBroadcastDraft.lastScopedTargetMode);
+      setMailingText(savedBroadcastDraft.text);
+      setMailingButtons(savedBroadcastDraft.buttons);
+      setMailingImageEnabled(savedBroadcastDraft.imageEnabled);
+      setMailingImageBase64(savedBroadcastDraft.imageBase64);
+      setMailingImageMimeType(savedBroadcastDraft.imageMimeType);
+      setMailingImageFileName(savedBroadcastDraft.imageFileName);
+      setMailingQuickPreset(savedBroadcastDraft.quickPreset);
+      setMailingScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
+      setMailingScheduleTimezone(
+        savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      );
+    }
     setDuplicateWindowInputValue('');
     setPendingSpeechStyle(null);
     setRequiredSubscriptionChannelsRefreshRequest({
@@ -2557,7 +2622,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [settingsScreenQuery.data?.requiredSubscriptionChannels]);
 
   useEffect(() => {
-    if (!broadcastHandoffStateQuery.data) {
+    if (!broadcastHandoffStateQuery.data || !handoffRequested) {
+      return;
+    }
+
+    const hasHandoffDraft =
+      broadcastHandoffStateQuery.data.hasContent ||
+      broadcastHandoffStateQuery.data.buttons.length > 0 ||
+      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ||
+      broadcastHandoffStateQuery.data.targetMode !== 'current' ||
+      broadcastHandoffStateQuery.data.targetChatIds.length > 0;
+    const hasLocalDirectContent = Boolean(mailingText.trim() || mailingImageEnabled);
+    if (
+      !hasHandoffDraft ||
+      (broadcastHandoffStateQuery.data.hasContent && !handoffRequested) ||
+      (!broadcastHandoffStateQuery.data.hasContent && hasLocalDirectContent)
+    ) {
       return;
     }
 
@@ -2601,6 +2681,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingVideoCleared(false);
     setMailingButtonErrors([]);
     setMailingScheduleError('');
     setMailingCycleError('');
@@ -2614,7 +2695,52 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         tone: 'success',
       });
     }
-  }, [broadcastHandoffStateQuery.data, chatId, handoffRequested, pushToast]);
+  }, [
+    broadcastHandoffStateQuery.data,
+    chatId,
+    handoffRequested,
+    mailingImageEnabled,
+    mailingText,
+    pushToast,
+  ]);
+
+  useEffect(() => {
+    if (!chatId || editingManagedBroadcast) {
+      return;
+    }
+
+    const draftToPersist: BroadcastComposerDraft = {
+      text: mailingText,
+      targetMode: mailingTargetMode,
+      targetChatIds: mailingTargetChatIds,
+      lastScopedTargetMode: mailingLastScopedTargetMode,
+      buttons: mailingButtons,
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageBase64,
+      imageMimeType: mailingImageMimeType,
+      imageFileName: mailingImageFileName,
+      scheduledSlots: mailingScheduledSlots,
+      quickPreset: mailingQuickPreset,
+      scheduleTimezone: mailingScheduleTimezone,
+    };
+
+    saveBroadcastComposerDraft('chat', chatId, draftToPersist);
+  }, [
+    chatId,
+    editingManagedBroadcast,
+    mailingButtons,
+    mailingImageBase64,
+    mailingImageEnabled,
+    mailingImageFileName,
+    mailingImageMimeType,
+    mailingLastScopedTargetMode,
+    mailingQuickPreset,
+    mailingScheduleTimezone,
+    mailingScheduledSlots,
+    mailingTargetChatIds,
+    mailingTargetMode,
+    mailingText,
+  ]);
 
   useEffect(() => {
     if (!rulesQuery.data) {
@@ -3030,6 +3156,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const sendBroadcastMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => sendBroadcast(api, chatId ?? '', payload),
+    onSuccess: (result) => {
+      appliedBroadcastHandoffSignatureRef.current = null;
+      resetMailingComposer();
+      if (chatId) {
+        void clearBroadcastHandoffState(api, chatId).catch(() => undefined);
+      }
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
+      pushToast({
+        tone: result.failedChats > 0 ? 'info' : 'success',
+        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Рассылка готова',
+        description: formatMiniappBroadcastResultDescription(result),
+      });
+      maxNotify(result.failedChats > 0 ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      const description = reportMailingAudienceApiError(error);
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить рассылку',
+        description,
+      });
+      maxNotify('error');
+    },
+  });
+
   const clearBroadcastHandoffMutation = useMutation({
     mutationFn: () => clearBroadcastHandoffState(api, chatId ?? ''),
     onSuccess: () => {
@@ -3241,6 +3395,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingImageBase64(broadcast.imageBase64);
       setMailingImageMimeType(broadcast.imageMimeType);
       setMailingImageFileName(broadcast.imageFileName);
+      setMailingVideoCleared(false);
       setMailingQuickPreset(null);
       setMailingScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
       setMailingScheduleTimezone(
@@ -4151,6 +4306,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingVideoCleared(false);
     setMailingQuickPreset(null);
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -4266,6 +4422,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingQuickPreset(null);
   }
 
+  function handleMailingPlannerStateChange(nextState: BroadcastSchedulePlannerSelectionState) {
+    setMailingPlannerState((current) =>
+      areBroadcastPlannerStatesEqual(current, nextState) ? current : nextState,
+    );
+  }
+
   function handleDeleteManagedBroadcast(broadcast: ManagedBroadcastListItem) {
     if (!chatId || cancelManagedBroadcastMutation.isPending) {
       return;
@@ -4361,11 +4523,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
 
     let hasError = false;
+    const keepVideoMedia =
+      !mailingVideoCleared &&
+      !mailingImageEnabled &&
+      editingManagedBroadcast?.mediaType === 'video' &&
+      editingManagedBroadcast.mediaPayload;
+    const hasDirectContent = Boolean(normalizedText || mailingImageEnabled || keepVideoMedia);
     if (editingManagedBroadcast) {
-      const keepVideoMedia =
-        !mailingImageEnabled &&
-        editingManagedBroadcast.mediaType === 'video' &&
-        editingManagedBroadcast.mediaPayload;
       if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
         setMailingTextError('В сохранённой рассылке нет текста, фото или видео.');
         hasError = true;
@@ -4387,8 +4551,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         setMailingImageError('');
       }
     } else {
-      setMailingTextError('');
-      setMailingImageError('');
+      if (!hasDirectContent && !mailingBotHasContent) {
+        setMailingTextError('Добавьте текст или фото.');
+        hasError = true;
+      } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
+        setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+        hasError = true;
+      } else {
+        setMailingTextError('');
+      }
+
+      if (mailingImageEnabled) {
+        if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+          setMailingImageError('Фото не готово.');
+          hasError = true;
+        } else {
+          setMailingImageError('');
+        }
+      } else {
+        setMailingImageError('');
+      }
     }
 
     if (!validateMailingButtonDraft()) {
@@ -4425,13 +4607,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
 
     if (editingManagedBroadcast) {
-      const keepVideoMedia =
-        !mailingImageEnabled &&
-        editingManagedBroadcast.mediaType === 'video' &&
-        editingManagedBroadcast.mediaPayload;
       const payload: SendBroadcastPayload = {
         text: normalizedText,
-        textFormat: editingManagedBroadcast.textFormat,
+        textFormat: 'markdown',
         ...handoffPayload,
         imageEnabled: mailingImageEnabled,
         imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
@@ -4449,7 +4627,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    handoffBroadcastMutation.mutate(handoffPayload);
+    if (!hasDirectContent && mailingBotHasContent) {
+      handoffBroadcastMutation.mutate(handoffPayload);
+      return;
+    }
+
+    const payload: SendBroadcastPayload = {
+      text: normalizedText,
+      textFormat: 'markdown',
+      ...handoffPayload,
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      mediaType: null,
+      mediaPayload: null,
+      mediaMimeType: '',
+      mediaFileName: '',
+    };
+    sendBroadcastMutation.mutate(payload);
   }
 
   function handleCommercialSensitivitySliderChange(rawValue: number) {
@@ -5138,9 +5334,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const activeManagedBroadcastCountdown = activeManagedBroadcast
     ? resolveBroadcastCountdown(activeManagedBroadcast.nextSendAt, mailingNowMs)
     : null;
+  const hasActiveManagedBroadcastCountdown = activeManagedBroadcastCountdown !== null;
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
+    sendBroadcastMutation.isPending ||
     handoffBroadcastMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
@@ -5174,7 +5372,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
   const mailingButtonEnabled = normalizedMailingButtons.length > 0;
   const editingMailingHasVideo =
-    editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
+    !mailingVideoCleared &&
+    editingManagedBroadcast?.mediaType === 'video' &&
+    Boolean(editingManagedBroadcast.mediaPayload);
+  const mailingHasDirectContent = Boolean(
+    normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
+  );
+  const mailingHasPublishableContent =
+    mailingHasDirectContent || (!editingManagedBroadcast && mailingBotHasContent);
   const mailingQuickSchedule = mailingQuickPreset
     ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
     : null;
@@ -5214,11 +5419,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingQuickSchedule !== null || mailingPlannerState.futureSlotCount > 0;
   const showMailingPrimaryAction =
     isMailingBusy ||
-    (mailingScheduleReady &&
+    (mailingHasPublishableContent &&
+      mailingScheduleReady &&
       mailingButtonDraftValid &&
       (mailingQuickSchedule !== null || mailingPlannerState.isConfirmed) &&
       mailingHasFutureSlots);
   const mailingSendDisabled = isMailingBusy;
+  const mailingPrimaryActionLabel =
+    !mailingHasDirectContent && !editingManagedBroadcast && mailingBotHasContent
+      ? 'Открыть бота'
+      : editingManagedBroadcast
+        ? 'Сохранить'
+        : mailingQuickPreset === 'now'
+          ? 'Отправить'
+          : 'Запланировать';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
@@ -5253,13 +5467,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       >
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
-          : handoffBroadcastMutation.isPending
-            ? 'Передаём...'
-            : isOpeningManagedBroadcastEditor
-              ? 'Открываем...'
-              : editingManagedBroadcast
-                ? 'Сохранить'
-                : 'Открыть бота'}
+          : sendBroadcastMutation.isPending
+            ? mailingQuickPreset === 'now'
+              ? 'Отправляем...'
+              : 'Планируем...'
+            : handoffBroadcastMutation.isPending
+              ? 'Передаём...'
+              : isOpeningManagedBroadcastEditor
+                ? 'Открываем...'
+                : mailingPrimaryActionLabel}
       </button>
     </div>
   );
@@ -5278,7 +5494,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (
       typeof window === 'undefined' ||
       !expandedSections.mailing ||
-      !activeManagedBroadcastCountdown
+      !hasActiveManagedBroadcastCountdown
     ) {
       return undefined;
     }
@@ -5291,7 +5507,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return () => {
       window.clearInterval(timerId);
     };
-  }, [activeManagedBroadcastCountdown, expandedSections.mailing]);
+  }, [expandedSections.mailing, hasActiveManagedBroadcastCountdown]);
 
   useHintPopoverAutoPosition(openHintKey !== null);
 
@@ -10157,6 +10373,82 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow">
+                            <div className="broadcast-stage-card broadcast-stage-card--message">
+                              <div className="broadcast-stage-card__head">
+                                <div className="broadcast-stage-card__title-wrap">
+                                  <strong>Контент</strong>
+                                </div>
+                                <span
+                                  className={cn(
+                                    'broadcast-stage-card__status',
+                                    mailingHasPublishableContent ? 'is-ready' : 'is-pending',
+                                  )}
+                                >
+                                  {mailingHasDirectContent
+                                    ? 'Готов'
+                                    : mailingBotHasContent
+                                      ? 'В боте'
+                                      : 'Пусто'}
+                                </span>
+                              </div>
+
+                              <div className="broadcast-stage-card__body">
+                                <Suspense fallback={null}>
+                                  <LazyBroadcastContentComposer
+                                    text={mailingText}
+                                    maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                                    image={{
+                                      enabled: mailingImageEnabled,
+                                      base64: mailingImageBase64,
+                                      mimeType: mailingImageMimeType,
+                                      fileName: mailingImageFileName,
+                                    }}
+                                    videoLabel={editingMailingHasVideo ? 'Видео' : null}
+                                    disabled={isMailingBusy}
+                                    textError={mailingTextError}
+                                    imageError={mailingImageError}
+                                    onTextChange={(nextText) => {
+                                      setMailingText(nextText);
+                                      if (mailingBotHasContent) {
+                                        setMailingBotHasContent(false);
+                                      }
+                                      if (mailingTextError) {
+                                        setMailingTextError('');
+                                      }
+                                    }}
+                                    onImageChange={(nextImage) => {
+                                      setMailingImageEnabled(nextImage.enabled);
+                                      setMailingImageBase64(nextImage.base64);
+                                      setMailingImageMimeType(nextImage.mimeType);
+                                      setMailingImageFileName(nextImage.fileName);
+                                      if (mailingBotHasContent) {
+                                        setMailingBotHasContent(false);
+                                      }
+                                      if (nextImage.enabled) {
+                                        setMailingVideoCleared(true);
+                                      }
+                                      setMailingImageError('');
+                                      if (mailingTextError) {
+                                        setMailingTextError('');
+                                      }
+                                    }}
+                                    onClearVideo={() => {
+                                      setMailingVideoCleared(true);
+                                    }}
+                                    onError={(message) => {
+                                      setMailingImageError(message);
+                                      pushToast({
+                                        tone: 'danger',
+                                        title: 'Фото не добавлено',
+                                        description: message,
+                                      });
+                                      maxNotify('error');
+                                    }}
+                                  />
+                                </Suspense>
+                              </div>
+                            </div>
+
                             <div className="broadcast-stage-card broadcast-stage-card--scope">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
@@ -10195,44 +10487,47 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
 
                               <div className="broadcast-stage-card__body">
-                                <BroadcastSchedulePlanner
-                                  resetKey={mailingPlannerResetKey}
-                                  value={mailingScheduledSlots}
-                                  occupiedSlots={mailingOccupiedSlots}
-                                  error={mailingScheduleError}
-                                  disabled={isMailingBusy}
-                                  managedBroadcasts={managedBroadcasts}
-                                  managedBroadcastsLoading={
-                                    settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
-                                  }
-                                  currentTargetLabel="Текущий чат"
-                                  excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                                  onEditBroadcast={handleEditManagedBroadcastById}
-                                  onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                                  pendingEditBroadcastId={
-                                    openManagedBroadcastEditorMutation.isPending
-                                      ? openManagedBroadcastEditorMutation.variables
-                                      : null
-                                  }
-                                  pendingDeleteBroadcastId={
-                                    cancelManagedBroadcastMutation.isPending
-                                      ? cancelManagedBroadcastMutation.variables
-                                      : null
-                                  }
-                                  quickPreset={mailingQuickPreset}
-                                  onSelectQuickPreset={handleSelectMailingQuickPreset}
-                                  onClearQuickPreset={handleClearMailingQuickPreset}
-                                  onSelectionStateChange={setMailingPlannerState}
-                                  onChange={(nextValue) => {
-                                    if (mailingQuickPreset) {
-                                      setMailingQuickPreset(null);
+                                <Suspense fallback={null}>
+                                  <LazyBroadcastSchedulePlanner
+                                    resetKey={mailingPlannerResetKey}
+                                    value={mailingScheduledSlots}
+                                    occupiedSlots={mailingOccupiedSlots}
+                                    error={mailingScheduleError}
+                                    disabled={isMailingBusy}
+                                    managedBroadcasts={managedBroadcasts}
+                                    managedBroadcastsLoading={
+                                      settingsScreenQuery.isLoading ||
+                                      settingsScreenQuery.isFetching
                                     }
-                                    setMailingScheduledSlots(nextValue);
-                                    if (mailingScheduleError) {
-                                      setMailingScheduleError('');
+                                    currentTargetLabel="Текущий чат"
+                                    excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                                    onEditBroadcast={handleEditManagedBroadcastById}
+                                    onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                                    pendingEditBroadcastId={
+                                      openManagedBroadcastEditorMutation.isPending
+                                        ? openManagedBroadcastEditorMutation.variables
+                                        : null
                                     }
-                                  }}
-                                />
+                                    pendingDeleteBroadcastId={
+                                      cancelManagedBroadcastMutation.isPending
+                                        ? cancelManagedBroadcastMutation.variables
+                                        : null
+                                    }
+                                    quickPreset={mailingQuickPreset}
+                                    onSelectQuickPreset={handleSelectMailingQuickPreset}
+                                    onClearQuickPreset={handleClearMailingQuickPreset}
+                                    onSelectionStateChange={handleMailingPlannerStateChange}
+                                    onChange={(nextValue) => {
+                                      if (mailingQuickPreset) {
+                                        setMailingQuickPreset(null);
+                                      }
+                                      setMailingScheduledSlots(nextValue);
+                                      if (mailingScheduleError) {
+                                        setMailingScheduleError('');
+                                      }
+                                    }}
+                                  />
+                                </Suspense>
                               </div>
                             </div>
 

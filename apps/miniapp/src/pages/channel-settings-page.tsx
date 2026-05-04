@@ -5,6 +5,7 @@ import type {
   ChannelSettingsScreenResponse,
   ChannelSuggestionEntryMode,
   ManagedBroadcastDetails,
+  SendBroadcastResult,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import '../styles/lazy-pages.css';
@@ -19,10 +20,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import {
-  BroadcastSchedulePlanner,
-  type BroadcastSchedulePlannerSelectionState,
-} from '../components/broadcast-schedule-planner';
+import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -46,6 +44,7 @@ import {
   getChannelSettingsScreen,
   handoffChannelBroadcast,
   retryChannelManagedBroadcast,
+  sendChannelBroadcast,
   updateChannelManagedBroadcast,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
@@ -66,6 +65,11 @@ import {
   sortAndUniqueBroadcastSlots,
   type BroadcastQuickPreset,
 } from '../lib/broadcast-schedule';
+import {
+  loadBroadcastComposerDraft,
+  saveBroadcastComposerDraft,
+  type BroadcastComposerDraft,
+} from '../lib/broadcast-composer-draft';
 import { cn } from '../lib/cn';
 import { maxNotify, openMaxBotLinkAndClose, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -102,6 +106,7 @@ type ChannelSettingsHintKey =
 
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
+const MAX_BROADCAST_TEXT_LENGTH = 2_000;
 const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 const CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS: Array<{
   value: ChannelSuggestionEntryMode;
@@ -140,7 +145,27 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   isDaySheetOpen: false,
   isConfirmed: false,
 };
+
+function areBroadcastPlannerStatesEqual(
+  left: BroadcastSchedulePlannerSelectionState,
+  right: BroadcastSchedulePlannerSelectionState,
+): boolean {
+  return (
+    left.pickedDayCount === right.pickedDayCount &&
+    left.selectedDayCount === right.selectedDayCount &&
+    left.slotCount === right.slotCount &&
+    left.futureSlotCount === right.futureSlotCount &&
+    left.isDaySheetOpen === right.isDaySheetOpen &&
+    left.isConfirmed === right.isConfirmed
+  );
+}
 const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
+const LazyBroadcastSchedulePlanner = lazy(() =>
+  import('../components/broadcast-schedule-planner').then((module) => ({
+    default: module.BroadcastSchedulePlanner,
+  })),
+);
+const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-content-composer'));
 
 function formatDateTimeInTimeZone(
   value: string | null,
@@ -304,6 +329,28 @@ function formatManagedBroadcastDateTime(value: string | null, timeZone?: string 
     },
     timeZone,
   );
+}
+
+function formatChannelBroadcastResultDescription(result: SendBroadcastResult): string {
+  if (result.sentChats === 0 && result.nextSendAt) {
+    return `Первый слот: ${formatManagedBroadcastDateTime(
+      result.nextSendAt,
+      result.scheduleTimezone,
+    )}.`;
+  }
+
+  if (result.failedChats > 0) {
+    return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
+  }
+
+  if (result.nextSendAt && result.scheduledOccurrences > 0) {
+    return `Следующий слот: ${formatManagedBroadcastDateTime(
+      result.nextSendAt,
+      result.scheduleTimezone,
+    )}.`;
+  }
+
+  return `Отправлено: ${result.sentChats}/${result.targetChats}.`;
 }
 
 function formatCompactManagedBroadcastDateTime(
@@ -687,7 +734,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
-  const [, setBroadcastTextError] = useState('');
+  const [broadcastTextError, setBroadcastTextError] = useState('');
   const [broadcastButtons, setBroadcastButtons] = useState<BroadcastLinkButton[]>([]);
   const [broadcastButtonRevealSignal, setBroadcastButtonRevealSignal] = useState(0);
   const [broadcastButtonErrors, setBroadcastButtonErrors] = useState<
@@ -697,6 +744,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
+  const [broadcastVideoCleared, setBroadcastVideoCleared] = useState(false);
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
   const [broadcastQuickPreset, setBroadcastQuickPreset] = useState<BroadcastQuickPreset | null>(
     null,
@@ -705,7 +753,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     resolveBroadcastScheduleTimezone(),
   );
   const [broadcastBotHasContent, setBroadcastBotHasContent] = useState(false);
-  const [, setBroadcastImageError] = useState('');
+  const [broadcastImageError, setBroadcastImageError] = useState('');
   const [, setBroadcastScheduleEnabled] = useState(false);
   const [, setBroadcastScheduleDays] = useState(0);
   const [, setBroadcastScheduleTime] = useState(
@@ -846,7 +894,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    if (!broadcastHandoffStateQuery.data) {
+    if (!broadcastHandoffStateQuery.data || !handoffRequested) {
+      return;
+    }
+
+    const hasHandoffDraft =
+      broadcastHandoffStateQuery.data.hasContent ||
+      broadcastHandoffStateQuery.data.buttons.length > 0 ||
+      broadcastHandoffStateQuery.data.scheduledSlots.length > 0;
+    const hasLocalDirectContent = Boolean(broadcastText.trim() || broadcastImageEnabled);
+    if (
+      !hasHandoffDraft ||
+      (broadcastHandoffStateQuery.data.hasContent && !handoffRequested) ||
+      (!broadcastHandoffStateQuery.data.hasContent && hasLocalDirectContent)
+    ) {
       return;
     }
 
@@ -870,6 +931,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastVideoCleared(false);
     setBroadcastButtonErrors([]);
     setBroadcastScheduleError('');
     setBroadcastCycleError('');
@@ -882,7 +944,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         description: 'Календарь восстановлен из личного чата бота.',
       });
     }
-  }, [broadcastHandoffStateQuery.data, handoffRequested, pushToast]);
+  }, [
+    broadcastHandoffStateQuery.data,
+    broadcastImageEnabled,
+    broadcastText,
+    handoffRequested,
+    pushToast,
+  ]);
 
   useEffect(() => {
     setBroadcastText('');
@@ -894,6 +962,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastVideoCleared(false);
     setBroadcastQuickPreset(null);
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -908,7 +977,56 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleError('');
     setEditingManagedBroadcast(null);
     resetBroadcastPlanner();
+    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('channel', chatId) : null;
+    if (savedBroadcastDraft) {
+      setBroadcastText(savedBroadcastDraft.text);
+      setBroadcastButtons(savedBroadcastDraft.buttons);
+      setBroadcastImageEnabled(savedBroadcastDraft.imageEnabled);
+      setBroadcastImageBase64(savedBroadcastDraft.imageBase64);
+      setBroadcastImageMimeType(savedBroadcastDraft.imageMimeType);
+      setBroadcastImageFileName(savedBroadcastDraft.imageFileName);
+      setBroadcastQuickPreset(savedBroadcastDraft.quickPreset);
+      setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
+      setBroadcastScheduleTimezone(
+        savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      );
+    }
   }, [chatId]);
+
+  useEffect(() => {
+    if (!chatId || editingManagedBroadcast) {
+      return;
+    }
+
+    const draftToPersist: BroadcastComposerDraft = {
+      text: broadcastText,
+      targetMode: 'current',
+      targetChatIds: chatId ? [chatId] : [],
+      lastScopedTargetMode: 'current',
+      buttons: broadcastButtons,
+      imageEnabled: broadcastImageEnabled,
+      imageBase64: broadcastImageBase64,
+      imageMimeType: broadcastImageMimeType,
+      imageFileName: broadcastImageFileName,
+      scheduledSlots: broadcastScheduledSlots,
+      quickPreset: broadcastQuickPreset,
+      scheduleTimezone: broadcastScheduleTimezone,
+    };
+
+    saveBroadcastComposerDraft('channel', chatId, draftToPersist);
+  }, [
+    broadcastButtons,
+    broadcastImageBase64,
+    broadcastImageEnabled,
+    broadcastImageFileName,
+    broadcastImageMimeType,
+    broadcastQuickPreset,
+    broadcastScheduleTimezone,
+    broadcastScheduledSlots,
+    broadcastText,
+    chatId,
+    editingManagedBroadcast,
+  ]);
 
   useEffect(() => {
     const timerId = window.setInterval(() => {
@@ -1164,6 +1282,33 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const sendBroadcastMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
+    onSuccess: (result) => {
+      appliedBroadcastHandoffSignatureRef.current = null;
+      resetBroadcastComposer();
+      if (chatId) {
+        void clearChannelBroadcastHandoffState(api, chatId).catch(() => undefined);
+      }
+      void queryClient.invalidateQueries({ queryKey: ['channel-settings-screen', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['channel-broadcast-handoff', chatId] });
+      pushToast({
+        tone: result.failedChats > 0 ? 'info' : 'success',
+        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Рассылка готова',
+        description: formatChannelBroadcastResultDescription(result),
+      });
+      maxNotify(result.failedChats > 0 ? 'warning' : 'success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось запустить рассылку',
+        description: normalizeApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const clearBroadcastHandoffMutation = useMutation({
     mutationFn: () => clearChannelBroadcastHandoffState(api, chatId ?? ''),
     onSuccess: () => {
@@ -1281,6 +1426,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       setBroadcastImageBase64(broadcast.imageBase64);
       setBroadcastImageMimeType(broadcast.imageMimeType);
       setBroadcastImageFileName(broadcast.imageFileName);
+      setBroadcastVideoCleared(false);
       setBroadcastQuickPreset(null);
       setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
       setBroadcastScheduleTimezone(
@@ -1424,6 +1570,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isBroadcastBusy =
+    sendBroadcastMutation.isPending ||
     handoffBroadcastMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
@@ -1438,7 +1585,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const normalizedBroadcastText = broadcastText.trim();
   const editingBroadcastHasVideo =
-    editingManagedBroadcast?.mediaType === 'video' && Boolean(editingManagedBroadcast.mediaPayload);
+    !broadcastVideoCleared &&
+    editingManagedBroadcast?.mediaType === 'video' &&
+    Boolean(editingManagedBroadcast.mediaPayload);
+  const broadcastHasDirectContent = Boolean(
+    normalizedBroadcastText || broadcastImageEnabled || editingBroadcastHasVideo,
+  );
+  const broadcastHasPublishableContent =
+    broadcastHasDirectContent || (!editingManagedBroadcast && broadcastBotHasContent);
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
   );
@@ -1469,7 +1623,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastQuickSchedule !== null || broadcastPlannerState.futureSlotCount > 0;
   const showBroadcastPrimaryAction =
     isBroadcastBusy ||
-    (broadcastScheduleReady &&
+    (broadcastHasPublishableContent &&
+      broadcastScheduleReady &&
       broadcastButtonDraftValid &&
       (broadcastQuickSchedule !== null || broadcastPlannerState.isConfirmed) &&
       broadcastHasFutureSlots);
@@ -1507,7 +1662,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? 'Календ'
       : broadcastHasButton
         ? formatBroadcastButtonsStatus(broadcastButtons)
-        : 'Бот';
+        : broadcastHasPublishableContent
+          ? 'Контент'
+          : 'Пусто';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : broadcastBotHasContent
@@ -1527,6 +1684,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const broadcastPrimaryActionLabel =
+    !broadcastHasDirectContent && !editingManagedBroadcast && broadcastBotHasContent
+      ? 'Открыть бота'
+      : editingManagedBroadcast
+        ? 'Сохранить'
+        : broadcastQuickPreset === 'now'
+          ? 'Отправить'
+          : 'Запланировать';
   const broadcastDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -1541,13 +1706,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       >
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
-          : handoffBroadcastMutation.isPending
-            ? 'Передаём...'
-            : isOpeningManagedBroadcastEditor
-              ? 'Открываем...'
-              : editingManagedBroadcast
-                ? 'Сохранить'
-                : 'Открыть бота'}
+          : sendBroadcastMutation.isPending
+            ? broadcastQuickPreset === 'now'
+              ? 'Отправляем...'
+              : 'Планируем...'
+            : handoffBroadcastMutation.isPending
+              ? 'Передаём...'
+              : isOpeningManagedBroadcastEditor
+                ? 'Открываем...'
+                : broadcastPrimaryActionLabel}
       </button>
     </div>
   );
@@ -1568,6 +1735,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastVideoCleared(false);
     setBroadcastQuickPreset(null);
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -1610,6 +1778,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   function handleClearBroadcastQuickPreset() {
     setBroadcastQuickPreset(null);
+  }
+
+  function handleBroadcastPlannerStateChange(nextState: BroadcastSchedulePlannerSelectionState) {
+    setBroadcastPlannerState((current) =>
+      areBroadcastPlannerStatesEqual(current, nextState) ? current : nextState,
+    );
   }
 
   function handleDeleteManagedBroadcast(broadcast: ManagedBroadcastListItem) {
@@ -1729,6 +1903,45 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleError('');
 
     let hasError = false;
+    const keepVideoMedia =
+      !broadcastVideoCleared &&
+      !broadcastImageEnabled &&
+      editingManagedBroadcast?.mediaType === 'video' &&
+      editingManagedBroadcast.mediaPayload;
+    const hasDirectContent = Boolean(
+      normalizedBroadcastText || broadcastImageEnabled || keepVideoMedia,
+    );
+
+    if (editingManagedBroadcast) {
+      if (!hasDirectContent) {
+        setBroadcastTextError('Добавьте текст, фото или видео.');
+        hasError = true;
+      } else if (normalizedBroadcastText.length > MAX_BROADCAST_TEXT_LENGTH) {
+        setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+        hasError = true;
+      } else {
+        setBroadcastTextError('');
+      }
+    } else if (!hasDirectContent && !broadcastBotHasContent) {
+      setBroadcastTextError('Добавьте текст или фото.');
+      hasError = true;
+    } else if (normalizedBroadcastText.length > MAX_BROADCAST_TEXT_LENGTH) {
+      setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+      hasError = true;
+    } else {
+      setBroadcastTextError('');
+    }
+
+    if (broadcastImageEnabled) {
+      if (!broadcastImageBase64 || !broadcastImageMimeType.toLowerCase().startsWith('image/')) {
+        setBroadcastImageError('Фото не готово.');
+        hasError = true;
+      } else {
+        setBroadcastImageError('');
+      }
+    } else {
+      setBroadcastImageError('');
+    }
 
     if (!validateBroadcastButtonDraft()) {
       hasError = true;
@@ -1750,13 +1963,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     const handoffPayload = buildBroadcastHandoffPayload();
 
     if (editingManagedBroadcast) {
-      const keepVideoMedia =
-        !broadcastImageEnabled &&
-        editingManagedBroadcast.mediaType === 'video' &&
-        editingManagedBroadcast.mediaPayload;
       const payload: SendBroadcastPayload = {
         text: normalizedBroadcastText,
-        textFormat: editingManagedBroadcast.textFormat,
+        textFormat: 'markdown',
         ...handoffPayload,
         imageEnabled: broadcastImageEnabled,
         imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
@@ -1774,7 +1983,25 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    handoffBroadcastMutation.mutate(handoffPayload);
+    if (!hasDirectContent && broadcastBotHasContent) {
+      handoffBroadcastMutation.mutate(handoffPayload);
+      return;
+    }
+
+    const payload: SendBroadcastPayload = {
+      text: normalizedBroadcastText,
+      textFormat: 'markdown',
+      ...handoffPayload,
+      imageEnabled: broadcastImageEnabled,
+      imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
+      imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
+      imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+      mediaType: null,
+      mediaPayload: null,
+      mediaMimeType: '',
+      mediaFileName: '',
+    };
+    sendBroadcastMutation.mutate(payload);
   }
 
   function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
@@ -2133,6 +2360,82 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
 
                   <div className="broadcast-compose-flow">
+                    <div className="broadcast-stage-card broadcast-stage-card--message">
+                      <div className="broadcast-stage-card__head">
+                        <div className="broadcast-stage-card__title-wrap">
+                          <strong>Контент</strong>
+                        </div>
+                        <span
+                          className={cn(
+                            'broadcast-stage-card__status',
+                            broadcastHasPublishableContent ? 'is-ready' : 'is-pending',
+                          )}
+                        >
+                          {broadcastHasDirectContent
+                            ? 'Готов'
+                            : broadcastBotHasContent
+                              ? 'В боте'
+                              : 'Пусто'}
+                        </span>
+                      </div>
+
+                      <div className="broadcast-stage-card__body">
+                        <Suspense fallback={null}>
+                          <LazyBroadcastContentComposer
+                            text={broadcastText}
+                            maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                            image={{
+                              enabled: broadcastImageEnabled,
+                              base64: broadcastImageBase64,
+                              mimeType: broadcastImageMimeType,
+                              fileName: broadcastImageFileName,
+                            }}
+                            videoLabel={editingBroadcastHasVideo ? 'Видео' : null}
+                            disabled={isBroadcastBusy}
+                            textError={broadcastTextError}
+                            imageError={broadcastImageError}
+                            onTextChange={(nextText) => {
+                              setBroadcastText(nextText);
+                              if (broadcastBotHasContent) {
+                                setBroadcastBotHasContent(false);
+                              }
+                              if (broadcastTextError) {
+                                setBroadcastTextError('');
+                              }
+                            }}
+                            onImageChange={(nextImage) => {
+                              setBroadcastImageEnabled(nextImage.enabled);
+                              setBroadcastImageBase64(nextImage.base64);
+                              setBroadcastImageMimeType(nextImage.mimeType);
+                              setBroadcastImageFileName(nextImage.fileName);
+                              if (broadcastBotHasContent) {
+                                setBroadcastBotHasContent(false);
+                              }
+                              if (nextImage.enabled) {
+                                setBroadcastVideoCleared(true);
+                              }
+                              setBroadcastImageError('');
+                              if (broadcastTextError) {
+                                setBroadcastTextError('');
+                              }
+                            }}
+                            onClearVideo={() => {
+                              setBroadcastVideoCleared(true);
+                            }}
+                            onError={(message) => {
+                              setBroadcastImageError(message);
+                              pushToast({
+                                tone: 'danger',
+                                title: 'Фото не добавлено',
+                                description: message,
+                              });
+                              maxNotify('error');
+                            }}
+                          />
+                        </Suspense>
+                      </div>
+                    </div>
+
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
@@ -2141,44 +2444,46 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       <div className="broadcast-stage-card__body">
-                        <BroadcastSchedulePlanner
-                          resetKey={broadcastPlannerResetKey}
-                          value={broadcastScheduledSlots}
-                          occupiedSlots={broadcastOccupiedSlots}
-                          error={broadcastScheduleError}
-                          disabled={isBroadcastBusy}
-                          managedBroadcasts={managedBroadcasts}
-                          managedBroadcastsLoading={
-                            settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
-                          }
-                          currentTargetLabel="Текущий канал"
-                          excludeBroadcastId={editingManagedBroadcast?.id ?? null}
-                          onEditBroadcast={handleEditManagedBroadcastById}
-                          onDeleteBroadcast={handleDeleteManagedBroadcastById}
-                          pendingEditBroadcastId={
-                            openManagedBroadcastEditorMutation.isPending
-                              ? openManagedBroadcastEditorMutation.variables
-                              : null
-                          }
-                          pendingDeleteBroadcastId={
-                            cancelManagedBroadcastMutation.isPending
-                              ? cancelManagedBroadcastMutation.variables
-                              : null
-                          }
-                          quickPreset={broadcastQuickPreset}
-                          onSelectQuickPreset={handleSelectBroadcastQuickPreset}
-                          onClearQuickPreset={handleClearBroadcastQuickPreset}
-                          onSelectionStateChange={setBroadcastPlannerState}
-                          onChange={(nextValue) => {
-                            if (broadcastQuickPreset) {
-                              setBroadcastQuickPreset(null);
+                        <Suspense fallback={null}>
+                          <LazyBroadcastSchedulePlanner
+                            resetKey={broadcastPlannerResetKey}
+                            value={broadcastScheduledSlots}
+                            occupiedSlots={broadcastOccupiedSlots}
+                            error={broadcastScheduleError}
+                            disabled={isBroadcastBusy}
+                            managedBroadcasts={managedBroadcasts}
+                            managedBroadcastsLoading={
+                              settingsScreenQuery.isLoading || settingsScreenQuery.isFetching
                             }
-                            setBroadcastScheduledSlots(nextValue);
-                            if (broadcastScheduleError) {
-                              setBroadcastScheduleError('');
+                            currentTargetLabel="Текущий канал"
+                            excludeBroadcastId={editingManagedBroadcast?.id ?? null}
+                            onEditBroadcast={handleEditManagedBroadcastById}
+                            onDeleteBroadcast={handleDeleteManagedBroadcastById}
+                            pendingEditBroadcastId={
+                              openManagedBroadcastEditorMutation.isPending
+                                ? openManagedBroadcastEditorMutation.variables
+                                : null
                             }
-                          }}
-                        />
+                            pendingDeleteBroadcastId={
+                              cancelManagedBroadcastMutation.isPending
+                                ? cancelManagedBroadcastMutation.variables
+                                : null
+                            }
+                            quickPreset={broadcastQuickPreset}
+                            onSelectQuickPreset={handleSelectBroadcastQuickPreset}
+                            onClearQuickPreset={handleClearBroadcastQuickPreset}
+                            onSelectionStateChange={handleBroadcastPlannerStateChange}
+                            onChange={(nextValue) => {
+                              if (broadcastQuickPreset) {
+                                setBroadcastQuickPreset(null);
+                              }
+                              setBroadcastScheduledSlots(nextValue);
+                              if (broadcastScheduleError) {
+                                setBroadcastScheduleError('');
+                              }
+                            }}
+                          />
+                        </Suspense>
                       </div>
                     </div>
 

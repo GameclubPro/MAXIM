@@ -12,6 +12,7 @@ import {
   promoteManagedEntityStandbyRequestSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
+  sendBroadcastResultSchema,
   updateManagedEntityPartnerAssistRequestSchema,
   updateManagedEntityPrimaryBotRequestSchema,
   updateManagedPollRequestSchema,
@@ -147,6 +148,19 @@ export async function clearChannelBroadcastHandoffState(
     method: 'DELETE',
   });
   return broadcastHandoffStateSchema.parse(response);
+}
+
+export async function sendChannelBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  payload: SendBroadcastPayload,
+) {
+  const requestBody = sendBroadcastRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/broadcast`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return sendBroadcastResultSchema.parse(response);
 }
 
 export async function getChannelManagedBroadcasts(

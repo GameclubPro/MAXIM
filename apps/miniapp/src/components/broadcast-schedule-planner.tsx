@@ -1,5 +1,5 @@
 import type { ManagedBroadcastSummary } from '@maxim/contracts';
-import { useEffect, useEffectEvent, useState } from 'react';
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
@@ -72,6 +72,21 @@ type BroadcastScheduleAgendaEntry = {
   facts: string[];
   canEdit: boolean;
 };
+
+function areSelectionStatesEqual(
+  left: BroadcastSchedulePlannerSelectionState | null,
+  right: BroadcastSchedulePlannerSelectionState,
+): boolean {
+  return (
+    left !== null &&
+    left.pickedDayCount === right.pickedDayCount &&
+    left.selectedDayCount === right.selectedDayCount &&
+    left.slotCount === right.slotCount &&
+    left.futureSlotCount === right.futureSlotCount &&
+    left.isDaySheetOpen === right.isDaySheetOpen &&
+    left.isConfirmed === right.isConfirmed
+  );
+}
 
 const SLOT_GROUPS: SlotGroup[] = [
   { label: 'Ночь', start: 0, end: 6 * 60 },
@@ -361,9 +376,10 @@ export function BroadcastSchedulePlanner({
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
-  const normalizedValue = sortAndUniqueBroadcastSlots(value);
-  const scheduledDayKeys = sortDayKeys(
-    normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot)),
+  const normalizedValue = useMemo(() => sortAndUniqueBroadcastSlots(value), [value]);
+  const scheduledDayKeys = useMemo(
+    () => sortDayKeys(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
+    [normalizedValue],
   );
   const initialDayKey = scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow);
   const [activeDayKey, setActiveDayKey] = useState(initialDayKey);
@@ -376,6 +392,7 @@ export function BroadcastSchedulePlanner({
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
+  const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
 
   const windowStart = startOfDay(anchorNow);
   const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
@@ -455,8 +472,9 @@ export function BroadcastSchedulePlanner({
 
     if (scheduledDayKeys.length === 0) {
       const todayKey = getBroadcastScheduleDayKey(anchorNow);
-      setActiveDayKey(todayKey);
-      setCurrentMonthKey(getMonthKey(anchorNow));
+      setActiveDayKey((current) => (current === todayKey ? current : todayKey));
+      const anchorMonthKey = getMonthKey(anchorNow);
+      setCurrentMonthKey((current) => (current === anchorMonthKey ? current : anchorMonthKey));
       return;
     }
 
@@ -531,14 +549,21 @@ export function BroadcastSchedulePlanner({
   }, [quickPreset]);
 
   useEffect(() => {
-    emitSelectionStateChange({
+    const nextState = {
       pickedDayCount: pickedDayKeys.length,
       selectedDayCount,
       slotCount: normalizedValue.length,
       futureSlotCount,
       isDaySheetOpen,
       isConfirmed,
-    });
+    };
+
+    if (areSelectionStatesEqual(lastSelectionStateRef.current, nextState)) {
+      return;
+    }
+
+    lastSelectionStateRef.current = nextState;
+    emitSelectionStateChange(nextState);
   }, [
     emitSelectionStateChange,
     futureSlotCount,
