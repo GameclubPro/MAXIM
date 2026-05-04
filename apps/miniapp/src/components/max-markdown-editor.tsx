@@ -82,7 +82,10 @@ export function MaxMarkdownEditor({
     <div className={cn('max-markdown-editor', className)}>
       {showToolbar ? (
         <div
-          className={cn('max-markdown-editor__toolbar', compactToolbar && 'max-markdown-editor__toolbar--compact')}
+          className={cn(
+            'max-markdown-editor__toolbar',
+            compactToolbar && 'max-markdown-editor__toolbar--compact',
+          )}
           role="toolbar"
           aria-label="Форматирование MAX"
         >

@@ -12,22 +12,26 @@ jest.mock('ioredis', () => ({
   default: jest.fn().mockImplementation(() => {
     const store = new Map<string, string>();
     const instance = {
-      scan: jest.fn().mockImplementation(
-        async (
-          _cursor: string,
-          _matchLiteral: string,
-          pattern: string,
-          _countLiteral: string,
-          _countValue: string,
-        ) => {
-          const normalizedPrefix = pattern.replace(/\*+$/u, '');
-          return [
-            '0',
-            [...store.keys()].filter((key) => key.startsWith(normalizedPrefix)),
-          ] as [string, string[]];
-        },
-      ),
-      mget: jest.fn().mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
+      scan: jest
+        .fn()
+        .mockImplementation(
+          async (
+            _cursor: string,
+            _matchLiteral: string,
+            pattern: string,
+            _countLiteral: string,
+            _countValue: string,
+          ) => {
+            const normalizedPrefix = pattern.replace(/\*+$/u, '');
+            return ['0', [...store.keys()].filter((key) => key.startsWith(normalizedPrefix))] as [
+              string,
+              string[],
+            ];
+          },
+        ),
+      mget: jest
+        .fn()
+        .mockImplementation(async (...keys: string[]) => keys.map((key) => store.get(key) ?? null)),
       quit: jest.fn().mockResolvedValue(undefined),
     };
     redisStores.push(store);
@@ -381,81 +385,82 @@ describe('MaxApiMetricsService', () => {
     store.set(`maxapi:rps:global:bot-b:background:${nowSec}`, '2');
     store.set(`maxapi:rps:global:bot-b:interactive:${nowSec - 1}`, '1');
 
-    await expect(service.getBotRateLimitSnapshot(['bot-a', 'bot-b'], { windowSec: 10 })).resolves
-      .toEqual({
-        'bot-a': {
-          windowSec: expectedWindowSec,
-          totalRequests: 13,
-          avgRps: avg(13),
-          peakRps: 10,
-          activeSeconds: 2,
-          trafficClasses: {
-            critical: {
-              totalRequests: 6,
-              avgRps: avg(6),
-              peakRps: 6,
-              activeSeconds: 1,
-            },
-            interactive: {
-              totalRequests: 4,
-              avgRps: avg(4),
-              peakRps: 4,
-              activeSeconds: 1,
-            },
-            background: {
-              totalRequests: 3,
-              avgRps: avg(3),
-              peakRps: 3,
-              activeSeconds: 1,
-            },
+    await expect(
+      service.getBotRateLimitSnapshot(['bot-a', 'bot-b'], { windowSec: 10 }),
+    ).resolves.toEqual({
+      'bot-a': {
+        windowSec: expectedWindowSec,
+        totalRequests: 13,
+        avgRps: avg(13),
+        peakRps: 10,
+        activeSeconds: 2,
+        trafficClasses: {
+          critical: {
+            totalRequests: 6,
+            avgRps: avg(6),
+            peakRps: 6,
+            activeSeconds: 1,
           },
-          limits: {
-            globalRps: 30,
-            criticalRps: 16,
-            interactiveRps: 14,
-            backgroundRps: 8,
+          interactive: {
+            totalRequests: 4,
+            avgRps: avg(4),
+            peakRps: 4,
+            activeSeconds: 1,
           },
-          peakLoad: 0.375,
-          avgLoad: 0.0072,
-          smoothedLoad: 0.0867,
+          background: {
+            totalRequests: 3,
+            avgRps: avg(3),
+            peakRps: 3,
+            activeSeconds: 1,
+          },
         },
-        'bot-b': {
-          windowSec: expectedWindowSec,
-          totalRequests: 3,
-          avgRps: avg(3),
-          peakRps: 2,
-          activeSeconds: 2,
-          trafficClasses: {
-            critical: {
-              totalRequests: 0,
-              avgRps: 0,
-              peakRps: 0,
-              activeSeconds: 0,
-            },
-            interactive: {
-              totalRequests: 1,
-              avgRps: avg(1),
-              peakRps: 1,
-              activeSeconds: 1,
-            },
-            background: {
-              totalRequests: 2,
-              avgRps: avg(2),
-              peakRps: 2,
-              activeSeconds: 1,
-            },
-          },
-          limits: {
-            globalRps: 30,
-            criticalRps: 16,
-            interactiveRps: 14,
-            backgroundRps: 8,
-          },
-          peakLoad: 0.25,
-          avgLoad: 0.0041,
-          smoothedLoad: 0.05,
+        limits: {
+          globalRps: 30,
+          criticalRps: 16,
+          interactiveRps: 14,
+          backgroundRps: 8,
         },
-      });
+        peakLoad: 0.375,
+        avgLoad: 0.0072,
+        smoothedLoad: 0.0867,
+      },
+      'bot-b': {
+        windowSec: expectedWindowSec,
+        totalRequests: 3,
+        avgRps: avg(3),
+        peakRps: 2,
+        activeSeconds: 2,
+        trafficClasses: {
+          critical: {
+            totalRequests: 0,
+            avgRps: 0,
+            peakRps: 0,
+            activeSeconds: 0,
+          },
+          interactive: {
+            totalRequests: 1,
+            avgRps: avg(1),
+            peakRps: 1,
+            activeSeconds: 1,
+          },
+          background: {
+            totalRequests: 2,
+            avgRps: avg(2),
+            peakRps: 2,
+            activeSeconds: 1,
+          },
+        },
+        limits: {
+          globalRps: 30,
+          criticalRps: 16,
+          interactiveRps: 14,
+          backgroundRps: 8,
+        },
+        peakLoad: 0.25,
+        avgLoad: 0.0041,
+        smoothedLoad: 0.05,
+      },
+    });
 
     await service.onModuleDestroy();
   });

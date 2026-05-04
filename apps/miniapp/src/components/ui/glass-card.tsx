@@ -19,7 +19,12 @@ export function GlassCard({
 
   return (
     <Tag
-      className={cn('glass-card', `glass-card--${padding}`, elevated && 'glass-card--elevated', className)}
+      className={cn(
+        'glass-card',
+        `glass-card--${padding}`,
+        elevated && 'glass-card--elevated',
+        className,
+      )}
       {...rest}
     >
       {children}

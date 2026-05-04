@@ -140,11 +140,7 @@ function scaleImageSize(
   };
 }
 
-function renderToCanvas(
-  image: HTMLImageElement,
-  width: number,
-  height: number,
-): HTMLCanvasElement {
+function renderToCanvas(image: HTMLImageElement, width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;

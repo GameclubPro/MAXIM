@@ -101,7 +101,9 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
     }
 
     blocks.push(
-      paragraphLines.map((line) => renderInlineTokensAsPlainText(parseInlineTokens(line))).join('\n'),
+      paragraphLines
+        .map((line) => renderInlineTokensAsPlainText(parseInlineTokens(line)))
+        .join('\n'),
     );
     paragraphLines = [];
   };

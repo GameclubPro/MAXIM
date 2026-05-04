@@ -16,9 +16,13 @@ async function bootstrap() {
     return;
   }
 
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({ bodyLimit }), {
-    bufferLogs: true,
-  });
+  const app = await NestFactory.create<NestFastifyApplication>(
+    AppModule,
+    new FastifyAdapter({ bodyLimit }),
+    {
+      bufferLogs: true,
+    },
+  );
 
   app.useLogger(app.get(Logger));
   app.setGlobalPrefix('api');

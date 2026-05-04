@@ -235,12 +235,13 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       return this.reconcileCachedChatTitle(chatId, resolved, normalizedTitle);
     }
 
-    let loadPromise!: Promise<ChatContext>;
-    loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, expectedEpoch).finally(() => {
-      if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
-        this.chatContextInFlightLoads.delete(chatId);
-      }
-    });
+    const loadPromise = this.loadCachedOrSource(chatId, normalizedTitle, expectedEpoch).finally(
+      () => {
+        if (this.chatContextInFlightLoads.get(chatId) === loadPromise) {
+          this.chatContextInFlightLoads.delete(chatId);
+        }
+      },
+    );
     this.chatContextInFlightLoads.set(chatId, loadPromise);
     const resolved = await loadPromise;
     if (this.readChatContextEpoch(chatId) !== expectedEpoch) {
@@ -803,7 +804,9 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   async getManagedEntitiesRecentBootstrap(
     entityType: ManagedEntityType,
   ): Promise<ManagedEntitiesRecentBootstrapSnapshot> {
-    const raw = await this.redis.get(ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType));
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesRecentBootstrapKey(entityType),
+    );
     if (!raw) {
       return [];
     }
@@ -832,23 +835,22 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
 
     const entityType = item.entityType;
     const current = await this.getManagedEntitiesRecentBootstrap(entityType);
-    const existing =
-      current.find((entry) => entry.id.trim() === normalizedChatId) ?? null;
+    const existing = current.find((entry) => entry.id.trim() === normalizedChatId) ?? null;
     const normalizedUserId =
       typeof userId === 'string' && userId.trim().length > 0 ? userId.trim() : null;
     const mergedBootstrapUserIds = Array.from(
       new Set([
         ...(normalizedUserId ? [normalizedUserId] : []),
-        ...((existing?.bootstrapUserIds ?? [])
-          .map((value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null))
-          .filter((value): value is string => Boolean(value))),
+        ...(existing?.bootstrapUserIds ?? [])
+          .map((value) =>
+            typeof value === 'string' && value.trim().length > 0 ? value.trim() : null,
+          )
+          .filter((value): value is string => Boolean(value)),
       ]),
     ).slice(0, ChatContextCacheService.MANAGED_ENTITIES_RECENT_BOOTSTRAP_MAX_USER_IDS);
     const nextEntry: ManagedEntitiesRecentBootstrapEntry = {
       ...item,
-      ...(mergedBootstrapUserIds.length > 0
-        ? { bootstrapUserIds: mergedBootstrapUserIds }
-        : {}),
+      ...(mergedBootstrapUserIds.length > 0 ? { bootstrapUserIds: mergedBootstrapUserIds } : {}),
     };
     const next = [
       nextEntry,
@@ -1109,7 +1111,8 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
       resolvedRoute?.botId ??
       (typeof this.maxBotLinkService.resolveBotId === 'function'
         ? await this.maxBotLinkService.resolveBotId({ chatId })
-        : null) ?? this.maxBotLinkService.getContextOrDefaultBotId();
+        : null) ??
+      this.maxBotLinkService.getContextOrDefaultBotId();
     return this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
@@ -1220,7 +1223,10 @@ export class ChatContextCacheService implements OnModuleInit, OnModuleDestroy {
   private isManagedEntitiesRecentBootstrapSnapshot(
     value: unknown,
   ): value is ManagedEntitiesRecentBootstrapSnapshot {
-    return Array.isArray(value) && value.every((item) => this.isManagedEntitiesRecentBootstrapEntry(item));
+    return (
+      Array.isArray(value) &&
+      value.every((item) => this.isManagedEntitiesRecentBootstrapEntry(item))
+    );
   }
 
   private isManagedEntitiesRecentBootstrapEntry(

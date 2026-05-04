@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { getInitData, getInitDataUserId, readUserIdFromInitData, waitForInitData } from '../src/lib/init-data';
+import {
+  getInitData,
+  getInitDataUserId,
+  readUserIdFromInitData,
+  waitForInitData,
+} from '../src/lib/init-data';
 
 type MutableWindow = Window &
   typeof globalThis & {

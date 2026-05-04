@@ -28,17 +28,22 @@
   - `api-moderation-background`
   - `api-action`
 - Prefer workspace-scoped validation before broader runs:
+  - `npm run check:api`
+  - `npm run check:miniapp`
   - `npm run typecheck --workspace @maxim/api`
   - `npm run typecheck --workspace @maxim/miniapp`
   - `npm test --workspace @maxim/api -- <spec-or-pattern>`
+- Use `npm run check` for a full local CI-style pass before broad or risky changes.
 - If `apps/api/prisma/schema.prisma` changes, include a migration before push.
 
 ## Local development
 
 - Quick start:
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`
-  - `npm run dev --workspace @maxim/api`
-  - `npm run dev --workspace @maxim/miniapp`
+  - `npm run dev:all`
+- Focused dev servers:
+  - `npm run dev:api`
+  - `npm run dev:miniapp`
 - Mini app iteration:
   - `npm run emulator:miniapp -- --device iphone --reuse-server`
   - `npm run emulator:miniapp:android -- --reuse-server`
@@ -117,4 +122,5 @@
 - Safe cleanup targets include `dist/`, `coverage/`, screenshot artifacts, and temporary root debug exports.
 - Keep local agent/tooling traces ignored. Repo-local Codex leftovers such as `.codex` must not remain tracked or untracked at handoff.
 - Before finalizing work, run `git status --short` and leave the tree clean: commit intentional changes, and remove or ignore transient files.
+- At handoff, update `AGENTS.md` when the completed task revealed a stable repo workflow, validation command, deploy rule, service name, or product invariant that future agents should reuse. Do not add one-off incident notes.
 - When runtime topology, deploy scripts, service names, or core workflows change, update this file in the same line of work.

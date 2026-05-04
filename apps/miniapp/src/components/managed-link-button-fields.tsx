@@ -65,9 +65,7 @@ export function ManagedLinkButtonFields({
           disabled={disabled}
         />
         {textError ? <small className="field__hint">{textError}</small> : null}
-        {!textError && textHint !== null ? (
-          <small className="field__hint">{textHint}</small>
-        ) : null}
+        {!textError && textHint !== null ? <small className="field__hint">{textHint}</small> : null}
       </label>
     </div>
   );

@@ -9,10 +9,7 @@ import {
   type WebhookSubscriptionSyncState,
 } from '../system/webhook-subscription-status.service';
 import { MAX_API_SOURCE_TAGS, MaxClientService } from './max-client.service';
-import {
-  MaxBotRegistryService,
-  type MaxBotDefinition,
-} from './max-bot-registry.service';
+import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from './max-webhook-subscription.constants';
 
 const DEFAULT_RECONCILE_INTERVAL_MS = 60 * 1_000;
@@ -76,7 +73,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
       return;
     }
 
-      this.inFlight = true;
+    this.inFlight = true;
     try {
       const syncState = await this.webhookSubscriptionStatusService.getSyncState();
       const operationalBots = this.getOperationalBots();
@@ -111,7 +108,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         null;
 
       await this.webhookSubscriptionStatusService.writeSyncState({
-        bots: Object.fromEntries(botResults.map((result) => [result.snapshot.botId, result.syncState])),
+        bots: Object.fromEntries(
+          botResults.map((result) => [result.snapshot.botId, result.syncState]),
+        ),
         lastGlobalIncomingWebhookAt: latestRecordedIncomingWebhookAt,
         lastGlobalAutoRecreateAt,
       });
@@ -196,9 +195,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     }
 
     if (
-      snapshots.some(
-        (snapshot) => snapshot.status === 'warning' || snapshot.status === 'disabled',
-      )
+      snapshots.some((snapshot) => snapshot.status === 'warning' || snapshot.status === 'disabled')
     ) {
       return 'warning';
     }
@@ -219,8 +216,9 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
   }> {
     const target = this.maxClient.getConfiguredWebhookSubscriptionTarget(bot.id);
     const checkedAt = new Date().toISOString();
-    const headerSecretFingerprint =
-      this.maxBotRegistry.computeWebhookHeaderSecretFingerprint(bot.id);
+    const headerSecretFingerprint = this.maxBotRegistry.computeWebhookHeaderSecretFingerprint(
+      bot.id,
+    );
 
     if (!target.url) {
       return {
@@ -387,7 +385,7 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
         lastAutoRecreateAt:
           shouldAutoRecreateStaleIngress && reconciledAt
             ? reconciledAt
-            : syncState?.lastAutoRecreateAt ?? null,
+            : (syncState?.lastAutoRecreateAt ?? null),
       },
     };
   }
@@ -511,18 +509,18 @@ export class MaxWebhookSubscriptionReconcilerService implements OnModuleInit, On
     const defaultBotId =
       typeof this.maxBotRegistry.getDefaultBot === 'function'
         ? this.maxBotRegistry.getDefaultBot().id
-        : snapshots[0]?.botId ?? null;
+        : (snapshots[0]?.botId ?? null);
     const defaultBotUrl =
       snapshots.find((snapshot) => snapshot.botId === defaultBotId)?.url ?? null;
 
     return {
       status: this.resolveAggregateStatus(snapshots),
       configured: snapshots.length > 0 && snapshots.every((snapshot) => snapshot.configured),
-      url: snapshots.length === 1 ? snapshots[0]?.url ?? null : defaultBotUrl,
+      url: snapshots.length === 1 ? (snapshots[0]?.url ?? null) : defaultBotUrl,
       checkedAt: new Date().toISOString(),
       reconciledAt:
         reconciledAtCandidates.length > 0
-          ? reconciledAtCandidates.sort((left, right) => right.localeCompare(left))[0] ?? null
+          ? (reconciledAtCandidates.sort((left, right) => right.localeCompare(left))[0] ?? null)
           : null,
       requiredUpdateTypes: [...MAX_REQUIRED_WEBHOOK_UPDATE_TYPES],
       actualUpdateTypes: aggregateActualUpdateTypes,

@@ -1523,9 +1523,6 @@ export class RuleEngineService {
       ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
       hasIntentContext ||
       ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
-    const hasContactContext =
-      ADS_PHONE_PATTERN.test(rawLoweredText) ||
-      ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker));
     const hasServiceCommercialContext =
       (hasServiceOfferContext && hasDealSignal) ||
       (hasServiceSpecialtyContext && hasDealSignal && !hasSearchRequestContext);

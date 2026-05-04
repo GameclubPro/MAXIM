@@ -25,22 +25,21 @@ const ALL_MODERATION_QUEUE_NAMES: AnyWebhookQueueName[] = [
   WEBHOOK_QUEUE_BACKGROUND,
 ];
 
-const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyWebhookQueueName[]> = {
-  legacy: [LEGACY_WEBHOOK_QUEUE],
-  critical: [WEBHOOK_QUEUE_CRITICAL],
-  join: JOIN_WEBHOOK_QUEUE_NAMES,
-  default: DEFAULT_WEBHOOK_QUEUE_NAMES,
-  background: [WEBHOOK_QUEUE_BACKGROUND],
-};
+const MODERATION_QUEUE_NAME_BY_ALIAS: Record<ModerationQueueAlias, readonly AnyWebhookQueueName[]> =
+  {
+    legacy: [LEGACY_WEBHOOK_QUEUE],
+    critical: [WEBHOOK_QUEUE_CRITICAL],
+    join: JOIN_WEBHOOK_QUEUE_NAMES,
+    default: DEFAULT_WEBHOOK_QUEUE_NAMES,
+    background: [WEBHOOK_QUEUE_BACKGROUND],
+  };
 
-export const DEFAULT_WEBHOOK_WORKER_GROUP_NAMES = Object.freeze(
-  [
-    'api-moderation',
-    'api-moderation-realtime-b',
-    'api-moderation-realtime-c',
-    'api-moderation-realtime-d',
-  ] as const satisfies readonly DefaultWebhookWorkerGroupName[],
-);
+export const DEFAULT_WEBHOOK_WORKER_GROUP_NAMES = Object.freeze([
+  'api-moderation',
+  'api-moderation-realtime-b',
+  'api-moderation-realtime-c',
+  'api-moderation-realtime-d',
+] as const satisfies readonly DefaultWebhookWorkerGroupName[]);
 const DEFAULT_WEBHOOK_WORKER_GROUP_QUEUES = Object.freeze(
   Object.fromEntries(
     DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName, groupIndex) => [
@@ -134,8 +133,9 @@ function resolveShardConcurrencyDistribution(total: number, shardCount: number):
   const baseConcurrency = Math.max(1, Math.floor(sanitizedTotal / shardCount));
   const remainder = sanitizedTotal % shardCount;
 
-  return Array.from({ length: shardCount }, (_, index) =>
-    baseConcurrency + (index < remainder ? 1 : 0),
+  return Array.from(
+    { length: shardCount },
+    (_, index) => baseConcurrency + (index < remainder ? 1 : 0),
   );
 }
 
@@ -163,11 +163,7 @@ export function getEnabledModerationProcessorQueues(
     return new Set(ALL_MODERATION_QUEUE_NAMES);
   }
 
-  const enabledQueues = new Set(
-    rawValue
-      .split(',')
-      .flatMap((token) => normalizeQueueToken(token)),
-  );
+  const enabledQueues = new Set(rawValue.split(',').flatMap((token) => normalizeQueueToken(token)));
 
   return enabledQueues.size > 0 ? enabledQueues : new Set(ALL_MODERATION_QUEUE_NAMES);
 }
@@ -247,7 +243,11 @@ export function getWebhookDynamicLeaseCanaryQueues(
     }
 
     const shardIndex = Number(normalized);
-    if (Number.isInteger(shardIndex) && shardIndex >= 0 && shardIndex < DEFAULT_WEBHOOK_QUEUE_NAMES.length) {
+    if (
+      Number.isInteger(shardIndex) &&
+      shardIndex >= 0 &&
+      shardIndex < DEFAULT_WEBHOOK_QUEUE_NAMES.length
+    ) {
       queues.add(DEFAULT_WEBHOOK_QUEUE_NAMES[shardIndex]!);
     }
   }

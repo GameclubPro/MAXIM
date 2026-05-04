@@ -171,7 +171,12 @@ const EMPTY_WEBHOOK_STATUS_METRICS: WebhookStatusMetrics = {
   oldestLagSec: 0,
 };
 const ACTIVE_FAILED_WEBHOOK_WINDOW_SEC = 6 * 60 * 60;
-const USER_FACING_WEBHOOK_TYPES = ['message_created', 'message_callback', 'bot_started', 'bot_added'] as const;
+const USER_FACING_WEBHOOK_TYPES = [
+  'message_created',
+  'message_callback',
+  'bot_started',
+  'bot_added',
+] as const;
 
 @Injectable()
 export class QueueMetricsService {
@@ -199,14 +204,22 @@ export class QueueMetricsService {
     @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue,
   ) {
     this.webhookJoinQueuesByName = Object.fromEntries(
-      JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
+      JOIN_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+        queueName,
+        this.resolveOptionalQueue(queueName),
+      ]),
     ) as Record<JoinWebhookQueueName, Queue | undefined>;
     this.webhookDefaultQueuesByName = Object.fromEntries(
-      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, this.resolveOptionalQueue(queueName)]),
+      DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+        queueName,
+        this.resolveOptionalQueue(queueName),
+      ]),
     ) as Record<DefaultWebhookQueueName, Queue | undefined>;
   }
 
-  private resolveOptionalQueue(queueName: DefaultWebhookQueueName | JoinWebhookQueueName): Queue | undefined {
+  private resolveOptionalQueue(
+    queueName: DefaultWebhookQueueName | JoinWebhookQueueName,
+  ): Queue | undefined {
     try {
       return this.moduleRef.get<Queue>(getQueueToken(queueName), { strict: false });
     } catch {
@@ -320,12 +333,12 @@ export class QueueMetricsService {
     ]);
     const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed] =
       await Promise.all([
-      this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
-      this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
-      this.readWebhookStatusMetrics(WebhookStatus.FAILED),
-      this.readWebhookStatusMetricsByTypes(WebhookStatus.RECEIVED, USER_FACING_WEBHOOK_TYPES),
-      this.readWebhookStatusMetricsByTypes(WebhookStatus.QUEUED, USER_FACING_WEBHOOK_TYPES),
-      this.readWebhookStatusMetricsByTypes(WebhookStatus.FAILED, USER_FACING_WEBHOOK_TYPES),
+        this.readWebhookStatusMetrics(WebhookStatus.RECEIVED),
+        this.readWebhookStatusMetrics(WebhookStatus.QUEUED),
+        this.readWebhookStatusMetrics(WebhookStatus.FAILED),
+        this.readWebhookStatusMetricsByTypes(WebhookStatus.RECEIVED, USER_FACING_WEBHOOK_TYPES),
+        this.readWebhookStatusMetricsByTypes(WebhookStatus.QUEUED, USER_FACING_WEBHOOK_TYPES),
+        this.readWebhookStatusMetricsByTypes(WebhookStatus.FAILED, USER_FACING_WEBHOOK_TYPES),
       ]);
     const bots = await this.buildPerBotSnapshots(botIds);
 
@@ -491,7 +504,9 @@ export class QueueMetricsService {
           {
             queues,
             counters: this.sumQueueCounters(
-              ...queues.map((queueName) => webhookDefaultShards[queueName] ?? { ...EMPTY_COUNTERS }),
+              ...queues.map(
+                (queueName) => webhookDefaultShards[queueName] ?? { ...EMPTY_COUNTERS },
+              ),
             ),
           },
         ];
@@ -503,7 +518,10 @@ export class QueueMetricsService {
     dynamicLeaseSummary: DefaultWebhookLeaseSummary,
   ): Record<DefaultWebhookWorkerGroupName, DefaultWebhookQueueName[]> {
     const queuesByGroup = Object.fromEntries(
-      DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName) => [groupName, [] as DefaultWebhookQueueName[]]),
+      DEFAULT_WEBHOOK_WORKER_GROUP_NAMES.map((groupName) => [
+        groupName,
+        [] as DefaultWebhookQueueName[],
+      ]),
     ) as Record<DefaultWebhookWorkerGroupName, DefaultWebhookQueueName[]>;
     const homeOwnerByQueue = getDefaultWebhookHomeOwnerByQueue();
 
@@ -624,8 +642,15 @@ export class QueueMetricsService {
   ): Promise<Record<string, BotQueueMetricsSnapshot>> {
     const snapshots = await Promise.all(
       botIds.map(async (botId) => {
-        const [received, queued, failed, userFacingReceived, userFacingQueued, userFacingFailed, queuedByQueue] =
-          await Promise.all([
+        const [
+          received,
+          queued,
+          failed,
+          userFacingReceived,
+          userFacingQueued,
+          userFacingFailed,
+          queuedByQueue,
+        ] = await Promise.all([
           this.readWebhookStatusMetricsForBot(WebhookStatus.RECEIVED, botId),
           this.readWebhookStatusMetricsForBot(WebhookStatus.QUEUED, botId),
           this.readWebhookStatusMetricsForBot(WebhookStatus.FAILED, botId),
@@ -645,7 +670,7 @@ export class QueueMetricsService {
             botId,
           ),
           this.readQueuedByQueue(botId),
-          ]);
+        ]);
         const oldestQueuedLagSec = queued.oldestLagSec;
         const oldestReceivedLagSec = received.oldestLagSec;
         const userFacingOldestQueuedLagSec = userFacingQueued.oldestLagSec;

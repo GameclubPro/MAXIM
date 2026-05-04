@@ -2,9 +2,7 @@ import { extractUrlsFromText, stripUrlsFromText } from './url-text.util';
 
 describe('url-text util', () => {
   it('extracts bare MAX invite links', () => {
-    expect(extractUrlsFromText('вступай max.ru/join/abcDEF123')).toEqual([
-      'max.ru/join/abcDEF123',
-    ]);
+    expect(extractUrlsFromText('вступай max.ru/join/abcDEF123')).toEqual(['max.ru/join/abcDEF123']);
   });
 
   it('extracts unicode domains with scheme', () => {
@@ -14,7 +12,7 @@ describe('url-text util', () => {
   });
 
   it('does not treat dotted russian text as a url', () => {
-    expect(extractUrlsFromText("Продам кузов Нивы.Весь перевареный")).toEqual([]);
+    expect(extractUrlsFromText('Продам кузов Нивы.Весь перевареный')).toEqual([]);
   });
 
   it('does not treat dotted addresses as a url', () => {

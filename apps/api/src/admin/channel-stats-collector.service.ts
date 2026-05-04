@@ -16,9 +16,7 @@ import {
 } from '../max/max-bot-link.service';
 import { MAX_REQUIRED_WEBHOOK_UPDATE_TYPES } from '../max/max-webhook-subscription.constants';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  BackgroundRuntimeGovernorService,
-} from '../system/background-runtime-governor.service';
+import { BackgroundRuntimeGovernorService } from '../system/background-runtime-governor.service';
 import {
   SystemModeService,
   isSystemModeRecoveryWindow,
@@ -83,7 +81,10 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     private readonly backgroundRuntimeGovernorService?: BackgroundRuntimeGovernorService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.startupSyncEnabled = configService.get<boolean>('CHANNEL_STATS_STARTUP_SYNC_ENABLED', false);
+    this.startupSyncEnabled = configService.get<boolean>(
+      'CHANNEL_STATS_STARTUP_SYNC_ENABLED',
+      false,
+    );
     this.startupSyncMaxChannels = Math.max(
       0,
       configService.get<number>('CHANNEL_STATS_STARTUP_MAX_CHANNELS', 6),
@@ -289,10 +290,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       return true;
     }
 
-    const freshestSyncAtMs = Math.max(
-      lastAudienceSyncAt.getTime(),
-      lastViewsSyncAt.getTime(),
-    );
+    const freshestSyncAtMs = Math.max(lastAudienceSyncAt.getTime(), lastViewsSyncAt.getTime());
     return Date.now() - freshestSyncAtMs >= this.startupSyncStaleMs;
   }
 
@@ -314,8 +312,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
     return (
       (leftFreshestSyncAtMs ?? Number.NEGATIVE_INFINITY) -
-        (rightFreshestSyncAtMs ?? Number.NEGATIVE_INFINITY) ||
-      left.id.localeCompare(right.id)
+        (rightFreshestSyncAtMs ?? Number.NEGATIVE_INFINITY) || left.id.localeCompare(right.id)
     );
   }
 
@@ -405,12 +402,12 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               from: lookbackFrom,
               to: now,
               count: 100,
-            maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
-            trafficClass: 'background',
-            ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
-            sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
-            ...(statsBotId ? { botId: statsBotId } : {}),
-          });
+              maxPages: this.resolveMessageSnapshotMaxPages(options?.reason),
+              trafficClass: 'background',
+              ignoreFailureMetricStatuses: CHANNEL_STATS_IGNORED_FAILURE_METRIC_STATUSES,
+              sourceTag: MAX_API_SOURCE_TAGS.CHANNEL_STATS_SYNC,
+              ...(statsBotId ? { botId: statsBotId } : {}),
+            });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;
           } catch (error: unknown) {

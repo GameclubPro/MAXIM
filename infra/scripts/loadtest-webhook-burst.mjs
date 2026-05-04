@@ -32,7 +32,9 @@ function parseArgs(argv) {
 
     switch (arg) {
       case '--target':
-        options.target = String(next ?? '').trim().toLowerCase();
+        options.target = String(next ?? '')
+          .trim()
+          .toLowerCase();
         index += 1;
         break;
       case '--duration-sec':
@@ -156,14 +158,21 @@ async function readEnvFile() {
 }
 
 function normalizeBaseUrl(value) {
-  return String(value ?? '').trim().replace(/\/+$/u, '');
+  return String(value ?? '')
+    .trim()
+    .replace(/\/+$/u, '');
 }
 
 function redactWebhookUrl(rawUrl) {
   try {
     const url = new URL(rawUrl);
     const segments = url.pathname.split('/').filter(Boolean);
-    if (segments.length >= 5 && segments[0] === 'api' && segments[1] === 'webhook' && segments[2] === 'max') {
+    if (
+      segments.length >= 5 &&
+      segments[0] === 'api' &&
+      segments[1] === 'webhook' &&
+      segments[2] === 'max'
+    ) {
       segments[4] = '[redacted]';
       url.pathname = `/${segments.join('/')}`;
     }
@@ -389,7 +398,9 @@ async function main() {
     probeSummaryPromise,
   ]);
 
-  process.stdout.write(`${JSON.stringify({ webhook: webhookSummary, probe: probeSummary }, null, 2)}\n`);
+  process.stdout.write(
+    `${JSON.stringify({ webhook: webhookSummary, probe: probeSummary }, null, 2)}\n`,
+  );
 
   if (!webhookSummary || webhookSummary.nonOk > 0) {
     process.exitCode = 1;

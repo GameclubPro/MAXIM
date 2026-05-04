@@ -53,9 +53,7 @@ export function parseAdditionalMaxBotsJson(
     parsedJson = JSON.parse(normalized);
   } catch (error: unknown) {
     throw new Error(
-      `MAX_BOTS_JSON must be valid JSON: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `MAX_BOTS_JSON must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 
@@ -134,7 +132,8 @@ export function buildResolvedMaxBotConfigs(input: {
         input.defaultBot.webhookHeaderSecret,
         input.defaultBot.webhookHeaderSecretPrevious,
       ),
-      contactId: normalizeContactId(input.defaultBot.contactId) ?? inferContactIdFromBotId(defaultBotId),
+      contactId:
+        normalizeContactId(input.defaultBot.contactId) ?? inferContactIdFromBotId(defaultBotId),
       state: 'active',
       visibleInAdmin: true,
       isDefault: true,

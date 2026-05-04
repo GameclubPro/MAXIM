@@ -100,7 +100,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       10,
     );
     this.summaryTtlMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_SUMMARY_TTL_MS', 20_000);
-    this.closeTimeoutMs = configService.get<number>('WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS', 5_000);
+    this.closeTimeoutMs = configService.get<number>(
+      'WEBHOOK_DYNAMIC_LEASES_CLOSE_TIMEOUT_MS',
+      5_000,
+    );
   }
 
   onModuleInit() {
@@ -130,7 +133,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       this.syncTimer = null;
     }
 
-    await Promise.all([...this.workers.values()].map((worker) => worker.close().catch(() => undefined)));
+    await Promise.all(
+      [...this.workers.values()].map((worker) => worker.close().catch(() => undefined)),
+    );
     this.workers.clear();
     await this.redis.quit();
   }
@@ -189,7 +194,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     const claims = await this.loadClaims();
     const handoffs = await this.loadHandoffs();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
-    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({ maxAgeMs: 1_500 });
+    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({
+      maxAgeMs: 1_500,
+    });
     const systemModeSnapshot =
       this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
       (await this.systemModeService.getEffectiveSnapshot());
@@ -199,7 +206,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       canaryQueues: this.canaryQueues,
       aliveWorkerGroups,
       claimedOwners: Object.fromEntries(
-        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, claims[queueName]?.ownerId ?? null]),
+        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+          queueName,
+          claims[queueName]?.ownerId ?? null,
+        ]),
       ) as Partial<Record<DefaultWebhookQueueName, DefaultWebhookWorkerGroupName | null>>,
       lastHandoffAtMs: Object.fromEntries(this.lastHandoffAtMs),
       queueCounters: snapshot.webhookDefaultShards,
@@ -270,7 +280,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
   private async buildSummary(): Promise<DefaultWebhookLeaseSummary> {
     const claims = await this.loadClaims();
     const aliveWorkerGroups = await this.loadAliveWorkerGroups();
-    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({ maxAgeMs: 1_500 });
+    const snapshot = await this.queueMetricsService.getWebhookDefaultShardSnapshot({
+      maxAgeMs: 1_500,
+    });
     const systemModeSnapshot =
       this.systemModeService.peekCachedSnapshot?.(this.heartbeatMs * 2) ??
       (await this.systemModeService.getEffectiveSnapshot());
@@ -280,7 +292,10 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
       canaryQueues: this.canaryQueues,
       aliveWorkerGroups,
       claimedOwners: Object.fromEntries(
-        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [queueName, claims[queueName]?.ownerId ?? null]),
+        DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+          queueName,
+          claims[queueName]?.ownerId ?? null,
+        ]),
       ) as Partial<Record<DefaultWebhookQueueName, DefaultWebhookWorkerGroupName | null>>,
       lastHandoffAtMs: Object.fromEntries(this.lastHandoffAtMs),
       queueCounters: snapshot.webhookDefaultShards,
@@ -758,7 +773,9 @@ export class DefaultWebhookLeaseManagerService implements OnModuleInit, OnModule
     }
   }
 
-  private async closeWorkersExcept(allowedQueues: ReadonlySet<DefaultWebhookQueueName>): Promise<void> {
+  private async closeWorkersExcept(
+    allowedQueues: ReadonlySet<DefaultWebhookQueueName>,
+  ): Promise<void> {
     for (const queueName of [...this.workers.keys()]) {
       if (!allowedQueues.has(queueName)) {
         if (this.isCloseRetryCoolingDown(queueName)) {

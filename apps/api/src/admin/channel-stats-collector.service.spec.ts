@@ -405,7 +405,9 @@ describe('ChannelStatsCollectorService', () => {
       throttled: false,
     });
 
-    const startupSync = (service as unknown as { syncStartupChannels: () => Promise<void> }).syncStartupChannels();
+    const startupSync = (
+      service as unknown as { syncStartupChannels: () => Promise<void> }
+    ).syncStartupChannels();
     await jest.runAllTimersAsync();
     await startupSync;
 
@@ -434,7 +436,10 @@ describe('ChannelStatsCollectorService', () => {
       }) as never,
     );
     const startupSpy = jest
-      .spyOn(service as unknown as { syncStartupChannels: () => Promise<void> }, 'syncStartupChannels')
+      .spyOn(
+        service as unknown as { syncStartupChannels: () => Promise<void> },
+        'syncStartupChannels',
+      )
       .mockResolvedValue(undefined);
 
     service.onModuleInit();

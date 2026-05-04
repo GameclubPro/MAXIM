@@ -186,7 +186,11 @@ export class WebhookService {
         status: WebhookStatus.RECEIVED,
       },
     });
-    this.deferBackgroundTask(() => this.persistAdminReadModels(update), 'admin read model refresh', update);
+    this.deferBackgroundTask(
+      () => this.persistAdminReadModels(update),
+      'admin read model refresh',
+      update,
+    );
   }
 
   private async stageManagedEntityPendingBootstrap(update: MaxUpdate): Promise<void> {
@@ -319,7 +323,13 @@ export class WebhookService {
               });
             }
           }
-          if (!(observedBotId && executionOwnerBotId !== storedOwnerBotId && observedBotId === executionOwnerBotId)) {
+          if (
+            !(
+              observedBotId &&
+              executionOwnerBotId !== storedOwnerBotId &&
+              observedBotId === executionOwnerBotId
+            )
+          ) {
             await this.maxBotLinkService.observeStoredChatBotWebhook({
               chatId,
               primaryBotId: executionOwnerBotId ?? storedOwnerBotId,
@@ -1055,7 +1065,12 @@ export class WebhookService {
     const chatId = params.chatId.trim();
     const incomingBotId = params.incomingBotId?.trim() ?? '';
     const currentOwnerBotId = params.currentOwnerBotId?.trim() ?? '';
-    if (!chatId.startsWith('-') || !incomingBotId || !currentOwnerBotId || incomingBotId === currentOwnerBotId) {
+    if (
+      !chatId.startsWith('-') ||
+      !incomingBotId ||
+      !currentOwnerBotId ||
+      incomingBotId === currentOwnerBotId
+    ) {
       return;
     }
 
@@ -1070,25 +1085,23 @@ export class WebhookService {
       Date.now() + EXECUTION_OWNER_ASYNC_RECHECK_BACKOFF_MS,
     );
     setTimeout(() => {
-      void this
-        .maybeFailOverExecutionOwner({
-          update: params.update,
-          chatId,
-          incomingBotId,
-          currentOwnerBotId,
-          allowLiveCheck: true,
-        })
-        .catch((error: unknown) => {
-          this.logger.debug(
-            {
-              chatId,
-              currentOwnerBotId,
-              incomingBotId,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Async execution-owner recheck after webhook ingest failed',
-          );
-        });
+      void this.maybeFailOverExecutionOwner({
+        update: params.update,
+        chatId,
+        incomingBotId,
+        currentOwnerBotId,
+        allowLiveCheck: true,
+      }).catch((error: unknown) => {
+        this.logger.debug(
+          {
+            chatId,
+            currentOwnerBotId,
+            incomingBotId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Async execution-owner recheck after webhook ingest failed',
+        );
+      });
     }, 0);
   }
 
@@ -1116,7 +1129,7 @@ export class WebhookService {
             ? 'webhook_chat_title_changed'
             : CHAT_ADMIN_ROSTER_MEMBERSHIP_CHURN_UPDATE_TYPES.has(normalizedType)
               ? 'webhook_membership_churn'
-            : null;
+              : null;
 
     void this.maxChatAdminRosterSyncService
       .scheduleChatAdminRosterSync({

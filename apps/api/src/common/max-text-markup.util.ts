@@ -43,21 +43,21 @@ export function renderMaxTextMarkupAsHtml(text: string, markup: MaxTextMarkup[])
     }
 
     const openBucket = openTags.get(start) ?? [];
-      openBucket.push({
-        open: tag.open,
-        close: tag.close,
-        end,
-        priority: tag.priority,
-      });
+    openBucket.push({
+      open: tag.open,
+      close: tag.close,
+      end,
+      priority: tag.priority,
+    });
     openTags.set(start, openBucket);
 
     const closeBucket = closeTags.get(end) ?? [];
-      closeBucket.push({
-        close: tag.close,
-        start,
-        end,
-        priority: tag.priority,
-      });
+    closeBucket.push({
+      close: tag.close,
+      start,
+      end,
+      priority: tag.priority,
+    });
     closeTags.set(end, closeBucket);
     boundaries.add(start);
     boundaries.add(end);

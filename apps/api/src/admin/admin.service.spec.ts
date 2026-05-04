@@ -3391,7 +3391,7 @@ describe('AdminService required subscription settings', () => {
       greetingBotMessageText: 'Привет!',
     });
 
-    const assertChatAdminSpy = jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
     jest
       .spyOn(
         service as unknown as {
@@ -18422,12 +18422,12 @@ describe('AdminService.sendBroadcast', () => {
       ],
     });
 
-    let service!: AdminService;
+    const serviceRef: { current?: AdminService } = {};
     let canceledStatus: string | null = null;
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithId: jest.fn().mockImplementation(async () => {
-        const canceled = await service.cancelManagedBroadcast('chat-1', 'broadcast-1', {
+        const canceled = await serviceRef.current!.cancelManagedBroadcast('chat-1', 'broadcast-1', {
           userId: 'admin-1',
           username: null,
           displayName: null,
@@ -18441,12 +18441,13 @@ describe('AdminService.sendBroadcast', () => {
       invalidate: jest.fn(),
     };
 
-    service = new AdminService(
+    const service = new AdminService(
       prisma as never,
       maxClient as never,
       chatContextCache as never,
       createConfigMock() as never,
     );
+    serviceRef.current = service;
 
     const result = await (service as any).processManagedBroadcastOccurrence(
       'broadcast-1',

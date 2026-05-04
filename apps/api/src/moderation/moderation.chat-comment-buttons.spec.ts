@@ -62,7 +62,10 @@ function createConfigMock() {
   };
 }
 
-function createService(settingsOverrides: Record<string, unknown>, adminUserIds: string[] = ['admin-1']) {
+function createService(
+  settingsOverrides: Record<string, unknown>,
+  adminUserIds: string[] = ['admin-1'],
+) {
   const prisma = {
     chat: {
       upsert: jest.fn().mockResolvedValue({

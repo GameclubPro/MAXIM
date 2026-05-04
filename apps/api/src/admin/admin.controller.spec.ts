@@ -37,11 +37,7 @@ describe('AdminController allowlist routes', () => {
       user as never,
     );
 
-    expect(adminService.removeDomain).toHaveBeenCalledWith(
-      'chat-1',
-      user,
-      'domain:docs.max.ru',
-    );
+    expect(adminService.removeDomain).toHaveBeenCalledWith('chat-1', user, 'domain:docs.max.ru');
   });
 
   it('schedules allowlist removal via query parameter', async () => {

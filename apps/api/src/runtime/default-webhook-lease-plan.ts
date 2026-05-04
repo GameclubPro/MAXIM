@@ -105,15 +105,16 @@ function resolveDynamicEligibility(
 }
 
 function measurePressure(counters: DefaultWebhookLeaseCounters): number {
-  return counters.waiting + counters.prioritized + counters.active * ACTIVE_WEIGHT + counters.delayed;
+  return (
+    counters.waiting + counters.prioritized + counters.active * ACTIVE_WEIGHT + counters.delayed
+  );
 }
 
 export function buildDefaultWebhookLeasePlan(
   input: DefaultWebhookLeasePlanInput,
 ): DefaultWebhookLeasePlan {
   const nowMs = Date.now();
-  const canaryQueues =
-    input.canaryQueues ?? getWebhookDynamicLeaseCanaryQueues(undefined);
+  const canaryQueues = input.canaryQueues ?? getWebhookDynamicLeaseCanaryQueues(undefined);
   const aliveWorkerGroups = normalizeWorkerGroups(input.aliveWorkerGroups);
   const homeOwnerByQueue = getDefaultWebhookHomeOwnerByQueue();
   const lastHandoffAtMs = input.lastHandoffAtMs ?? {};

@@ -7,10 +7,7 @@ import {
 } from '@prisma/client';
 import type { ManagedEntityBotCapability } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
-import {
-  isValidMaxBotStartPayload,
-  isValidMaxMiniappStartPayload,
-} from './max-deep-link.util';
+import { isValidMaxBotStartPayload, isValidMaxMiniappStartPayload } from './max-deep-link.util';
 import { MaxBotContextService } from './max-bot-context.service';
 import { MaxBotRegistryService, type MaxBotDefinition } from './max-bot-registry.service';
 
@@ -255,7 +252,9 @@ export class MaxBotLinkService {
     return this.resolveBotRoute(request);
   }
 
-  async resolveBotId(options: { chatId?: string | null; botId?: string | null } = {}): Promise<string> {
+  async resolveBotId(
+    options: { chatId?: string | null; botId?: string | null } = {},
+  ): Promise<string> {
     const route = await this.resolveBotRoute({
       purpose: 'default',
       chatId: options.chatId,
@@ -391,7 +390,9 @@ export class MaxBotLinkService {
     this.chatBotBindingCache.delete(normalizedChatId);
   }
 
-  async resolveContactId(options: { chatId?: string | null; botId?: string | null } = {}): Promise<string | null> {
+  async resolveContactId(
+    options: { chatId?: string | null; botId?: string | null } = {},
+  ): Promise<string | null> {
     const route = await this.resolveBotRoute({
       purpose: 'default',
       chatId: options.chatId,
@@ -518,9 +519,7 @@ export class MaxBotLinkService {
 
     await this.upsertChatBotMembership(chatId, botId, {
       role:
-        nextPrimaryBotId === botId
-          ? ChatBotMembershipRole.PRIMARY
-          : ChatBotMembershipRole.STANDBY,
+        nextPrimaryBotId === botId ? ChatBotMembershipRole.PRIMARY : ChatBotMembershipRole.STANDBY,
       status: ChatBotMembershipStatus.ACTIVE,
       lastSeenAt: now,
       lastWebhookAt: explicitBotId ? now : null,
@@ -591,13 +590,11 @@ export class MaxBotLinkService {
       null;
     const activeMembership =
       activeBotId && chat?.botMemberships
-        ? chat.botMemberships.find((membership) => membership.botId === activeBotId) ?? null
+        ? (chat.botMemberships.find((membership) => membership.botId === activeBotId) ?? null)
         : null;
     const activeMembershipStatus = activeMembership?.status ?? null;
     const assignedBotIds = Array.from(
-      new Set(
-        activeKnownMemberships.map((membership) => membership.botId),
-      ),
+      new Set(activeKnownMemberships.map((membership) => membership.botId)),
     );
     const shouldHandleGroupUpdate =
       !activeBotId ||
@@ -762,9 +759,7 @@ export class MaxBotLinkService {
       },
       update: {
         title,
-        ...(nextPrimaryBotId
-          ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId }
-          : {}),
+        ...(nextPrimaryBotId ? { botId: nextPrimaryBotId, primaryBotId: nextPrimaryBotId } : {}),
         ...(entityType ? { entityType } : {}),
       },
     });
@@ -911,14 +906,14 @@ export class MaxBotLinkService {
 
     const primaryAdminCapableMembership =
       state.primaryBotId !== null
-        ? state.activeKnownMemberships.find((membership) => {
+        ? (state.activeKnownMemberships.find((membership) => {
             if (membership.botId !== state.primaryBotId) {
               return false;
             }
 
             const snapshot = this.normalizeMembershipAccessSnapshot(membership.permissionsSnapshot);
             return Boolean(snapshot && (snapshot.isAdmin || snapshot.isOwner));
-          }) ?? null
+          }) ?? null)
         : null;
     if (primaryAdminCapableMembership) {
       return this.buildRoute({
@@ -953,8 +948,9 @@ export class MaxBotLinkService {
 
     const primaryActiveMembership =
       state.primaryBotId !== null
-        ? state.activeKnownMemberships.find((membership) => membership.botId === state.primaryBotId) ??
-          null
+        ? (state.activeKnownMemberships.find(
+            (membership) => membership.botId === state.primaryBotId,
+          ) ?? null)
         : null;
     if (
       primaryActiveMembership &&
@@ -1192,9 +1188,9 @@ export class MaxBotLinkService {
 
     const primaryActiveMembership =
       state.primaryBotId !== null
-        ? state.activeActionableMemberships.find(
+        ? (state.activeActionableMemberships.find(
             (membership) => membership.botId === state.primaryBotId,
-          ) ?? null
+          ) ?? null)
         : null;
     if (
       primaryActiveMembership &&
@@ -1382,7 +1378,7 @@ export class MaxBotLinkService {
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
           .filter((item): item is ManagedEntityBotCapability =>
             supported.has(item as ManagedEntityBotCapability),
-        ),
+          ),
       ),
     );
   }
@@ -1519,7 +1515,8 @@ export class MaxBotLinkService {
         this.botRegistry.getBotById(membership.botId),
     );
     const nextPrimaryBotId =
-      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)?.botId ??
+      activeMemberships.find((membership) => membership.role === ChatBotMembershipRole.PRIMARY)
+        ?.botId ??
       activeMemberships[0]?.botId ??
       null;
 

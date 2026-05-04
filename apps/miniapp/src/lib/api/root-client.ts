@@ -207,9 +207,7 @@ function parseManagedEntitiesResponseSnapshot(
   };
 }
 
-function parseManagedEntitiesResponseDiff(
-  value: unknown,
-): ManagedEntitiesResponseDiff | null {
+function parseManagedEntitiesResponseDiff(value: unknown): ManagedEntitiesResponseDiff | null {
   if (value === null || value === undefined) {
     return null;
   }

@@ -121,7 +121,10 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
-  if (pathname.includes('/dialog/') && (pathname.includes('/channel/') || pathname.includes('/chat/'))) {
+  if (
+    pathname.includes('/dialog/') &&
+    (pathname.includes('/channel/') || pathname.includes('/chat/'))
+  ) {
     const isSuggest = pathname.includes('/dialog/suggest');
     const entityLabel = pathname.includes('/channel/') ? 'Канал' : 'Чат';
     return {
@@ -180,8 +183,7 @@ export function Shell() {
   const isKeyboardOpen = useKeyboardOpen();
   const isChatsRoute = location.pathname === '/';
   const selectedRootEntityType = useMemo(
-    () =>
-      normalizeEntityType(new URLSearchParams(location.search).get('view'), lastEntityType),
+    () => normalizeEntityType(new URLSearchParams(location.search).get('view'), lastEntityType),
     [lastEntityType, location.search],
   );
   const routeEntityType: LastEntityType = location.pathname.includes('/channel/')
@@ -222,7 +224,9 @@ export function Shell() {
     setLastEntityType(selectedRootEntityType);
   }, [isChatsRoute, selectedRootEntityType]);
 
-  const resolvedEntityType: LastEntityType = isChatsRoute ? selectedRootEntityType : routeEntityType;
+  const resolvedEntityType: LastEntityType = isChatsRoute
+    ? selectedRootEntityType
+    : routeEntityType;
   const resolvedChatId = chatId || lastEntityIds[resolvedEntityType];
   const homeRoute = buildManagedEntitiesRoute(resolvedEntityType);
 

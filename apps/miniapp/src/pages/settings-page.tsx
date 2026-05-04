@@ -1145,20 +1145,6 @@ function formatApiError(error: unknown): string {
   return trimmedMessage ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
 }
 
-function isValidHttpUrl(value: string): boolean {
-  const normalized = value.trim();
-  if (!normalized) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
 function normalizeDayMinutes(value: number, fallback = 0): number {
   if (!Number.isInteger(value) || value < 0 || value > 1_439) {
     return fallback;
@@ -5091,7 +5077,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     (settingsScreenQuery.isPending || settingsHandoffRetryCount > 0);
   const showSettingsHandoffError =
     Boolean(chatId) && handoffRequested && !settingsScreenQuery.data && settingsScreenQuery.isError;
-  const settingsHandoffMode = showSettingsHandoffPending ? 'loading' : showSettingsHandoffError ? 'error' : null;
+  const settingsHandoffMode = showSettingsHandoffPending
+    ? 'loading'
+    : showSettingsHandoffError
+      ? 'error'
+      : null;
   const managedChatsRoute = buildManagedEntitiesRoute('chat');
   const refetchSettings = () => void settingsQuery.refetch();
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -5517,10 +5507,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     <div className="page-stack page-enter">
       {settingsHandoffMode ? (
         <Suspense fallback={null}>
-          <LazySettingsHandoffState
-            mode={settingsHandoffMode}
-            onRetry={refetchSettings}
-          />
+          <LazySettingsHandoffState mode={settingsHandoffMode} onRetry={refetchSettings} />
         </Suspense>
       ) : null}
 
@@ -5539,11 +5526,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             title="Ошибка загрузки настроек"
             description={formatApiError(settingsQuery.error)}
             action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={refetchSettings}
-              >
+              <button type="button" className="button button--danger" onClick={refetchSettings}>
                 Повторить
               </button>
             }

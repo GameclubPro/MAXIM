@@ -265,7 +265,9 @@ function parseMiniappRouteStartParam(value: string): string | null {
   }
 
   try {
-    const parsed = JSON.parse(decodeBase64Url(encodedPayload)) as Partial<MiniappRouteLaunchPayload>;
+    const parsed = JSON.parse(
+      decodeBase64Url(encodedPayload),
+    ) as Partial<MiniappRouteLaunchPayload>;
     if (parsed.v !== 1 || parsed.k !== 'route') {
       return null;
     }

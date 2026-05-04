@@ -97,9 +97,7 @@ export async function promoteChatStandbyBot(
   chatId: string,
   botId?: string,
 ): Promise<ManagedEntityBotExecutionPlan> {
-  const requestBody = promoteManagedEntityStandbyRequestSchema.parse(
-    botId ? { botId } : {},
-  );
+  const requestBody = promoteManagedEntityStandbyRequestSchema.parse(botId ? { botId } : {});
   const response = await api.request(`/chats/${chatId}/bots/promote-standby`, {
     method: 'POST',
     body: JSON.stringify(requestBody),

@@ -28,7 +28,10 @@ type PersistedMembership = {
 
 type PermissionsSummary = NonNullable<ManagedEntityAssignedBot['permissionsSummary']>;
 
-const ASSIST_CAPABILITIES_BY_ENTITY: Record<ManagedEntityType, readonly ManagedEntityBotCapability[]> = {
+const ASSIST_CAPABILITIES_BY_ENTITY: Record<
+  ManagedEntityType,
+  readonly ManagedEntityBotCapability[]
+> = {
   chat: ['suggestion_delivery', 'membership_prewarm', 'access_prewarm'],
   channel: [
     'background_scans',
@@ -179,7 +182,9 @@ export class MaxBotExecutionPlannerService {
       throw new BadRequestException('Бот не является активным участником этого чата.');
     }
     if (membership.role === ChatBotMembershipRole.PRIMARY) {
-      throw new BadRequestException('Owner-бот и так обслуживает user-facing path без assist-режима.');
+      throw new BadRequestException(
+        'Owner-бот и так обслуживает user-facing path без assist-режима.',
+      );
     }
 
     let nextCapabilities: ManagedEntityBotCapability[] = [];
@@ -274,7 +279,8 @@ export class MaxBotExecutionPlannerService {
     const partnerBotId = assistPartner?.botId ?? activePartner?.botId ?? null;
     const primaryBotId =
       this.maxBotRegistry.getBotById(state.primaryBotId)?.id ??
-      assignedBots.find((bot) => bot.role === 'primary' && bot.membershipStatus === 'active')?.botId ??
+      assignedBots.find((bot) => bot.role === 'primary' && bot.membershipStatus === 'active')
+        ?.botId ??
       null;
     const reasons = [
       'Пользовательские deep link-сценарии стараются оставаться на том боте, из которого пользователь открыл поток.',
@@ -388,7 +394,8 @@ export class MaxBotExecutionPlannerService {
           (primaryBotId !== null && primaryBotId === bot.id)
             ? 'primary'
             : 'standby',
-        membershipStatus: membership.status === ChatBotMembershipStatus.REMOVED ? 'removed' : 'active',
+        membershipStatus:
+          membership.status === ChatBotMembershipStatus.REMOVED ? 'removed' : 'active',
         lifecycleState: bot.state,
         speechPersona: bot.speechPersona,
         characterName: bot.characterName,
@@ -469,7 +476,9 @@ export class MaxBotExecutionPlannerService {
       new Set(
         value
           .map((item) => (typeof item === 'string' ? item.trim() : ''))
-          .filter((item): item is ManagedEntityBotCapability => supported.has(item as ManagedEntityBotCapability)),
+          .filter((item): item is ManagedEntityBotCapability =>
+            supported.has(item as ManagedEntityBotCapability),
+          ),
       ),
     );
   }
@@ -500,7 +509,10 @@ export class MaxBotExecutionPlannerService {
     };
   }
 
-  private async refreshBotAccessSnapshot(chatId: string, botId: string): Promise<PermissionsSummary> {
+  private async refreshBotAccessSnapshot(
+    chatId: string,
+    botId: string,
+  ): Promise<PermissionsSummary> {
     try {
       const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
         botId,
@@ -539,7 +551,9 @@ export class MaxBotExecutionPlannerService {
       checkedAt: new Date().toISOString(),
       isAdmin: access.isAdmin,
       isOwner: access.isOwner,
-      permissions: Array.from(new Set(access.permissions.map((item) => item.trim()).filter(Boolean))),
+      permissions: Array.from(
+        new Set(access.permissions.map((item) => item.trim()).filter(Boolean)),
+      ),
     };
   }
 

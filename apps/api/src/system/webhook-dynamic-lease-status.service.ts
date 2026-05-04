@@ -22,11 +22,7 @@ export class WebhookDynamicLeaseStatusService implements OnModuleDestroy {
   }
 
   async getSummary(maxAgeMs = 0): Promise<DefaultWebhookLeaseSummary | null> {
-    if (
-      this.summaryCache &&
-      maxAgeMs > 0 &&
-      Date.now() - this.summaryCacheAtMs <= maxAgeMs
-    ) {
+    if (this.summaryCache && maxAgeMs > 0 && Date.now() - this.summaryCacheAtMs <= maxAgeMs) {
       return this.summaryCache;
     }
 

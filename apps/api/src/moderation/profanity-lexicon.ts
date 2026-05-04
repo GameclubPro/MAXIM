@@ -8,18 +8,7 @@ const CYRILLIC_HARD_MASC_SUFFIXES = ['', 'а', 'у', 'е', 'ом', 'и', 'ов',
 const CYRILLIC_FEM_A_SUFFIXES = ['а', 'и', 'е', 'у', 'ой', 'ою', 'ам', 'ами', 'ах'];
 const CYRILLIC_HARD_FEM_A_SUFFIXES = ['а', 'ы', 'е', 'у', 'ой', 'ою', 'ам', 'ами', 'ах'];
 const CYRILLIC_SOFT_FEM_SUFFIXES = ['ь', 'и', 'ью', 'ей', 'ям', 'ями', 'ях'];
-const CYRILLIC_ADJECTIVE_SUFFIXES = [
-  'ий',
-  'ая',
-  'ое',
-  'ие',
-  'ого',
-  'ому',
-  'ую',
-  'ым',
-  'ых',
-  'ыми',
-];
+const CYRILLIC_ADJECTIVE_SUFFIXES = ['ий', 'ая', 'ое', 'ие', 'ого', 'ому', 'ую', 'ым', 'ых', 'ыми'];
 const CYRILLIC_HARD_ADJECTIVE_SUFFIXES = [
   'ый',
   'ая',

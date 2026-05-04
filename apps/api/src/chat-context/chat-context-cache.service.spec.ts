@@ -784,7 +784,7 @@ describe('ChatContextCacheService', () => {
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(redisInstance.set).toHaveBeenCalledWith(
       ChatContextCacheService.cacheKey(chatId),
-      expect.stringContaining('\"user-2\"'),
+      expect.stringContaining('"user-2"'),
       'EX',
       60,
     );

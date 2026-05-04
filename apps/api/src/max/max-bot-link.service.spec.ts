@@ -67,14 +67,16 @@ function createServiceFixture() {
         });
         return chats.get(data.id);
       }),
-      update: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
-        const existing = chats.get(where.id);
-        if (!existing) {
-          throw new Error(`Chat ${where.id} not found`);
-        }
-        Object.assign(existing, data);
-        return existing;
-      }),
+      update: jest.fn(
+        async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
+          const existing = chats.get(where.id);
+          if (!existing) {
+            throw new Error(`Chat ${where.id} not found`);
+          }
+          Object.assign(existing, data);
+          return existing;
+        },
+      ),
       upsert: jest.fn(
         async ({
           where,
@@ -500,9 +502,9 @@ describe('MaxBotLinkService', () => {
       },
     );
 
-    await expect(
-      fixture.service.resolveBotIdForRead({ chatId: 'channel-read-1' }),
-    ).resolves.toBe('id613002203036_4_bot');
+    await expect(fixture.service.resolveBotIdForRead({ chatId: 'channel-read-1' })).resolves.toBe(
+      'id613002203036_4_bot',
+    );
   });
 
   it('returns a structured read route with provenance for generic chat reads', async () => {
@@ -567,9 +569,9 @@ describe('MaxBotLinkService', () => {
     const fixture = createServiceFixture();
     fixture.botContext.getActiveBotId.mockReturnValue('id613002203036_4_bot');
 
-    await expect(
-      fixture.service.resolveBotIdForRead({ chatId: 'missing-chat' }),
-    ).resolves.toBe('id613002203036_4_bot');
+    await expect(fixture.service.resolveBotIdForRead({ chatId: 'missing-chat' })).resolves.toBe(
+      'id613002203036_4_bot',
+    );
   });
 
   it('prefers the primary admin bot for group-chat deletes even when a standby bot has an explicit delete alias', async () => {

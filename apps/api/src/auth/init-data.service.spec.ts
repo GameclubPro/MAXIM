@@ -43,9 +43,7 @@ describe('InitDataService', () => {
     return {
       getValidationTokens: jest
         .fn()
-        .mockReturnValue(
-          previousToken ? [botToken, previousBotToken] : [botToken],
-        ),
+        .mockReturnValue(previousToken ? [botToken, previousBotToken] : [botToken]),
     };
   }
 

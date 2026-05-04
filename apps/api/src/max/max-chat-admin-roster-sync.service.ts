@@ -200,7 +200,10 @@ export class MaxChatAdminRosterSyncService {
           continue;
         }
 
-        const adminUserIds = await this.maxClient.getChatAdminIds(normalized.chatId, requestOptions);
+        const adminUserIds = await this.maxClient.getChatAdminIds(
+          normalized.chatId,
+          requestOptions,
+        );
         await this.syncAllowlist(normalized, adminUserIds);
         return true;
       } catch (error: unknown) {
@@ -298,7 +301,8 @@ export class MaxChatAdminRosterSyncService {
           .filter((botId): botId is string => Boolean(botId)),
       ),
     );
-    const entityType = params?.entityType === 'channel' ? 'channel' : params?.entityType === 'chat' ? 'chat' : null;
+    const entityType =
+      params?.entityType === 'channel' ? 'channel' : params?.entityType === 'chat' ? 'chat' : null;
     const source =
       params?.source === 'webhook_bot_added' ||
       params?.source === 'webhook_bot_removed' ||
@@ -392,11 +396,7 @@ export class MaxChatAdminRosterSyncService {
 
   private async persistCatalogBinding(job: MaxChatAdminRosterSyncJob): Promise<void> {
     const entityType = this.toPrismaEntityType(job.entityType);
-    if (
-      !entityType &&
-      !this.readTrimmedString(job.title) &&
-      (job.botIds?.length ?? 0) === 0
-    ) {
+    if (!entityType && !this.readTrimmedString(job.title) && (job.botIds?.length ?? 0) === 0) {
       return;
     }
 
@@ -638,7 +638,10 @@ export class MaxChatAdminRosterSyncService {
     };
   }
 
-  private buildChatAdminRosterReadOptions(job: MaxChatAdminRosterSyncJob, botId: string): {
+  private buildChatAdminRosterReadOptions(
+    job: MaxChatAdminRosterSyncJob,
+    botId: string,
+  ): {
     botId: string;
     trafficClass: 'interactive' | 'background';
     actionHealthLane: 'background';
@@ -754,8 +757,7 @@ export class MaxChatAdminRosterSyncService {
       },
     });
 
-    const entityType =
-      this.fromPrismaEntityType(persisted?.entityType) ?? entityTypeHint ?? null;
+    const entityType = this.fromPrismaEntityType(persisted?.entityType) ?? entityTypeHint ?? null;
     if (!entityType) {
       return null;
     }
@@ -826,7 +828,8 @@ export class MaxChatAdminRosterSyncService {
     } else {
       const existing = nextItems[existingIndex];
       const mergedTitle =
-        this.isFallbackTitle(summary.id, existing.title) && !this.isFallbackTitle(summary.id, summary.title)
+        this.isFallbackTitle(summary.id, existing.title) &&
+        !this.isFallbackTitle(summary.id, summary.title)
           ? summary.title
           : existing.title;
       const mergedLink = existing.link ?? summary.link ?? null;
@@ -854,7 +857,12 @@ export class MaxChatAdminRosterSyncService {
       return;
     }
 
-    await this.writeManagedEntitiesPublishedSnapshot(userId, summary.entityType, currentSnapshot, nextItems);
+    await this.writeManagedEntitiesPublishedSnapshot(
+      userId,
+      summary.entityType,
+      currentSnapshot,
+      nextItems,
+    );
   }
 
   private async removeManagedEntitiesPublishedSnapshotItem(
@@ -875,7 +883,12 @@ export class MaxChatAdminRosterSyncService {
       return;
     }
 
-    await this.writeManagedEntitiesPublishedSnapshot(userId, entityType, currentSnapshot, nextItems);
+    await this.writeManagedEntitiesPublishedSnapshot(
+      userId,
+      entityType,
+      currentSnapshot,
+      nextItems,
+    );
   }
 
   private async writeManagedEntitiesPublishedSnapshot(
@@ -889,7 +902,10 @@ export class MaxChatAdminRosterSyncService {
       builtAt: new Date().toISOString(),
       lastSyncedAt: currentSnapshot.lastSyncedAt,
       itemCount: items.length,
-      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(items, currentSnapshot.lastSyncedAt),
+      itemsHash: this.buildManagedEntitiesPublishedSnapshotHash(
+        items,
+        currentSnapshot.lastSyncedAt,
+      ),
       items: items.map((item) => this.cloneManagedEntitySummary(item)),
     };
     await this.chatContextCache.setManagedEntitiesPublishedSnapshot(
@@ -972,13 +988,11 @@ export class MaxChatAdminRosterSyncService {
   private async persistBotSelfAccessSnapshot(
     chatId: string,
     botId: string,
-    access:
-      | {
-          isAdmin: boolean;
-          isOwner: boolean;
-          permissions?: readonly string[];
-        }
-      | null,
+    access: {
+      isAdmin: boolean;
+      isOwner: boolean;
+      permissions?: readonly string[];
+    } | null,
   ): Promise<void> {
     try {
       await this.prisma.chatBotMembership.updateMany({
@@ -1016,10 +1030,11 @@ export class MaxChatAdminRosterSyncService {
 
   private isChatAccessDeniedError(error: unknown): boolean {
     const status = (error as { response?: { status?: number } } | null)?.response?.status;
-    const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data?.code;
+    const code = (error as { response?: { data?: { code?: unknown } } } | null)?.response?.data
+      ?.code;
     const normalizedCode = typeof code === 'string' ? code.trim().toLowerCase() : null;
-    const message =
-      (error as { response?: { data?: { message?: unknown } } } | null)?.response?.data?.message;
+    const message = (error as { response?: { data?: { message?: unknown } } } | null)?.response
+      ?.data?.message;
     const normalizedMessage =
       typeof message === 'string'
         ? message.trim().toLowerCase()

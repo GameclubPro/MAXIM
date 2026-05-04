@@ -1,6 +1,4 @@
-export function collectBotTokenSecrets(
-  ...candidates: Array<string | null | undefined>
-): string[] {
+export function collectBotTokenSecrets(...candidates: Array<string | null | undefined>): string[] {
   const normalizedSecrets: string[] = [];
   const seen = new Set<string>();
 

@@ -50,18 +50,11 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import {
-  PREVIEW_CHANNEL_ID,
-  PREVIEW_CHANNEL_TITLE,
-  PREVIEW_CHAT_ID,
-  PREVIEW_CHAT_TITLE,
-} from '../lib/design-preview';
-import {
   formatDialogAttachmentSize,
   prepareCommentDialogFileAttachment,
   prepareCommentDialogImageAttachment,
   type PreparedCommentDialogAttachment,
 } from '../lib/dialog-attachments';
-import { readChatTitle } from '../lib/chat-titles';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
 import { getInitDataUserId } from '../lib/init-data';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
@@ -186,12 +179,6 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   }
 
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function hasCommentAttachments(
-  attachments: ChannelDialogAttachment[] | PreparedCommentDialogAttachment[] | null | undefined,
-): boolean {
-  return Array.isArray(attachments) && attachments.length > 0;
 }
 
 const COMMENT_IMAGE_FILE_NAME_RE = /\.(avif|bmp|gif|heic|heif|jpe?g|png|tiff?|webp)$/iu;
@@ -482,224 +469,6 @@ function renderPlainTextParagraphs(text: string) {
       ))}
     </p>
   ));
-}
-
-const SUGGEST_INTRO_STYLE: CSSProperties = {
-  display: 'grid',
-  gap: '8px',
-  padding: '14px 14px 16px',
-  borderRadius: '22px',
-  borderColor: 'rgba(255, 233, 217, 0.96)',
-  background: 'rgba(255, 249, 244, 0.96)',
-  boxShadow: '0 16px 34px rgba(181, 99, 47, 0.08)',
-};
-
-const SUGGEST_INTRO_EYEBROW_STYLE: CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  width: 'fit-content',
-  minHeight: '28px',
-  padding: '0 11px',
-  borderRadius: '999px',
-  background: 'rgba(255, 122, 61, 0.12)',
-  color: 'rgba(163, 74, 20, 0.9)',
-  fontSize: '0.69rem',
-  fontWeight: 900,
-  letterSpacing: '0.04em',
-  textTransform: 'uppercase',
-};
-
-const SUGGEST_INTRO_TITLE_STYLE: CSSProperties = {
-  fontSize: '0.98rem',
-  lineHeight: '1.16',
-  letterSpacing: '-0.02em',
-  color: 'rgba(41, 28, 18, 0.92)',
-};
-
-const SUGGEST_BADGES_ROW_STYLE: CSSProperties = {
-  display: 'flex',
-  flexWrap: 'wrap',
-  gap: '8px',
-};
-
-const SUGGEST_BADGE_STYLE: CSSProperties = {
-  minHeight: '26px',
-  padding: '0 10px',
-  borderRadius: '999px',
-  background: 'rgba(255, 255, 255, 0.78)',
-  color: 'rgba(88, 57, 32, 0.78)',
-  display: 'inline-flex',
-  alignItems: 'center',
-  fontSize: '0.7rem',
-  fontWeight: 800,
-};
-
-const SUGGEST_CARD_STYLE: CSSProperties = {
-  display: 'grid',
-  gap: '10px',
-  minWidth: 0,
-  padding: '14px',
-  borderRadius: '22px',
-  border: '1px solid rgba(255, 236, 224, 0.98)',
-  background: 'rgba(255, 250, 246, 0.98)',
-  boxShadow: '0 14px 30px rgba(181, 99, 47, 0.08)',
-};
-
-const SUGGEST_CARD_HEAD_STYLE: CSSProperties = {
-  display: 'grid',
-  gap: '8px',
-};
-
-const SUGGEST_CARD_ROW_STYLE: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: '10px',
-  flexWrap: 'wrap',
-};
-
-const SUGGEST_CARD_EYEBROW_STYLE: CSSProperties = {
-  color: 'rgba(120, 74, 43, 0.72)',
-  fontSize: '0.72rem',
-  fontWeight: 800,
-  letterSpacing: '0.02em',
-  textTransform: 'uppercase',
-};
-
-const SUGGEST_CARD_TIME_STYLE: CSSProperties = {
-  minHeight: '28px',
-  padding: '0 10px',
-  borderRadius: '999px',
-  background: 'rgba(255, 255, 255, 0.84)',
-  color: 'rgba(104, 77, 58, 0.66)',
-  display: 'inline-flex',
-  alignItems: 'center',
-  fontSize: '0.72rem',
-  fontWeight: 800,
-};
-
-const SUGGEST_CARD_TITLE_STYLE: CSSProperties = {
-  fontSize: '0.96rem',
-  lineHeight: '1.2',
-  color: 'rgba(35, 28, 23, 0.92)',
-};
-
-const SUGGEST_CARD_TEXT_STYLE: CSSProperties = {
-  margin: 0,
-  color: 'rgba(33, 27, 24, 0.88)',
-  lineHeight: '1.46',
-  whiteSpace: 'pre-wrap',
-};
-
-const SUGGEST_CARD_MUTED_TEXT_STYLE: CSSProperties = {
-  color: 'rgba(94, 70, 54, 0.64)',
-  fontStyle: 'italic',
-};
-
-const SUGGEST_CARD_ATTACHMENT_STYLE: CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: '8px',
-  width: 'fit-content',
-  maxWidth: '100%',
-  minHeight: '36px',
-  padding: '0 12px',
-  borderRadius: '16px',
-  border: '1px solid rgba(236, 194, 162, 0.66)',
-  background: 'rgba(255, 248, 242, 0.88)',
-  color: 'rgba(96, 64, 43, 0.8)',
-  fontSize: '0.78rem',
-  fontWeight: 700,
-};
-
-const SUGGEST_CARD_ATTACHMENT_BADGE_STYLE: CSSProperties = {
-  minHeight: '24px',
-  padding: '0 8px',
-  borderRadius: '999px',
-  background: 'rgba(255, 122, 61, 0.12)',
-  color: 'rgba(163, 74, 20, 0.9)',
-  display: 'inline-flex',
-  alignItems: 'center',
-  fontSize: '0.68rem',
-  fontWeight: 900,
-  letterSpacing: '0.03em',
-  textTransform: 'uppercase',
-};
-
-const SUGGEST_CARD_NOTE_STYLE: CSSProperties = {
-  color: 'rgba(94, 70, 54, 0.7)',
-  fontSize: '0.74rem',
-  lineHeight: '1.34',
-};
-
-const SUGGEST_CARD_LINK_STYLE: CSSProperties = {
-  minHeight: '34px',
-  padding: '0 14px',
-  borderRadius: '999px',
-  background: 'color-mix(in srgb, var(--dialog-accent) 16%, white)',
-  color: 'color-mix(in srgb, var(--dialog-accent) 76%, black)',
-  display: 'inline-flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  textDecoration: 'none',
-  fontSize: '0.76rem',
-  fontWeight: 900,
-  letterSpacing: '0.01em',
-};
-
-const SUGGEST_EMPTY_STYLE: CSSProperties = {
-  display: 'grid',
-  gap: '6px',
-  textAlign: 'left',
-  padding: '18px',
-};
-
-const SUGGEST_EMPTY_TITLE_STYLE: CSSProperties = {
-  color: 'rgba(35, 28, 23, 0.9)',
-  fontSize: '0.96rem',
-};
-
-const SUGGEST_EMPTY_COPY_STYLE: CSSProperties = {
-  margin: 0,
-  color: 'rgba(94, 70, 54, 0.72)',
-  fontSize: '0.84rem',
-  lineHeight: '1.45',
-  fontWeight: 500,
-};
-
-function buildSuggestionStatusStyle(tone: SuggestionStatusPresentation['tone']): CSSProperties {
-  const baseStyle: CSSProperties = {
-    minHeight: '30px',
-    padding: '0 11px',
-    borderRadius: '999px',
-    display: 'inline-flex',
-    alignItems: 'center',
-    fontSize: '0.74rem',
-    fontWeight: 900,
-    letterSpacing: '0.01em',
-  };
-
-  if (tone === 'published') {
-    return {
-      ...baseStyle,
-      color: '#127456',
-      background: 'rgba(31, 169, 126, 0.14)',
-    };
-  }
-
-  if (tone === 'cancelled') {
-    return {
-      ...baseStyle,
-      color: '#9a3448',
-      background: 'rgba(214, 91, 120, 0.14)',
-    };
-  }
-
-  return {
-    ...baseStyle,
-    color: '#9a5a14',
-    background: 'rgba(240, 164, 43, 0.15)',
-  };
 }
 
 function buildSwipeReplyStyle(
@@ -1320,26 +1089,6 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
   return pathname.includes('/channel/') ? 'channel' : 'chat';
 }
 
-function resolveDialogTitle(
-  chatId: string,
-  entityType: LastEntityType,
-  storedTitle: string,
-): string {
-  if (storedTitle.trim()) {
-    return storedTitle.trim();
-  }
-
-  if (entityType === 'channel' && chatId === PREVIEW_CHANNEL_ID) {
-    return PREVIEW_CHANNEL_TITLE;
-  }
-
-  if (entityType === 'chat' && chatId === PREVIEW_CHAT_ID) {
-    return PREVIEW_CHAT_TITLE;
-  }
-
-  return chatId;
-}
-
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
@@ -1771,11 +1520,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     ignoreNextBubbleClickRef.current = false;
     resetAttachmentPickers();
   }, [chatId, dialogType, entityType, token]);
-
-  const handleDismiss = () => {
-    maxImpact('light');
-    navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-  };
 
   useEffect(() => {
     const field = composeFieldRef.current;

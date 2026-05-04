@@ -2,10 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import type { Job } from 'bullmq';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { AdminService } from './admin.service';
-import {
-  ADMIN_MANUAL_FANOUT_QUEUE,
-  type AdminManualFanoutJob,
-} from './admin-manual-fanout.queue';
+import { ADMIN_MANUAL_FANOUT_QUEUE, type AdminManualFanoutJob } from './admin-manual-fanout.queue';
 
 @Processor(ADMIN_MANUAL_FANOUT_QUEUE, {
   concurrency: 2,

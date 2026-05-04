@@ -129,7 +129,10 @@ export class WebhookRoutingService {
     const now = Date.now();
     const currentAssignment = this.readFreshAssignment(assignmentKey, now);
     if (currentAssignment) {
-      const hotAssignmentSnapshot = await this.readHotWorkerSnapshotForAssignment(currentAssignment, now);
+      const hotAssignmentSnapshot = await this.readHotWorkerSnapshotForAssignment(
+        currentAssignment,
+        now,
+      );
       if (!hotAssignmentSnapshot) {
         return currentAssignment.queueName;
       }
@@ -218,7 +221,9 @@ export class WebhookRoutingService {
     const bestCandidate = candidates.reduce((best, current) =>
       this.compareQueuePressure(current, best) < 0 ? current : best,
     );
-    const currentCandidate = candidates.find((candidate) => candidate.queueName === currentQueueName);
+    const currentCandidate = candidates.find(
+      (candidate) => candidate.queueName === currentQueueName,
+    );
     if (!currentCandidate) {
       return bestCandidate.queueName;
     }
@@ -226,7 +231,8 @@ export class WebhookRoutingService {
     const queuePressureGap = currentCandidate.queuePressure - bestCandidate.queuePressure;
     const workerPressureGap = currentCandidate.workerPressure - bestCandidate.workerPressure;
     const leasedChatsGap = currentCandidate.leasedChats - bestCandidate.leasedChats;
-    const workerLeasedChatsGap = currentCandidate.workerLeasedChats - bestCandidate.workerLeasedChats;
+    const workerLeasedChatsGap =
+      currentCandidate.workerLeasedChats - bestCandidate.workerLeasedChats;
     const queuePressureScoreGap =
       currentCandidate.queuePressureScore - bestCandidate.queuePressureScore;
     const workerPressureScoreGap =
@@ -276,10 +282,7 @@ export class WebhookRoutingService {
       if (assignment.queueName === queueName) {
         leasedChats += 1;
       }
-      if (
-        workerGroupName &&
-        this.workerGroupByQueue[assignment.queueName] === workerGroupName
-      ) {
+      if (workerGroupName && this.workerGroupByQueue[assignment.queueName] === workerGroupName) {
         workerLeasedChats += 1;
       }
     }
@@ -375,7 +378,8 @@ export class WebhookRoutingService {
     });
     const workerGroups = Object.values(snapshot.webhookDefaultWorkerGroups);
     const totalPressure = workerGroups.reduce(
-      (sum, metrics) => sum + metrics.counters.waiting + metrics.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT,
+      (sum, metrics) =>
+        sum + metrics.counters.waiting + metrics.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT,
       0,
     );
     if (totalPressure < this.hotWorkerRebalancePressureMin) {
@@ -388,7 +392,8 @@ export class WebhookRoutingService {
     }
 
     const currentPressure =
-      currentWorker.counters.waiting + currentWorker.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT;
+      currentWorker.counters.waiting +
+      currentWorker.counters.active * ACTIVE_WORKER_PRESSURE_WEIGHT;
     const workerPressureShare = currentPressure / totalPressure;
     return workerPressureShare >= this.hotWorkerRebalancePressureShare ? snapshot : null;
   }

@@ -56,8 +56,8 @@ export function BroadcastAudienceControls({
     const normalizedUserId = favoriteUserId?.trim() || getInitDataUserId()?.trim() || '';
     return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
   }, [favoriteUserId]);
-  const [storedFavoriteChatIds, setStoredFavoriteChatIds] = useState(() =>
-    readHomeEntityFavorites(favoriteStorageScope).chat,
+  const [storedFavoriteChatIds, setStoredFavoriteChatIds] = useState(
+    () => readHomeEntityFavorites(favoriteStorageScope).chat,
   );
   const favoriteStorageScopeRef = useRef(favoriteStorageScope);
   const scopedTargetMode: BroadcastScopedTargetMode =

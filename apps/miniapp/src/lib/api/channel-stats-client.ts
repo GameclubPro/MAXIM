@@ -44,9 +44,7 @@ export async function getChannelActivityFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(
-    `/channels/${chatId}/activity-feed?${params.toString()}`,
-  );
+  const response = await api.request(`/channels/${chatId}/activity-feed?${params.toString()}`);
   return membershipActivityPageSchema.parse(response);
 }
 

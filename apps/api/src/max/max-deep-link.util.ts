@@ -74,11 +74,7 @@ function buildCompactPayload(
     return null;
   }
 
-  const signature = buildCompactSignature(
-    scope,
-    normalizedComponents as string[],
-    botToken.trim(),
-  );
+  const signature = buildCompactSignature(scope, normalizedComponents as string[], botToken.trim());
   const payload = [prefix, ...(normalizedComponents as string[]), signature].join('_');
 
   return isValidMaxBotStartPayload(payload) ? payload : null;
@@ -173,11 +169,7 @@ export function buildCompactGiveawayHandoffStartPayload(
   return buildCompactPayload(
     GIVEAWAY_HANDOFF_COMPACT_PREFIX,
     GIVEAWAY_HANDOFF_SIGNATURE_SCOPE,
-    [
-      params.chatId,
-      encodeManagedEntityType(params.entityType),
-      params.giveawayId?.trim() || '0',
-    ],
+    [params.chatId, encodeManagedEntityType(params.entityType), params.giveawayId?.trim() || '0'],
     normalizedBotToken,
   );
 }
@@ -258,9 +250,8 @@ export function parseCompactProfileMentionStartPayload(
     return null;
   }
 
-  const [prefix, chatIdRaw, entityTypeCodeRaw, userIdRaw, signatureRaw, ...rest] = payload.split(
-    '_',
-  );
+  const [prefix, chatIdRaw, entityTypeCodeRaw, userIdRaw, signatureRaw, ...rest] =
+    payload.split('_');
   if (prefix !== PROFILE_MENTION_COMPACT_PREFIX || rest.length > 0) {
     return null;
   }

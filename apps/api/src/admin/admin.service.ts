@@ -158,7 +158,6 @@ import type { Queue } from 'bullmq';
 import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   ChatContextCacheService,
-  type ChatAdminAccessState,
   type ManagedEntitiesPublishedDiff,
   type ManagedEntitiesPublishedSnapshot,
 } from '../chat-context/chat-context-cache.service';
@@ -14452,8 +14451,7 @@ export class AdminService implements OnModuleDestroy {
       return response;
     }
 
-    let pending!: Promise<LogsDashboardResponse>;
-    pending = this.buildLogsDashboardResponse(
+    const pending = this.buildLogsDashboardResponse(
       chatId,
       parsed.data.range,
       parsed.data.includeActivityPreview,
@@ -17947,16 +17945,20 @@ export class AdminService implements OnModuleDestroy {
       return cached.promise;
     }
 
-    let pending!: Promise<ModerationFeedPage>;
-    pending = this.getModerationFeedPage(chatId, from, to, query, entityType, profileOptions).catch(
-      (error: unknown) => {
-        const current = this.moderationFeedPageCache.get(cacheKey);
-        if (current?.promise === pending) {
-          this.moderationFeedPageCache.delete(cacheKey);
-        }
-        throw error;
-      },
-    );
+    const pending = this.getModerationFeedPage(
+      chatId,
+      from,
+      to,
+      query,
+      entityType,
+      profileOptions,
+    ).catch((error: unknown) => {
+      const current = this.moderationFeedPageCache.get(cacheKey);
+      if (current?.promise === pending) {
+        this.moderationFeedPageCache.delete(cacheKey);
+      }
+      throw error;
+    });
 
     this.moderationFeedPageCache.set(cacheKey, {
       expiresAtMs: Date.now() + EVENTS_FEED_PAGE_CACHE_TTL_MS,
@@ -18100,8 +18102,7 @@ export class AdminService implements OnModuleDestroy {
       return cached.promise;
     }
 
-    let pending!: Promise<MembershipActivityPage>;
-    pending = this.getMembershipActivityFeedPage(
+    const pending = this.getMembershipActivityFeedPage(
       chatId,
       from,
       to,
@@ -18497,8 +18498,7 @@ export class AdminService implements OnModuleDestroy {
       return cached.promise;
     }
 
-    let pending!: Promise<ChatParticipantsPage>;
-    pending = this.buildChatParticipantsPage(chatId, userId, query, entityType).catch(
+    const pending = this.buildChatParticipantsPage(chatId, userId, query, entityType).catch(
       (error: unknown) => {
         const current = this.chatParticipantsPageCache.get(cacheKey);
         if (current?.promise === pending) {
@@ -19243,8 +19243,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (missingUserIds.length > 0) {
-      let batchPromise!: Promise<Map<string, ResolvedUserProfile>>;
-      batchPromise = this.loadResolvedUserProfiles(
+      const batchPromise = this.loadResolvedUserProfiles(
         chatId,
         entityType,
         missingUserIds,
@@ -23295,7 +23294,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const persistedBotId = await this.resolveChatBotIdForRead(normalizedChatId);
-    let fallbackBotId = persistedBotId;
+    const fallbackBotId = persistedBotId;
     const seenBotIds = new Set<string>();
 
     if (persistedBotId) {

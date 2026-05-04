@@ -42,7 +42,9 @@ export default function SettingsHandoffState({
 
         <div className="settings-handoff__copy">
           <span className="settings-handoff__eyebrow">Подключение</span>
-          <h3>{isError ? `${capitalizeFirst(entityLabel)} пока не готов` : `Готовим ${settingsLabel}`}</h3>
+          <h3>
+            {isError ? `${capitalizeFirst(entityLabel)} пока не готов` : `Готовим ${settingsLabel}`}
+          </h3>
           <p>
             {isError
               ? 'Проверьте, что бот назначен администратором, и повторите.'
@@ -57,7 +59,9 @@ export default function SettingsHandoffState({
           <span className={cn('settings-handoff__step', isError ? 'is-error' : 'is-active')}>
             Права
           </span>
-          <span className={cn('settings-handoff__step', !isError && retryCount === 0 && 'is-pending')}>
+          <span
+            className={cn('settings-handoff__step', !isError && retryCount === 0 && 'is-pending')}
+          >
             Настройки
           </span>
         </div>

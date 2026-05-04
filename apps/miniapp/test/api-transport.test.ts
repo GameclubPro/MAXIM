@@ -18,7 +18,9 @@ function createResponse(options: {
     status: options.status,
     headers: {
       get(name: string) {
-        return name.toLowerCase() === 'content-type' ? (options.contentType ?? 'application/json') : null;
+        return name.toLowerCase() === 'content-type'
+          ? (options.contentType ?? 'application/json')
+          : null;
       },
     } as Headers,
     text: async () => options.text ?? '',
@@ -46,8 +48,14 @@ test('refreshes Authorization header from the init data provider between request
   await api.request('/chats');
 
   assert.equal(calls.length, 2);
-  assert.equal(new Headers(calls[0].init?.headers).get('Authorization'), 'InitData auth_date=1&hash=first');
-  assert.equal(new Headers(calls[1].init?.headers).get('Authorization'), 'InitData auth_date=2&hash=second');
+  assert.equal(
+    new Headers(calls[0].init?.headers).get('Authorization'),
+    'InitData auth_date=1&hash=first',
+  );
+  assert.equal(
+    new Headers(calls[1].init?.headers).get('Authorization'),
+    'InitData auth_date=2&hash=second',
+  );
 });
 
 test('retries a 401 request once when fresh init data becomes available', async () => {
@@ -79,8 +87,14 @@ test('retries a 401 request once when fresh init data becomes available', async 
 
   assert.equal(result, null);
   assert.equal(calls.length, 2);
-  assert.equal(new Headers(calls[0].init?.headers).get('Authorization'), 'InitData auth_date=1&hash=stale');
-  assert.equal(new Headers(calls[1].init?.headers).get('Authorization'), 'InitData auth_date=2&hash=fresh');
+  assert.equal(
+    new Headers(calls[0].init?.headers).get('Authorization'),
+    'InitData auth_date=1&hash=stale',
+  );
+  assert.equal(
+    new Headers(calls[1].init?.headers).get('Authorization'),
+    'InitData auth_date=2&hash=fresh',
+  );
 });
 
 test('waits briefly for bridge-refreshed init data before surfacing a 401', async () => {
@@ -115,8 +129,14 @@ test('waits briefly for bridge-refreshed init data before surfacing a 401', asyn
 
   assert.equal(result, null);
   assert.equal(calls.length, 2);
-  assert.equal(new Headers(calls[0].init?.headers).get('Authorization'), 'InitData auth_date=1&hash=stale');
-  assert.equal(new Headers(calls[1].init?.headers).get('Authorization'), 'InitData auth_date=2&hash=fresh');
+  assert.equal(
+    new Headers(calls[0].init?.headers).get('Authorization'),
+    'InitData auth_date=1&hash=stale',
+  );
+  assert.equal(
+    new Headers(calls[1].init?.headers).get('Authorization'),
+    'InitData auth_date=2&hash=fresh',
+  );
 });
 
 test.afterEach(() => {

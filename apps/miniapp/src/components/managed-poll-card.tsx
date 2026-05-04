@@ -315,7 +315,9 @@ export function ManagedPollCard({
     });
   };
 
-  const saveDraftNow = async ({ force = false }: { force?: boolean } = {}): Promise<ManagedPoll | null> => {
+  const saveDraftNow = async ({
+    force = false,
+  }: { force?: boolean } = {}): Promise<ManagedPoll | null> => {
     if (!entityId) {
       return null;
     }
@@ -553,7 +555,12 @@ export function ManagedPollCard({
           </div>
         </div>
         <div className="managed-poll-card__chips">
-          <span className={cn('chip', buildStatusTone(poll.status) && `chip--${buildStatusTone(poll.status)}`)}>
+          <span
+            className={cn(
+              'chip',
+              buildStatusTone(poll.status) && `chip--${buildStatusTone(poll.status)}`,
+            )}
+          >
             {buildStatusLabel(poll.status)}
           </span>
           <span className="chip">{totalVotes} голосов</span>
@@ -562,7 +569,11 @@ export function ManagedPollCard({
 
       <div className="managed-poll-card__meta">
         <div className="managed-poll-card__meta-line">
-          <span>{poll.publishedAt ? `Пост опубликован ${new Date(poll.publishedAt).toLocaleString('ru-RU')}` : 'Пост ещё не опубликован'}</span>
+          <span>
+            {poll.publishedAt
+              ? `Пост опубликован ${new Date(poll.publishedAt).toLocaleString('ru-RU')}`
+              : 'Пост ещё не опубликован'}
+          </span>
           {poll.publishedUrl ? (
             <a
               href={poll.publishedUrl}
@@ -584,7 +595,9 @@ export function ManagedPollCard({
         </div>
         <div className="managed-poll-card__meta-line">
           <span>{draftStatusText}</span>
-          <span>{draft.options.length}/{MANAGED_POLL_MAX_OPTIONS} вариантов</span>
+          <span>
+            {draft.options.length}/{MANAGED_POLL_MAX_OPTIONS} вариантов
+          </span>
         </div>
       </div>
 
@@ -638,7 +651,9 @@ export function ManagedPollCard({
                           current
                             ? {
                                 ...current,
-                                options: current.options.filter((_, itemIndex) => itemIndex !== index),
+                                options: current.options.filter(
+                                  (_, itemIndex) => itemIndex !== index,
+                                ),
                               }
                             : current,
                         )
@@ -679,7 +694,9 @@ export function ManagedPollCard({
         })}
       </div>
 
-      {optionError ? <small className="field__hint managed-poll-card__hint-error">{optionError}</small> : null}
+      {optionError ? (
+        <small className="field__hint managed-poll-card__hint-error">{optionError}</small>
+      ) : null}
 
       {!isActive && draft.options.length < MANAGED_POLL_MAX_OPTIONS ? (
         <button

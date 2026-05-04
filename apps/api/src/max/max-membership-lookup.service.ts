@@ -207,10 +207,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       1_000,
     );
     this.hotChannelDurationMs =
-      this.readConfigInt(
-        configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_DURATION_SEC'),
-        120,
-      ) * 1_000;
+      this.readConfigInt(configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_DURATION_SEC'), 120) *
+      1_000;
     this.hotChannelPositiveFreshTtlSec = this.readConfigInt(
       configService.get('MAX_MEMBERSHIP_LOOKUP_HOT_CHANNEL_POSITIVE_TTL_SEC'),
       90,
@@ -351,8 +349,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     const now = Date.now();
-    const requestedBotId =
-      typeof options.botId === 'string' ? options.botId.trim() : '';
+    const requestedBotId = typeof options.botId === 'string' ? options.botId.trim() : '';
     let lookupBotId: string | null = this.normalizeBotScopedCacheBotId(requestedBotId);
     if (
       !lookupBotId &&
@@ -375,7 +372,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       ]),
     );
     const legacyCacheKeyByUserId = new Map(
-      normalizedUserIds.map((userId) => [userId, this.buildLegacyCacheKey(normalizedChatId, userId)]),
+      normalizedUserIds.map((userId) => [
+        userId,
+        this.buildLegacyCacheKey(normalizedChatId, userId),
+      ]),
     );
     let unresolvedUserIds: string[] = [];
 
@@ -561,8 +561,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       });
     });
 
-    let trackedPromise!: Promise<boolean | null>;
-    trackedPromise = lookupPromise.finally(() => {
+    const trackedPromise = lookupPromise.finally(() => {
       if (this.inFlight.get(cacheKey) === trackedPromise) {
         this.inFlight.delete(cacheKey);
       }
@@ -705,16 +704,12 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
       try {
         const accessByUserId = await this.executeLookupWithGuard(
           async () =>
-            this.maxClient.getChatMembersAccess(
-              chatId,
-              normalizedUserIds,
-              {
-                trafficClass: policy.trafficClass,
-                timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
-                ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
-                ...(botId ? { botId } : {}),
-              },
-            ),
+            this.maxClient.getChatMembersAccess(chatId, normalizedUserIds, {
+              trafficClass: policy.trafficClass,
+              timeoutMs: this.resolveLookupTimeoutMs(policy.trafficClass),
+              ...(policy.sourceTag ? { sourceTag: policy.sourceTag } : {}),
+              ...(botId ? { botId } : {}),
+            }),
           {
             chatId,
             userIds: normalizedUserIds,
@@ -798,8 +793,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     const promises = new Map<string, Promise<boolean | null>>();
     for (const userId of normalizedUserIds) {
       const cacheKey = this.buildCacheKey(chatId, userId, botId);
-      let trackedPromise!: Promise<boolean | null>;
-      trackedPromise = batchLookupPromise
+      const trackedPromise = batchLookupPromise
         .then((results) => results.get(userId) ?? null)
         .finally(() => {
           if (this.inFlight.get(cacheKey) === trackedPromise) {
@@ -834,9 +828,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     );
   }
 
-  private async resolveLookupBotId(
-    chatId: string,
-  ): Promise<string | null> {
+  private async resolveLookupBotId(chatId: string): Promise<string | null> {
     if (!this.maxBotLinkService) {
       return null;
     }
@@ -869,10 +861,10 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     return (
-      await this.maxBotLinkService.resolveBotId({
+      (await this.maxBotLinkService.resolveBotId({
         chatId,
-      })
-    ) ?? null;
+      })) ?? null
+    );
   }
 
   private parseInvalidationMessage(payload: string): {
@@ -997,9 +989,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     }
 
     const rawValues = await this.runRedisReadWithin(
-      this.redis
-        .mget(...normalizedCacheKeys)
-        .catch(() => normalizedCacheKeys.map(() => null)),
+      this.redis.mget(...normalizedCacheKeys).catch(() => normalizedCacheKeys.map(() => null)),
       MEMBERSHIP_REDIS_READ_TIMEOUT_MS,
     );
     if (!rawValues) {
@@ -1028,10 +1018,9 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     legacyCacheKey: string,
     snapshot: MembershipCacheSnapshot,
   ): Promise<void> {
-    const ttlSec =
-      snapshot.isMember
-        ? this.membershipRetentionPositiveTtlSec
-        : this.membershipRetentionNegativeTtlSec;
+    const ttlSec = snapshot.isMember
+      ? this.membershipRetentionPositiveTtlSec
+      : this.membershipRetentionNegativeTtlSec;
     const redisWriteKeys = this.buildRedisWriteKeys(cacheKey, legacyCacheKey);
     if (redisWriteKeys.length === 1) {
       await this.redis.set(cacheKey, JSON.stringify(snapshot), 'EX', ttlSec);
@@ -1059,10 +1048,7 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
     return cacheKey;
   }
 
-  private async runRedisReadWithin<T>(
-    operation: Promise<T>,
-    maxWaitMs: number,
-  ): Promise<T | null> {
+  private async runRedisReadWithin<T>(operation: Promise<T>, maxWaitMs: number): Promise<T | null> {
     let timeout: NodeJS.Timeout | null = null;
     const timeoutPromise = new Promise<null>((resolve) => {
       timeout = setTimeout(() => resolve(null), Math.max(1, Math.trunc(maxWaitMs)));
@@ -1150,9 +1136,8 @@ export class MaxMembershipLookupService implements OnModuleInit, OnModuleDestroy
 
   private resolveRetentionTtlMs(isMember: boolean): number {
     return (
-      (isMember
-        ? this.membershipRetentionPositiveTtlSec
-        : this.membershipRetentionNegativeTtlSec) * 1_000
+      (isMember ? this.membershipRetentionPositiveTtlSec : this.membershipRetentionNegativeTtlSec) *
+      1_000
     );
   }
 

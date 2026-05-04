@@ -231,7 +231,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
     return Object.fromEntries(
       normalizedBotIds.map((botId) => [
         botId,
-        this.buildBotRateLimitSnapshot(buckets.get(botId) ?? this.createSourceCounterBucket(), windowSec),
+        this.buildBotRateLimitSnapshot(
+          buckets.get(botId) ?? this.createSourceCounterBucket(),
+          windowSec,
+        ),
       ]),
     );
   }
@@ -242,7 +245,10 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       return DEFAULT_MAX_API_SOURCE_METRICS_WINDOW_SEC;
     }
 
-    return Math.max(60, Math.min(MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT, Math.trunc(numericValue)));
+    return Math.max(
+      60,
+      Math.min(MAX_API_SOURCE_METRICS_WINDOW_SEC_LIMIT, Math.trunc(numericValue)),
+    );
   }
 
   private async scanKeys(pattern: string): Promise<string[]> {
@@ -295,7 +301,9 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       return null;
     }
 
-    const [botId, trafficClassRaw, sourceTag, secRaw, ...rest] = key.slice(prefix.length).split(':');
+    const [botId, trafficClassRaw, sourceTag, secRaw, ...rest] = key
+      .slice(prefix.length)
+      .split(':');
     if (!botId || !sourceTag || rest.length > 0) {
       return null;
     }
@@ -344,10 +352,7 @@ export class MaxApiMetricsService implements OnModuleDestroy {
       ...this.buildTrafficClassStats(bucket.perSecond, windowSec),
       trafficClasses: {
         critical: this.buildTrafficClassStats(bucket.trafficClassBuckets.critical, windowSec),
-        interactive: this.buildTrafficClassStats(
-          bucket.trafficClassBuckets.interactive,
-          windowSec,
-        ),
+        interactive: this.buildTrafficClassStats(bucket.trafficClassBuckets.interactive, windowSec),
         background: this.buildTrafficClassStats(bucket.trafficClassBuckets.background, windowSec),
       },
     };

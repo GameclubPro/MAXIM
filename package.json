@@ -8,7 +8,13 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp",
-    "dev": "npm run dev --workspace @maxim/api",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
+    "check:api": "npm run typecheck:api && npm run test:api",
+    "check:miniapp": "npm run typecheck:miniapp && npm run test:miniapp",
+    "dev": "npm run dev:api",
+    "dev:all": "concurrently --kill-others-on-fail -n api,miniapp -c blue,magenta \"npm run dev --workspace @maxim/api\" \"npm run dev --workspace @maxim/miniapp\"",
+    "dev:api": "npm run dev --workspace @maxim/api",
+    "dev:miniapp": "npm run dev --workspace @maxim/miniapp",
     "emulator:miniapp": "node scripts/open-miniapp-emulator.mjs",
     "emulator:miniapp:android": "node scripts/open-miniapp-emulator.mjs --device android",
     "emulator:miniapp:iphone": "node scripts/open-miniapp-emulator.mjs --device iphone",
@@ -16,7 +22,12 @@
     "loadtest:webhook": "node infra/scripts/loadtest-webhook-burst.mjs",
     "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",
     "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp",
+    "typecheck:api": "npm run typecheck --workspace @maxim/api",
+    "typecheck:contracts": "npm run typecheck --workspace @maxim/contracts",
+    "typecheck:miniapp": "npm run typecheck --workspace @maxim/miniapp",
     "test": "npm run test --workspace @maxim/api",
+    "test:api": "npm run test --workspace @maxim/api",
+    "test:miniapp": "npm run test --workspace @maxim/miniapp",
     "format": "prettier --check .",
     "format:write": "prettier --write .",
     "prepare": "husky",
@@ -26,6 +37,7 @@
   "devDependencies": {
     "@eslint/js": "^9.20.0",
     "@types/node": "^22.13.4",
+    "concurrently": "^9.2.1",
     "eslint": "^9.20.1",
     "globals": "^15.15.0",
     "husky": "^9.1.7",
@@ -37,5 +49,9 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,json,md,yml,yaml}": "prettier --write"
+  },
+  "overrides": {
+    "fastify": "5.8.5",
+    "vite": "6.4.2"
   }
 }

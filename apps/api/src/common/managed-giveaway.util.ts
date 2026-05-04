@@ -13,9 +13,7 @@ export function normalizeManagedGiveawayDraft(
     imageFileName: payload.imageEnabled ? payload.imageFileName.trim() : '',
     requiredChannelIds: Array.from(
       new Set(
-        payload.requiredChannelIds
-          .map((item) => item.trim())
-          .filter((item) => item.length > 0),
+        payload.requiredChannelIds.map((item) => item.trim()).filter((item) => item.length > 0),
       ),
     ),
     prizes: payload.prizes
@@ -28,9 +26,7 @@ export function normalizeManagedGiveawayDraft(
 }
 
 export function buildManagedGiveawayDrawRank(drawSeed: string, userId: string): string {
-  return createHash('sha256')
-    .update(`${drawSeed.trim()}:${userId.trim()}`)
-    .digest('hex');
+  return createHash('sha256').update(`${drawSeed.trim()}:${userId.trim()}`).digest('hex');
 }
 
 export function formatManagedGiveawayPrizeList(

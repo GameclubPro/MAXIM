@@ -21,7 +21,9 @@ function buildDefaultShardSnapshot() {
   );
 }
 
-function buildWorkerGroupSnapshot(overrides: Partial<Record<string, { waiting: number; active: number }>> = {}) {
+function buildWorkerGroupSnapshot(
+  overrides: Partial<Record<string, { waiting: number; active: number }>> = {},
+) {
   return {
     'api-moderation': {
       queues: [
@@ -30,7 +32,14 @@ function buildWorkerGroupSnapshot(overrides: Partial<Record<string, { waiting: n
         'moderation-default-8',
         'moderation-default-12',
       ],
-      counters: { waiting: 4, active: 1, delayed: 0, failed: 0, completed: 0, ...overrides['api-moderation'] },
+      counters: {
+        waiting: 4,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+        ...overrides['api-moderation'],
+      },
     },
     'api-moderation-realtime-b': {
       queues: [
@@ -87,7 +96,10 @@ function createService(params?: {
   pendingCount?: bigint | number;
   queueSnapshot?: {
     webhookDefaultShards: Record<string, { waiting: number; active: number; delayed: number }>;
-    webhookDefaultWorkerGroups: Record<string, { queues: string[]; counters: { waiting: number; active: number } }>;
+    webhookDefaultWorkerGroups: Record<
+      string,
+      { queues: string[]; counters: { waiting: number; active: number } }
+    >;
   };
   config?: Partial<Record<string, number>>;
 }) {

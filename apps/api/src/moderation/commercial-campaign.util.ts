@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { extractUrlsFromText, stripUrlsFromText } from '../common/url-text.util';
 
 const COMMERCIAL_CAMPAIGN_KEY_PREFIX = 'commercial-campaign:v1';
-const COMMERCIAL_CAMPAIGN_PHONE_PATTERN = /(?:\+?\d[\d\s()\-]{8,}\d)/gu;
+const COMMERCIAL_CAMPAIGN_PHONE_PATTERN = /(?:\+?\d[\d\s()-]{8,}\d)/gu;
 const COMMERCIAL_CAMPAIGN_TEXT_MIN_LENGTH = 18;
 const COMMERCIAL_CAMPAIGN_TEXT_MIN_TOKENS = 3;
 
@@ -44,7 +44,9 @@ function normalizeCampaignText(value: string): string {
   return normalized;
 }
 
-export function normalizeCommercialCampaignSenderId(value: string | null | undefined): string | null {
+export function normalizeCommercialCampaignSenderId(
+  value: string | null | undefined,
+): string | null {
   if (typeof value !== 'string') {
     return null;
   }
@@ -157,10 +159,10 @@ export function hasCommercialCampaignEvidence(
 ): value is CommercialCampaignContext {
   return Boolean(
     value &&
-      (value.sameTextDistinctChatCount >= 2 ||
-        value.repeatedPhoneDistinctChatCount >= 2 ||
-        value.repeatedLinkDistinctChatCount >= 2 ||
-        value.senderDistinctChatCount >= 3),
+    (value.sameTextDistinctChatCount >= 2 ||
+      value.repeatedPhoneDistinctChatCount >= 2 ||
+      value.repeatedLinkDistinctChatCount >= 2 ||
+      value.senderDistinctChatCount >= 3),
   );
 }
 
@@ -218,7 +220,11 @@ export class InMemoryCommercialCampaignTracker {
     for (const phone of fingerprint.phones) {
       repeatedPhoneDistinctChatCount = Math.max(
         repeatedPhoneDistinctChatCount,
-        this.addToSetWithTtl(buildCommercialCampaignPhoneChatsKey(phone), params.chatId, createdAtMs),
+        this.addToSetWithTtl(
+          buildCommercialCampaignPhoneChatsKey(phone),
+          params.chatId,
+          createdAtMs,
+        ),
       );
     }
 

@@ -182,10 +182,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   peekCachedSnapshot(maxAgeMs = Number.POSITIVE_INFINITY): SystemModeSnapshot | null {
-    if (
-      this.sharedSnapshotCache &&
-      Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs
-    ) {
+    if (this.sharedSnapshotCache && Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs) {
       return this.sharedSnapshotCache;
     }
 
@@ -244,10 +241,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private getCachedSharedSnapshot(
     maxAgeMs = SYSTEM_MODE_SHARED_CACHE_TTL_MS,
   ): SystemModeSnapshot | null {
-    if (
-      this.sharedSnapshotCache &&
-      Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs
-    ) {
+    if (this.sharedSnapshotCache && Date.now() - this.sharedSnapshotCacheAtMs <= maxAgeMs) {
       return this.sharedSnapshotCache;
     }
 
@@ -352,7 +346,8 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
             typeof action.windowSec === 'number' && Number.isFinite(action.windowSec)
               ? action.windowSec
               : 60,
-          total: typeof action.total === 'number' && Number.isFinite(action.total) ? action.total : 0,
+          total:
+            typeof action.total === 'number' && Number.isFinite(action.total) ? action.total : 0,
           success:
             typeof action.success === 'number' && Number.isFinite(action.success)
               ? action.success

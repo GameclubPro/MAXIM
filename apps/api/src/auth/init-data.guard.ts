@@ -6,7 +6,9 @@ export class InitDataGuard implements CanActivate {
   constructor(private readonly initDataService: InitDataService) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const request = context.switchToHttp().getRequest<{ headers: Record<string, string>; user?: unknown }>();
+    const request = context
+      .switchToHttp()
+      .getRequest<{ headers: Record<string, string>; user?: unknown }>();
     const authHeader = request.headers.authorization;
 
     if (!authHeader || !authHeader.startsWith('InitData ')) {

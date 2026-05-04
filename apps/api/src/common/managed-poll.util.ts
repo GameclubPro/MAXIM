@@ -23,9 +23,7 @@ export function normalizeManagedPollDraft(
 } {
   const normalizedQuestion = normalizeManagedPollText(question);
   const normalizedOptions = Array.isArray(options)
-    ? options
-        .slice(0, MANAGED_POLL_MAX_OPTIONS)
-        .map((value) => normalizeManagedPollText(value))
+    ? options.slice(0, MANAGED_POLL_MAX_OPTIONS).map((value) => normalizeManagedPollText(value))
     : [];
 
   while (normalizedOptions.length < MANAGED_POLL_MIN_OPTIONS) {
@@ -54,7 +52,9 @@ export function validateManagedPollForPublish(
     throw new Error('Заполните все варианты ответа.');
   }
 
-  const uniqueOptions = new Set(normalized.options.map((option) => normalizeManagedPollOptionKey(option)));
+  const uniqueOptions = new Set(
+    normalized.options.map((option) => normalizeManagedPollOptionKey(option)),
+  );
   if (uniqueOptions.size !== normalized.options.length) {
     throw new Error('Варианты ответа должны отличаться друг от друга.');
   }
@@ -84,8 +84,7 @@ export function buildManagedPollOptionSummaries(
     optionResults: normalizedOptions.map((option, index) => ({
       option,
       votes: safeVoteCounts[index] ?? 0,
-      percent:
-        totalVotes > 0 ? Math.round(((safeVoteCounts[index] ?? 0) / totalVotes) * 100) : 0,
+      percent: totalVotes > 0 ? Math.round(((safeVoteCounts[index] ?? 0) / totalVotes) * 100) : 0,
     })),
   };
 }
@@ -136,9 +135,7 @@ export function buildManagedPollCallbackPayload(
   ].join('|');
 }
 
-export function parseManagedPollCallbackPayload(
-  payload: string | null,
-): {
+export function parseManagedPollCallbackPayload(payload: string | null): {
   pollId: string;
   version: number;
   optionIndex: number;

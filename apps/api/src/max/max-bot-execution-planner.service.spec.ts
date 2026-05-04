@@ -83,13 +83,15 @@ function createFixture() {
             })),
         };
       }),
-      update: jest.fn(async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
-        if (where.id !== chat.id) {
-          throw new Error('Chat not found');
-        }
-        Object.assign(chat, data);
-        return chat;
-      }),
+      update: jest.fn(
+        async ({ where, data }: { where: { id: string }; data: Partial<MutableChat> }) => {
+          if (where.id !== chat.id) {
+            throw new Error('Chat not found');
+          }
+          Object.assign(chat, data);
+          return chat;
+        },
+      ),
     },
     chatBotMembership: {
       updateMany: jest.fn(

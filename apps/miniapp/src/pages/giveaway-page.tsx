@@ -277,13 +277,7 @@ function buildModalPresentation(params: {
   participantStatusUnavailable: boolean;
   displayPhase: GiveawayDisplayPhase;
 }): GiveawayModalPresentation {
-  const {
-    giveaway,
-    participant,
-    missingChannelsCount,
-    participantStatusUnavailable,
-    displayPhase,
-  } = params;
+  const { participant, missingChannelsCount, participantStatusUnavailable, displayPhase } = params;
 
   if (participantStatusUnavailable) {
     return {

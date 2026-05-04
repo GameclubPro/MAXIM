@@ -21,7 +21,10 @@ test('detects raw init-data auth failures as session-expired states', () => {
 
 test('treats stale dialog token errors as terminal for comments polling', () => {
   assert.equal(isTerminalDialogApiMessage('Неверный токен кнопки. Откройте диалог заново.'), true);
-  assert.equal(isTerminalDialogApiMessage('Кнопка устарела. Откройте сообщение и нажмите снова.'), true);
+  assert.equal(
+    isTerminalDialogApiMessage('Кнопка устарела. Откройте сообщение и нажмите снова.'),
+    true,
+  );
   assert.equal(
     isTerminalDialogApiMessage(
       'Сессия истекла или доступ запрещён. Откройте мини-приложение заново.',

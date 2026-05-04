@@ -91,11 +91,19 @@ export class MaxBotRegistryService {
 
   getBotById(botId: string | null | undefined): MaxBotDefinition | null {
     const normalized = typeof botId === 'string' ? botId.trim() : '';
-    return normalized ? this.botsById.get(normalized) ?? null : null;
+    return normalized ? (this.botsById.get(normalized) ?? null) : null;
   }
 
   getRequiredWebhookUpdateTypes(): readonly string[] {
-    return ['message_created', 'message_callback', 'user_added', 'bot_added', 'bot_started', 'user_removed', 'bot_removed'];
+    return [
+      'message_created',
+      'message_callback',
+      'user_added',
+      'bot_added',
+      'bot_started',
+      'user_removed',
+      'bot_removed',
+    ];
   }
 
   getValidationTokens(): readonly string[] {
@@ -177,7 +185,7 @@ export class MaxBotRegistryService {
 
   private resolveEntryBot(configuredBotId: string | undefined): MaxBotDefinition {
     const normalized = typeof configuredBotId === 'string' ? configuredBotId.trim() : '';
-    const configuredBot = normalized ? this.botsById.get(normalized) ?? null : null;
+    const configuredBot = normalized ? (this.botsById.get(normalized) ?? null) : null;
     if (configuredBot && canExecuteActionsForBotState(configuredBot.state)) {
       return configuredBot;
     }
@@ -207,10 +215,7 @@ export class MaxBotRegistryService {
     return `${trimmed.slice(0, lastSlash + 1)}***`;
   }
 
-  private isMatchingAnyWebhookSecret(
-    provided: string,
-    expectedValues: readonly string[],
-  ): boolean {
+  private isMatchingAnyWebhookSecret(provided: string, expectedValues: readonly string[]): boolean {
     return expectedValues.some((expected) => this.isMatchingWebhookSecret(provided, expected));
   }
 

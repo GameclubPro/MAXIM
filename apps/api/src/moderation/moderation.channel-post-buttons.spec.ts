@@ -90,9 +90,7 @@ function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
-function createConfigMock(
-  overrides: Partial<Record<string, string | number | boolean>> = {},
-) {
+function createConfigMock(overrides: Partial<Record<string, string | number | boolean>> = {}) {
   return {
     get: jest.fn((key: string) => {
       if (key in overrides) {

@@ -150,10 +150,13 @@ export async function handoffManagedGiveaway(
   payload: ManagedGiveawayHandoffPayload,
 ) {
   const requestBody = managedGiveawayHandoffRequestSchema.parse(payload);
-  const response = await api.request(`${resolveEntityBase(entityType, entityId)}/giveaway/handoff`, {
-    method: 'POST',
-    body: JSON.stringify(requestBody),
-  });
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaway/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
   return broadcastHandoffResponseSchema.parse(response);
 }
 

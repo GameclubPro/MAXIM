@@ -4,6 +4,7 @@ import { buildActiveMuteStateKey } from './moderation-state.util';
 import { ModerationService } from './moderation.service';
 
 declare global {
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace jest {
     interface Matchers<R> {
       toHaveBeenCalledWithPrefix(...expected: unknown[]): R;

@@ -39,9 +39,7 @@ describe('renderSupportedMarkdownAsHtml', () => {
   });
 
   it('renders nested bold italic underline links for publication and preview modes', () => {
-    expect(
-      renderSupportedMarkdownAsHtml('[**_++MAX Docs++_**](https://dev.max.ru/docs-api)'),
-    ).toBe(
+    expect(renderSupportedMarkdownAsHtml('[**_++MAX Docs++_**](https://dev.max.ru/docs-api)')).toBe(
       '<p><a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a></p>',
     );
     expect(
@@ -71,12 +69,12 @@ describe('renderSupportedMarkdownAsHtml', () => {
   });
 
   it('renders escaped markdown punctuation as literal text', () => {
-    expect(
-      renderSupportedMarkdownAsHtml('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_'),
-    ).toBe('<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>');
-    expect(stripSupportedMarkdownToPlainText('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_')).toBe(
-      'Анонс C++ [beta] (v2) _raw_',
+    expect(renderSupportedMarkdownAsHtml('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_')).toBe(
+      '<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>',
     );
+    expect(
+      stripSupportedMarkdownToPlainText('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_'),
+    ).toBe('Анонс C++ [beta] (v2) _raw_');
   });
 
   it('strips supported markdown to plain text', () => {
@@ -84,8 +82,6 @@ describe('renderSupportedMarkdownAsHtml', () => {
       stripSupportedMarkdownToPlainText(
         '**Заголовок**\nТекст с _курсивом_, ++подчеркиванием++, ~~зачеркиванием~~ и `кодом`.\n\n[Открыть MAX](https://max.ru/)',
       ),
-    ).toBe(
-      'Заголовок\nТекст с курсивом, подчеркиванием, зачеркиванием и кодом.\n\nОткрыть MAX',
-    );
+    ).toBe('Заголовок\nТекст с курсивом, подчеркиванием, зачеркиванием и кодом.\n\nОткрыть MAX');
   });
 });

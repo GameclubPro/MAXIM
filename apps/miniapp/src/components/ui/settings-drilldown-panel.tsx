@@ -115,7 +115,11 @@ export function SettingsDrilldownPanel({
       />
 
       <section
-        className={cn('settings-drilldown__panel', `settings-drilldown__panel--tone-${tone}`, className)}
+        className={cn(
+          'settings-drilldown__panel',
+          `settings-drilldown__panel--tone-${tone}`,
+          className,
+        )}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
@@ -145,9 +149,7 @@ export function SettingsDrilldownPanel({
 
         <div className="settings-drilldown__content">
           <div className="settings-drilldown__body">{children}</div>
-          {shouldRenderFooter ? (
-            <div className="settings-drilldown__footer">{footer}</div>
-          ) : null}
+          {shouldRenderFooter ? <div className="settings-drilldown__footer">{footer}</div> : null}
         </div>
       </section>
     </div>,

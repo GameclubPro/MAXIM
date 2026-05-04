@@ -10,9 +10,7 @@ export function readSystemAccessConfig(configService: ConfigService): SystemAcce
     .split(',')
     .map((value) => value.trim())
     .filter((value) => value.length > 0);
-  const nodeEnv = String(configService.get<string>('NODE_ENV', 'development'))
-    .trim()
-    .toLowerCase();
+  const nodeEnv = String(configService.get<string>('NODE_ENV', 'development')).trim().toLowerCase();
 
   return {
     systemAdminUserIds: new Set(configuredUserIds),

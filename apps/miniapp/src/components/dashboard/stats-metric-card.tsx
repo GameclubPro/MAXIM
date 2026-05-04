@@ -7,12 +7,7 @@ type StatsMetricCardProps = {
   tone?: 'neutral' | 'accent' | 'success' | 'warning' | 'danger';
 };
 
-export function StatsMetricCard({
-  label,
-  value,
-  detail,
-  tone = 'neutral',
-}: StatsMetricCardProps) {
+export function StatsMetricCard({ label, value, detail, tone = 'neutral' }: StatsMetricCardProps) {
   return (
     <GlassCard
       as="article"

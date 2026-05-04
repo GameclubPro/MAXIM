@@ -1,6 +1,9 @@
 import * as leasePlanModule from '../runtime/default-webhook-lease-plan';
 import { DEFAULT_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
-import { buildDefaultWebhookLeaseKey, buildDefaultWebhookWorkerHeartbeatKey } from '../runtime/default-webhook-dynamic-leases';
+import {
+  buildDefaultWebhookLeaseKey,
+  buildDefaultWebhookWorkerHeartbeatKey,
+} from '../runtime/default-webhook-dynamic-leases';
 import { DefaultWebhookLeaseManagerService } from './default-webhook-lease-manager.service';
 
 type RedisMockInstance = {
@@ -98,12 +101,18 @@ function createQueueMetricsMock() {
   return {
     getSnapshot: jest.fn().mockResolvedValue({
       webhookDefaultShards: Object.fromEntries(
-        Array.from({ length: 16 }, (_, index) => [`moderation-default-${index}`, { ...emptyCounters }]),
+        Array.from({ length: 16 }, (_, index) => [
+          `moderation-default-${index}`,
+          { ...emptyCounters },
+        ]),
       ),
     }),
     getWebhookDefaultShardSnapshot: jest.fn().mockResolvedValue({
       webhookDefaultShards: Object.fromEntries(
-        Array.from({ length: 16 }, (_, index) => [`moderation-default-${index}`, { ...emptyCounters }]),
+        Array.from({ length: 16 }, (_, index) => [
+          `moderation-default-${index}`,
+          { ...emptyCounters },
+        ]),
       ),
     }),
   };
@@ -180,7 +189,9 @@ describe('DefaultWebhookLeaseManagerService', () => {
     const heartbeat = redis.store.get(buildDefaultWebhookWorkerHeartbeatKey('api-moderation'));
     expect(heartbeat).toBeTruthy();
 
-    const renewedClaim = JSON.parse(redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}');
+    const renewedClaim = JSON.parse(
+      redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}',
+    );
     expect(renewedClaim.ownerId).toBe('api-moderation');
     expect(renewedClaim.fencingToken).toBe(4);
     expect(renewedClaim.leaseUntilMs).toBeGreaterThan(previousLeaseUntilMs);
@@ -310,7 +321,9 @@ describe('DefaultWebhookLeaseManagerService', () => {
 
     await (service as any).publishKeepalive();
 
-    const renewedClaim = JSON.parse(redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}');
+    const renewedClaim = JSON.parse(
+      redis.store.get(buildDefaultWebhookLeaseKey(queueName)) ?? '{}',
+    );
     expect(renewedClaim).toEqual(originalClaim);
 
     await service.onModuleDestroy();
@@ -405,25 +418,32 @@ describe('DefaultWebhookLeaseManagerService', () => {
       handoffPending: false,
     };
 
-    jest
-      .spyOn(leasePlanModule, 'buildDefaultWebhookLeasePlan')
-      .mockReturnValue({
-        workerLoads: {
-          'api-moderation': 10,
-          'api-moderation-realtime-b': 0,
-          'api-moderation-realtime-c': 0,
-          'api-moderation-realtime-d': 0,
-        },
-        queues: planQueues as ReturnType<typeof leasePlanModule.buildDefaultWebhookLeasePlan>['queues'],
-      });
+    jest.spyOn(leasePlanModule, 'buildDefaultWebhookLeasePlan').mockReturnValue({
+      workerLoads: {
+        'api-moderation': 10,
+        'api-moderation-realtime-b': 0,
+        'api-moderation-realtime-c': 0,
+        'api-moderation-realtime-d': 0,
+      },
+      queues: planQueues as ReturnType<
+        typeof leasePlanModule.buildDefaultWebhookLeasePlan
+      >['queues'],
+    });
 
     (service as any).loadClaims = jest.fn().mockResolvedValue({
       [queueName]: JSON.parse(redis.store.get(claimKey) ?? '{}'),
     });
     (service as any).loadHandoffs = jest.fn().mockResolvedValue({});
-    (service as any).loadAliveWorkerGroups = jest.fn().mockResolvedValue(
-      new Set(['api-moderation', 'api-moderation-realtime-b', 'api-moderation-realtime-c', 'api-moderation-realtime-d']),
-    );
+    (service as any).loadAliveWorkerGroups = jest
+      .fn()
+      .mockResolvedValue(
+        new Set([
+          'api-moderation',
+          'api-moderation-realtime-b',
+          'api-moderation-realtime-c',
+          'api-moderation-realtime-d',
+        ]),
+      );
     (service as any).closeWorker = jest.fn().mockResolvedValue('timed_out');
     (service as any).closeWorkersExcept = jest.fn().mockResolvedValue(undefined);
     (service as any).ensureWorkerRunning = jest.fn().mockResolvedValue(undefined);

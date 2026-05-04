@@ -1,10 +1,7 @@
 import { createHmac } from 'node:crypto';
 import { ConfigService } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
-import {
-  FastifyAdapter,
-  type NestFastifyApplication,
-} from '@nestjs/platform-fastify';
+import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { InitDataService } from '../auth/init-data.service';
 import { MaxBotRegistryService } from '../max/max-bot-registry.service';

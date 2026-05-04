@@ -13,9 +13,7 @@ type ManagedEntityListItem = {
 export function readLastChatId(): string {
   try {
     return (
-      window.localStorage.getItem(LAST_CHAT_ID_KEY) ??
-      readLastEntityId(readLastEntityType()) ??
-      ''
+      window.localStorage.getItem(LAST_CHAT_ID_KEY) ?? readLastEntityId(readLastEntityType()) ?? ''
     );
   } catch {
     return '';

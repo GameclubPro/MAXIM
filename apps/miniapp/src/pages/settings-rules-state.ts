@@ -32,10 +32,7 @@ type RulesTextScreenState = Pick<
 >;
 
 function isRequiredSubscriptionCurrentlyActive(
-  settings: Pick<
-    ChatSettings,
-    'requiredSubscriptionEnabled' | 'requiredSubscriptionExpiresAt'
-  >,
+  settings: Pick<ChatSettings, 'requiredSubscriptionEnabled' | 'requiredSubscriptionExpiresAt'>,
 ): boolean {
   if (!settings.requiredSubscriptionEnabled) {
     return false;

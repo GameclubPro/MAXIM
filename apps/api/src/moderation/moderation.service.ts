@@ -112,7 +112,6 @@ import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
   LEGACY_WEBHOOK_QUEUE,
-  type JoinWebhookQueueName,
   type AnyWebhookQueueName,
   type ProcessWebhookJob,
   WEBHOOK_QUEUE_BACKGROUND,
@@ -7190,8 +7189,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     });
 
-    let trackedLookupPromise!: Promise<boolean>;
-    trackedLookupPromise = lookupPromise.finally(() => {
+    const trackedLookupPromise = lookupPromise.finally(() => {
       if (this.globalSpammerExemptionLookupInFlight.get(cacheKey) === trackedLookupPromise) {
         this.globalSpammerExemptionLookupInFlight.delete(cacheKey);
       }
@@ -8953,8 +8951,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return allowStaleOnError ? (memoryCached?.isMember ?? null) : null;
       }
     })();
-    let trackedLookupPromise!: Promise<boolean | null>;
-    trackedLookupPromise = lookupPromise.finally(() => {
+    const trackedLookupPromise = lookupPromise.finally(() => {
       if (this.requiredSubscriptionMembershipInFlight.get(cacheKey) === trackedLookupPromise) {
         this.requiredSubscriptionMembershipInFlight.delete(cacheKey);
       }
@@ -12010,8 +12007,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     });
 
-    let trackedLookupPromise!: Promise<RemoteChatAdminAccessState | null>;
-    trackedLookupPromise = lookupPromise.finally(() => {
+    const trackedLookupPromise = lookupPromise.finally(() => {
       if (this.chatAdminLookupInFlight.get(cacheKey) === trackedLookupPromise) {
         this.chatAdminLookupInFlight.delete(cacheKey);
       }
@@ -12319,8 +12315,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     });
 
-    let trackedReadPromise!: Promise<RemoteChatAdminAccessState | null>;
-    trackedReadPromise = readPromise.finally(() => {
+    const trackedReadPromise = readPromise.finally(() => {
       if (this.chatAdminSharedCacheReadInFlight.get(cacheKey) === trackedReadPromise) {
         this.chatAdminSharedCacheReadInFlight.delete(cacheKey);
       }

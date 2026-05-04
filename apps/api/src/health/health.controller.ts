@@ -32,7 +32,9 @@ export class HealthController {
       : typeof bots === 'string'
         ? bots.split(',')
         : [];
-    const normalizedBotIds = [...new Set(requestedBots.map((botId) => botId.trim()).filter(Boolean))];
+    const normalizedBotIds = [
+      ...new Set(requestedBots.map((botId) => botId.trim()).filter(Boolean)),
+    ];
     if (normalizedBotIds.length > 16) {
       throw new BadRequestException('Too many bot ids requested');
     }

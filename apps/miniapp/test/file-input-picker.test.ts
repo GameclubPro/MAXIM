@@ -1,9 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  openFileInputPicker,
-  resolveFileInputActivationMode,
-} from '../src/lib/file-input-picker';
+import { openFileInputPicker, resolveFileInputActivationMode } from '../src/lib/file-input-picker';
 
 test('resolveFileInputActivationMode keeps direct native tap for Android webviews', () => {
   assert.equal(resolveFileInputActivationMode('android'), 'native-tap');

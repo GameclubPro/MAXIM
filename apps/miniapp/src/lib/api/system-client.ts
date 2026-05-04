@@ -501,7 +501,8 @@ function parseBotQueueMetricsSnapshot(value: unknown) {
       ]),
     ),
     actionHealth: parseActionHealthSnapshot(value.actionHealth),
-    oldestQueuedEventId: typeof value.oldestQueuedEventId === 'string' ? value.oldestQueuedEventId : null,
+    oldestQueuedEventId:
+      typeof value.oldestQueuedEventId === 'string' ? value.oldestQueuedEventId : null,
     oldestQueuedCreatedAt:
       typeof value.oldestQueuedCreatedAt === 'string' ? value.oldestQueuedCreatedAt : null,
     oldestQueuedLagSec: value.oldestQueuedLagSec,

@@ -959,7 +959,8 @@ export function ManagedGiveawayCard({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (giveawayId: string) => deleteManagedGiveaway(api, entityType, entityId, giveawayId),
+    mutationFn: (giveawayId: string) =>
+      deleteManagedGiveaway(api, entityType, entityId, giveawayId),
   });
 
   const isBusy =
@@ -1752,9 +1753,7 @@ export function ManagedGiveawayCard({
               <p>{buildCurrentSubtitle(featuredItem)}</p>
             </div>
             <div className="managed-giveaway__hero-badges">
-              <span
-                className={cn('managed-giveaway__badge', buildStatusTone(featuredItem.status))}
-              >
+              <span className={cn('managed-giveaway__badge', buildStatusTone(featuredItem.status))}>
                 {buildStatusLabel(featuredItem.status)}
               </span>
               {featuredItem.hasImage ? (
@@ -1775,7 +1774,9 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway__dashboard-stat">
               <span>Условия</span>
               <strong>{1 + requiredChannelsCount}</strong>
-              <small>{requiredChannelsCount > 0 ? 'доп. каналы включены' : 'только источник'}</small>
+              <small>
+                {requiredChannelsCount > 0 ? 'доп. каналы включены' : 'только источник'}
+              </small>
             </div>
             <div className="managed-giveaway__dashboard-stat">
               <span>Места</span>
@@ -1924,8 +1925,7 @@ export function ManagedGiveawayCard({
                     winner.status === 'SELECTED' ||
                     winner.status === 'CLAIMED' ||
                     winner.status === 'EXPIRED';
-                  const canDeliver =
-                    winner.status === 'SELECTED' || winner.status === 'CLAIMED';
+                  const canDeliver = winner.status === 'SELECTED' || winner.status === 'CLAIMED';
 
                   return (
                     <div key={winner.id} className="managed-giveaway__dashboard-winner">
@@ -1987,7 +1987,10 @@ export function ManagedGiveawayCard({
 
           {featuredDetailsQuery.error ? (
             <div className="managed-giveaway__error-inline">
-              {formatApiError(featuredDetailsQuery.error, 'Не удалось подгрузить детали розыгрыша.')}
+              {formatApiError(
+                featuredDetailsQuery.error,
+                'Не удалось подгрузить детали розыгрыша.',
+              )}
             </div>
           ) : null}
         </div>
@@ -2561,7 +2564,9 @@ export function ManagedGiveawayCard({
                   </div>
                   <div className="managed-giveaway__section-actions">
                     <span className="managed-giveaway__chip">
-                      {draft.description.trim() ? `${draft.description.trim().length}/2000` : 'Текст'}
+                      {draft.description.trim()
+                        ? `${draft.description.trim().length}/2000`
+                        : 'Текст'}
                     </span>
                   </div>
                 </div>

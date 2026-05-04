@@ -232,9 +232,9 @@ export class HealthService implements OnModuleDestroy {
 
   private mapQueueMetricsBots(
     queueMetrics: Pick<QueueMetricsSnapshot, 'bots'> | null | undefined,
-    maxApiBotSnapshots:
-      | Awaited<ReturnType<MaxApiMetricsService['getBotRateLimitSnapshot']>>
-      | null = null,
+    maxApiBotSnapshots: Awaited<
+      ReturnType<MaxApiMetricsService['getBotRateLimitSnapshot']>
+    > | null = null,
   ): ReadinessSnapshot['bots'] {
     return Object.fromEntries(
       Object.entries(queueMetrics?.bots ?? {}).map(([botId, botMetrics]) => {
@@ -546,10 +546,7 @@ export class HealthService implements OnModuleDestroy {
   ): boolean {
     const previousGeneratedAtMs = Date.parse(previousSnapshot.generatedAt);
     const nextGeneratedAtMs = Date.parse(nextSnapshot.generatedAt);
-    if (
-      !Number.isFinite(previousGeneratedAtMs) ||
-      !Number.isFinite(nextGeneratedAtMs)
-    ) {
+    if (!Number.isFinite(previousGeneratedAtMs) || !Number.isFinite(nextGeneratedAtMs)) {
       return nextSnapshot.generatedAt !== previousSnapshot.generatedAt;
     }
 

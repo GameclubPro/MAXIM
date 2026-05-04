@@ -435,8 +435,9 @@ describe('MaxWebhookSubscriptionReconcilerService', () => {
       ),
       matchesConfiguredWebhookUrl: jest
         .fn()
-        .mockImplementation((url: string, botId: string) =>
-          url === `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
+        .mockImplementation(
+          (url: string, botId: string) =>
+            url === `https://maxim.play-team.ru/api/webhook/max/${botId}/secret-path`,
         ),
       deleteWebhookSubscription: jest.fn().mockResolvedValue(undefined),
       ensureWebhookSubscription: jest.fn().mockImplementation((updateTypes, { botId }) =>

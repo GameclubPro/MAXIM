@@ -5,12 +5,15 @@ import type {
 } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 
-type LoadMembershipActivityPage = (query: {
-  range: MembershipActivityRange;
-  filter: MembershipActivityFilter;
-  limit: number;
-  cursor?: string;
-}, request?: Pick<RequestInit, 'signal'>) => Promise<MembershipActivityPage>;
+type LoadMembershipActivityPage = (
+  query: {
+    range: MembershipActivityRange;
+    filter: MembershipActivityFilter;
+    limit: number;
+    cursor?: string;
+  },
+  request?: Pick<RequestInit, 'signal'>,
+) => Promise<MembershipActivityPage>;
 
 type UseMembershipActivityFeedOptions = {
   enabled?: boolean;
@@ -123,7 +126,11 @@ export function useMembershipActivityFeed({
         }
       })
       .catch((cause: unknown) => {
-        if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
+        if (
+          requestId !== requestIdRef.current ||
+          controller.signal.aborted ||
+          isAbortError(cause)
+        ) {
           return;
         }
 
@@ -156,12 +163,15 @@ export function useMembershipActivityFeed({
     setError(null);
 
     try {
-      const nextPage = await runLoadPage({
-        range,
-        filter,
-        limit,
-        cursor: feed.nextCursor,
-      }, { signal: controller.signal });
+      const nextPage = await runLoadPage(
+        {
+          range,
+          filter,
+          limit,
+          cursor: feed.nextCursor,
+        },
+        { signal: controller.signal },
+      );
       if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }

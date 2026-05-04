@@ -3,7 +3,10 @@ import {
   type DefaultWebhookWorkerGroupName,
   type WebhookDynamicLeasesMode,
 } from './moderation-runtime';
-import { DEFAULT_WEBHOOK_QUEUE_NAMES, type DefaultWebhookQueueName } from '../webhook/webhook-queues';
+import {
+  DEFAULT_WEBHOOK_QUEUE_NAMES,
+  type DefaultWebhookQueueName,
+} from '../webhook/webhook-queues';
 
 export type DefaultWebhookShardClaim = {
   queueName: DefaultWebhookQueueName;
@@ -75,7 +78,6 @@ export function isDefaultWebhookWorkerGroupName(
 
 export function isDefaultWebhookQueueName(value: unknown): value is DefaultWebhookQueueName {
   return (
-    typeof value === 'string' &&
-    (DEFAULT_WEBHOOK_QUEUE_NAMES as readonly string[]).includes(value)
+    typeof value === 'string' && (DEFAULT_WEBHOOK_QUEUE_NAMES as readonly string[]).includes(value)
   );
 }

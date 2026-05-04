@@ -774,7 +774,9 @@ describe('MaxMembershipLookupService', () => {
       hasChatMember: jest.fn(),
       getChatMembersAccess: jest
         .fn()
-        .mockResolvedValueOnce(new Map([['user-stale-positive', { userId: 'user-stale-positive', isAdmin: false }]]))
+        .mockResolvedValueOnce(
+          new Map([['user-stale-positive', { userId: 'user-stale-positive', isAdmin: false }]]),
+        )
         .mockRejectedValueOnce(throttleError)
         .mockRejectedValueOnce(throttleError),
     };
@@ -791,15 +793,25 @@ describe('MaxMembershipLookupService', () => {
     jest.advanceTimersByTime(61_000);
 
     await expect(
-      service.getMembership('channel-hot-mode', 'user-trigger-1', 'moderation_required_subscription', {
-        forceRefresh: true,
-      }),
+      service.getMembership(
+        'channel-hot-mode',
+        'user-trigger-1',
+        'moderation_required_subscription',
+        {
+          forceRefresh: true,
+        },
+      ),
     ).resolves.toBeNull();
     jest.advanceTimersByTime(15_001);
     await expect(
-      service.getMembership('channel-hot-mode', 'user-trigger-2', 'moderation_required_subscription', {
-        forceRefresh: true,
-      }),
+      service.getMembership(
+        'channel-hot-mode',
+        'user-trigger-2',
+        'moderation_required_subscription',
+        {
+          forceRefresh: true,
+        },
+      ),
     ).resolves.toBeNull();
 
     await expect(

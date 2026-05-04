@@ -180,24 +180,26 @@ describe('WebhookService', () => {
 
     await expect(
       Promise.race([
-        service.ingest(
-          {
-            updateId: 'u-join-1',
-            type: 'user_added',
-            message: {
-              messageId: 'user_added:u-join-1',
-              chatId: 'chat-1',
-              senderId: 'user-10',
-              text: '',
-              createdAt: new Date('2026-03-29T12:00:00.000Z').toISOString(),
+        service
+          .ingest(
+            {
+              updateId: 'u-join-1',
+              type: 'user_added',
+              message: {
+                messageId: 'user_added:u-join-1',
+                chatId: 'chat-1',
+                senderId: 'user-10',
+                text: '',
+                createdAt: new Date('2026-03-29T12:00:00.000Z').toISOString(),
+              },
+              membership: {
+                action: 'added',
+                memberUserIds: ['user-10'],
+              },
             },
-            membership: {
-              action: 'added',
-              memberUserIds: ['user-10'],
-            },
-          },
-          '127.0.0.1',
-        ).then((result) => ({ kind: 'accepted', result })),
+            '127.0.0.1',
+          )
+          .then((result) => ({ kind: 'accepted', result })),
         new Promise((resolve) => {
           setTimeout(() => resolve({ kind: 'timeout' }), 25);
         }),
@@ -596,14 +598,12 @@ describe('WebhookService', () => {
       get: jest.fn().mockReturnValue(1),
     };
     const maxClient = {
-      getCurrentChatMemberAccess: jest
-        .fn()
-        .mockResolvedValueOnce({
-          userId: 'id613002203036_4_bot',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['delete_messages'],
-        }),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValueOnce({
+        userId: 'id613002203036_4_bot',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['delete_messages'],
+      }),
     };
     maxBotLinkService.bindChatToBot
       .mockResolvedValueOnce('id613002203036_bot')

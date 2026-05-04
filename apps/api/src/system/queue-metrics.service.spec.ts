@@ -25,18 +25,20 @@ describe('QueueMetricsService', () => {
   it('returns queue counters, webhook status metrics, and action health in one snapshot', async () => {
     const prisma = {
       webhookEvent: {
-        count: jest.fn().mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
-          switch (where.status) {
-            case WebhookStatus.RECEIVED:
-              return 7;
-            case WebhookStatus.QUEUED:
-              return 3;
-            case WebhookStatus.FAILED:
-              return 2;
-            default:
-              return 0;
-          }
-        }),
+        count: jest
+          .fn()
+          .mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
+            switch (where.status) {
+              case WebhookStatus.RECEIVED:
+                return 7;
+              case WebhookStatus.QUEUED:
+                return 3;
+              case WebhookStatus.FAILED:
+                return 2;
+              default:
+                return 0;
+            }
+          }),
         findFirst: jest
           .fn()
           .mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
@@ -104,10 +106,14 @@ describe('QueueMetricsService', () => {
       ]),
     );
     const moduleRef = {
-      get: jest.fn((token: string) =>
-        Object.fromEntries(
-          DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [getQueueToken(queueName), defaultQueues[queueName]]),
-        )[token],
+      get: jest.fn(
+        (token: string) =>
+          Object.fromEntries(
+            DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+              getQueueToken(queueName),
+              defaultQueues[queueName],
+            ]),
+          )[token],
       ),
     };
     const botRegistry = {
@@ -121,10 +127,38 @@ describe('QueueMetricsService', () => {
       moduleRef as never,
       botRegistry as never,
       undefined,
-      createQueueMock({ waiting: 1, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 10 }) as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 1, failed: 0, completed: 4 }) as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 1, completed: 2 }) as never,
-      createQueueMock({ waiting: 3, prioritized: 0, active: 1, delayed: 0, failed: 0, completed: 11 }) as never,
+      createQueueMock({
+        waiting: 1,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 10,
+      }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 1,
+        failed: 0,
+        completed: 4,
+      }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 1,
+        completed: 2,
+      }) as never,
+      createQueueMock({
+        waiting: 3,
+        prioritized: 0,
+        active: 1,
+        delayed: 0,
+        failed: 0,
+        completed: 11,
+      }) as never,
     );
 
     const snapshot = await service.getSnapshot();
@@ -278,23 +312,33 @@ describe('QueueMetricsService', () => {
     try {
       const prisma = {
         webhookEvent: {
-          count: jest.fn().mockImplementation(async ({ where }: { where: { status: WebhookStatus; createdAt?: { gte: Date } } }) => {
-            if (where.status !== WebhookStatus.FAILED) {
-              return 0;
-            }
+          count: jest
+            .fn()
+            .mockImplementation(
+              async ({
+                where,
+              }: {
+                where: { status: WebhookStatus; createdAt?: { gte: Date } };
+              }) => {
+                if (where.status !== WebhookStatus.FAILED) {
+                  return 0;
+                }
 
-            return where.createdAt?.gte ? 1 : 5;
-          }),
-          findFirst: jest.fn().mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
-            if (where.status !== WebhookStatus.FAILED) {
-              return null;
-            }
+                return where.createdAt?.gte ? 1 : 5;
+              },
+            ),
+          findFirst: jest
+            .fn()
+            .mockImplementation(async ({ where }: { where: { status: WebhookStatus } }) => {
+              if (where.status !== WebhookStatus.FAILED) {
+                return null;
+              }
 
-            return {
-              id: 'failed-oldest',
-              createdAt: new Date('2026-04-12T03:00:00.000Z'),
-            };
-          }),
+              return {
+                id: 'failed-oldest',
+                createdAt: new Date('2026-04-12T03:00:00.000Z'),
+              };
+            }),
           groupBy: jest.fn().mockResolvedValue([]),
         },
       };
@@ -437,10 +481,14 @@ describe('QueueMetricsService', () => {
       ]),
     );
     const moduleRef = {
-      get: jest.fn((token: string) =>
-        Object.fromEntries(
-          DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [getQueueToken(queueName), defaultQueues[queueName]]),
-        )[token],
+      get: jest.fn(
+        (token: string) =>
+          Object.fromEntries(
+            DEFAULT_WEBHOOK_QUEUE_NAMES.map((queueName) => [
+              getQueueToken(queueName),
+              defaultQueues[queueName],
+            ]),
+          )[token],
       ),
     };
     const botRegistry = {
@@ -469,7 +517,9 @@ describe('QueueMetricsService', () => {
             {
               queueName,
               homeOwner:
-                queueName === 'moderation-default-0' ? 'api-moderation' : 'api-moderation-realtime-b',
+                queueName === 'moderation-default-0'
+                  ? 'api-moderation'
+                  : 'api-moderation-realtime-b',
               actualOwner:
                 queueName === 'moderation-default-0'
                   ? 'api-moderation-realtime-b'
@@ -502,10 +552,38 @@ describe('QueueMetricsService', () => {
       moduleRef as never,
       botRegistry as never,
       webhookDynamicLeaseStatusService as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
-      createQueueMock({ waiting: 0, prioritized: 0, active: 0, delayed: 0, failed: 0, completed: 0 }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      }) as never,
+      createQueueMock({
+        waiting: 0,
+        prioritized: 0,
+        active: 0,
+        delayed: 0,
+        failed: 0,
+        completed: 0,
+      }) as never,
     );
 
     const snapshot = await service.getSnapshot();

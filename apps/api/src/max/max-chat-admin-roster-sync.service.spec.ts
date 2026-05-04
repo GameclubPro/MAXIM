@@ -124,7 +124,10 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('syncs admin allowlist from the first admin-capable bot', async () => {
     const { service, prisma, maxClient, maxBotLinkService, chatContextCache } = createService();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      { userId: 'user-1' },
+      { userId: 'user-3' },
+    ]);
     maxClient.getCurrentChatMemberAccess.mockResolvedValue({
       userId: 'bot-user-1',
       isAdmin: true,
@@ -180,7 +183,10 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('clears stale allowlist rows when no bot keeps admin access', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-7' }, { userId: 'user-8' }]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      { userId: 'user-7' },
+      { userId: 'user-8' },
+    ]);
     maxClient.getCurrentChatMemberAccess.mockResolvedValue({
       userId: 'bot-user-1',
       isAdmin: false,
@@ -425,7 +431,10 @@ describe('MaxChatAdminRosterSyncService', () => {
 
   it('pushes allowlist changes into existing published snapshots for affected admins', async () => {
     const { service, prisma, maxClient, chatContextCache } = createService();
-    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ userId: 'user-1' }, { userId: 'user-3' }]);
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      { userId: 'user-1' },
+      { userId: 'user-3' },
+    ]);
     prisma.chat.findUnique.mockResolvedValue({
       title: 'Snapshot chat',
       entityType: 'CHAT',

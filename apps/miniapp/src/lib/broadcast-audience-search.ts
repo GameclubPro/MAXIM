@@ -68,9 +68,10 @@ export function filterBroadcastAudienceChoices<
   return items.filter((item) => {
     const searchable = buildBroadcastAudienceSearchDocument(item);
     return queryTokenVariants.some((queryTokens) =>
-      queryTokens.every((token) =>
-        searchable.texts.some((text) => text.includes(token)) ||
-        searchable.compacts.some((compact) => compact.includes(token)),
+      queryTokens.every(
+        (token) =>
+          searchable.texts.some((text) => text.includes(token)) ||
+          searchable.compacts.some((compact) => compact.includes(token)),
       ),
     );
   });

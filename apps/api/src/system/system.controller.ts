@@ -13,7 +13,11 @@ import { z } from 'zod';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { QueueMetricsService } from './queue-metrics.service';
-import { canUserAccessSystem, readSystemAccessConfig, type SystemAccessConfig } from './system-access.util';
+import {
+  canUserAccessSystem,
+  readSystemAccessConfig,
+  type SystemAccessConfig,
+} from './system-access.util';
 import { MaxApiMetricsService } from './max-api-metrics.service';
 import { SystemDashboardService } from './system-dashboard.service';
 import { SystemModeService } from './system-mode.service';
@@ -22,7 +26,12 @@ const systemModeBodySchema = z.object({
   mode: z.enum(['normal', 'degrade', 'auto']),
 });
 const maxApiMetricsQuerySchema = z.object({
-  windowSec: z.coerce.number().int().min(60).max(6 * 60 * 60).optional(),
+  windowSec: z.coerce
+    .number()
+    .int()
+    .min(60)
+    .max(6 * 60 * 60)
+    .optional(),
 });
 
 @Controller('v1/system')

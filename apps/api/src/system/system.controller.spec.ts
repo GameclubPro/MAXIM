@@ -26,7 +26,9 @@ describe('SystemController', () => {
       }),
     );
 
-    await expect(controller.getMode({ userId: '300' } as never)).rejects.toThrow(ForbiddenException);
+    await expect(controller.getMode({ userId: '300' } as never)).rejects.toThrow(
+      ForbiddenException,
+    );
   });
 
   it('allows access in production when user is in the system admin allowlist', async () => {

@@ -5,12 +5,15 @@ import type {
 } from '@maxim/contracts';
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 
-type LoadModerationFeedPage = (query: {
-  range: LogsDashboardRange;
-  filter: ModerationFeedFilter;
-  limit: number;
-  cursor?: string;
-}, request?: Pick<RequestInit, 'signal'>) => Promise<ModerationFeedPage>;
+type LoadModerationFeedPage = (
+  query: {
+    range: LogsDashboardRange;
+    filter: ModerationFeedFilter;
+    limit: number;
+    cursor?: string;
+  },
+  request?: Pick<RequestInit, 'signal'>,
+) => Promise<ModerationFeedPage>;
 
 type UseModerationFeedOptions = {
   enabled?: boolean;
@@ -109,7 +112,11 @@ export function useModerationFeed({
         }
       })
       .catch((cause: unknown) => {
-        if (requestId !== requestIdRef.current || controller.signal.aborted || isAbortError(cause)) {
+        if (
+          requestId !== requestIdRef.current ||
+          controller.signal.aborted ||
+          isAbortError(cause)
+        ) {
           return;
         }
 
@@ -142,12 +149,15 @@ export function useModerationFeed({
     setError(null);
 
     try {
-      const nextPage = await runLoadPage({
-        range,
-        filter,
-        limit,
-        cursor: feed.nextCursor,
-      }, { signal: controller.signal });
+      const nextPage = await runLoadPage(
+        {
+          range,
+          filter,
+          limit,
+          cursor: feed.nextCursor,
+        },
+        { signal: controller.signal },
+      );
       if (requestId !== requestIdRef.current || controller.signal.aborted) {
         return;
       }

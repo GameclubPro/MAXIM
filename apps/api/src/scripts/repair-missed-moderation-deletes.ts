@@ -108,9 +108,7 @@ async function loadCandidates(
   options: CliOptions,
 ): Promise<RepairCandidateRow[]> {
   const limitSql =
-    typeof options.limit === 'number'
-      ? Prisma.sql`limit ${options.limit}`
-      : Prisma.sql``;
+    typeof options.limit === 'number' ? Prisma.sql`limit ${options.limit}` : Prisma.sql``;
 
   return prisma.$queryRaw<RepairCandidateRow[]>(Prisma.sql`
     with base as (

@@ -956,9 +956,7 @@ describe('ManagedGiveawayService', () => {
             expect.objectContaining({
               type: 'link',
               text: 'Участвовать · 0',
-              url: expect.stringContaining(
-                'https://max.ru/id613002203036_4_bot?startapp=gg-',
-              ),
+              url: expect.stringContaining('https://max.ru/id613002203036_4_bot?startapp=gg-'),
             }),
           ],
         ],
@@ -1040,9 +1038,7 @@ describe('ManagedGiveawayService', () => {
             expect.objectContaining({
               type: 'link',
               text: 'Участвовать · 0',
-              url: expect.stringContaining(
-                'https://max.ru/id613002203036_4_bot?startapp=gg-',
-              ),
+              url: expect.stringContaining('https://max.ru/id613002203036_4_bot?startapp=gg-'),
             }),
           ],
         ],

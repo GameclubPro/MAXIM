@@ -358,7 +358,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           <div className="system-panel__head">
             <div>
               <h2>Burst и hot path</h2>
-              <p>Короткий срез по burst episodes и стадиям, которые реально съедают tail latency.</p>
+              <p>
+                Короткий срез по burst episodes и стадиям, которые реально съедают tail latency.
+              </p>
             </div>
             {dashboard.burst ? (
               <span className={dashboard.burst.active ? 'chip chip--danger' : 'chip'}>
@@ -448,7 +450,10 @@ export function SystemPage({ api }: { api: ApiTransport }) {
           <div className="system-panel__head">
             <div>
               <h2>Background budget</h2>
-              <p>Фоновые MAX source tags и причины, по которым governor начинает их душить раньше hard degrade.</p>
+              <p>
+                Фоновые MAX source tags и причины, по которым governor начинает их душить раньше
+                hard degrade.
+              </p>
             </div>
             {dashboard.backgroundBudget ? (
               <span className="chip">
@@ -473,7 +478,9 @@ export function SystemPage({ api }: { api: ApiTransport }) {
               ))}
             </div>
           ) : (
-            <p className="system-panel__hint">Нет выраженного background source-share за текущее окно.</p>
+            <p className="system-panel__hint">
+              Нет выраженного background source-share за текущее окно.
+            </p>
           )}
           {backgroundPauses.length > 0 ? (
             <div className="system-chip-list">

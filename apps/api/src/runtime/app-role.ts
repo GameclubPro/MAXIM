@@ -1,7 +1,9 @@
 export type AppRole = 'all' | 'ingress' | 'admin' | 'enqueue' | 'moderation' | 'action';
 
 export function getAppRole(): AppRole {
-  const value = String(process.env.APP_ROLE ?? 'all').trim().toLowerCase();
+  const value = String(process.env.APP_ROLE ?? 'all')
+    .trim()
+    .toLowerCase();
   if (
     value === 'all' ||
     value === 'ingress' ||
