@@ -2572,7 +2572,19 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
   });
   const posts = range === '24h' ? 3 : range === '7d' ? 14 : 42;
   const views = viewsSeries.reduce((sum, item) => sum + item.views, 0);
+  let cumulativeViews = 0;
   const reactions = Math.round(views * 0.06);
+  const topPosts = Array.from({ length: Math.min(5, posts) }, (_, index) => {
+    const postViews = Math.round(4_800 - index * 520 + (range === '30d' ? 1_400 : 0));
+    return {
+      messageId: `preview-channel-post-${index + 1}`,
+      publishedAt: addHours(now, -4 - index * 11).toISOString(),
+      url: `https://max.ru/channels/yuzhnoe-news/${index + 1}`,
+      views: postViews,
+      viewsDelta: Math.round(postViews * (0.62 - index * 0.05)),
+      reactions: Math.round(postViews * 0.055),
+    };
+  });
 
   return channelStatsResponseSchema.parse({
     channel: {
@@ -2600,18 +2612,27 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       content: {
         posts,
         views,
+        viewsTotal: Math.round(views * 1.24),
+        viewsMode: 'observedDelta',
         reactions,
         topReactions: [
           { emoji: '🔥', count: 182 },
           { emoji: '👍', count: 133 },
           { emoji: '❤️', count: 97 },
         ],
+        topPosts,
         lastPublishedAt: addHours(now, -3).toISOString(),
       },
       series: {
         participants: participantsSeries,
         membership: membershipSeries,
-        views: viewsSeries,
+        views: viewsSeries.map((item) => {
+          cumulativeViews += item.views;
+          return {
+            ...item,
+            cumulativeViews,
+          };
+        }),
       },
     },
     secondary: {

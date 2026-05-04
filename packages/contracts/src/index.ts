@@ -2598,6 +2598,19 @@ export const channelStatsReactionSchema = z.object({
 });
 export type ChannelStatsReaction = z.infer<typeof channelStatsReactionSchema>;
 
+export const channelStatsViewModeSchema = z.enum(['observedDelta', 'latestTotal']);
+export type ChannelStatsViewMode = z.infer<typeof channelStatsViewModeSchema>;
+
+export const channelStatsTopPostSchema = z.object({
+  messageId: z.string(),
+  publishedAt: z.string().datetime(),
+  url: z.string().trim().max(2_048).nullable(),
+  views: z.number().int().min(0),
+  viewsDelta: z.number().int().min(0),
+  reactions: z.number().int().min(0),
+});
+export type ChannelStatsTopPost = z.infer<typeof channelStatsTopPostSchema>;
+
 export const channelStatsResponseSchema = z.object({
   channel: z.object({
     id: z.string(),
@@ -2624,8 +2637,11 @@ export const channelStatsResponseSchema = z.object({
     content: z.object({
       posts: z.number().int().min(0),
       views: z.number().int().min(0),
+      viewsTotal: z.number().int().min(0),
+      viewsMode: channelStatsViewModeSchema,
       reactions: z.number().int().min(0),
       topReactions: z.array(channelStatsReactionSchema),
+      topPosts: z.array(channelStatsTopPostSchema),
       lastPublishedAt: z.string().datetime().nullable(),
     }),
     series: z.object({
@@ -2646,6 +2662,7 @@ export const channelStatsResponseSchema = z.object({
         z.object({
           at: z.string().datetime(),
           views: z.number().int().min(0),
+          cumulativeViews: z.number().int().min(0),
         }),
       ),
     }),

@@ -338,6 +338,7 @@ function createPrismaMock() {
     },
     channelPostViewSnapshot: {
       create: jest.fn().mockResolvedValue(undefined),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     chatRules: {
       upsert: jest.fn().mockResolvedValue({
@@ -14871,22 +14872,47 @@ describe('AdminService.getChannelStats', () => {
     });
     prisma.channelPost.findMany.mockResolvedValue([
       {
+        id: 'post-1',
+        messageId: 'mid-1',
         publishedAt: new Date('2026-03-03T07:00:00.000Z'),
+        url: 'https://max.ru/news/post-1',
         latestViews: 150,
         latestReactionsTotal: 5,
         latestReactions: [
           { emoji: '🔥', count: 3 },
           { emoji: '👍', count: 2 },
         ],
+        latestSnapshotAt: new Date('2026-03-07T11:00:00.000Z'),
       },
       {
+        id: 'post-2',
+        messageId: 'mid-2',
         publishedAt: new Date('2026-03-06T14:00:00.000Z'),
+        url: 'https://max.ru/news/post-2',
         latestViews: 260,
         latestReactionsTotal: 7,
         latestReactions: [
           { emoji: '🔥', count: 4 },
           { emoji: '❤️', count: 3 },
         ],
+        latestSnapshotAt: new Date('2026-03-07T11:00:00.000Z'),
+      },
+    ]);
+    prisma.channelPostViewSnapshot.findMany.mockResolvedValue([
+      {
+        channelPostId: 'post-1',
+        views: 100,
+        capturedAt: new Date('2026-03-03T08:00:00.000Z'),
+      },
+      {
+        channelPostId: 'post-1',
+        views: 150,
+        capturedAt: new Date('2026-03-07T11:00:00.000Z'),
+      },
+      {
+        channelPostId: 'post-2',
+        views: 260,
+        capturedAt: new Date('2026-03-07T11:00:00.000Z'),
       },
     ]);
     prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
@@ -14967,11 +14993,31 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.content).toEqual({
       posts: 2,
       views: 410,
+      viewsTotal: 410,
+      viewsMode: 'observedDelta',
       reactions: 12,
       topReactions: [
         { emoji: '🔥', count: 7 },
         { emoji: '❤️', count: 3 },
         { emoji: '👍', count: 2 },
+      ],
+      topPosts: [
+        {
+          messageId: 'mid-2',
+          publishedAt: '2026-03-06T14:00:00.000Z',
+          url: 'https://max.ru/news/post-2',
+          views: 260,
+          viewsDelta: 260,
+          reactions: 7,
+        },
+        {
+          messageId: 'mid-1',
+          publishedAt: '2026-03-03T07:00:00.000Z',
+          url: 'https://max.ru/news/post-1',
+          views: 150,
+          viewsDelta: 150,
+          reactions: 5,
+        },
       ],
       lastPublishedAt: '2026-03-06T14:00:00.000Z',
     });
@@ -15178,10 +15224,14 @@ describe('AdminService.getChannelStats', () => {
     });
     prisma.channelPost.findMany.mockResolvedValue([
       {
+        id: 'post-1',
+        messageId: 'mid-1',
         publishedAt: new Date('2026-03-07T09:00:00.000Z'),
+        url: null,
         latestViews: 44,
         latestReactionsTotal: 0,
         latestReactions: null,
+        latestSnapshotAt: null,
       },
     ]);
     prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
@@ -15243,8 +15293,20 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.content).toEqual({
       posts: 1,
       views: 44,
+      viewsTotal: 44,
+      viewsMode: 'latestTotal',
       reactions: 0,
       topReactions: [],
+      topPosts: [
+        {
+          messageId: 'mid-1',
+          publishedAt: '2026-03-07T09:00:00.000Z',
+          url: null,
+          views: 44,
+          viewsDelta: 44,
+          reactions: 0,
+        },
+      ],
       lastPublishedAt: '2026-03-07T09:00:00.000Z',
     });
     expect(result.secondary.suggestionsFailed).toBe(1);

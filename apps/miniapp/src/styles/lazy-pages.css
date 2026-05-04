@@ -16570,6 +16570,10 @@
     align-items: start;
   }
 
+  .channel-insights__summary--command {
+    padding: 16px 0 0;
+  }
+
   .channel-insights__summary > .channel-insights__summary-head .channel-insights__eyebrow {
     display: none;
   }
@@ -16626,6 +16630,10 @@
     gap: 10px;
   }
 
+  .channel-insights__summary--command {
+    padding: 14px 0 0;
+  }
+
   .channel-insights__summary-head {
     gap: 10px;
   }
@@ -16675,6 +16683,18 @@
 
   .channel-insights__ledger-metric span {
     font-size: 0.68rem;
+  }
+
+  .channel-stats-graph__summary-chips {
+    display: none;
+  }
+
+  .channel-stats-graph__canvas {
+    padding: 6px;
+  }
+
+  .channel-stats-graph__svg {
+    height: 154px;
   }
 }
 
