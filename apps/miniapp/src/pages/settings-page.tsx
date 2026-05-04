@@ -269,6 +269,8 @@ const COMMERCIAL_BALANCED_MAX = 69;
 const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
+const BROADCAST_MAINTENANCE_NOTICE_KEY = 'maxim:broadcast-maintenance-notice:2026-05-05';
+const BROADCAST_MAINTENANCE_NOTICE_END_MS = new Date('2026-05-05T23:59:59+03:00').getTime();
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const LINK_BOT_BUTTON_GROUP = {
   buttonsKey: 'linkBotButtons',
@@ -2040,6 +2042,27 @@ function areBroadcastPlannerStatesEqual(
   );
 }
 
+function shouldShowBroadcastMaintenanceNotice(): boolean {
+  if (Date.now() > BROADCAST_MAINTENANCE_NOTICE_END_MS) {
+    return false;
+  }
+
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    if (window.sessionStorage.getItem(BROADCAST_MAINTENANCE_NOTICE_KEY) === '1') {
+      return false;
+    }
+
+    window.sessionStorage.setItem(BROADCAST_MAINTENANCE_NOTICE_KEY, '1');
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 function WarnMessageEditor({
   editorKey,
   botSpeechStyle,
@@ -2177,6 +2200,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
+  const mailingMaintenanceNoticeShownRef = useRef(false);
   const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const rulesDraftRef = useRef<ChatRules | null>(null);
@@ -5508,6 +5532,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       window.clearInterval(timerId);
     };
   }, [expandedSections.mailing, hasActiveManagedBroadcastCountdown]);
+
+  useEffect(() => {
+    if (!expandedSections.mailing || mailingMaintenanceNoticeShownRef.current) {
+      return;
+    }
+
+    if (!shouldShowBroadcastMaintenanceNotice()) {
+      return;
+    }
+
+    mailingMaintenanceNoticeShownRef.current = true;
+    pushToast({
+      tone: 'info',
+      title: 'Техработы 5 мая',
+      description: 'Рассылка может временно работать нестабильно.',
+    });
+  }, [expandedSections.mailing, pushToast]);
 
   useHintPopoverAutoPosition(openHintKey !== null);
 

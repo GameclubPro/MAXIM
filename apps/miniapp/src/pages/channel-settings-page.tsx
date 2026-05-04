@@ -107,6 +107,8 @@ type ChannelSettingsHintKey =
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const MAX_BROADCAST_TEXT_LENGTH = 2_000;
+const BROADCAST_MAINTENANCE_NOTICE_KEY = 'maxim:broadcast-maintenance-notice:2026-05-05';
+const BROADCAST_MAINTENANCE_NOTICE_END_MS = new Date('2026-05-05T23:59:59+03:00').getTime();
 const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 const CHANNEL_SUGGESTION_ENTRY_MODE_OPTIONS: Array<{
   value: ChannelSuggestionEntryMode;
@@ -159,6 +161,28 @@ function areBroadcastPlannerStatesEqual(
     left.isConfirmed === right.isConfirmed
   );
 }
+
+function shouldShowBroadcastMaintenanceNotice(): boolean {
+  if (Date.now() > BROADCAST_MAINTENANCE_NOTICE_END_MS) {
+    return false;
+  }
+
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    if (window.sessionStorage.getItem(BROADCAST_MAINTENANCE_NOTICE_KEY) === '1') {
+      return false;
+    }
+
+    window.sessionStorage.setItem(BROADCAST_MAINTENANCE_NOTICE_KEY, '1');
+    return true;
+  } catch {
+    return true;
+  }
+}
+
 const LazySettingsHandoffState = lazy(() => import('../components/handoff'));
 const LazyBroadcastSchedulePlanner = lazy(() =>
   import('../components/broadcast-schedule-planner').then((module) => ({
@@ -772,6 +796,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
+  const broadcastMaintenanceNoticeShownRef = useRef(false);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
   const searchParams = new URLSearchParams(location.search);
   const focusSection = searchParams.get('focus');
@@ -1037,6 +1062,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       window.clearInterval(timerId);
     };
   }, []);
+
+  useEffect(() => {
+    if (!expandedSections.broadcast || broadcastMaintenanceNoticeShownRef.current) {
+      return;
+    }
+
+    if (!shouldShowBroadcastMaintenanceNotice()) {
+      return;
+    }
+
+    broadcastMaintenanceNoticeShownRef.current = true;
+    pushToast({
+      tone: 'info',
+      title: 'Техработы 5 мая',
+      description: 'Рассылка может временно работать нестабильно.',
+    });
+  }, [expandedSections.broadcast, pushToast]);
 
   useEffect(() => {
     if (!chatId) {
