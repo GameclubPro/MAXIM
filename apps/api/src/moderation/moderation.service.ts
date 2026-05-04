@@ -5189,23 +5189,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return true;
     }
 
-    const queued = await this.enqueueAdminForwardedModerationCommand({
-      chatId,
-      target,
-      actor,
-      command,
-      commandMessageId: messageId,
-      settings,
-    });
-    if (queued) {
-      await this.sendGroupAdminCommandNotice({
-        chatId,
-        settings,
-        text: this.buildQueuedGroupAdminCommandAcceptedNotice(command, target),
-      });
-      return true;
-    }
-
     try {
       const result =
         command.action === 'BAN'
@@ -5264,72 +5247,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return true;
-  }
-
-  private buildQueuedGroupAdminCommandAcceptedNotice(
-    command: Exclude<AdminForwardedModerationCommand, { action: 'RULES' }>,
-    target: ForwardedModerationTarget,
-  ): string {
-    const targetLabel = this.formatUserLabel(target.senderName ?? undefined, target.userId);
-    if (command.action === 'BAN') {
-      return `Принял команду: выполняю бан для ${targetLabel}.`;
-    }
-
-    if (command.mutePermanent) {
-      return `Принял команду: выполняю мут бессрочно для ${targetLabel}.`;
-    }
-
-    return `Принял команду: выполняю мут на ${
-      command.muteDurationHours ?? DEFAULT_MUTE_DURATION_HOURS
-    }ч для ${targetLabel}.`;
-  }
-
-  private async enqueueAdminForwardedModerationCommand(params: {
-    chatId: string;
-    target: ForwardedModerationTarget;
-    actor: AuthUser;
-    command: Exclude<AdminForwardedModerationCommand, { action: 'RULES' }>;
-    commandMessageId: string;
-    settings: ChatSettings;
-  }): Promise<boolean> {
-    const enqueueCommand = (
-      this.adminService as
-        | (AdminService & {
-            enqueueManualGroupModerationCommand?: (params: {
-              sourceChatId: string;
-              targetUserId: string;
-              targetSenderName?: string | null;
-              targetMessageId?: string | null;
-              commandMessageId: string;
-              actor: AuthUser;
-              action: 'BAN' | 'MUTE';
-              muteDurationHours?: number | null;
-              mutePermanent?: boolean;
-              deleteBotMessagesEnabled: boolean;
-              deleteBotMessagesDelayMinutes: number;
-            }) => Promise<boolean>;
-          })
-        | undefined
-    )?.enqueueManualGroupModerationCommand;
-
-    if (typeof enqueueCommand !== 'function') {
-      return false;
-    }
-
-    return enqueueCommand.call(this.adminService, {
-      sourceChatId: params.chatId,
-      targetUserId: params.target.userId,
-      targetSenderName: params.target.senderName,
-      targetMessageId: params.target.messageId,
-      commandMessageId: params.commandMessageId,
-      actor: params.actor,
-      action: params.command.action,
-      muteDurationHours: params.command.action === 'MUTE' ? params.command.muteDurationHours : null,
-      mutePermanent:
-        params.command.action === 'MUTE' ? params.command.mutePermanent === true : false,
-      deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
-    });
   }
 
   private parseAdminForwardedModerationCommand(

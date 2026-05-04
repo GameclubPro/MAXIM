@@ -8420,7 +8420,7 @@ describe('ModerationService', () => {
     ).toBe(true);
   });
 
-  it('queues group forwarded moderation commands when async admin command handling is available', async () => {
+  it('executes group forwarded moderation commands immediately when async fanout is available', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8482,30 +8482,27 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
-    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
+    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
+    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
       expect.objectContaining({
-        sourceChatId: 'chat-1',
-        targetUserId: 'user-2',
-        targetSenderName: 'Нарушитель',
-        targetMessageId: 'mid-forward-ban-1',
-        commandMessageId: 'msg-admin-forward-ban-1',
-        action: 'BAN',
-        muteDurationHours: null,
-        deleteBotMessagesEnabled: true,
-        deleteBotMessagesDelayMinutes: 3,
-        actor: expect.objectContaining({
-          userId: 'admin-1',
-          chatId: 'chat-1',
-        }),
+        userId: 'admin-1',
+        chatId: 'chat-1',
       }),
+      'group_command',
     );
-    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-forward-ban-1', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-ban-1', {
+      immediate: true,
+    });
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Принял команду: выполняю бан'),
+      expect.stringContaining('Пользователь [Нарушитель](max://user/user-2) забанен.'),
       { textFormat: 'markdown' },
       expect.objectContaining({
         immediate: true,
