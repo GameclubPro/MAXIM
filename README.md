@@ -19,6 +19,7 @@ Production-ready monorepo for MAX chat moderation bot and admin mini-app.
 5. Run mini-app: `npm run dev --workspace @maxim/miniapp`.
 
 The `.env.example` file now includes a multi-bot example:
+
 - the default bot stays the primary visible bot,
 - `MAX_ENTRY_BOT_ID` keeps `start` / `startapp` links on one canonical entry bot even when ownership is split across multiple bots,
 - additional bots are listed in `MAX_BOTS_JSON`,
@@ -27,12 +28,34 @@ The `.env.example` file now includes a multi-bot example:
 ## Standalone Bot On The Same VPS
 
 For an isolated custom bot that must not share the main multi-bot registry, use the dedicated standalone stack instead of `MAX_BOTS_JSON`:
+
 - env template: `infra/env/reshenie.env.example`
 - compose project: `infra/docker-compose.reshenie.yml`
 - VPS deploy: `./infra/scripts/vps-pull-build-up-reshenie.sh main`
 
 This stack runs the same API image as a separate single-process service with its own Postgres, Redis, webhook path, and ignored root env file `.env.reshenie`.
 It also ships its own mini-app under `/reshenie/app/`, so `APP_BASE_URL=https://maxim.play-team.ru/reshenie` stays consistent.
+
+## Prod / VPS Access From Any Device
+
+Each local device should keep its own ignored VPS access config:
+
+```sh
+cp infra/env/vps.env.example .env.vps
+$EDITOR .env.vps
+./infra/scripts/vps-connect.sh doctor
+```
+
+The wrapper runs repo-standard commands on the VPS without storing secrets in git:
+
+```sh
+./infra/scripts/vps-connect.sh shell
+./infra/scripts/vps-connect.sh health
+./infra/scripts/vps-connect.sh deploy main miniapp-static
+./infra/scripts/vps-connect.sh deploy main api-ingress api-admin api-enqueue api-moderation api-moderation-critical api-moderation-join api-moderation-realtime-b api-moderation-realtime-c api-moderation-realtime-d api-moderation-background api-action
+```
+
+`npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper. If direct SSH is unavailable, configure the optional Yandex Cloud fields in `.env.vps` and use `./infra/scripts/vps-connect.sh yc-shell` for manual recovery.
 
 ## Mini-app mobile emulator
 

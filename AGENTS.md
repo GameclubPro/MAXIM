@@ -1,11 +1,13 @@
 # Agent Notes
 
 ## Purpose
+
 - This file should accelerate work, not override the repo.
 - If `AGENTS.md` conflicts with `package.json`, Docker Compose, scripts, or the current code, trust the repo and update this file.
 - Keep this file short, stable, and repo-verified. Do not store temporary incidents, dated prod observations, or assumptions that will drift.
 
 ## Core workflow
+
 - For runtime-affecting changes in `apps/api`, `apps/miniapp`, Prisma, Docker, or MAX integration, the default finish is: local validation plus VPS deploy, unless the user explicitly says not to deploy.
 - Docs, `AGENTS.md`, `README.md`, test-only changes, and cleanup changes do not require VPS deploy unless the user asks for it.
 - Prefer repo scripts over long manual sequences:
@@ -32,6 +34,7 @@
 - If `apps/api/prisma/schema.prisma` changes, include a migration before push.
 
 ## Local development
+
 - Quick start:
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`
   - `npm run dev --workspace @maxim/api`
@@ -46,10 +49,15 @@
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 
 ## Deploy and VPS
+
 - Primary aliases, if configured locally:
   - `ssh maxim-vps`
   - `ssh maxim-vps-edge`
   - `ssh maxim-vps-legacy`
+- Portable repo-local access from any device:
+  - copy `infra/env/vps.env.example` to root `.env.vps` and keep it out of git
+  - verify with `./infra/scripts/vps-connect.sh doctor`
+  - use `./infra/scripts/vps-connect.sh shell|health|ps|logs <service>|deploy main [services...]`
 - If plain SSH stalls before the banner or times out, treat that as a Yandex Cloud access issue first. Prefer `yc compute ssh` as the recovery path and verify that the VM security group allows `22/tcp` from the current public IP.
 - Keep Yandex Cloud service-account keys only in local ignored files or configured `yc` profiles, never in git.
 - Use `docker compose` only.
@@ -75,6 +83,7 @@
 - If `/app/` returns `502`, check `docker compose ps miniapp-static` first.
 
 ## MAX integration
+
 - For MAX Bot API, Mini Apps, `init_data`, webhook behavior, and deep links, verify against current official MAX docs instead of memory.
 - Source priority:
   1. `https://dev.max.ru/docs/`
@@ -93,6 +102,7 @@
 - For MAX deep links, keep `startapp` payloads within the current documented constraints and use MAX-specific navigation only for MAX URLs.
 
 ## Data model and product rules
+
 - Multi-bot chat ownership is modeled as `Chat.primaryBotId` plus `ChatBotMembership`. Treat `Chat.botId` as transitional compatibility only.
 - Managed entities are aggregated per unique chat or channel. Do not duplicate cards per bot.
 - The public mini app should not expose internal primary, standby, or execution-owner details.
@@ -102,6 +112,7 @@
 - Managed-entities refresh is async. Diagnose `CHAT` and `CHANNEL` separately and trust refresh state/cursor, not only the first response.
 
 ## Repo hygiene
+
 - Do not commit secrets, local exports, dumps, build artifacts, or one-off debug files.
 - Safe cleanup targets include `dist/`, `coverage/`, screenshot artifacts, and temporary root debug exports.
 - Keep local agent/tooling traces ignored. Repo-local Codex leftovers such as `.codex` must not remain tracked or untracked at handoff.
