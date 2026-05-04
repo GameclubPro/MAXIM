@@ -2563,11 +2563,19 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
       participantsCount: runningParticipants,
     };
   });
+  const viewWeights = Array.from({ length: points }, (_, index) => {
+    const progress = points > 1 ? index / (points - 1) : 0;
+    const campaignLift = index === Math.floor(points * 0.62) ? 2.2 : 0;
+    const latePulse = index >= points - 2 ? 0.9 : 0;
+    return 1 + progress * 0.9 + campaignLift + latePulse;
+  });
+  const targetViews = range === '24h' ? 38_400 : range === '7d' ? 78_000 : 248_000;
+  const viewsDistribution = distributeTotal(targetViews, viewWeights);
   const viewsSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(from.getTime() + stepMs * index);
     return {
       at: at.toISOString(),
-      views: Math.round(3_200 + index * 540 + (range === '30d' ? 1_800 : 0)),
+      views: viewsDistribution[index] ?? 0,
     };
   });
   const posts = range === '24h' ? 3 : range === '7d' ? 14 : 42;

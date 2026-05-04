@@ -37,6 +37,15 @@ type ChannelStatsRouteState = {
 
 type ChartTab = 'audience' | 'views' | 'posts';
 
+type ChartInsightTone = 'accent' | 'success' | 'danger' | 'warning' | 'neutral';
+
+type ChartInsight = {
+  tone: ChartInsightTone;
+  label: string;
+  value: string;
+  detail: string;
+};
+
 type AudienceChartPoint = {
   at: string;
   participantsCount: number | null;
@@ -53,9 +62,11 @@ type AudienceChartPoint = {
 type ViewChartPoint = {
   at: string;
   views: number;
+  cumulativeViews: number;
   x: number;
   y: number;
   height: number;
+  cumulativeY: number;
 };
 
 const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
@@ -327,6 +338,164 @@ function buildAudienceAreaPath(
   )} ${floorY.toFixed(2)} Z`;
 }
 
+function findPeakIndex<TItem>(items: TItem[], resolveValue: (item: TItem) => number): number {
+  let peakIndex = -1;
+  let peakValue = Number.NEGATIVE_INFINITY;
+
+  items.forEach((item, index) => {
+    const value = resolveValue(item);
+    if (value > peakValue) {
+      peakValue = value;
+      peakIndex = index;
+    }
+  });
+
+  return peakIndex;
+}
+
+function getFirstFiniteParticipant(points: AudienceChartPoint[]): number | null {
+  for (const point of points) {
+    if (typeof point.participantsCount === 'number') {
+      return point.participantsCount;
+    }
+  }
+
+  return null;
+}
+
+function getLastFiniteParticipant(points: AudienceChartPoint[]): number | null {
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    const point = points[index];
+    if (point && typeof point.participantsCount === 'number') {
+      return point.participantsCount;
+    }
+  }
+
+  return null;
+}
+
+function buildAudienceInsights(
+  stats: ChannelStatsResponse,
+  points: AudienceChartPoint[],
+): ChartInsight[] {
+  const periodNet =
+    stats.official.audience.net ??
+    stats.official.audience.joined - (stats.official.audience.left ?? 0);
+  const firstParticipants = getFirstFiniteParticipant(points);
+  const lastParticipants = getLastFiniteParticipant(points);
+  const participantTrend =
+    firstParticipants !== null && lastParticipants !== null
+      ? lastParticipants - firstParticipants
+      : null;
+  const peakJoinedPoint = points[findPeakIndex(points, (point) => point.joined)] ?? null;
+  const peakLeftPoint = points[findPeakIndex(points, (point) => point.left)] ?? null;
+  const churn = stats.official.audience.joined + (stats.official.audience.left ?? 0);
+
+  const insights: ChartInsight[] = [
+    {
+      tone: periodNet > 0 ? 'success' : periodNet < 0 ? 'danger' : 'neutral',
+      label: 'Баланс',
+      value: formatSignedCount(periodNet),
+      detail: `${formatCount(stats.official.audience.joined)} вошли за период`,
+    },
+  ];
+
+  if (participantTrend !== null) {
+    insights.push({
+      tone: participantTrend > 0 ? 'accent' : participantTrend < 0 ? 'warning' : 'neutral',
+      label: 'Темп',
+      value: formatSignedCount(participantTrend),
+      detail: 'по снимкам MAX',
+    });
+  }
+
+  if (peakJoinedPoint && peakJoinedPoint.joined > 0) {
+    insights.push({
+      tone: 'success',
+      label: 'Пик входа',
+      value: formatCount(peakJoinedPoint.joined),
+      detail: formatShortDate(peakJoinedPoint.at, stats.period.bucket),
+    });
+  }
+
+  if (peakLeftPoint && peakLeftPoint.left > 0) {
+    insights.push({
+      tone: 'danger',
+      label: 'Отток',
+      value: formatCount(peakLeftPoint.left),
+      detail: formatShortDate(peakLeftPoint.at, stats.period.bucket),
+    });
+  } else if (churn > 0) {
+    insights.push({
+      tone: 'neutral',
+      label: 'Движение',
+      value: formatCount(churn),
+      detail: 'входы и выходы',
+    });
+  }
+
+  return insights.slice(0, 4);
+}
+
+function buildViewsInsights(
+  stats: ChannelStatsResponse,
+  bars: ViewChartPoint[],
+  averageViews: number,
+): ChartInsight[] {
+  const peakBar = bars[findPeakIndex(bars, (bar) => bar.views)] ?? null;
+  const cumulativeViews = bars[bars.length - 1]?.cumulativeViews ?? stats.official.content.views;
+  const posts = stats.official.content.posts;
+  const reactions = stats.official.content.reactions;
+
+  return [
+    {
+      tone: 'accent',
+      label: 'Пик',
+      value: formatCount(peakBar?.views ?? 0),
+      detail: peakBar ? formatShortDate(peakBar.at, stats.period.bucket) : 'нет данных',
+    },
+    {
+      tone: 'neutral',
+      label: 'Среднее',
+      value: formatCount(averageViews),
+      detail: 'на точку графика',
+    },
+    {
+      tone: 'success',
+      label: 'Накоплено',
+      value: formatCount(cumulativeViews),
+      detail: 'по периоду',
+    },
+    {
+      tone: reactions > 0 ? 'warning' : 'neutral',
+      label: 'Контент',
+      value: formatCount(posts),
+      detail: `${formatCount(reactions)} реакций`,
+    },
+  ];
+}
+
+function ChartInsightStrip({ insights }: { insights: ChartInsight[] }) {
+  if (insights.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="channel-stats-graph__insights" aria-label="Ключевые точки графика">
+      {insights.map((insight) => (
+        <span
+          key={`${insight.label}-${insight.value}-${insight.detail}`}
+          className={`channel-stats-graph__insight channel-stats-graph__insight--${insight.tone}`}
+        >
+          <small>{insight.label}</small>
+          <strong>{insight.value}</strong>
+          <em>{insight.detail}</em>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function buildAudienceChart(stats: ChannelStatsResponse): {
   points: AudienceChartPoint[];
   linePath: string;
@@ -453,6 +622,9 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
 function buildViewsChart(stats: ChannelStatsResponse): {
   bars: ViewChartPoint[];
   maxViews: number;
+  cumulativeMax: number;
+  cumulativeLinePath: string;
+  cumulativeAreaPath: string;
   guideYs: number[];
   leftPad: number;
   rightPad: number;
@@ -463,6 +635,9 @@ function buildViewsChart(stats: ChannelStatsResponse): {
     return {
       bars: [],
       maxViews: 0,
+      cumulativeMax: 0,
+      cumulativeLinePath: '',
+      cumulativeAreaPath: '',
       guideYs: [],
       leftPad: 18,
       rightPad: 14,
@@ -479,24 +654,40 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   const plotWidth = width - leftPad - rightPad;
   const usableHeight = height - topPad - bottomPad;
   const maxViews = Math.max(...series.map((item) => item.views), 0);
+  const cumulativeMax = Math.max(...series.map((item) => item.cumulativeViews), 0);
   const scale = maxViews > 0 ? usableHeight / maxViews : 0;
+  const cumulativeRange = Math.max(1, cumulativeMax);
+
+  const bars = series.map((item, index) => {
+    const x =
+      series.length === 1
+        ? width / 2
+        : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
+    const barHeight = item.views * scale;
+    return {
+      at: item.at,
+      views: item.views,
+      cumulativeViews: item.cumulativeViews,
+      x,
+      y: height - bottomPad - barHeight,
+      height: barHeight,
+      cumulativeY:
+        topPad + ((cumulativeMax - item.cumulativeViews) / cumulativeRange) * usableHeight,
+    };
+  });
+  const cumulativePoints = bars.map((bar) => ({ x: bar.x, y: bar.cumulativeY }));
+  const cumulativeLinePath = buildAudiencePath(cumulativePoints);
 
   return {
-    bars: series.map((item, index) => {
-      const x =
-        series.length === 1
-          ? width / 2
-          : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
-      const barHeight = item.views * scale;
-      return {
-        at: item.at,
-        views: item.views,
-        x,
-        y: height - bottomPad - barHeight,
-        height: barHeight,
-      };
-    }),
+    bars,
     maxViews,
+    cumulativeMax,
+    cumulativeLinePath,
+    cumulativeAreaPath: buildAudienceAreaPath(
+      cumulativeLinePath,
+      cumulativePoints,
+      height - bottomPad,
+    ),
     guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
     leftPad,
     rightPad,
@@ -525,6 +716,11 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
   const activeParticipantsLabelWidth = Math.max(58, activeParticipantsLabel.length * 7 + 18);
   const activeNet = activePoint ? activePoint.joined - activePoint.left : 0;
+  const audienceInsights = buildAudienceInsights(stats, chart.points);
+  const maxMembershipActivity = Math.max(
+    ...chart.points.map((point) => point.joined + point.left),
+    0,
+  );
   const activeGuideLabel = activePoint
     ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
         activePoint.participantsCount,
@@ -572,6 +768,8 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             </div>
           </div>
 
+          <ChartInsightStrip insights={audienceInsights} />
+
           <div
             className="channel-stats-graph__canvas channel-stats-graph__canvas--audience"
             tabIndex={0}
@@ -616,6 +814,26 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
             }}
           >
             <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+              <defs>
+                <linearGradient id="channel-audience-line" x1="50" x2="306" y1="20" y2="78">
+                  <stop offset="0" stopColor="#5f9dff" />
+                  <stop offset="0.54" stopColor="#0b84ff" />
+                  <stop offset="1" stopColor="#35c59f" />
+                </linearGradient>
+                <linearGradient id="channel-audience-area" x1="0" x2="0" y1="18" y2="92">
+                  <stop offset="0" stopColor="#0b84ff" stopOpacity="0.2" />
+                  <stop offset="0.72" stopColor="#35c59f" stopOpacity="0.07" />
+                  <stop offset="1" stopColor="#35c59f" stopOpacity="0" />
+                </linearGradient>
+                <linearGradient id="channel-joined-bar" x1="0" x2="0" y1="106" y2="138">
+                  <stop offset="0" stopColor="#5ee2a8" />
+                  <stop offset="1" stopColor="#1fa97e" />
+                </linearGradient>
+                <linearGradient id="channel-left-bar" x1="0" x2="0" y1="138" y2="154">
+                  <stop offset="0" stopColor="#ff9aa9" />
+                  <stop offset="1" stopColor="#e45363" />
+                </linearGradient>
+              </defs>
               {activePoint ? (
                 <rect
                   x={activePoint.x - activeBandWidth / 2}
@@ -661,7 +879,16 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                 className="channel-stats-graph__baseline"
               />
               {chart.hasLine ? (
-                <path d={chart.areaPath} className="channel-stats-graph__area" />
+                <path
+                  d={chart.areaPath}
+                  className="channel-stats-graph__area channel-stats-graph__area--audience"
+                />
+              ) : null}
+              {chart.hasLine ? (
+                <path
+                  d={chart.linePath}
+                  className="channel-stats-graph__line-glow channel-stats-graph__line-glow--audience"
+                />
               ) : null}
               {activePoint ? (
                 <line
@@ -698,8 +925,48 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   ) : null}
                 </g>
               ))}
+              <line
+                x1={chart.leftPad}
+                y1="158"
+                x2={320 - chart.rightPad}
+                y2="158"
+                className="channel-stats-graph__event-rail"
+              />
+              {chart.points.map((point, index) => {
+                const activity = point.joined + point.left;
+                const tone =
+                  point.left > point.joined ? 'left' : point.joined > 0 ? 'joined' : 'neutral';
+                const opacity =
+                  maxMembershipActivity > 0
+                    ? clamp(activity / maxMembershipActivity, 0.32, 1)
+                    : 0.28;
+
+                return (
+                  <circle
+                    key={`event-${labels[index]?.at ?? index}`}
+                    cx={point.x}
+                    cy="158"
+                    r={safeActiveIndex === index ? 4.4 : 2.8}
+                    style={{ opacity }}
+                    className={`channel-stats-graph__event-dot channel-stats-graph__event-dot--${tone} ${
+                      safeActiveIndex === index ? 'is-active' : ''
+                    }`}
+                  />
+                );
+              })}
               {chart.hasLine ? (
-                <path d={chart.linePath} className="channel-stats-graph__line" />
+                <path
+                  d={chart.linePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--audience"
+                />
+              ) : null}
+              {chart.hasLine && activePoint ? (
+                <circle
+                  cx={activePoint.x}
+                  cy={activePoint.y}
+                  r="10"
+                  className="channel-stats-graph__dot-pulse"
+                />
               ) : null}
               {chart.hasLine
                 ? chart.points.map((point, index) => (
@@ -773,12 +1040,14 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
   const totalViews = labels.reduce((sum, item) => sum + item.views, 0);
   const averageViews = labels.length > 0 ? Math.round(totalViews / labels.length) : 0;
+  const viewInsights = buildViewsInsights(stats, chart.bars, averageViews);
   const slotWidth =
     chart.bars.length > 1
       ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
       : 44;
   const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
   const activeViewsLabel = formatCount(activeBar?.views ?? null);
+  const activeCumulativeLabel = formatCount(activeBar?.cumulativeViews ?? chart.cumulativeMax);
   const activeViewsLabelWidth = Math.max(58, activeViewsLabel.length * 7 + 18);
   const calloutX = activeBar
     ? clamp(
@@ -791,7 +1060,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const activeGuideLabel = activeBar
     ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
         activeBar.views,
-      )} просмотров за период`
+      )} просмотров за период, ${formatCount(activeBar.cumulativeViews)} накопительно`
     : 'Данные по просмотрам недоступны';
   const modeLabel =
     stats.official.content.viewsMode === 'observedDelta'
@@ -822,10 +1091,15 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 Среднее {formatCount(averageViews)}
               </span>
               <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
+                Накоплено {activeCumulativeLabel}
+              </span>
+              <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
                 {modeLabel}
               </span>
             </div>
           </div>
+
+          <ChartInsightStrip insights={viewInsights} />
 
           <div
             className="channel-stats-graph__canvas"
@@ -871,6 +1145,28 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
             }}
           >
             <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+              <defs>
+                <linearGradient id="channel-views-bar" x1="0" x2="0" y1="18" y2="162">
+                  <stop offset="0" stopColor="#58a6ff" />
+                  <stop offset="1" stopColor="#0b84ff" />
+                </linearGradient>
+                <linearGradient
+                  id="channel-views-cumulative-line"
+                  x1="18"
+                  x2="306"
+                  y1="18"
+                  y2="162"
+                >
+                  <stop offset="0" stopColor="#9f7aea" />
+                  <stop offset="0.58" stopColor="#0b84ff" />
+                  <stop offset="1" stopColor="#35c59f" />
+                </linearGradient>
+                <linearGradient id="channel-views-cumulative-area" x1="0" x2="0" y1="16" y2="162">
+                  <stop offset="0" stopColor="#0b84ff" stopOpacity="0.16" />
+                  <stop offset="0.74" stopColor="#9f7aea" stopOpacity="0.05" />
+                  <stop offset="1" stopColor="#9f7aea" stopOpacity="0" />
+                </linearGradient>
+              </defs>
               {activeBar ? (
                 <rect
                   x={activeBar.x - activeBandWidth / 2}
@@ -898,6 +1194,18 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                 y2={chart.baselineY}
                 className="channel-stats-graph__baseline"
               />
+              {chart.cumulativeAreaPath ? (
+                <path
+                  d={chart.cumulativeAreaPath}
+                  className="channel-stats-graph__area channel-stats-graph__area--views-cumulative"
+                />
+              ) : null}
+              {chart.cumulativeLinePath ? (
+                <path
+                  d={chart.cumulativeLinePath}
+                  className="channel-stats-graph__line-glow channel-stats-graph__line-glow--views"
+                />
+              ) : null}
               {activeBar ? (
                 <line
                   x1={activeBar.x}
@@ -920,6 +1228,28 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
                   }`}
                 />
               ))}
+              {chart.cumulativeLinePath ? (
+                <path
+                  d={chart.cumulativeLinePath}
+                  className="channel-stats-graph__line channel-stats-graph__line--views-cumulative"
+                />
+              ) : null}
+              {activeBar ? (
+                <circle
+                  cx={activeBar.x}
+                  cy={activeBar.cumulativeY}
+                  r="8"
+                  className="channel-stats-graph__dot-pulse channel-stats-graph__dot-pulse--views"
+                />
+              ) : null}
+              {activeBar ? (
+                <circle
+                  cx={activeBar.x}
+                  cy={activeBar.cumulativeY}
+                  r="4.3"
+                  className="channel-stats-graph__dot channel-stats-graph__dot--views is-active"
+                />
+              ) : null}
               {activeBar ? (
                 <g>
                   <rect
@@ -994,13 +1324,15 @@ function TopPostsChart({ stats }: { stats: ChannelStatsResponse }) {
           const row = (
             <>
               <div className="channel-posts-chart__row-head">
-                <span>{title}</span>
+                <span className="channel-posts-chart__rank">#{index + 1}</span>
+                <span className="channel-posts-chart__title">{title}</span>
                 <strong>{formatCount(value)}</strong>
               </div>
               <div className="channel-posts-chart__bar" aria-hidden="true">
                 <span style={{ width: `${width}%` }} />
               </div>
               <div className="channel-posts-chart__row-meta">
+                <small>Прирост {formatCount(post.viewsDelta)}</small>
                 <small>{formatDateTime(post.publishedAt)}</small>
                 <small>{formatCount(post.reactions)} реакций</small>
                 <small>{formatCount(post.views)} всего</small>

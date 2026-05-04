@@ -16539,8 +16539,13 @@
   border-radius: 18px;
   border-color: rgba(214, 226, 238, 0.92);
   background:
-    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(245, 249, 253, 0.98)),
-    rgba(255, 255, 255, 0.96);
+    linear-gradient(180deg, rgba(252, 254, 255, 0.98), rgba(244, 249, 253, 0.98)),
+    linear-gradient(90deg, rgba(94, 127, 160, 0.04) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(94, 127, 160, 0.035) 1px, transparent 1px);
+  background-size:
+    100% 100%,
+    26px 26px,
+    26px 26px;
 }
 
 .channel-stats-graph__line {
@@ -16687,6 +16692,20 @@
 
   .channel-stats-graph__summary-chips {
     display: none;
+  }
+
+  .channel-stats-graph__insights {
+    grid-auto-columns: minmax(104px, 44%);
+    gap: 6px;
+  }
+
+  .channel-stats-graph__insight {
+    padding: 8px 9px 7px;
+    border-radius: 14px;
+  }
+
+  .channel-stats-graph__insight strong {
+    font-size: 0.98rem;
   }
 
   .channel-stats-graph__canvas {
