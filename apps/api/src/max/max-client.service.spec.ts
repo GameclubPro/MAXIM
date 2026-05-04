@@ -295,6 +295,47 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('splits oversized callback rows to MAX row limits', async () => {
+    const service = createService();
+
+    const buttons = Array.from({ length: 8 }, (_, index) => ({
+      type: 'callback' as const,
+      text: `B${index + 1}`,
+      payload: `p${index + 1}`,
+    }));
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [buttons],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized?.map((row) => row.length)).toEqual([7, 1]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('limits link and open_app rows to three buttons', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          { type: 'link' as const, text: 'L1', url: 'https://example.com/1' },
+          { type: 'link' as const, text: 'L2', url: 'https://example.com/2' },
+          {
+            type: 'open_app' as const,
+            text: 'App',
+            webApp: 'https://maxim.play-team.ru/app/',
+          },
+          { type: 'link' as const, text: 'L4', url: 'https://example.com/4' },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized?.map((row) => row.length)).toEqual([3, 1]);
+
+    await service.onModuleDestroy();
+  });
+
   it('supports open_app button type for native miniapp opening', async () => {
     const service = createService();
 
@@ -318,6 +359,34 @@ describe('MaxClientService inline keyboard guardrails', () => {
           text: 'Открыть miniapp',
           web_app: 'https://maxim.play-team.ru/app/',
           contact_id: '613002203036',
+        },
+      ],
+    ]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('supports clipboard button type', async () => {
+    const service = createService();
+
+    const normalized = (service as any).normalizeInlineKeyboardButtons({
+      buttons: [
+        [
+          {
+            type: 'clipboard',
+            text: 'Скопировать',
+            payload: 'promo-2026',
+          },
+        ],
+      ],
+    }) as Array<Array<Record<string, unknown>>> | null;
+
+    expect(normalized).toEqual([
+      [
+        {
+          type: 'clipboard',
+          text: 'Скопировать',
+          payload: 'promo-2026',
         },
       ],
     ]);

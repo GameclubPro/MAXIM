@@ -163,6 +163,12 @@ export type MaxRequestGeoLocationButton = {
   quick?: boolean;
 };
 
+export type MaxClipboardButton = {
+  type: 'clipboard';
+  text: string;
+  payload: string;
+};
+
 export type MaxChatButton = {
   type: 'chat';
   text: string;
@@ -190,6 +196,7 @@ export type MaxMessageButton =
   | MaxOpenAppButton
   | MaxRequestContactButton
   | MaxRequestGeoLocationButton
+  | MaxClipboardButton
   | MaxChatButton;
 
 export type MaxSendMessageOptions = {
@@ -281,6 +288,15 @@ export const MAX_API_SOURCE_TAGS = {
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
+const MAX_INLINE_KEYBOARD_ROWS = 30;
+const MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW = 7;
+const MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW = 3;
+const MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES = new Set([
+  'link',
+  'open_app',
+  'request_contact',
+  'request_geo_location',
+]);
 const DEFAULT_MAX_API_GLOBAL_RPS = 30;
 const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
 const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
@@ -3432,15 +3448,37 @@ export class MaxClientService implements OnModuleDestroy {
       (acc, row) => acc + (Array.isArray(row) ? row.length : 0),
       0,
     );
+    const requestedRows = sourceButtons.filter(
+      (row) => Array.isArray(row) && row.length > 0,
+    ).length;
     let totalButtons = 0;
     let truncated = false;
+    let rowBuffer: Array<Record<string, unknown>> = [];
+    let rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
+
+    const flushRow = (): boolean => {
+      if (rowBuffer.length === 0) {
+        return true;
+      }
+
+      if (rows.length >= MAX_INLINE_KEYBOARD_ROWS) {
+        rowBuffer = [];
+        rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
+        truncated = true;
+        return false;
+      }
+
+      rows.push(rowBuffer);
+      rowBuffer = [];
+      rowLimit = MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
+      return true;
+    };
 
     for (const row of sourceButtons) {
       if (!Array.isArray(row) || row.length === 0) {
         continue;
       }
 
-      const normalizedRow: Array<Record<string, unknown>> = [];
       for (const button of row) {
         if (totalButtons >= MAX_INLINE_KEYBOARD_BUTTONS) {
           truncated = true;
@@ -3449,26 +3487,43 @@ export class MaxClientService implements OnModuleDestroy {
 
         const normalizedButton = this.normalizeInlineKeyboardButton(button);
         if (normalizedButton) {
-          normalizedRow.push(normalizedButton);
+          const buttonRowLimit = this.resolveInlineKeyboardButtonRowLimit(normalizedButton);
+          const nextRowLimit =
+            rowBuffer.length === 0 ? buttonRowLimit : Math.min(rowLimit, buttonRowLimit);
+          if (rowBuffer.length > 0 && rowBuffer.length >= nextRowLimit && !flushRow()) {
+            break;
+          }
+          if (rows.length >= MAX_INLINE_KEYBOARD_ROWS && rowBuffer.length === 0) {
+            truncated = true;
+            break;
+          }
+
+          rowLimit = rowBuffer.length === 0 ? buttonRowLimit : Math.min(rowLimit, buttonRowLimit);
+          rowBuffer.push(normalizedButton);
           totalButtons += 1;
+
+          if (rowBuffer.length >= rowLimit && !flushRow()) {
+            break;
+          }
         }
       }
 
-      if (normalizedRow.length > 0) {
-        rows.push(normalizedRow);
-      }
+      flushRow();
 
       if (truncated) {
         break;
       }
     }
 
-    if (truncated || requestedButtons > MAX_INLINE_KEYBOARD_BUTTONS) {
+    if (truncated || requestedButtons > totalButtons || requestedRows > MAX_INLINE_KEYBOARD_ROWS) {
       this.logger.warn(
         {
           requestedButtons,
           deliveredButtons: totalButtons,
           limit: MAX_INLINE_KEYBOARD_BUTTONS,
+          requestedRows,
+          deliveredRows: rows.length,
+          rowLimit: MAX_INLINE_KEYBOARD_ROWS,
           screen: options.debugContext?.screen ?? null,
           action: options.debugContext?.action ?? null,
         },
@@ -3553,6 +3608,19 @@ export class MaxClientService implements OnModuleDestroy {
           ...(quick !== undefined ? { quick } : {}),
         };
       }
+      case 'clipboard': {
+        const payload =
+          'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
+        if (!payload) {
+          return null;
+        }
+
+        return {
+          type: 'clipboard',
+          text,
+          payload,
+        };
+      }
       case 'chat': {
         const chatTitle =
           'chatTitle' in button && typeof button.chatTitle === 'string'
@@ -3584,6 +3652,13 @@ export class MaxClientService implements OnModuleDestroy {
       default:
         return null;
     }
+  }
+
+  private resolveInlineKeyboardButtonRowLimit(button: Record<string, unknown>): number {
+    const type = typeof button.type === 'string' ? button.type.trim().toLowerCase() : '';
+    return MAX_INLINE_KEYBOARD_NARROW_BUTTON_TYPES.has(type)
+      ? MAX_INLINE_KEYBOARD_NARROW_BUTTONS_PER_ROW
+      : MAX_INLINE_KEYBOARD_BUTTONS_PER_ROW;
   }
 
   private async executeReadRequest<T>(

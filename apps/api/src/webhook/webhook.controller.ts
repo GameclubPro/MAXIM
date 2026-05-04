@@ -3,7 +3,6 @@ import {
   Controller,
   ForbiddenException,
   HttpCode,
-  HttpException,
   HttpStatus,
   Logger,
   Param,
@@ -68,7 +67,13 @@ export class WebhookController {
     const ip = request.ip;
     const allowed = await this.webhookRateLimitService.isAllowed(ip);
     if (!allowed) {
-      throw new HttpException('Webhook rate limit exceeded', HttpStatus.TOO_MANY_REQUESTS);
+      this.logger.warn(
+        {
+          botId: bot.id,
+          ip,
+        },
+        'Webhook ingress rate limit exceeded after signature validation; accepting event to avoid MAX delivery retries',
+      );
     }
 
     const update = this.parser.parse(payload, { botId: bot.id });

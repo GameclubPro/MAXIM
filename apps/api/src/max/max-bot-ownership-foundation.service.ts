@@ -34,6 +34,7 @@ type RepairRuntimeState = {
 type ChatRecord = {
   id: string;
   entityType: ChatEntityType;
+  title: string;
   botId: string | null;
   primaryBotId: string | null;
 };
@@ -51,10 +52,18 @@ type MembershipAccessSnapshot = {
   isOwner: boolean;
 };
 
-type LocalActivityBotSignal = {
+type RepairSignal = {
   chatId: string;
   botId: string | null;
+  title: string | null;
   lastEventAt: Date;
+};
+
+type RawWebhookRepairSignal = {
+  chat_id: string | null;
+  bot_id: string | null;
+  chat_title: string | null;
+  created_at: Date;
 };
 
 @Injectable()
@@ -209,6 +218,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         select: {
           id: true,
           entityType: true,
+          title: true,
           botId: true,
           primaryBotId: true,
         },
@@ -227,10 +237,20 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     ]);
 
     const membershipsByChat = this.groupMembershipsByChat(memberships);
-    const localActivityBotByChat = await this.loadLocalActivityBotSignals(
+    const localActivityRepairByChat = await this.loadLocalActivityRepairSignals(
       chats,
       membershipsByChat,
       knownBotIds,
+    );
+    const webhookRepairByChat = await this.loadWebhookRepairSignals(
+      chats,
+      membershipsByChat,
+      knownBotIds,
+      localActivityRepairByChat,
+    );
+    const repairSignalsByChat = this.mergeRepairSignals(
+      localActivityRepairByChat,
+      webhookRepairByChat,
     );
     let appliedChanges = 0;
 
@@ -244,25 +264,19 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         chat,
         chatMemberships,
         knownBotIds,
-        localActivityBotByChat.get(chat.id) ?? null,
+        repairSignalsByChat.get(chat.id) ?? null,
       );
       if (!repair) {
         continue;
       }
 
       const operations: Prisma.PrismaPromise<unknown>[] = [];
+      const chatUpdateData: Prisma.ChatUpdateInput = {};
       if (repair.nextPrimaryBotId) {
         const desiredPrimaryBotId = repair.nextPrimaryBotId;
         if (chat.primaryBotId !== desiredPrimaryBotId || chat.botId !== desiredPrimaryBotId) {
-          operations.push(
-            this.prisma.chat.update({
-              where: { id: chat.id },
-              data: {
-                primaryBotId: desiredPrimaryBotId,
-                botId: desiredPrimaryBotId,
-              },
-            }),
-          );
+          chatUpdateData.primaryBotId = desiredPrimaryBotId;
+          chatUpdateData.botId = desiredPrimaryBotId;
         }
 
         operations.push(
@@ -301,6 +315,17 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           );
         }
       }
+      if (repair.nextTitle) {
+        chatUpdateData.title = repair.nextTitle;
+      }
+      if (Object.keys(chatUpdateData).length > 0) {
+        operations.unshift(
+          this.prisma.chat.update({
+            where: { id: chat.id },
+            data: chatUpdateData,
+          }),
+        );
+      }
 
       if (operations.length === 0) {
         continue;
@@ -320,13 +345,18 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     chat: ChatRecord,
     memberships: readonly MembershipRecord[],
     knownBotIds: ReadonlySet<string>,
-    localActivityBotId: string | null = null,
-  ): { nextPrimaryBotId: string | null; activeKnownStandbyBotIds: string[] } | null {
+    repairSignal: RepairSignal | null = null,
+  ): {
+    nextPrimaryBotId: string | null;
+    nextTitle: string | null;
+    activeKnownStandbyBotIds: string[];
+  } | null {
     const primaryKnown = this.readKnownBotId(chat.primaryBotId, knownBotIds);
     const legacyKnown = this.readKnownBotId(chat.botId, knownBotIds);
-    const localActivityKnown = this.readKnownBotId(localActivityBotId, knownBotIds);
+    const signalKnown = this.readKnownBotId(repairSignal?.botId ?? null, knownBotIds);
+    const nextTitle = this.resolveRepairTitle(chat, repairSignal);
     const hasUnknownPrimary = Boolean(chat.primaryBotId && !primaryKnown);
-    if (hasUnknownPrimary) {
+    if (hasUnknownPrimary && !nextTitle) {
       return null;
     }
 
@@ -348,7 +378,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           membership.status === ChatBotMembershipStatus.REMOVED,
       );
 
-    let nextPrimaryBotId: string | null = primaryKnown;
+    let nextPrimaryBotId: string | null = hasUnknownPrimary ? null : primaryKnown;
     if (!chat.primaryBotId) {
       if (activePrimaryMembership) {
         nextPrimaryBotId = activePrimaryMembership.botId;
@@ -362,8 +392,8 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
           nextPrimaryBotId = activeKnownMemberships[0].botId;
         } else if (legacyKnown) {
           nextPrimaryBotId = legacyKnown;
-        } else if (localActivityKnown) {
-          nextPrimaryBotId = localActivityKnown;
+        } else if (signalKnown) {
+          nextPrimaryBotId = signalKnown;
         }
       }
     } else if (primaryKnown && !hasActivePrimaryMembership && hasRemovedPrimaryMembership) {
@@ -376,44 +406,49 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
       }
     }
 
-    if (!nextPrimaryBotId) {
+    if (!nextPrimaryBotId && !nextTitle) {
       return null;
     }
 
-    const activeKnownStandbyBotIds = activeKnownMemberships
-      .filter((membership) => membership.botId !== nextPrimaryBotId)
-      .map((membership) => membership.botId);
+    const activeKnownStandbyBotIds = nextPrimaryBotId
+      ? activeKnownMemberships
+          .filter((membership) => membership.botId !== nextPrimaryBotId)
+          .map((membership) => membership.botId)
+      : [];
 
-    const shouldRepair =
-      chat.primaryBotId !== nextPrimaryBotId ||
-      chat.botId !== nextPrimaryBotId ||
-      !hasActivePrimaryMembership ||
-      activeKnownMemberships.some(
-        (membership) =>
-          membership.botId !== nextPrimaryBotId &&
-          membership.role !== ChatBotMembershipRole.STANDBY,
-      ) ||
-      activeKnownMemberships.some(
-        (membership) =>
-          membership.botId === nextPrimaryBotId &&
-          membership.role !== ChatBotMembershipRole.PRIMARY,
-      );
+    const shouldRepairOwnership = Boolean(
+      nextPrimaryBotId &&
+      (chat.primaryBotId !== nextPrimaryBotId ||
+        chat.botId !== nextPrimaryBotId ||
+        !hasActivePrimaryMembership ||
+        activeKnownMemberships.some(
+          (membership) =>
+            membership.botId !== nextPrimaryBotId &&
+            membership.role !== ChatBotMembershipRole.STANDBY,
+        ) ||
+        activeKnownMemberships.some(
+          (membership) =>
+            membership.botId === nextPrimaryBotId &&
+            membership.role !== ChatBotMembershipRole.PRIMARY,
+        )),
+    );
 
-    if (!shouldRepair) {
+    if (!shouldRepairOwnership && !nextTitle) {
       return null;
     }
 
     return {
       nextPrimaryBotId,
+      nextTitle,
       activeKnownStandbyBotIds,
     };
   }
 
-  private async loadLocalActivityBotSignals(
+  private async loadLocalActivityRepairSignals(
     chats: readonly ChatRecord[],
     membershipsByChat: ReadonlyMap<string, readonly MembershipRecord[]>,
     knownBotIds: ReadonlySet<string>,
-  ): Promise<Map<string, string>> {
+  ): Promise<Map<string, RepairSignal>> {
     const knownBotIdList = Array.from(knownBotIds);
     if (knownBotIdList.length === 0) {
       return new Map();
@@ -421,7 +456,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
 
     const candidateChatIds = chats
       .filter((chat) =>
-        this.shouldUseLocalActivityBotSignal(
+        this.shouldUseLocalActivityRepairSignal(
           chat,
           membershipsByChat.get(chat.id) ?? [],
           knownBotIds,
@@ -435,33 +470,185 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     const rows = await this.prisma.managedEntityLocalActivity.findMany({
       where: {
         chatId: { in: candidateChatIds },
-        botId: { in: knownBotIdList },
+        OR: [{ botId: { in: knownBotIdList } }, { chatTitle: { not: null } }],
       },
       select: {
         chatId: true,
         botId: true,
+        chatTitle: true,
         lastEventAt: true,
       },
       orderBy: [{ chatId: 'asc' }, { lastEventAt: 'desc' }],
     });
 
-    const result = new Map<string, string>();
-    for (const row of rows as LocalActivityBotSignal[]) {
+    const result = new Map<string, RepairSignal>();
+    for (const row of rows as Array<{
+      chatId: string;
+      botId: string | null;
+      chatTitle: string | null;
+      lastEventAt: Date;
+    }>) {
       const botId = this.readKnownBotId(row.botId, knownBotIds);
-      if (!botId || result.has(row.chatId)) {
+      const title = this.readTrimmedString(row.chatTitle);
+      if ((!botId && !title) || result.has(row.chatId)) {
         continue;
       }
-      result.set(row.chatId, botId);
+      result.set(row.chatId, {
+        chatId: row.chatId,
+        botId,
+        title,
+        lastEventAt: row.lastEventAt,
+      });
     }
 
     return result;
   }
 
-  private shouldUseLocalActivityBotSignal(
+  private async loadWebhookRepairSignals(
+    chats: readonly ChatRecord[],
+    membershipsByChat: ReadonlyMap<string, readonly MembershipRecord[]>,
+    knownBotIds: ReadonlySet<string>,
+    existingSignals: ReadonlyMap<string, RepairSignal>,
+  ): Promise<Map<string, RepairSignal>> {
+    const knownBotIdList = Array.from(knownBotIds);
+    if (knownBotIdList.length === 0) {
+      return new Map();
+    }
+
+    const candidateChatIds = chats
+      .filter((chat) =>
+        this.shouldUseWebhookRepairSignal(
+          chat,
+          membershipsByChat.get(chat.id) ?? [],
+          knownBotIds,
+          existingSignals.get(chat.id) ?? null,
+        ),
+      )
+      .map((chat) => chat.id);
+    if (candidateChatIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.$queryRaw<RawWebhookRepairSignal[]>(Prisma.sql`
+      WITH candidate_events AS (
+        SELECT
+          COALESCE(
+            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+            NULLIF(BTRIM(normalized_payload->>'chatId'), '')
+          ) AS chat_id,
+          NULLIF(BTRIM(bot_id), '') AS bot_id,
+          COALESCE(
+            NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), ''),
+            NULLIF(BTRIM(normalized_payload->>'chatTitle'), '')
+          ) AS chat_title,
+          created_at
+        FROM webhook_events
+        WHERE bot_id IN (${Prisma.join(knownBotIdList)})
+          AND created_at >= now() - interval '30 days'
+          AND COALESCE(
+            NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), ''),
+            NULLIF(BTRIM(normalized_payload->>'chatId'), '')
+          ) IN (${Prisma.join(candidateChatIds)})
+      )
+      SELECT
+        chat_id,
+        (ARRAY_AGG(bot_id ORDER BY created_at DESC) FILTER (WHERE bot_id IS NOT NULL))[1] AS bot_id,
+        (ARRAY_AGG(chat_title ORDER BY created_at DESC) FILTER (WHERE chat_title IS NOT NULL))[1] AS chat_title,
+        MAX(created_at) AS created_at
+      FROM candidate_events
+      WHERE chat_id IS NOT NULL
+        AND (bot_id IS NOT NULL OR chat_title IS NOT NULL)
+      GROUP BY chat_id
+    `);
+
+    const result = new Map<string, RepairSignal>();
+    for (const row of rows) {
+      const chatId = this.readTrimmedString(row.chat_id);
+      if (!chatId || result.has(chatId)) {
+        continue;
+      }
+
+      const botId = this.readKnownBotId(row.bot_id, knownBotIds);
+      const title = this.readTrimmedString(row.chat_title);
+      if (!botId && !title) {
+        continue;
+      }
+
+      result.set(chatId, {
+        chatId,
+        botId,
+        title,
+        lastEventAt: row.created_at,
+      });
+    }
+
+    return result;
+  }
+
+  private mergeRepairSignals(
+    first: ReadonlyMap<string, RepairSignal>,
+    second: ReadonlyMap<string, RepairSignal>,
+  ): Map<string, RepairSignal> {
+    const result = new Map(first);
+    for (const signal of second.values()) {
+      const existing = result.get(signal.chatId);
+      if (!existing) {
+        result.set(signal.chatId, signal);
+        continue;
+      }
+
+      if (signal.lastEventAt.getTime() >= existing.lastEventAt.getTime()) {
+        result.set(signal.chatId, {
+          chatId: signal.chatId,
+          botId: signal.botId ?? existing.botId,
+          title: signal.title ?? existing.title,
+          lastEventAt: signal.lastEventAt,
+        });
+        continue;
+      }
+
+      result.set(signal.chatId, {
+        chatId: existing.chatId,
+        botId: existing.botId ?? signal.botId,
+        title: existing.title ?? signal.title,
+        lastEventAt: existing.lastEventAt,
+      });
+    }
+
+    return result;
+  }
+
+  private shouldUseLocalActivityRepairSignal(
     chat: ChatRecord,
     memberships: readonly MembershipRecord[],
     knownBotIds: ReadonlySet<string>,
   ): boolean {
+    if (this.isFallbackTitle(chat.id, chat.title)) {
+      return true;
+    }
+
+    if (chat.primaryBotId || chat.botId) {
+      return false;
+    }
+
+    return !memberships.some(
+      (membership) =>
+        membership.status === ChatBotMembershipStatus.ACTIVE && knownBotIds.has(membership.botId),
+    );
+  }
+
+  private shouldUseWebhookRepairSignal(
+    chat: ChatRecord,
+    memberships: readonly MembershipRecord[],
+    knownBotIds: ReadonlySet<string>,
+    existingSignal: RepairSignal | null,
+  ): boolean {
+    const needsTitleSignal =
+      this.isFallbackTitle(chat.id, chat.title) && !this.readTrimmedString(existingSignal?.title);
+    if (needsTitleSignal) {
+      return true;
+    }
+
     if (chat.primaryBotId || chat.botId) {
       return false;
     }
@@ -478,6 +665,7 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
         select: {
           id: true,
           entityType: true,
+          title: true,
           botId: true,
           primaryBotId: true,
         },
@@ -715,6 +903,34 @@ export class MaxBotOwnershipFoundationService implements OnModuleInit, OnModuleD
     knownBotIds: ReadonlySet<string>,
   ): string | null {
     return typeof botId === 'string' && knownBotIds.has(botId) ? botId : null;
+  }
+
+  private resolveRepairTitle(chat: ChatRecord, signal: RepairSignal | null): string | null {
+    const nextTitle = this.readTrimmedString(signal?.title);
+    if (!nextTitle || this.isFallbackTitle(chat.id, nextTitle)) {
+      return null;
+    }
+
+    if (!this.isFallbackTitle(chat.id, chat.title)) {
+      return null;
+    }
+
+    const currentTitle = this.readTrimmedString(chat.title);
+    return currentTitle === nextTitle ? null : nextTitle;
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  private isFallbackTitle(chatId: string, title: string | null | undefined): boolean {
+    const normalizedTitle = this.readTrimmedString(title);
+    return normalizedTitle === `Chat ${chatId}` || normalizedTitle === `Channel ${chatId}`;
   }
 
   private createCoverageAccumulator() {

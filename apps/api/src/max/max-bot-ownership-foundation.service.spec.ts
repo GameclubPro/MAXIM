@@ -26,6 +26,7 @@ jest.mock('ioredis', () => ({
 type ChatRow = {
   id: string;
   entityType: ChatEntityType;
+  title?: string;
   botId: string | null;
   primaryBotId: string | null;
 };
@@ -41,17 +42,27 @@ type MembershipRow = {
 type LocalActivityRow = {
   chatId: string;
   botId: string | null;
+  chatTitle?: string | null;
   lastEventAt: Date;
+};
+
+type WebhookSignalRow = {
+  chatId: string;
+  botId: string | null;
+  chatTitle?: string | null;
+  createdAt: Date;
 };
 
 function createPrismaMock(params: {
   chats: ChatRow[];
   memberships: MembershipRow[];
   localActivities?: LocalActivityRow[];
+  webhookSignals?: WebhookSignalRow[];
 }) {
   const chats = params.chats;
   const memberships = params.memberships;
   const localActivities = params.localActivities ?? [];
+  const webhookSignals = params.webhookSignals ?? [];
 
   return {
     chat: {
@@ -59,6 +70,9 @@ function createPrismaMock(params: {
         chats.map((chat) => ({
           id: chat.id,
           entityType: chat.entityType,
+          title:
+            chat.title ??
+            (chat.entityType === ChatEntityType.CHANNEL ? `Channel ${chat.id}` : `Chat ${chat.id}`),
           botId: chat.botId,
           primaryBotId: chat.primaryBotId,
         })),
@@ -141,14 +155,28 @@ function createPrismaMock(params: {
     },
     managedEntityLocalActivity: {
       findMany: jest.fn(
-        async ({ where }: { where: { chatId: { in: string[] }; botId: { in: string[] } } }) =>
-          localActivities
-            .filter(
-              (activity) =>
-                where.chatId.in.includes(activity.chatId) &&
-                activity.botId !== null &&
-                where.botId.in.includes(activity.botId),
-            )
+        async ({
+          where,
+        }: {
+          where: {
+            chatId: { in: string[] };
+            botId?: { in: string[] };
+            OR?: Array<{ botId?: { in: string[] }; chatTitle?: { not: null } }>;
+          };
+        }) => {
+          const knownBotIds = new Set(
+            where.botId?.in ?? where.OR?.flatMap((entry) => entry.botId?.in ?? []) ?? [],
+          );
+          return localActivities
+            .filter((activity) => {
+              if (!where.chatId.in.includes(activity.chatId)) {
+                return false;
+              }
+              return (
+                (activity.botId !== null && knownBotIds.has(activity.botId)) ||
+                Boolean(activity.chatTitle?.trim())
+              );
+            })
             .slice()
             .sort((left, right) => {
               if (left.chatId !== right.chatId) {
@@ -159,10 +187,20 @@ function createPrismaMock(params: {
             .map((activity) => ({
               chatId: activity.chatId,
               botId: activity.botId,
+              chatTitle: activity.chatTitle ?? null,
               lastEventAt: activity.lastEventAt,
-            })),
+            }));
+        },
       ),
     },
+    $queryRaw: jest.fn(async () =>
+      webhookSignals.map((signal) => ({
+        chat_id: signal.chatId,
+        bot_id: signal.botId,
+        chat_title: signal.chatTitle ?? null,
+        created_at: signal.createdAt,
+      })),
+    ),
     $transaction: jest.fn(async (operations: Array<Promise<unknown>>) => Promise.all(operations)),
   };
 }
@@ -243,6 +281,13 @@ describe('MaxBotOwnershipFoundationService', () => {
           botId: null,
           primaryBotId: null,
         },
+        {
+          id: 'chat-webhook-signal',
+          entityType: ChatEntityType.CHAT,
+          title: 'Chat chat-webhook-signal',
+          botId: null,
+          primaryBotId: null,
+        },
       ],
       memberships: [
         {
@@ -269,6 +314,14 @@ describe('MaxBotOwnershipFoundationService', () => {
           chatId: 'chat-local-activity',
           botId: 'id613002203036_bot',
           lastEventAt: new Date('2026-03-31T10:00:00.000Z'),
+        },
+      ],
+      webhookSignals: [
+        {
+          chatId: 'chat-webhook-signal',
+          botId: 'id613002203036_4_bot',
+          chatTitle: 'Webhook Real Chat',
+          createdAt: new Date('2026-04-01T10:00:00.000Z'),
         },
       ],
     });
@@ -323,6 +376,16 @@ describe('MaxBotOwnershipFoundationService', () => {
         },
       }),
     );
+    expect(prisma.chat.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'chat-webhook-signal' },
+        data: {
+          primaryBotId: 'id613002203036_4_bot',
+          botId: 'id613002203036_4_bot',
+          title: 'Webhook Real Chat',
+        },
+      }),
+    );
     expect(maxBotLinkService.rememberChatBotBinding).toHaveBeenCalledWith(
       'chat-legacy',
       'id613002203036_bot',
@@ -333,8 +396,8 @@ describe('MaxBotOwnershipFoundationService', () => {
       dormant: 1,
     });
     expect(snapshot.entities.total).toMatchObject({
-      total: 5,
-      withPrimary: 4,
+      total: 6,
+      withPrimary: 5,
       withoutPrimary: 1,
     });
     expect(snapshot.entities.channels).toMatchObject({
