@@ -21,6 +21,13 @@ type BroadcastStudioHeaderProps = {
   editing?: boolean;
 };
 
+type BroadcastStudioChecklistProps = {
+  title?: string;
+  summary: string;
+  ready: boolean;
+  signals: BroadcastStudioSignal[];
+};
+
 function BroadcastSignalIcon({ icon }: { icon: BroadcastStudioSignalIcon }) {
   if (icon === 'audience') {
     return (
@@ -149,6 +156,47 @@ export function BroadcastStudioHeader({
             </span>
             <span className="broadcast-studio-command__signal-copy">
               <span className="broadcast-studio-command__signal-label">{signal.label}</span>
+              <strong>{signal.value}</strong>
+            </span>
+          </span>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+export function BroadcastStudioChecklist({
+  title = 'Проверка',
+  summary,
+  ready,
+  signals,
+}: BroadcastStudioChecklistProps) {
+  return (
+    <section
+      className={cn('broadcast-flight-check', ready && 'is-ready')}
+      aria-label="Проверка рассылки"
+    >
+      <div className="broadcast-flight-check__head">
+        <span className="broadcast-flight-check__copy">
+          <strong>{title}</strong>
+          <small>{summary}</small>
+        </span>
+        <span className={cn('broadcast-flight-check__badge', ready && 'is-ready')}>
+          {ready ? 'Готово' : 'Черновик'}
+        </span>
+      </div>
+
+      <div className="broadcast-flight-check__grid">
+        {signals.map((signal, index) => (
+          <span
+            key={`${signal.label}-${signal.value}-${index}`}
+            className={cn('broadcast-flight-check__item', `is-${signal.tone ?? 'neutral'}`)}
+          >
+            <span className="broadcast-flight-check__icon" aria-hidden>
+              <BroadcastSignalIcon icon={signal.icon ?? 'content'} />
+            </span>
+            <span className="broadcast-flight-check__item-copy">
+              <small>{signal.label}</small>
               <strong>{signal.value}</strong>
             </span>
           </span>

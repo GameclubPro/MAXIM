@@ -72,7 +72,7 @@ export function resolveBroadcastQuickScheduleSelection(
 
   switch (preset) {
     case 'plus30':
-      label = '+30м';
+      label = '+30 мин';
       scheduledAt = addMinutes(new Date(nowMs), 30);
       break;
     case 'tonight': {

@@ -58,6 +58,7 @@ import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
+  BroadcastStudioChecklist,
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
@@ -5534,6 +5535,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingStudioSubtitle = editingManagedBroadcast
     ? 'Режим редактирования активной рассылки'
     : mailingFooterMeta || mailingHeaderSummary || 'Черновик рассылки';
+  const mailingReadinessSummary = mailingPublishReady
+    ? mailingPrimaryActionLabel
+    : mailingPublishIssueLabels.length > 0
+      ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
+      : 'Черновик';
   const mailingDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -10695,6 +10701,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ) : null}
                               </div>
                             </div>
+
+                            <BroadcastStudioChecklist
+                              summary={mailingReadinessSummary}
+                              ready={mailingPublishReady}
+                              signals={mailingStudioSignals}
+                            />
                           </div>
                         ) : (
                           <div className="broadcast-stage-card broadcast-stage-card--feed">

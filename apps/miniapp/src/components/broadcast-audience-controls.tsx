@@ -37,6 +37,9 @@ type BroadcastAudienceControlsProps = {
   favoriteChatIds?: readonly string[];
   favoriteUserId?: string | null;
   choices: ChatSummary[];
+  currentLabel?: string;
+  selectedLabel?: string;
+  allLabel?: string;
   loading?: boolean;
   refreshing?: boolean;
   remoteError?: string | null;
@@ -56,6 +59,9 @@ export function BroadcastAudienceControls({
   favoriteChatIds,
   favoriteUserId = null,
   choices,
+  currentLabel = 'Текущий чат',
+  selectedLabel = 'Выбрать',
+  allLabel = 'Все чаты',
   loading = false,
   refreshing = false,
   remoteError = null,
@@ -155,7 +161,8 @@ export function BroadcastAudienceControls({
             }}
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>Текущий</strong>
+            <strong>{currentLabel}</strong>
+            <small>1 чат</small>
           </button>
 
           <button
@@ -172,8 +179,8 @@ export function BroadcastAudienceControls({
             }}
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>Выбрать</strong>
-            {selectedModeActive ? <small>{triggerLabel}</small> : null}
+            <strong>{selectedLabel}</strong>
+            <small>{selectedModeActive ? triggerLabel : selectedAudienceLabel}</small>
           </button>
 
           <button
@@ -189,8 +196,8 @@ export function BroadcastAudienceControls({
             }}
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
-            <strong>Все</strong>
-            {allModeActive ? <small>{allChoicesLabel}</small> : null}
+            <strong>{allLabel}</strong>
+            <small>{allChoicesLabel}</small>
           </button>
         </div>
 
@@ -218,7 +225,7 @@ export function BroadcastAudienceControls({
                 }}
                 disabled={disabled}
               >
-                Все {choices.length > 0 ? choices.length : ''}
+                {allLabel} {choices.length > 0 ? choices.length : ''}
               </button>
             </span>
           </div>

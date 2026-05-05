@@ -31,6 +31,37 @@ type BroadcastContentComposerProps = {
   onError?: (message: string) => void;
 };
 
+const BROADCAST_TEXT_TEMPLATES = [
+  {
+    id: 'announce',
+    label: 'Анонс',
+    text: '**Анонс**\n\nКоротко о главном:\n\n• \n\nПодробнее ниже.',
+  },
+  {
+    id: 'promo',
+    label: 'Акция',
+    text: '**Специальное предложение**\n\nУсловия:\n\n• \n\nДействует до ',
+  },
+  {
+    id: 'digest',
+    label: 'Итоги',
+    text: '**Итоги недели**\n\nГлавное:\n\n• \n• \n• ',
+  },
+] as const;
+
+const BROADCAST_TEXT_SNIPPETS = [
+  {
+    id: 'cta',
+    label: 'CTA',
+    text: 'Нажмите кнопку ниже, чтобы открыть.',
+  },
+  {
+    id: 'urgent',
+    label: 'Важно',
+    text: '**Важно:** ',
+  },
+] as const;
+
 export function BroadcastContentComposer({
   text,
   maxLength,
@@ -94,9 +125,20 @@ export function BroadcastContentComposer({
     });
   }
 
+  function applyTemplate(value: string) {
+    const nextValue = text.trim().length > 0 ? `${text.trimEnd()}\n\n${value}` : value;
+    onTextChange(nextValue.slice(0, maxLength));
+  }
+
   return (
     <div className={cn('broadcast-content-composer', (textError || imageError) && 'field--error')}>
-      <div className={cn('broadcast-content-composer__workspace', hasPreview && 'has-preview')}>
+      <div
+        className={cn(
+          'broadcast-content-composer__workspace',
+          'has-preview',
+          !hasPreview && 'is-empty-preview',
+        )}
+      >
         <div className="broadcast-content-composer__editor">
           <div className="broadcast-content-composer__editor-head">
             <span
@@ -107,6 +149,31 @@ export function BroadcastContentComposer({
             >
               {text.length}/{maxLength}
             </span>
+          </div>
+
+          <div className="broadcast-content-composer__template-row" aria-label="Быстрый текст">
+            {BROADCAST_TEXT_TEMPLATES.map((template) => (
+              <button
+                key={template.id}
+                type="button"
+                className="broadcast-content-composer__template-chip"
+                onClick={() => applyTemplate(template.text)}
+                disabled={isBusy}
+              >
+                {template.label}
+              </button>
+            ))}
+            {BROADCAST_TEXT_SNIPPETS.map((snippet) => (
+              <button
+                key={snippet.id}
+                type="button"
+                className="broadcast-content-composer__template-chip is-snippet"
+                onClick={() => applyTemplate(snippet.text)}
+                disabled={isBusy}
+              >
+                {snippet.label}
+              </button>
+            ))}
           </div>
 
           <MaxMarkdownEditor
@@ -152,56 +219,65 @@ export function BroadcastContentComposer({
           </div>
         </div>
 
-        {hasPreview ? (
-          <div className="broadcast-message-card" aria-label="Предпросмотр сообщения">
-            <div className="broadcast-message-card__phone" aria-hidden>
-              <div className="broadcast-message-card__bubble">
-                {imagePreviewUrl ? (
-                  <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
-                ) : null}
+        <div
+          className={cn('broadcast-message-card', !hasPreview && 'is-empty')}
+          aria-label="Предпросмотр сообщения"
+        >
+          <div className="broadcast-message-card__phone" aria-hidden>
+            <div className="broadcast-message-card__bubble">
+              {imagePreviewUrl ? (
+                <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
+              ) : null}
 
-                {videoLabel ? (
-                  <span className="broadcast-message-card__video-preview">{videoLabel}</span>
-                ) : null}
+              {videoLabel ? (
+                <span className="broadcast-message-card__video-preview">{videoLabel}</span>
+              ) : null}
 
-                {normalizedText ? (
-                  <MaxMarkdownPreview
-                    value={text}
-                    className="broadcast-message-card__preview"
-                    preserveLinks
-                    fallback={null}
-                  />
-                ) : null}
+              {normalizedText ? (
+                <MaxMarkdownPreview
+                  value={text}
+                  className="broadcast-message-card__preview"
+                  preserveLinks
+                  fallback={null}
+                />
+              ) : null}
 
-                {previewButtonRows.length > 0 ? (
-                  <div className="broadcast-message-card__buttons">
-                    {previewButtonRows.map((row, rowIndex) => (
-                      <div
-                        key={`preview-row-${rowIndex}`}
-                        className="broadcast-message-card__button-row"
-                      >
-                        {row.map((button, buttonIndex) => (
-                          <span
-                            key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
-                            className={cn(
-                              'broadcast-message-card__button',
-                              previewSystemButtons.includes(button) && 'is-system',
-                            )}
-                          >
-                            {button.text.trim()}
-                          </span>
-                        ))}
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
+              {!hasPreview ? (
+                <span className="broadcast-message-card__empty-lines">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              ) : null}
 
-                <span className="broadcast-message-card__tail" />
-                <span className="broadcast-message-card__checks" />
-              </div>
+              {previewButtonRows.length > 0 ? (
+                <div className="broadcast-message-card__buttons">
+                  {previewButtonRows.map((row, rowIndex) => (
+                    <div
+                      key={`preview-row-${rowIndex}`}
+                      className="broadcast-message-card__button-row"
+                    >
+                      {row.map((button, buttonIndex) => (
+                        <span
+                          key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
+                          className={cn(
+                            'broadcast-message-card__button',
+                            previewSystemButtons.includes(button) && 'is-system',
+                          )}
+                        >
+                          {button.text.trim()}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+
+              <span className="broadcast-message-card__tail" />
+              <span className="broadcast-message-card__checks" />
             </div>
           </div>
-        ) : null}
+        </div>
       </div>
 
       {(imagePreviewUrl || videoLabel) && (
