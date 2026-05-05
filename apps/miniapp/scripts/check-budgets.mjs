@@ -18,11 +18,13 @@ const STARTUP_JS_BUDGET_GZIP = 108 * 1024 + 512;
 // the premium planner dock plus smart quick-time suggestions,
 // the richer broadcast compose/feed shell,
 // the chat-audience picker with current/selected/all targeting,
+// broadcast test-to-self delivery, duplicate-to-compose actions,
+// favorite-audience quick selection and local text template entry points,
 // bidirectional stop-word preset actions and inline +/- parsing,
 // the invitation access gate with editable bot notices,
 // plus the new-chat/channel handoff loading state
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 10 * 1024 + 512;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 11 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

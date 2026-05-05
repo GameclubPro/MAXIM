@@ -3991,10 +3991,12 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 12px;
 }
 
 .broadcast-publish-bar__copy {
+  flex: 1 1 190px;
   min-width: 0;
   display: grid;
   gap: 4px;
@@ -4015,6 +4017,11 @@
 .broadcast-publish-bar__button {
   flex: 0 0 auto;
   min-width: 148px;
+}
+
+.broadcast-publish-bar__test {
+  flex: 0 0 auto;
+  min-width: 108px;
 }
 
 .settings-drilldown .broadcast-stage-card {
@@ -18135,7 +18142,8 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   }
 }
 
-.design-preview .settings-drilldown {
+.design-preview__device-screen .settings-drilldown {
+  --app-viewport-height: 100%;
   position: absolute;
 }
 
@@ -19744,6 +19752,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 }
 
 .broadcast-publish-bar__copy {
+  flex: 1 1 160px;
   gap: 2px;
 }
 
@@ -19878,6 +19887,12 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 
 .broadcast-publish-bar__button:disabled {
   opacity: 0.62;
+}
+
+.broadcast-publish-bar__test {
+  min-width: 104px;
+  min-height: 40px;
+  border-radius: 14px;
 }
 
 .broadcast-audience-confirm {
@@ -20058,6 +20073,53 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   border-color: rgba(35, 160, 107, 0.24);
   background: rgba(235, 249, 243, 0.92);
   color: #14724b;
+}
+
+.broadcast-content-composer__template-chip.is-saved {
+  border-color: rgba(11, 132, 255, 0.18);
+  background: rgba(235, 246, 255, 0.94);
+  color: #0d5c9e;
+}
+
+.broadcast-content-composer__template-chip.is-save {
+  border-style: dashed;
+  border-color: rgba(82, 111, 138, 0.3);
+  background: rgba(245, 248, 251, 0.9);
+  color: #4d657b;
+}
+
+.broadcast-content-composer__template-chip-shell {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  max-width: 190px;
+}
+
+.broadcast-content-composer__template-chip-shell .broadcast-content-composer__template-chip {
+  min-width: 0;
+  max-width: 156px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top-right-radius: 8px;
+  border-bottom-right-radius: 8px;
+}
+
+.broadcast-content-composer__template-delete {
+  width: 30px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid rgba(11, 132, 255, 0.18);
+  border-left: 0;
+  border-radius: 8px 999px 999px 8px;
+  background: rgba(235, 246, 255, 0.94);
+  color: #0d5c9e;
+}
+
+.broadcast-content-composer__template-delete svg {
+  width: 14px;
+  height: 14px;
 }
 
 .broadcast-message-card.is-empty .broadcast-message-card__bubble {

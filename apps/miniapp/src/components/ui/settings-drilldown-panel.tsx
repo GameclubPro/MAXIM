@@ -30,6 +30,14 @@ function CloseIcon() {
   );
 }
 
+function resolveDrilldownPortalTarget(): Element | null {
+  if (typeof document === 'undefined') {
+    return null;
+  }
+
+  return document.querySelector('.design-preview__device-screen') ?? document.body;
+}
+
 export function SettingsDrilldownPanel({
   id,
   open,
@@ -96,7 +104,8 @@ export function SettingsDrilldownPanel({
     };
   }, [onClose, open]);
 
-  if (!open || typeof document === 'undefined') {
+  const portalTarget = open ? resolveDrilldownPortalTarget() : null;
+  if (!open || !portalTarget) {
     return null;
   }
 
@@ -153,6 +162,6 @@ export function SettingsDrilldownPanel({
         </div>
       </section>
     </div>,
-    document.body,
+    portalTarget,
   );
 }

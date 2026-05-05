@@ -92,6 +92,7 @@ import {
   type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
   type SendBroadcastResult,
+  type SendBroadcastTestResult,
   type ChatSummary,
   type ManagedEntityHeader,
   type UpdateManagedEntityPartnerAssistRequest,
@@ -107,6 +108,7 @@ import {
   updateManagedPollRequestSchema,
   type ManagedPoll,
   sendBroadcastRequestSchema,
+  sendBroadcastTestResultSchema,
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
@@ -9685,6 +9687,22 @@ export class AdminService implements OnModuleDestroy {
     });
   }
 
+  async sendBroadcastTest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<SendBroadcastTestResult> {
+    return this.sendManagedBroadcastTest(sourceChatId, user, body, 'chat');
+  }
+
+  async sendChannelBroadcastTest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<SendBroadcastTestResult> {
+    return this.sendManagedBroadcastTest(sourceChatId, user, body, 'channel');
+  }
+
   async listManagedBroadcasts(
     sourceChatId: string,
     user: AuthUser,
@@ -10378,6 +10396,141 @@ export class AdminService implements OnModuleDestroy {
       options.entityType,
       options.source,
     );
+  }
+
+  private async sendManagedBroadcastTest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<SendBroadcastTestResult> {
+    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
+      entityType,
+    });
+    const deliveryBotId =
+      (await this.resolveDeliveryBotAssignment(sourceChatId)) ?? this.resolvePrivateDeliveryBotId();
+    const privateChatId = await this.resolvePrivateDialogChatId(user, deliveryBotId);
+    const media = await this.resolveManagedBroadcastMedia(
+      request.payload,
+      entityType,
+      sourceChatId,
+      user.userId,
+      deliveryBotId,
+    );
+    const message = await this.buildManagedBroadcastMessage(
+      sourceChatId,
+      entityType,
+      request.payload,
+      request.normalizedSourceText,
+      media,
+      deliveryBotId,
+    );
+
+    try {
+      const published = await this.sendManagedBroadcastTestPrivateMessage({
+        adminUserId: user.userId,
+        privateChatId,
+        message: message.messageText,
+        options: message.messageOptions,
+        botId: deliveryBotId,
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          chatId: sourceChatId,
+          actorUserId: user.userId,
+          action: 'SEND_BROADCAST_TEST',
+          payload: {
+            entityType,
+            botId: deliveryBotId ?? null,
+            privateChatId: privateChatId ?? null,
+            messageId: published.messageId,
+          },
+        },
+      });
+
+      return sendBroadcastTestResultSchema.parse({
+        delivered: true,
+        messageId: published.messageId,
+        chatId: published.chatId ?? privateChatId ?? null,
+        url: published.url ?? null,
+      });
+    } catch (error: unknown) {
+      const maxApiMessage = this.extractMaxApiErrorMessage(error);
+      throw new BadRequestException(
+        maxApiMessage ||
+          'Не удалось отправить тест. Откройте личный диалог с ботом и попробуйте ещё раз.',
+      );
+    }
+  }
+
+  private async sendManagedBroadcastTestPrivateMessage(params: {
+    adminUserId: string;
+    privateChatId: string | null;
+    message: string;
+    options?:
+      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'attachments' | 'textFormat'>
+      | undefined;
+    botId?: string;
+  }) {
+    let lastError: unknown = null;
+    let privateChatId = params.privateChatId;
+    const attempts =
+      Math.max(
+        this.hasRetriableMaxAttachment(params.options)
+          ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length
+          : 0,
+        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
+        BROADCAST_TIMEOUT_RETRY_DELAYS_MS.length,
+      ) + 1;
+
+    for (let attempt = 1; attempt <= attempts; ) {
+      try {
+        return privateChatId
+          ? await this.maxClient.sendMessageImmediateWithId(
+              privateChatId,
+              params.message,
+              params.options,
+              {
+                trafficClass: 'interactive',
+                ...(params.botId ? { botId: params.botId } : {}),
+              },
+            )
+          : await this.maxClient.sendMessageImmediateToUser(
+              params.adminUserId,
+              params.message,
+              params.options,
+              {
+                trafficClass: 'interactive',
+                ...(params.botId ? { botId: params.botId } : {}),
+              },
+            );
+      } catch (error: unknown) {
+        lastError = error;
+        if (privateChatId && this.isPrivateDialogChatUnavailableError(error)) {
+          privateChatId = null;
+          continue;
+        }
+
+        const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(
+          error,
+          attempt,
+          params.options,
+        );
+        if (retryDelayMs === null) {
+          throw error;
+        }
+
+        await this.sleep(retryDelayMs);
+        attempt += 1;
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    throw new Error('Broadcast test delivery failed without error details.');
   }
 
   private async prepareManagedBroadcastRequest(

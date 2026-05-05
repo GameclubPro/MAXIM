@@ -94,6 +94,7 @@ import {
   retryManagedBroadcast,
   scheduleDomainRemoval,
   sendBroadcast,
+  sendBroadcastTest,
   updateManagedBroadcast,
   updateRules,
   updateSettings,
@@ -2101,6 +2102,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const mailingTemplateScope = `chat:${chatId ?? 'draft'}`;
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -2164,6 +2166,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       body.classList.remove('settings-home-page-open');
     };
   }, []);
+
   const [resolvedRequiredSubscriptionChannels, setResolvedRequiredSubscriptionChannels] = useState<
     ManagedEntityHeader[]
   >([]);
@@ -2171,6 +2174,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingPlannerState, setMailingPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
+    useState<ManagedBroadcastDetails | null>(null);
+  const [duplicatedManagedBroadcast, setDuplicatedManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
@@ -2296,6 +2301,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setResolvedRequiredSubscriptionChannels([]);
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
+    setDuplicatedManagedBroadcast(null);
     setMailingWorkspaceView('compose');
     let cancelled = false;
     const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
@@ -2669,6 +2675,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     appliedBroadcastHandoffSignatureRef.current = signature;
     setEditingManagedBroadcast(null);
+    setDuplicatedManagedBroadcast(null);
     const handoffTargetChatIds = normalizeBroadcastAudienceTargetChatIds(
       broadcastHandoffStateQuery.data.targetChatIds,
     );
@@ -3161,6 +3168,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const sendBroadcastTestMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => sendBroadcastTest(api, chatId ?? '', payload),
+    onSuccess: () => {
+      pushToast({
+        tone: 'success',
+        title: 'Тест отправлен',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Тест не отправлен',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+
   const clearBroadcastHandoffMutation = useMutation({
     mutationFn: () => clearBroadcastHandoffState(api, chatId ?? ''),
     onSuccess: () => {
@@ -3343,48 +3369,61 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  function applyManagedBroadcastToMailingComposer(
+    broadcast: ManagedBroadcastDetails,
+    mode: 'edit' | 'duplicate',
+  ) {
+    const targetChatIds = normalizeBroadcastAudienceTargetChatIds(broadcast.targetChatIds);
+    setEditingManagedBroadcast(mode === 'edit' ? broadcast : null);
+    setDuplicatedManagedBroadcast(
+      mode === 'duplicate' && broadcast.mediaType === 'video' && broadcast.mediaPayload
+        ? broadcast
+        : null,
+    );
+    setMailingTargetMode(broadcast.targetMode);
+    setMailingTargetChatIds(
+      broadcast.targetMode === 'selected' && targetChatIds.length === 0
+        ? chatId
+          ? [chatId]
+          : []
+        : targetChatIds,
+    );
+    setMailingLastScopedTargetMode(
+      resolveBroadcastAudienceLastScopedMode({
+        targetMode: broadcast.targetMode,
+        targetChatIds,
+        currentChatId: chatId ?? undefined,
+      }),
+    );
+    setMailingAudienceError('');
+    setMailingText(broadcast.text);
+    setMailingButtons(broadcast.buttons);
+    setMailingImageEnabled(broadcast.imageEnabled);
+    setMailingImageBase64(broadcast.imageBase64);
+    setMailingImageMimeType(broadcast.imageMimeType);
+    setMailingImageFileName(broadcast.imageFileName);
+    setMailingVideoCleared(false);
+    setMailingQuickPreset(null);
+    setMailingScheduledSlots(
+      mode === 'edit' ? sortAndUniqueBroadcastSlots(broadcast.scheduledSlots) : [],
+    );
+    setMailingScheduleTimezone(
+      broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+    );
+    setMailingTextError('');
+    setMailingButtonErrors([]);
+    setMailingImageError('');
+    setMailingScheduleError(mode === 'duplicate' ? 'Выберите время.' : '');
+    setMailingCycleError('');
+    resetMailingPlanner();
+    setMailingWorkspaceView('compose');
+    setExpandedSections((current) => ({ ...current, mailing: true }));
+  }
+
   const openManagedBroadcastEditorMutation = useMutation({
     mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
-      setEditingManagedBroadcast(broadcast);
-      const targetChatIds = normalizeBroadcastAudienceTargetChatIds(broadcast.targetChatIds);
-      setMailingTargetMode(broadcast.targetMode);
-      setMailingTargetChatIds(
-        broadcast.targetMode === 'selected' && targetChatIds.length === 0
-          ? chatId
-            ? [chatId]
-            : []
-          : targetChatIds,
-      );
-      setMailingLastScopedTargetMode(
-        resolveBroadcastAudienceLastScopedMode({
-          targetMode: broadcast.targetMode,
-          targetChatIds,
-          currentChatId: chatId ?? undefined,
-        }),
-      );
-      setMailingAudienceError('');
-      setMailingText(broadcast.text);
-      setMailingButtons(broadcast.buttons);
-      setMailingButtonErrors([]);
-      setMailingImageEnabled(broadcast.imageEnabled);
-      setMailingImageBase64(broadcast.imageBase64);
-      setMailingImageMimeType(broadcast.imageMimeType);
-      setMailingImageFileName(broadcast.imageFileName);
-      setMailingVideoCleared(false);
-      setMailingQuickPreset(null);
-      setMailingScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
-      setMailingScheduleTimezone(
-        broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
-      );
-      setMailingTextError('');
-      setMailingButtonErrors([]);
-      setMailingImageError('');
-      setMailingScheduleError('');
-      setMailingCycleError('');
-      resetMailingPlanner();
-      setMailingWorkspaceView('compose');
-      setExpandedSections((current) => ({ ...current, mailing: true }));
+      applyManagedBroadcastToMailingComposer(broadcast, 'edit');
       pushToast({
         tone: 'info',
         title: 'Редактирование рассылки',
@@ -3400,6 +3439,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть рассылку',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const duplicateManagedBroadcastMutation = useMutation({
+    mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
+    onSuccess: (broadcast) => {
+      applyManagedBroadcastToMailingComposer(broadcast, 'duplicate');
+      pushToast({
+        tone: 'success',
+        title: 'Копия готова',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Копия не создана',
         description: formatApiError(error),
       });
     },
@@ -4271,6 +4328,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function resetMailingComposer() {
     setEditingManagedBroadcast(null);
+    setDuplicatedManagedBroadcast(null);
     setMailingTargetMode('current');
     setMailingTargetChatIds(chatId ? [chatId] : []);
     setMailingLastScopedTargetMode('current');
@@ -4304,7 +4362,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function handleClearMailingComposer() {
-    if (editingManagedBroadcast) {
+    if (editingManagedBroadcast || duplicatedManagedBroadcast) {
       handleCancelMailingEdit();
       return;
     }
@@ -4426,6 +4484,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     openManagedBroadcastEditorMutation.mutate(broadcast.id);
   }
 
+  function handleDuplicateManagedBroadcast(broadcast: ManagedBroadcastListItem) {
+    if (!chatId || duplicateManagedBroadcastMutation.isPending) {
+      return;
+    }
+
+    duplicateManagedBroadcastMutation.mutate(broadcast.id);
+  }
+
   function handleDeleteManagedBroadcastById(broadcastId: string) {
     const broadcast = managedBroadcasts.find((item) => item.id === broadcastId);
     if (!broadcast) {
@@ -4488,6 +4554,43 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }
 
+  function buildMailingTestPayload(): SendBroadcastPayload {
+    const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedMailingButtons);
+    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+    const keepVideoMedia =
+      !mailingVideoCleared &&
+      !mailingImageEnabled &&
+      videoSource?.mediaType === 'video' &&
+      videoSource.mediaPayload;
+
+    return {
+      text: mailingText.trim(),
+      textFormat: 'markdown',
+      targetMode: 'current',
+      targetChatIds: chatId ? [chatId] : [],
+      applyToAllChats: false,
+      buttons: buttonState.buttons,
+      buttonEnabled: buttonState.buttonEnabled,
+      buttonUrl: buttonState.buttonUrl,
+      buttonText: buttonState.buttonText,
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      mediaType: keepVideoMedia ? 'video' : null,
+      mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
+      mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
+      mediaFileName: keepVideoMedia ? (videoSource?.mediaFileName ?? '') : '',
+      scheduleMode: 'legacy',
+      scheduleTimezone: mailingScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      scheduledSlots: [],
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 1,
+    };
+  }
+
   function submitMailingPayload(broadcastId: string | null, payload: SendBroadcastPayload) {
     if (broadcastId) {
       updateManagedBroadcastMutation.mutate({
@@ -4536,11 +4639,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
 
     let hasError = false;
+    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
     const keepVideoMedia =
       !mailingVideoCleared &&
       !mailingImageEnabled &&
-      editingManagedBroadcast?.mediaType === 'video' &&
-      editingManagedBroadcast.mediaPayload;
+      videoSource?.mediaType === 'video' &&
+      videoSource.mediaPayload;
     const hasDirectContent = Boolean(normalizedText || mailingImageEnabled || keepVideoMedia);
     if (editingManagedBroadcast) {
       if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
@@ -4620,33 +4724,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       replaceConflictingSlots: false,
     };
 
-    const payload: SendBroadcastPayload = editingManagedBroadcast
-      ? {
-          text: normalizedText,
-          textFormat: 'markdown',
-          ...publishBasePayload,
-          imageEnabled: mailingImageEnabled,
-          imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
-          imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
-          imageFileName: mailingImageEnabled ? mailingImageFileName : '',
-          mediaType: keepVideoMedia ? 'video' : null,
-          mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
-          mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
-          mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
-        }
-      : {
-          text: normalizedText,
-          textFormat: 'markdown',
-          ...publishBasePayload,
-          imageEnabled: mailingImageEnabled,
-          imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
-          imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
-          imageFileName: mailingImageEnabled ? mailingImageFileName : '',
-          mediaType: null,
-          mediaPayload: null,
-          mediaMimeType: '',
-          mediaFileName: '',
-        };
+    const payload: SendBroadcastPayload = {
+      text: normalizedText,
+      textFormat: 'markdown',
+      ...publishBasePayload,
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      mediaType: keepVideoMedia ? 'video' : null,
+      mediaPayload: keepVideoMedia ? (videoSource?.mediaPayload ?? null) : null,
+      mediaMimeType: keepVideoMedia ? (videoSource?.mediaMimeType ?? '') : '',
+      mediaFileName: keepVideoMedia ? (videoSource?.mediaFileName ?? '') : '',
+    };
 
     const hasConflictingSlots =
       !quickSchedule && scheduledSlots.some((slot) => mailingOccupiedSlots.includes(slot));
@@ -4659,6 +4749,52 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     submitMailingPayload(editingManagedBroadcast?.id ?? null, payload);
+  }
+
+  function handleSendBroadcastTest() {
+    if (!chatId || sendBroadcastTestMutation.isPending) {
+      return;
+    }
+
+    const normalizedText = mailingText.trim();
+    const videoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
+    const keepVideoMedia =
+      !mailingVideoCleared &&
+      !mailingImageEnabled &&
+      videoSource?.mediaType === 'video' &&
+      videoSource.mediaPayload;
+    let hasError = false;
+
+    if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
+      setMailingTextError('Добавьте текст или фото.');
+      hasError = true;
+    } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
+      setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+      hasError = true;
+    } else {
+      setMailingTextError('');
+    }
+
+    if (mailingImageEnabled) {
+      if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+        setMailingImageError('Фото не готово.');
+        hasError = true;
+      } else {
+        setMailingImageError('');
+      }
+    } else {
+      setMailingImageError('');
+    }
+
+    if (!validateMailingButtonDraft()) {
+      hasError = true;
+    }
+
+    if (hasError) {
+      return;
+    }
+
+    sendBroadcastTestMutation.mutate(buildMailingTestPayload());
   }
 
   function handleCommercialSensitivitySliderChange(rawValue: number) {
@@ -5359,8 +5495,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
     sendBroadcastMutation.isPending ||
+    sendBroadcastTestMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
+    duplicateManagedBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
@@ -5394,10 +5532,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const normalizedMailingText = mailingText.trim();
   const normalizedMailingButtons = trimBroadcastLinkButtons(mailingButtons);
   const mailingButtonEnabled = normalizedMailingButtons.length > 0;
+  const mailingVideoSource = editingManagedBroadcast ?? duplicatedManagedBroadcast;
   const editingMailingHasVideo =
     !mailingVideoCleared &&
-    editingManagedBroadcast?.mediaType === 'video' &&
-    Boolean(editingManagedBroadcast.mediaPayload);
+    mailingVideoSource?.mediaType === 'video' &&
+    Boolean(mailingVideoSource.mediaPayload);
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
@@ -5423,6 +5562,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     .join(' · ');
   const showMailingResetAction =
     editingManagedBroadcast !== null ||
+    duplicatedManagedBroadcast !== null ||
     mailingTargetMode !== 'current' ||
     mailingQuickPreset !== null ||
     mailingScheduledSlots.length > 0 ||
@@ -5448,6 +5588,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduleReady &&
     mailingButtonDraftValid &&
     mailingHasFutureSlots;
+  const mailingTestReady = mailingHasPublishableContent && mailingButtonDraftValid;
   const mailingSendDisabled = isMailingBusy || !mailingPublishReady;
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Контент' : null,
@@ -5460,7 +5601,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingQuickPreset === 'now'
       ? 'Отправить'
       : 'Запланировать';
-  const showMailingWorkspaceTabs = !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
+  const showMailingWorkspaceTabs =
+    !editingManagedBroadcast && !duplicatedManagedBroadcast && orderedManagedBroadcasts.length > 0;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить рассылку';
@@ -5555,6 +5697,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       </div>
       <button
         type="button"
+        className="button button--ghost broadcast-publish-bar__test"
+        onClick={handleSendBroadcastTest}
+        disabled={isMailingBusy || !mailingTestReady}
+      >
+        {sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест себе'}
+      </button>
+      <button
+        type="button"
         className="button button--accent broadcast-publish-bar__button"
         onClick={handleSendBroadcast}
         disabled={mailingSendDisabled}
@@ -5577,10 +5727,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingWorkspaceView('compose');
     }
 
-    if (editingManagedBroadcast && mailingWorkspaceView !== 'compose') {
+    if (
+      (editingManagedBroadcast || duplicatedManagedBroadcast) &&
+      mailingWorkspaceView !== 'compose'
+    ) {
       setMailingWorkspaceView('compose');
     }
-  }, [editingManagedBroadcast, mailingWorkspaceView, orderedManagedBroadcasts.length]);
+  }, [
+    duplicatedManagedBroadcast,
+    editingManagedBroadcast,
+    mailingWorkspaceView,
+    orderedManagedBroadcasts.length,
+  ]);
 
   useEffect(() => {
     if (
@@ -10424,14 +10582,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="broadcast-studio-shell">
                         <BroadcastStudioHeader
                           title={
-                            editingManagedBroadcast ? 'Редактирование рассылки' : 'Новая рассылка'
+                            editingManagedBroadcast
+                              ? 'Редактирование рассылки'
+                              : duplicatedManagedBroadcast
+                                ? 'Копия рассылки'
+                                : 'Новая рассылка'
                           }
                           subtitle={mailingStudioSubtitle}
                           readyCount={mailingStudioReadyCount}
                           totalCount={4}
                           signals={mailingStudioSignals}
                           busy={isMailingBusy}
-                          editing={editingManagedBroadcast !== null}
+                          editing={
+                            editingManagedBroadcast !== null || duplicatedManagedBroadcast !== null
+                          }
                         />
 
                         {showMailingWorkspaceTabs || showMailingResetAction ? (
@@ -10540,6 +10704,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }}
                                     buttons={normalizedMailingButtons}
                                     systemButtons={mailingSystemButtons}
+                                    templateScope={mailingTemplateScope}
                                   />
                                 </Suspense>
                               </div>
@@ -10752,6 +10917,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   const isOpeningBroadcastEditor =
                                     openManagedBroadcastEditorMutation.isPending &&
                                     openManagedBroadcastEditorMutation.variables === broadcast.id;
+                                  const isDuplicatingBroadcast =
+                                    duplicateManagedBroadcastMutation.isPending &&
+                                    duplicateManagedBroadcastMutation.variables === broadcast.id;
                                   const isRetryingBroadcast =
                                     retryManagedBroadcastMutation.isPending &&
                                     retryManagedBroadcastMutation.variables === broadcast.id;
@@ -10840,6 +11008,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       )}
 
                                       <div className="managed-broadcast-card__actions">
+                                        <button
+                                          type="button"
+                                          className="button button--ghost"
+                                          onClick={() => handleDuplicateManagedBroadcast(broadcast)}
+                                          disabled={isMailingBusy}
+                                        >
+                                          {isDuplicatingBroadcast ? 'Копируем...' : 'Дублировать'}
+                                        </button>
                                         {broadcast.canRetry ? (
                                           <button
                                             type="button"

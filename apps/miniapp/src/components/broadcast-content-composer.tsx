@@ -1,11 +1,16 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Xmark as IconoirXmark } from 'iconoir-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { MaxMarkdownEditor } from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { buildBroadcastPreviewButtonRows } from '../lib/broadcast-link-buttons';
+import {
+  createBroadcastTextTemplate,
+  deleteBroadcastTextTemplate,
+  readBroadcastTextTemplates,
+} from '../lib/broadcast-text-templates';
 import { openFileInputPicker } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -21,6 +26,7 @@ type BroadcastContentComposerProps = {
   image: BroadcastContentComposerImage;
   buttons?: BroadcastLinkButton[];
   systemButtons?: BroadcastLinkButton[];
+  templateScope?: string;
   videoLabel?: string | null;
   disabled?: boolean;
   textError?: string;
@@ -68,6 +74,7 @@ export function BroadcastContentComposer({
   image,
   buttons = [],
   systemButtons = [],
+  templateScope,
   videoLabel = null,
   disabled = false,
   textError = '',
@@ -79,6 +86,9 @@ export function BroadcastContentComposer({
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const [savedTemplates, setSavedTemplates] = useState(() =>
+    templateScope ? readBroadcastTextTemplates(templateScope) : [],
+  );
   const imagePreviewUrl =
     image.enabled && image.base64 && image.mimeType
       ? `data:${image.mimeType};base64,${image.base64}`
@@ -90,6 +100,12 @@ export function BroadcastContentComposer({
   const hasPreview = Boolean(normalizedText || imagePreviewUrl || videoLabel);
   const remainingLength = maxLength - text.length;
   const isBusy = disabled || isPreparingImage;
+  const canUseTemplates = Boolean(templateScope);
+  const canSaveTemplate = Boolean(canUseTemplates && normalizedText);
+
+  useEffect(() => {
+    setSavedTemplates(templateScope ? readBroadcastTextTemplates(templateScope) : []);
+  }, [templateScope]);
 
   async function handleImageFiles(files: FileList | null) {
     const file = files?.[0] ?? null;
@@ -128,6 +144,22 @@ export function BroadcastContentComposer({
   function applyTemplate(value: string) {
     const nextValue = text.trim().length > 0 ? `${text.trimEnd()}\n\n${value}` : value;
     onTextChange(nextValue.slice(0, maxLength));
+  }
+
+  function saveTemplate() {
+    if (!templateScope || !normalizedText) {
+      return;
+    }
+
+    setSavedTemplates(createBroadcastTextTemplate(templateScope, normalizedText).templates);
+  }
+
+  function deleteTemplate(templateId: string) {
+    if (!templateScope) {
+      return;
+    }
+
+    setSavedTemplates(deleteBroadcastTextTemplate(templateScope, templateId));
   }
 
   return (
@@ -174,6 +206,40 @@ export function BroadcastContentComposer({
                 {snippet.label}
               </button>
             ))}
+            {savedTemplates.map((template) => (
+              <span key={template.id} className="broadcast-content-composer__template-chip-shell">
+                <button
+                  type="button"
+                  className="broadcast-content-composer__template-chip is-saved"
+                  onClick={() => applyTemplate(template.text)}
+                  disabled={isBusy}
+                >
+                  {template.label}
+                </button>
+                {canUseTemplates ? (
+                  <button
+                    type="button"
+                    className="broadcast-content-composer__template-delete"
+                    onClick={() => deleteTemplate(template.id)}
+                    disabled={isBusy}
+                    aria-label={`Удалить шаблон ${template.label}`}
+                    title="Удалить шаблон"
+                  >
+                    <IconoirXmark aria-hidden focusable="false" />
+                  </button>
+                ) : null}
+              </span>
+            ))}
+            {canUseTemplates ? (
+              <button
+                type="button"
+                className="broadcast-content-composer__template-chip is-save"
+                onClick={saveTemplate}
+                disabled={isBusy || !canSaveTemplate}
+              >
+                Сохранить
+              </button>
+            ) : null}
           </div>
 
           <MaxMarkdownEditor

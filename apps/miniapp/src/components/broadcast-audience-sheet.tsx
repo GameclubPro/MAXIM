@@ -128,6 +128,10 @@ export function BroadcastAudienceSheet({
     () => orderedChoices.filter((chat) => draftSelection.includes(chat.id)).slice(0, 3),
     [draftSelection, orderedChoices],
   );
+  const favoriteSelection = useMemo(() => {
+    const favoriteIds = new Set(normalizeBroadcastAudienceTargetChatIds(favoriteChatIds));
+    return orderedChoices.filter((chat) => favoriteIds.has(chat.id)).map((chat) => chat.id);
+  }, [favoriteChatIds, orderedChoices]);
 
   if (!open || typeof document === 'undefined') {
     return null;
@@ -244,6 +248,16 @@ export function BroadcastAudienceSheet({
               >
                 Текущий
               </button>
+              {favoriteSelection.length > 0 ? (
+                <button
+                  type="button"
+                  className="broadcast-audience-sheet__quick-pill"
+                  disabled={disabled}
+                  onClick={() => setDraftSelection(favoriteSelection)}
+                >
+                  Избранные {favoriteSelection.length}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="broadcast-audience-sheet__quick-pill"

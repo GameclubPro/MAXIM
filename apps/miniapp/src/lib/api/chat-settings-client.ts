@@ -379,3 +379,26 @@ export async function sendBroadcast(
   });
   return sendBroadcastResultSchema.parse(response);
 }
+
+export async function sendBroadcastTest(
+  api: ApiTransport,
+  chatId: string,
+  payload: SendBroadcastPayload,
+): Promise<void> {
+  const requestBody = sendBroadcastRequestSchema.parse({
+    ...payload,
+    targetMode: 'current',
+    targetChatIds: [chatId],
+    applyToAllChats: false,
+    scheduleMode: 'legacy',
+    scheduledSlots: [],
+    sendAt: null,
+    cycleEnabled: false,
+    cycleEveryHours: 1,
+    cycleCount: 1,
+  });
+  await api.request(`/chats/${chatId}/broadcast/test`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+}

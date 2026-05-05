@@ -350,6 +350,15 @@ export class AdminController {
     return this.adminService.sendChannelBroadcast(chatId, user, body);
   }
 
+  @Post('channels/:chatId/broadcast/test')
+  sendChannelBroadcastTest(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.sendChannelBroadcastTest(chatId, user, body);
+  }
+
   @Get('channels/:chatId/broadcasts')
   getChannelManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.listChannelManagedBroadcasts(chatId, user);
@@ -556,6 +565,15 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.sendBroadcast(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/broadcast/test')
+  sendBroadcastTest(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.sendBroadcastTest(chatId, user, body);
   }
 
   @Get('chats/:chatId/broadcasts')

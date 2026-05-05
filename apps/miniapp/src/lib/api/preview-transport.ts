@@ -35,6 +35,7 @@ import {
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
+  sendBroadcastTestResultSchema,
   systemDashboardResponseSchema,
   systemModeSnapshotSchema,
   toggleChannelDialogReactionRequestSchema,
@@ -3191,6 +3192,15 @@ async function handleChatRequest(
     }
   }
 
+  if (tail[0] === 'broadcast' && tail[1] === 'test' && method === 'POST') {
+    return sendBroadcastTestResultSchema.parse({
+      delivered: true,
+      messageId: `preview-broadcast-test-${Date.now()}`,
+      chatId: 'preview-private-chat',
+      url: null,
+    });
+  }
+
   if (tail[0] === 'broadcasts' && tail.length === 1 && method === 'GET') {
     return cloneJson(state.chatBroadcasts.map(buildBroadcastSummary));
   }
@@ -3791,6 +3801,15 @@ async function handleChannelRequest(
     if (method === 'POST') {
       return createBroadcastHandoffResponse();
     }
+  }
+
+  if (tail[0] === 'broadcast' && tail[1] === 'test' && method === 'POST') {
+    return sendBroadcastTestResultSchema.parse({
+      delivered: true,
+      messageId: `preview-channel-broadcast-test-${Date.now()}`,
+      chatId: 'preview-private-chat',
+      url: null,
+    });
   }
 
   if (tail[0] === 'members' && tail[1] && tail[2] === 'profile' && tail[3] === 'handoff') {

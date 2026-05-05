@@ -3245,6 +3245,14 @@ export const sendBroadcastResultSchema = z.object({
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
+export const sendBroadcastTestResultSchema = z.object({
+  delivered: z.boolean(),
+  messageId: z.string().nullable(),
+  chatId: z.string().nullable(),
+  url: z.string().url().nullable(),
+});
+export type SendBroadcastTestResult = z.infer<typeof sendBroadcastTestResultSchema>;
+
 export const managedBroadcastStatusSchema = z.enum([
   'ACTIVE',
   'PARTIAL',
