@@ -10557,6 +10557,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       });
                                       maxNotify('error');
                                     }}
+                                    buttons={normalizedMailingButtons}
                                   />
                                 </Suspense>
                               </div>
@@ -10703,7 +10704,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     errors={mailingButtonErrors}
                                     revealNextStepSignal={mailingButtonRevealSignal}
                                     compact
-                                    title="Сетка кнопок"
+                                    title=""
                                     subtitle=""
                                     onChange={(nextButtons) => {
                                       setMailingButtons(nextButtons);

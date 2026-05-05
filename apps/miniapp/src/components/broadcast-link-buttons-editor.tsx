@@ -46,10 +46,22 @@ export function BroadcastLinkButtonsEditor({
   const previewRows = chunkBroadcastLinkButtons(buttons);
   const canAddMore = buttons.length < MAX_BROADCAST_LINK_BUTTONS;
   const shouldSpotlightNextStep = revealNextStepSignal > 0 && buttons.length === 1 && canAddMore;
+  const compactPresets =
+    contextEntityType === 'channel'
+      ? [
+          { label: 'Канал', text: 'Открыть канал' },
+          { label: 'Бот', text: 'Открыть бота' },
+          { label: 'URL', text: 'Открыть' },
+        ]
+      : [
+          { label: 'Бот', text: 'Открыть бота' },
+          { label: 'Канал', text: 'Открыть канал' },
+          { label: 'URL', text: 'Открыть' },
+        ];
   const nextButtonLabel = compact
     ? buttons.length === 0
-      ? 'Добавить кнопку'
-      : 'Ещё кнопка'
+      ? 'Добавить'
+      : 'Ещё'
     : buttons.length === 0
       ? 'Добавить первую кнопку'
       : buttons.length === 1
@@ -119,23 +131,60 @@ export function BroadcastLinkButtonsEditor({
     onChange([...buttons, createEmptyBroadcastLinkButton()]);
   }
 
+  function applyPreset(text: string) {
+    const nextButton = { ...createEmptyBroadcastLinkButton(), text };
+    const emptyIndex = buttons.findIndex((button) => !button.text.trim());
+
+    if (emptyIndex >= 0) {
+      onChange(
+        buttons.map((button, index) => (index === emptyIndex ? { ...button, text } : button)),
+      );
+      return;
+    }
+
+    if (canAddMore) {
+      onChange([...buttons, nextButton]);
+    }
+  }
+
   return (
     <div className={cn('broadcast-link-editor', compact && 'broadcast-link-editor--compact')}>
       <div className="broadcast-link-editor__head">
-        <div className="broadcast-link-editor__copy">
-          <strong>{title}</strong>
-          {subtitle ? <small>{subtitle}</small> : null}
-        </div>
+        {title || subtitle ? (
+          <div className="broadcast-link-editor__copy">
+            {title ? <strong>{title}</strong> : null}
+            {subtitle ? <small>{subtitle}</small> : null}
+          </div>
+        ) : null}
         <span className="broadcast-link-editor__count">
           {buttons.length}/{MAX_BROADCAST_LINK_BUTTONS}
         </span>
       </div>
 
-      <div className="broadcast-link-editor__preview" aria-label="Предпросмотр рядов кнопок">
-        <div className="broadcast-link-editor__preview-meta">
-          <span>{formatBroadcastButtonsStatus(buttons)}</span>
-          <small>{previewRows.length > 0 ? `${previewRows.length} ряда` : 'Пока пусто'}</small>
+      {compact && canAddMore ? (
+        <div className="broadcast-link-editor__presets" aria-label="Быстрые кнопки">
+          {compactPresets.map((preset) => (
+            <button
+              key={preset.label}
+              type="button"
+              className="broadcast-link-editor__preset"
+              disabled={disabled}
+              onClick={() => applyPreset(preset.text)}
+              aria-label={preset.text}
+            >
+              {preset.label}
+            </button>
+          ))}
         </div>
+      ) : null}
+
+      <div className="broadcast-link-editor__preview" aria-label="Предпросмотр рядов кнопок">
+        {!compact ? (
+          <div className="broadcast-link-editor__preview-meta">
+            <span>{formatBroadcastButtonsStatus(buttons)}</span>
+            <small>{previewRows.length > 0 ? `${previewRows.length} ряда` : 'Пока пусто'}</small>
+          </div>
+        ) : null}
         <div className="broadcast-link-editor__preview-board">
           {previewRows.length > 0 ? (
             previewRows.map((row, rowIndex) => (
@@ -155,10 +204,8 @@ export function BroadcastLinkButtonsEditor({
               </div>
             ))
           ) : (
-            <div className="broadcast-link-editor__empty">
-              <strong>
-                {compact ? 'Кнопка появится здесь' : 'Первая кнопка откроет ленту действий'}
-              </strong>
+            <div className="broadcast-link-editor__empty" aria-hidden={compact}>
+              <strong>{compact ? '+' : 'Первая кнопка откроет ленту действий'}</strong>
               {!compact ? (
                 <small>После этого снизу появится удобное добавление ещё кнопок.</small>
               ) : null}

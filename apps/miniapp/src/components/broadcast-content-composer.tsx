@@ -1,9 +1,11 @@
+import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Xmark as IconoirXmark } from 'iconoir-react';
 import { useRef, useState } from 'react';
 import { MaxMarkdownEditor } from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
+import { chunkBroadcastLinkButtons } from '../lib/broadcast-link-buttons';
 import { openFileInputPicker } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -17,6 +19,7 @@ type BroadcastContentComposerProps = {
   text: string;
   maxLength: number;
   image: BroadcastContentComposerImage;
+  buttons?: BroadcastLinkButton[];
   videoLabel?: string | null;
   disabled?: boolean;
   textError?: string;
@@ -31,6 +34,7 @@ export function BroadcastContentComposer({
   text,
   maxLength,
   image,
+  buttons = [],
   videoLabel = null,
   disabled = false,
   textError = '',
@@ -47,6 +51,8 @@ export function BroadcastContentComposer({
       ? `data:${image.mimeType};base64,${image.base64}`
       : null;
   const normalizedText = text.trim();
+  const previewButtons = buttons.filter((button) => button.text.trim());
+  const previewButtonRows = chunkBroadcastLinkButtons(previewButtons);
   const hasPreview = Boolean(normalizedText || imagePreviewUrl || videoLabel);
   const remainingLength = maxLength - text.length;
   const isBusy = disabled || isPreparingImage;
@@ -105,7 +111,7 @@ export function BroadcastContentComposer({
             onChange={onTextChange}
             maxLength={maxLength}
             placeholder="Текст рассылки"
-            rows={5}
+            rows={3}
             disabled={isBusy}
             compactToolbar
             ariaLabel="Текст рассылки"
@@ -145,21 +151,48 @@ export function BroadcastContentComposer({
 
         {hasPreview ? (
           <div className="broadcast-message-card" aria-label="Предпросмотр сообщения">
-            <div className="broadcast-message-card__surface">
-              <>
+            <div className="broadcast-message-card__phone" aria-hidden>
+              <div className="broadcast-message-card__bubble">
                 {imagePreviewUrl ? (
                   <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
                 ) : null}
+
                 {videoLabel ? (
                   <span className="broadcast-message-card__video-preview">{videoLabel}</span>
                 ) : null}
-                <MaxMarkdownPreview
-                  value={text}
-                  className="broadcast-message-card__preview"
-                  preserveLinks
-                  fallback={null}
-                />
-              </>
+
+                {normalizedText ? (
+                  <MaxMarkdownPreview
+                    value={text}
+                    className="broadcast-message-card__preview"
+                    preserveLinks
+                    fallback={null}
+                  />
+                ) : null}
+
+                {previewButtonRows.length > 0 ? (
+                  <div className="broadcast-message-card__buttons">
+                    {previewButtonRows.map((row, rowIndex) => (
+                      <div
+                        key={`preview-row-${rowIndex}`}
+                        className="broadcast-message-card__button-row"
+                      >
+                        {row.map((button, buttonIndex) => (
+                          <span
+                            key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
+                            className="broadcast-message-card__button"
+                          >
+                            {button.text.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <span className="broadcast-message-card__tail" />
+                <span className="broadcast-message-card__checks" />
+              </div>
             </div>
           </div>
         ) : null}

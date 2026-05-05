@@ -2535,6 +2535,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               });
                               maxNotify('error');
                             }}
+                            buttons={normalizedBroadcastButtons}
                           />
                         </Suspense>
                       </div>
@@ -2651,7 +2652,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             errors={broadcastButtonErrors}
                             revealNextStepSignal={broadcastButtonRevealSignal}
                             compact
-                            title="Сетка кнопок"
+                            title=""
                             subtitle=""
                             onChange={(nextButtons) => {
                               setBroadcastButtons(nextButtons);

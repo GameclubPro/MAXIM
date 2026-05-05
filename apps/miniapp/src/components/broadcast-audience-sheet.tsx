@@ -110,6 +110,24 @@ export function BroadcastAudienceSheet({
     () => filterBroadcastAudienceChoices(orderedChoices, searchValue),
     [orderedChoices, searchValue],
   );
+  const visibleChoices = useMemo(
+    () =>
+      [...filteredChoices].sort((left, right) => {
+        const leftSelected = draftSelection.includes(left.id);
+        const rightSelected = draftSelection.includes(right.id);
+
+        if (leftSelected === rightSelected) {
+          return 0;
+        }
+
+        return leftSelected ? -1 : 1;
+      }),
+    [draftSelection, filteredChoices],
+  );
+  const selectedPreviewChoices = useMemo(
+    () => orderedChoices.filter((chat) => draftSelection.includes(chat.id)).slice(0, 3),
+    [draftSelection, orderedChoices],
+  );
 
   if (!open || typeof document === 'undefined') {
     return null;
@@ -156,10 +174,10 @@ export function BroadcastAudienceSheet({
           <div className="broadcast-audience-sheet__sticky">
             <div className="broadcast-audience-sheet__hero">
               <div className="broadcast-audience-sheet__hero-copy">
-                <strong id="broadcast-audience-sheet-title">Активные чаты</strong>
+                <strong id="broadcast-audience-sheet-title">Чаты</strong>
                 <span>
                   {hasSearchQuery
-                    ? `${filteredChoices.length} из ${orderedChoices.length}`
+                    ? `${filteredChoices.length}/${orderedChoices.length}`
                     : totalChoicesLabel}
                 </span>
               </div>
@@ -174,14 +192,17 @@ export function BroadcastAudienceSheet({
               </button>
             </div>
 
-            <div className="broadcast-audience-sheet__stats">
-              <span className="broadcast-audience-sheet__stat is-primary">{selectedLabel}</span>
-              <span className="broadcast-audience-sheet__stat">Всего {orderedChoices.length}</span>
-              {currentChatId && draftSelection.includes(currentChatId) ? (
-                <span className="broadcast-audience-sheet__stat is-soft">Текущий</span>
-              ) : null}
-              <span className="broadcast-audience-sheet__badge">{draftSelection.length}</span>
-            </div>
+            {hasSelection ? (
+              <div className="broadcast-audience-sheet__selected-strip" aria-label={selectedLabel}>
+                {selectedPreviewChoices.map((chat) => (
+                  <span key={`selected-${chat.id}`}>{chat.title}</span>
+                ))}
+                {draftSelection.length > selectedPreviewChoices.length ? (
+                  <span>+{draftSelection.length - selectedPreviewChoices.length}</span>
+                ) : null}
+                <span className="broadcast-audience-sheet__badge">{draftSelection.length}</span>
+              </div>
+            ) : null}
 
             <div className="broadcast-audience-sheet__search-shell">
               <span className="broadcast-audience-sheet__search-icon" aria-hidden>
@@ -221,7 +242,7 @@ export function BroadcastAudienceSheet({
                 disabled={disabled || !currentChatId}
                 onClick={() => setDraftSelection(currentChatId ? [currentChatId] : [])}
               >
-                Только текущий
+                Текущий
               </button>
               <button
                 type="button"
@@ -229,7 +250,7 @@ export function BroadcastAudienceSheet({
                 disabled={disabled || draftSelection.length === 0}
                 onClick={() => setDraftSelection([])}
               >
-                Очистить
+                Сброс
               </button>
               {canRefresh ? (
                 <button
@@ -238,7 +259,7 @@ export function BroadcastAudienceSheet({
                   disabled={disabled || loading || refreshing}
                   onClick={onRefresh}
                 >
-                  {refreshing ? 'Обновляем' : 'Обновить'}
+                  {refreshing ? '...' : '↻'}
                 </button>
               ) : null}
             </div>
@@ -279,7 +300,7 @@ export function BroadcastAudienceSheet({
           {!loading && !error && filteredChoices.length > 0 ? (
             <div className="broadcast-audience-sheet__scroll" ref={scrollRef}>
               <div className="broadcast-audience-sheet__list" aria-label="Список активных чатов">
-                {filteredChoices.map((chat) => {
+                {visibleChoices.map((chat) => {
                   const checked = draftSelection.includes(chat.id);
                   const isCurrentChat = chat.id === currentChatId;
 
@@ -315,13 +336,7 @@ export function BroadcastAudienceSheet({
                         <span className="broadcast-audience-sheet__option-row broadcast-audience-sheet__option-row--meta">
                           <small>{chat.link?.trim() || chat.id}</small>
 
-                          <span className="broadcast-audience-sheet__option-meta">
-                            {isCurrentChat ? (
-                              <span className="broadcast-audience-sheet__option-chip">
-                                Этот чат
-                              </span>
-                            ) : null}
-                          </span>
+                          <span className="broadcast-audience-sheet__option-meta" />
                         </span>
                       </span>
                     </button>
