@@ -85,7 +85,6 @@ import {
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
-  handoffBroadcast,
   handoffRules,
   publishRules,
   removeDomain,
@@ -2159,7 +2158,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingScheduleTimezone, setMailingScheduleTimezone] = useState(() =>
     resolveBroadcastScheduleTimezone(),
   );
-  const [mailingBotHasContent, setMailingBotHasContent] = useState(false);
   const [, setMailingScheduleEnabled] = useState(false);
   const [, setMailingScheduleDays] = useState(0);
   const [, setMailingScheduleTime] = useState(() =>
@@ -2198,6 +2196,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
+  const [pendingMailingSlotConflict, setPendingMailingSlotConflict] = useState<{
+    broadcastId: string | null;
+    payload: SendBroadcastPayload;
+  } | null>(null);
   const [chatsListRefreshRequest, setChatsListRefreshRequest] = useState<{
     nonce: number;
     behavior: 'default' | 'manual' | 'recovery';
@@ -2301,7 +2303,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingQuickPreset(null);
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
-    setMailingBotHasContent(false);
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
     setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
@@ -2385,7 +2386,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     enabled:
       Boolean(chatId) &&
       !editingManagedBroadcast &&
-      (expandedSections.mailing || (focusSection === 'broadcast' && handoffRequested)),
+      focusSection === 'broadcast' &&
+      handoffRequested,
     refetchOnWindowFocus: false,
   });
   const meQuery = useQuery({
@@ -2675,17 +2677,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const hasHandoffDraft =
-      broadcastHandoffStateQuery.data.hasContent ||
       broadcastHandoffStateQuery.data.buttons.length > 0 ||
       broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ||
       broadcastHandoffStateQuery.data.targetMode !== 'current' ||
       broadcastHandoffStateQuery.data.targetChatIds.length > 0;
-    const hasLocalDirectContent = Boolean(mailingText.trim() || mailingImageEnabled);
-    if (
-      !hasHandoffDraft ||
-      (broadcastHandoffStateQuery.data.hasContent && !handoffRequested) ||
-      (!broadcastHandoffStateQuery.data.hasContent && hasLocalDirectContent)
-    ) {
+    if (!hasHandoffDraft) {
       return;
     }
 
@@ -2723,34 +2719,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingScheduleTimezone(
       broadcastHandoffStateQuery.data.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
-    setMailingBotHasContent(broadcastHandoffStateQuery.data.hasContent);
-    setMailingText('');
-    setMailingImageEnabled(false);
-    setMailingImageBase64('');
-    setMailingImageMimeType('');
-    setMailingImageFileName('');
-    setMailingVideoCleared(false);
     setMailingButtonErrors([]);
     setMailingScheduleError('');
     setMailingCycleError('');
     resetMailingPlanner();
     setExpandedSections((current) => ({ ...current, mailing: true }));
     setMailingWorkspaceView('compose');
-    if (handoffRequested && broadcastHandoffStateQuery.data.hasContent) {
-      pushToast({
-        title: 'Контент сохранён в боте',
-        description: 'Календарь восстановлен из личного чата бота.',
-        tone: 'success',
-      });
-    }
-  }, [
-    broadcastHandoffStateQuery.data,
-    chatId,
-    handoffRequested,
-    mailingImageEnabled,
-    mailingText,
-    pushToast,
-  ]);
+    pushToast({
+      title: 'Параметры восстановлены',
+      description: 'Охват, кнопки и календарь перенесены в мини-аппу.',
+      tone: 'success',
+    });
+  }, [broadcastHandoffStateQuery.data, chatId, handoffRequested, pushToast]);
 
   useEffect(() => {
     if (!chatId || editingManagedBroadcast) {
@@ -3176,34 +3156,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const handoffBroadcastMutation = useMutation({
-    mutationFn: (payload: BroadcastHandoffPayload) => handoffBroadcast(api, chatId ?? '', payload),
-    onSuccess: (result) => {
-      if (!openMaxBotLinkAndClose(result.botUrl)) {
-        pushToast({
-          tone: 'danger',
-          title: 'Не удалось открыть бота',
-          description: 'Ссылка на handoff вернулась пустой.',
-        });
-        return;
-      }
-
-      pushToast({
-        tone: 'info',
-        title: 'Открываем личный чат бота',
-        description: 'Отправьте там текст или фото, затем подтвердите рассылку.',
-      });
-    },
-    onError: (error) => {
-      const description = reportMailingAudienceApiError(error);
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть сбор контента',
-        description,
-      });
-    },
-  });
-
   const sendBroadcastMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendBroadcast(api, chatId ?? '', payload),
     onSuccess: (result) => {
@@ -3436,7 +3388,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       );
       setMailingAudienceError('');
       setMailingText(broadcast.text);
-      setMailingBotHasContent(false);
       setMailingButtons(broadcast.buttons);
       setMailingButtonErrors([]);
       setMailingImageEnabled(broadcast.imageEnabled);
@@ -4348,7 +4299,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingLastScopedTargetMode('current');
     setMailingAudienceError('');
     setMailingText('');
-    setMailingBotHasContent(false);
     setMailingButtons([]);
     setMailingImageEnabled(false);
     setMailingImageBase64('');
@@ -4531,7 +4481,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return !hasBroadcastLinkButtonErrors(nextErrors);
   }
 
-  function buildMailingHandoffPayload(): BroadcastHandoffPayload {
+  function buildMailingPublishBasePayload(): BroadcastHandoffPayload {
     const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedMailingButtons);
     const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
     const quickSchedule = mailingQuickPreset
@@ -4559,6 +4509,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       cycleEveryHours: 1,
       cycleCount: quickSchedule ? 1 : Math.max(scheduledSlots.length, 1),
     };
+  }
+
+  function submitMailingPayload(broadcastId: string | null, payload: SendBroadcastPayload) {
+    if (broadcastId) {
+      updateManagedBroadcastMutation.mutate({
+        broadcastId,
+        payload,
+      });
+      return;
+    }
+
+    sendBroadcastMutation.mutate(payload);
+  }
+
+  function handleCloseMailingSlotConflict() {
+    setPendingMailingSlotConflict(null);
+    setMailingScheduleError('Выберите свободное время.');
+  }
+
+  function confirmMailingSlotReplacement() {
+    if (!pendingMailingSlotConflict) {
+      return;
+    }
+
+    const { broadcastId, payload } = pendingMailingSlotConflict;
+    setPendingMailingSlotConflict(null);
+    setMailingScheduleError('');
+    submitMailingPayload(broadcastId, {
+      ...payload,
+      replaceConflictingSlots: true,
+    });
   }
 
   function handleSendBroadcast() {
@@ -4606,7 +4587,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         setMailingImageError('');
       }
     } else {
-      if (!hasDirectContent && !mailingBotHasContent) {
+      if (!hasDirectContent) {
         setMailingTextError('Добавьте текст или фото.');
         hasError = true;
       } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
@@ -4654,65 +4635,53 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const hasConflictingSlots =
-      !quickSchedule && scheduledSlots.some((slot) => mailingOccupiedSlots.includes(slot));
-    const replaceConflictingSlots =
-      hasConflictingSlots &&
-      typeof window !== 'undefined' &&
-      window.confirm('На это время уже есть рассылка. Заменить занятый слот?');
-    if (hasConflictingSlots && !replaceConflictingSlots) {
-      setMailingScheduleError('Выберите свободное время или подтвердите замену.');
-      return;
-    }
-
-    const handoffPayload = {
-      ...buildMailingHandoffPayload(),
+    const publishBasePayload = {
+      ...buildMailingPublishBasePayload(),
       targetMode: audiencePayload.targetMode,
       targetChatIds: audiencePayload.targetChatIds,
       applyToAllChats: audiencePayload.applyToAllChats,
-      replaceConflictingSlots,
+      replaceConflictingSlots: false,
     };
 
-    if (editingManagedBroadcast) {
-      const payload: SendBroadcastPayload = {
-        text: normalizedText,
-        textFormat: 'markdown',
-        ...handoffPayload,
-        imageEnabled: mailingImageEnabled,
-        imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
-        imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
-        imageFileName: mailingImageEnabled ? mailingImageFileName : '',
-        mediaType: keepVideoMedia ? 'video' : null,
-        mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
-        mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
-        mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
-      };
-      updateManagedBroadcastMutation.mutate({
-        broadcastId: editingManagedBroadcast.id,
+    const payload: SendBroadcastPayload = editingManagedBroadcast
+      ? {
+          text: normalizedText,
+          textFormat: 'markdown',
+          ...publishBasePayload,
+          imageEnabled: mailingImageEnabled,
+          imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+          imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+          imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+          mediaType: keepVideoMedia ? 'video' : null,
+          mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
+          mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
+          mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
+        }
+      : {
+          text: normalizedText,
+          textFormat: 'markdown',
+          ...publishBasePayload,
+          imageEnabled: mailingImageEnabled,
+          imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+          imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+          imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+          mediaType: null,
+          mediaPayload: null,
+          mediaMimeType: '',
+          mediaFileName: '',
+        };
+
+    const hasConflictingSlots =
+      !quickSchedule && scheduledSlots.some((slot) => mailingOccupiedSlots.includes(slot));
+    if (hasConflictingSlots) {
+      setPendingMailingSlotConflict({
+        broadcastId: editingManagedBroadcast?.id ?? null,
         payload,
       });
       return;
     }
 
-    if (!hasDirectContent && mailingBotHasContent) {
-      handoffBroadcastMutation.mutate(handoffPayload);
-      return;
-    }
-
-    const payload: SendBroadcastPayload = {
-      text: normalizedText,
-      textFormat: 'markdown',
-      ...handoffPayload,
-      imageEnabled: mailingImageEnabled,
-      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
-      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
-      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
-      mediaType: null,
-      mediaPayload: null,
-      mediaMimeType: '',
-      mediaFileName: '',
-    };
-    sendBroadcastMutation.mutate(payload);
+    submitMailingPayload(editingManagedBroadcast?.id ?? null, payload);
   }
 
   function handleCommercialSensitivitySliderChange(rawValue: number) {
@@ -5391,6 +5360,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
+  const pendingMailingConflictSlots = pendingMailingSlotConflict
+    ? pendingMailingSlotConflict.payload.scheduledSlots.filter((slot) =>
+        mailingOccupiedSlots.includes(slot),
+      )
+    : [];
+  const pendingMailingConflictPreviewSlot =
+    pendingMailingConflictSlots[0] ?? pendingMailingSlotConflict?.payload.scheduledSlots[0] ?? null;
   const activeManagedBroadcast = orderedManagedBroadcasts.find((broadcast) => {
     if (broadcast.status !== 'ACTIVE' && broadcast.status !== 'PARTIAL') {
       return false;
@@ -5406,7 +5382,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
     sendBroadcastMutation.isPending ||
-    handoffBroadcastMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
@@ -5449,8 +5424,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHasDirectContent = Boolean(
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
-  const mailingHasPublishableContent =
-    mailingHasDirectContent || (!editingManagedBroadcast && mailingBotHasContent);
+  const mailingHasPublishableContent = mailingHasDirectContent;
   const mailingQuickSchedule = mailingQuickPreset
     ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
     : null;
@@ -5477,8 +5451,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduledSlots.length > 0 ||
     normalizedMailingText.length > 0 ||
     mailingImageEnabled ||
-    mailingButtonEnabled ||
-    mailingBotHasContent;
+    mailingButtonEnabled;
   const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedMailingButtons),
   );
@@ -5505,20 +5478,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
-  const mailingPrimaryActionLabel =
-    !mailingHasDirectContent && !editingManagedBroadcast && mailingBotHasContent
-      ? 'Открыть бота'
-      : editingManagedBroadcast
-        ? 'Сохранить'
-        : mailingQuickPreset === 'now'
-          ? 'Отправить'
-          : 'Запланировать';
+  const mailingPrimaryActionLabel = editingManagedBroadcast
+    ? 'Сохранить'
+    : mailingQuickPreset === 'now'
+      ? 'Отправить'
+      : 'Запланировать';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
-    : mailingBotHasContent
-      ? 'Очистить черновик в боте'
-      : 'Очистить рассылку';
+    : 'Очистить рассылку';
   const mailingFooterTitle = editingManagedBroadcast
     ? 'Сохранить рассылку'
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
@@ -5528,7 +5496,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : mailingSelectionSummary || 'Рассылка';
   const mailingFooterMeta = [
     mailingHeaderTargetLabel,
-    !editingManagedBroadcast && mailingBotHasContent ? 'В боте' : null,
     mailingImageEnabled ? 'Фото' : null,
     editingMailingHasVideo ? 'Видео' : null,
     mailingButtonEnabled ? formatBroadcastButtonsStatus(normalizedMailingButtons) : null,
@@ -5556,11 +5523,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     {
       label: 'Контент',
       value: mailingHasPublishableContent
-        ? mailingBotHasContent && !mailingHasDirectContent
-          ? 'В боте'
-          : mailingImageEnabled || editingMailingHasVideo
-            ? 'Медиа'
-            : `${normalizedMailingText.length}/2000`
+        ? mailingImageEnabled || editingMailingHasVideo
+          ? 'Медиа'
+          : `${normalizedMailingText.length}/2000`
         : 'Пусто',
       tone: mailingHasPublishableContent ? 'ready' : 'pending',
       icon: 'content',
@@ -5618,11 +5583,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ? mailingQuickPreset === 'now'
               ? 'Отправляем...'
               : 'Планируем...'
-            : handoffBroadcastMutation.isPending
-              ? 'Передаём...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : mailingPrimaryActionLabel}
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : mailingPrimaryActionLabel}
       </button>
     </div>
   );
@@ -10560,11 +10523,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     mailingHasPublishableContent ? 'is-ready' : 'is-pending',
                                   )}
                                 >
-                                  {mailingHasDirectContent
-                                    ? 'Готов'
-                                    : mailingBotHasContent
-                                      ? 'В боте'
-                                      : 'Пусто'}
+                                  {mailingHasDirectContent ? 'Готов' : 'Пусто'}
                                 </span>
                               </div>
 
@@ -10585,9 +10544,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     imageError={mailingImageError}
                                     onTextChange={(nextText) => {
                                       setMailingText(nextText);
-                                      if (mailingBotHasContent) {
-                                        setMailingBotHasContent(false);
-                                      }
                                       if (mailingTextError) {
                                         setMailingTextError('');
                                       }
@@ -10597,9 +10553,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       setMailingImageBase64(nextImage.base64);
                                       setMailingImageMimeType(nextImage.mimeType);
                                       setMailingImageFileName(nextImage.fileName);
-                                      if (mailingBotHasContent) {
-                                        setMailingBotHasContent(false);
-                                      }
                                       if (nextImage.enabled) {
                                         setMailingVideoCleared(true);
                                       }
@@ -12350,6 +12303,36 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </GlassCard>
       ) : null}
+
+      <ActionConfirmSheet
+        id="mailing-slot-conflict"
+        open={pendingMailingSlotConflict !== null}
+        title="Заменить слот?"
+        summary="На это время уже есть рассылка."
+        previewTitle={
+          pendingMailingConflictPreviewSlot
+            ? formatCompactBroadcastDateTime(
+                pendingMailingConflictPreviewSlot,
+                pendingMailingSlotConflict?.payload.scheduleTimezone,
+              )
+            : 'Занятый слот'
+        }
+        previewMeta={
+          pendingMailingConflictSlots.length > 1
+            ? formatRussianCountLabel(
+                pendingMailingConflictSlots.length,
+                'занятый слот',
+                'занятых слота',
+                'занятых слотов',
+              )
+            : 'Текущая рассылка на это время будет заменена.'
+        }
+        confirmLabel="Заменить"
+        cancelLabel="Другое время"
+        tone="accent"
+        onClose={handleCloseMailingSlotConflict}
+        onConfirm={confirmMailingSlotReplacement}
+      />
 
       <ActionConfirmSheet
         id="managed-broadcast-delete"

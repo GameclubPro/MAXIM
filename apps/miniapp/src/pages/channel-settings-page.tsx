@@ -47,7 +47,6 @@ import {
   getChannelBroadcastHandoffState,
   getChannelManagedBroadcast,
   getChannelSettingsScreen,
-  handoffChannelBroadcast,
   retryChannelManagedBroadcast,
   sendChannelBroadcast,
   updateChannelManagedBroadcast,
@@ -78,7 +77,7 @@ import {
 } from '../lib/broadcast-composer-draft';
 import { buildChannelBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
 import { cn } from '../lib/cn';
-import { maxNotify, openMaxBotLinkAndClose, setMaxClosingConfirmation } from '../lib/max-bridge';
+import { maxNotify, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -783,7 +782,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastScheduleTimezone, setBroadcastScheduleTimezone] = useState(() =>
     resolveBroadcastScheduleTimezone(),
   );
-  const [broadcastBotHasContent, setBroadcastBotHasContent] = useState(false);
   const [broadcastImageError, setBroadcastImageError] = useState('');
   const [, setBroadcastScheduleEnabled] = useState(false);
   const [, setBroadcastScheduleDays] = useState(0);
@@ -802,6 +800,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastDetails | null>(null);
   const [managedBroadcastDeleteTarget, setManagedBroadcastDeleteTarget] =
     useState<ManagedBroadcastListItem | null>(null);
+  const [pendingBroadcastSlotConflict, setPendingBroadcastSlotConflict] = useState<{
+    broadcastId: string | null;
+    payload: SendBroadcastPayload;
+  } | null>(null);
   const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const broadcastMaintenanceNoticeShownRef = useRef(false);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
@@ -827,7 +829,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     enabled:
       Boolean(chatId) &&
       !editingManagedBroadcast &&
-      (expandedSections.broadcast || (focusSection === 'broadcast' && handoffRequested)),
+      focusSection === 'broadcast' &&
+      handoffRequested,
     refetchOnWindowFocus: false,
   });
 
@@ -931,15 +934,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const hasHandoffDraft =
-      broadcastHandoffStateQuery.data.hasContent ||
       broadcastHandoffStateQuery.data.buttons.length > 0 ||
       broadcastHandoffStateQuery.data.scheduledSlots.length > 0;
-    const hasLocalDirectContent = Boolean(broadcastText.trim() || broadcastImageEnabled);
-    if (
-      !hasHandoffDraft ||
-      (broadcastHandoffStateQuery.data.hasContent && !handoffRequested) ||
-      (!broadcastHandoffStateQuery.data.hasContent && hasLocalDirectContent)
-    ) {
+    if (!hasHandoffDraft) {
       return;
     }
 
@@ -957,38 +954,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastScheduleTimezone(
       broadcastHandoffStateQuery.data.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
-    setBroadcastBotHasContent(broadcastHandoffStateQuery.data.hasContent);
-    setBroadcastText('');
-    setBroadcastImageEnabled(false);
-    setBroadcastImageBase64('');
-    setBroadcastImageMimeType('');
-    setBroadcastImageFileName('');
-    setBroadcastVideoCleared(false);
     setBroadcastButtonErrors([]);
     setBroadcastScheduleError('');
     setBroadcastCycleError('');
     resetBroadcastPlanner();
     setExpandedSections((current) => ({ ...current, broadcast: true }));
-    if (handoffRequested && broadcastHandoffStateQuery.data.hasContent) {
-      pushToast({
-        tone: 'success',
-        title: 'Контент сохранён в боте',
-        description: 'Календарь восстановлен из личного чата бота.',
-      });
-    }
-  }, [
-    broadcastHandoffStateQuery.data,
-    broadcastImageEnabled,
-    broadcastText,
-    handoffRequested,
-    pushToast,
-  ]);
+    pushToast({
+      tone: 'success',
+      title: 'Параметры восстановлены',
+      description: 'Кнопки и календарь перенесены в мини-аппу.',
+    });
+  }, [broadcastHandoffStateQuery.data, handoffRequested, pushToast]);
 
   useEffect(() => {
     setBroadcastText('');
     setBroadcastTextError('');
     setBroadcastButtons([]);
-    setBroadcastBotHasContent(false);
     setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
@@ -1321,35 +1302,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return request;
   };
 
-  const handoffBroadcastMutation = useMutation({
-    mutationFn: (payload: BroadcastHandoffPayload) => handoffChannelBroadcast(api, chatId, payload),
-    onSuccess: (result) => {
-      if (!openMaxBotLinkAndClose(result.botUrl)) {
-        pushToast({
-          tone: 'danger',
-          title: 'Не удалось открыть бота',
-          description: 'Ссылка на handoff вернулась пустой.',
-        });
-        return;
-      }
-
-      pushToast({
-        tone: 'info',
-        title: 'Открываем личный чат бота',
-        description: 'Отправьте там текст или фото, затем подтвердите публикацию.',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть сбор контента',
-        description: normalizeApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-
   const sendBroadcastMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => sendChannelBroadcast(api, chatId ?? '', payload),
     onSuccess: (result) => {
@@ -1503,7 +1455,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onSuccess: (broadcast) => {
       setEditingManagedBroadcast(broadcast);
       setBroadcastText(broadcast.text);
-      setBroadcastBotHasContent(false);
       setBroadcastButtons(broadcast.buttons);
       setBroadcastButtonErrors([]);
       setBroadcastImageEnabled(broadcast.imageEnabled);
@@ -1656,11 +1607,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
+  const pendingBroadcastConflictSlots = pendingBroadcastSlotConflict
+    ? pendingBroadcastSlotConflict.payload.scheduledSlots.filter((slot) =>
+        broadcastOccupiedSlots.includes(slot),
+      )
+    : [];
+  const pendingBroadcastConflictPreviewSlot =
+    pendingBroadcastConflictSlots[0] ??
+    pendingBroadcastSlotConflict?.payload.scheduledSlots[0] ??
+    null;
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isBroadcastBusy =
     sendBroadcastMutation.isPending ||
-    handoffBroadcastMutation.isPending ||
     clearBroadcastHandoffMutation.isPending ||
     isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
@@ -1680,8 +1639,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastHasDirectContent = Boolean(
     normalizedBroadcastText || broadcastImageEnabled || editingBroadcastHasVideo,
   );
-  const broadcastHasPublishableContent =
-    broadcastHasDirectContent || (!editingManagedBroadcast && broadcastBotHasContent);
+  const broadcastHasPublishableContent = broadcastHasDirectContent;
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
   );
@@ -1728,8 +1686,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
-    broadcastHasButton ||
-    broadcastBotHasContent;
+    broadcastHasButton;
   const broadcastHeaderSummary = broadcastSlotsSummary;
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение через бота выключено'
@@ -1761,9 +1718,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           : 'Пусто';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
-    : broadcastBotHasContent
-      ? 'Очистить черновик в боте'
-      : 'Очистить рассылку';
+    : 'Очистить рассылку';
   const broadcastFooterTitle = editingManagedBroadcast
     ? 'Сохранить рассылку'
     : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
@@ -1773,7 +1728,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         : broadcastSelectionSummary || 'Рассылка';
   const broadcastFooterMeta = [
     'Текущий канал',
-    !editingManagedBroadcast && broadcastBotHasContent ? 'В боте' : null,
     broadcastImageEnabled ? 'Фото' : null,
     editingBroadcastHasVideo ? 'Видео' : null,
     broadcastHasButton ? formatBroadcastButtonsStatus(normalizedBroadcastButtons) : null,
@@ -1790,11 +1744,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     {
       label: 'Контент',
       value: broadcastHasPublishableContent
-        ? broadcastBotHasContent && !broadcastHasDirectContent
-          ? 'В боте'
-          : broadcastImageEnabled || editingBroadcastHasVideo
-            ? 'Медиа'
-            : `${normalizedBroadcastText.length}/2000`
+        ? broadcastImageEnabled || editingBroadcastHasVideo
+          ? 'Медиа'
+          : `${normalizedBroadcastText.length}/2000`
         : 'Пусто',
       tone: broadcastHasPublishableContent ? 'ready' : 'pending',
       icon: 'content',
@@ -1832,14 +1784,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastStudioSubtitle = editingManagedBroadcast
     ? 'Режим редактирования активной рассылки'
     : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик рассылки';
-  const broadcastPrimaryActionLabel =
-    !broadcastHasDirectContent && !editingManagedBroadcast && broadcastBotHasContent
-      ? 'Открыть бота'
-      : editingManagedBroadcast
-        ? 'Сохранить'
-        : broadcastQuickPreset === 'now'
-          ? 'Отправить'
-          : 'Запланировать';
+  const broadcastPrimaryActionLabel = editingManagedBroadcast
+    ? 'Сохранить'
+    : broadcastQuickPreset === 'now'
+      ? 'Отправить'
+      : 'Запланировать';
   const broadcastDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -1865,11 +1814,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             ? broadcastQuickPreset === 'now'
               ? 'Отправляем...'
               : 'Планируем...'
-            : handoffBroadcastMutation.isPending
-              ? 'Передаём...'
-              : isOpeningManagedBroadcastEditor
-                ? 'Открываем...'
-                : broadcastPrimaryActionLabel}
+            : isOpeningManagedBroadcastEditor
+              ? 'Открываем...'
+              : broadcastPrimaryActionLabel}
       </button>
     </div>
   );
@@ -1883,7 +1830,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setBroadcastText('');
     setBroadcastTextError('');
-    setBroadcastBotHasContent(false);
     setBroadcastButtons([]);
     setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
@@ -2020,7 +1966,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     return !hasBroadcastLinkButtonErrors(nextErrors);
   }
 
-  function buildBroadcastHandoffPayload(): BroadcastHandoffPayload {
+  function buildBroadcastPublishBasePayload(): BroadcastHandoffPayload {
     const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
     const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedBroadcastButtons);
     const quickSchedule = broadcastQuickPreset
@@ -2043,6 +1989,37 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       cycleEveryHours: 1,
       cycleCount: quickSchedule ? 1 : Math.max(scheduledSlots.length, 1),
     };
+  }
+
+  function submitBroadcastPayload(broadcastId: string | null, payload: SendBroadcastPayload) {
+    if (broadcastId) {
+      updateManagedBroadcastMutation.mutate({
+        broadcastId,
+        payload,
+      });
+      return;
+    }
+
+    sendBroadcastMutation.mutate(payload);
+  }
+
+  function handleCloseBroadcastSlotConflict() {
+    setPendingBroadcastSlotConflict(null);
+    setBroadcastScheduleError('Выберите свободное время.');
+  }
+
+  function confirmBroadcastSlotReplacement() {
+    if (!pendingBroadcastSlotConflict) {
+      return;
+    }
+
+    const { broadcastId, payload } = pendingBroadcastSlotConflict;
+    setPendingBroadcastSlotConflict(null);
+    setBroadcastScheduleError('');
+    submitBroadcastPayload(broadcastId, {
+      ...payload,
+      replaceConflictingSlots: true,
+    });
   }
 
   function handleSendChannelBroadcast() {
@@ -2077,7 +2054,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       } else {
         setBroadcastTextError('');
       }
-    } else if (!hasDirectContent && !broadcastBotHasContent) {
+    } else if (!hasDirectContent) {
       setBroadcastTextError('Добавьте текст или фото.');
       hasError = true;
     } else if (normalizedBroadcastText.length > MAX_BROADCAST_TEXT_LENGTH) {
@@ -2115,62 +2092,50 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const hasConflictingSlots =
-      !quickSchedule && scheduledSlots.some((slot) => broadcastOccupiedSlots.includes(slot));
-    const replaceConflictingSlots =
-      hasConflictingSlots &&
-      typeof window !== 'undefined' &&
-      window.confirm('На это время уже есть рассылка. Заменить занятый слот?');
-    if (hasConflictingSlots && !replaceConflictingSlots) {
-      setBroadcastScheduleError('Выберите свободное время или подтвердите замену.');
-      return;
-    }
-
-    const handoffPayload = {
-      ...buildBroadcastHandoffPayload(),
-      replaceConflictingSlots,
+    const publishBasePayload = {
+      ...buildBroadcastPublishBasePayload(),
+      replaceConflictingSlots: false,
     };
 
-    if (editingManagedBroadcast) {
-      const payload: SendBroadcastPayload = {
-        text: normalizedBroadcastText,
-        textFormat: 'markdown',
-        ...handoffPayload,
-        imageEnabled: broadcastImageEnabled,
-        imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
-        imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
-        imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
-        mediaType: keepVideoMedia ? 'video' : null,
-        mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
-        mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
-        mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
-      };
-      updateManagedBroadcastMutation.mutate({
-        broadcastId: editingManagedBroadcast.id,
+    const payload: SendBroadcastPayload = editingManagedBroadcast
+      ? {
+          text: normalizedBroadcastText,
+          textFormat: 'markdown',
+          ...publishBasePayload,
+          imageEnabled: broadcastImageEnabled,
+          imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
+          imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
+          imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+          mediaType: keepVideoMedia ? 'video' : null,
+          mediaPayload: keepVideoMedia ? editingManagedBroadcast.mediaPayload : null,
+          mediaMimeType: keepVideoMedia ? editingManagedBroadcast.mediaMimeType : '',
+          mediaFileName: keepVideoMedia ? editingManagedBroadcast.mediaFileName : '',
+        }
+      : {
+          text: normalizedBroadcastText,
+          textFormat: 'markdown',
+          ...publishBasePayload,
+          imageEnabled: broadcastImageEnabled,
+          imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
+          imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
+          imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
+          mediaType: null,
+          mediaPayload: null,
+          mediaMimeType: '',
+          mediaFileName: '',
+        };
+
+    const hasConflictingSlots =
+      !quickSchedule && scheduledSlots.some((slot) => broadcastOccupiedSlots.includes(slot));
+    if (hasConflictingSlots) {
+      setPendingBroadcastSlotConflict({
+        broadcastId: editingManagedBroadcast?.id ?? null,
         payload,
       });
       return;
     }
 
-    if (!hasDirectContent && broadcastBotHasContent) {
-      handoffBroadcastMutation.mutate(handoffPayload);
-      return;
-    }
-
-    const payload: SendBroadcastPayload = {
-      text: normalizedBroadcastText,
-      textFormat: 'markdown',
-      ...handoffPayload,
-      imageEnabled: broadcastImageEnabled,
-      imageBase64: broadcastImageEnabled ? broadcastImageBase64 : '',
-      imageMimeType: broadcastImageEnabled ? broadcastImageMimeType : '',
-      imageFileName: broadcastImageEnabled ? broadcastImageFileName : '',
-      mediaType: null,
-      mediaPayload: null,
-      mediaMimeType: '',
-      mediaFileName: '',
-    };
-    sendBroadcastMutation.mutate(payload);
+    submitBroadcastPayload(editingManagedBroadcast?.id ?? null, payload);
   }
 
   function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
@@ -2550,11 +2515,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             broadcastHasPublishableContent ? 'is-ready' : 'is-pending',
                           )}
                         >
-                          {broadcastHasDirectContent
-                            ? 'Готов'
-                            : broadcastBotHasContent
-                              ? 'В боте'
-                              : 'Пусто'}
+                          {broadcastHasDirectContent ? 'Готов' : 'Пусто'}
                         </span>
                       </div>
 
@@ -2575,9 +2536,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             imageError={broadcastImageError}
                             onTextChange={(nextText) => {
                               setBroadcastText(nextText);
-                              if (broadcastBotHasContent) {
-                                setBroadcastBotHasContent(false);
-                              }
                               if (broadcastTextError) {
                                 setBroadcastTextError('');
                               }
@@ -2587,9 +2545,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               setBroadcastImageBase64(nextImage.base64);
                               setBroadcastImageMimeType(nextImage.mimeType);
                               setBroadcastImageFileName(nextImage.fileName);
-                              if (broadcastBotHasContent) {
-                                setBroadcastBotHasContent(false);
-                              }
                               if (nextImage.enabled) {
                                 setBroadcastVideoCleared(true);
                               }
@@ -3053,6 +3008,36 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </SettingsDrilldownPanel>
         </GlassCard>
       ) : null}
+
+      <ActionConfirmSheet
+        id="channel-broadcast-slot-conflict"
+        open={pendingBroadcastSlotConflict !== null}
+        title="Заменить слот?"
+        summary="На это время уже есть рассылка."
+        previewTitle={
+          pendingBroadcastConflictPreviewSlot
+            ? formatCompactManagedBroadcastDateTime(
+                pendingBroadcastConflictPreviewSlot,
+                pendingBroadcastSlotConflict?.payload.scheduleTimezone,
+              )
+            : 'Занятый слот'
+        }
+        previewMeta={
+          pendingBroadcastConflictSlots.length > 1
+            ? formatChannelCountLabel(
+                pendingBroadcastConflictSlots.length,
+                'занятый слот',
+                'занятых слота',
+                'занятых слотов',
+              )
+            : 'Текущая рассылка на это время будет заменена.'
+        }
+        confirmLabel="Заменить"
+        cancelLabel="Другое время"
+        tone="accent"
+        onClose={handleCloseBroadcastSlotConflict}
+        onConfirm={confirmBroadcastSlotReplacement}
+      />
 
       <ActionConfirmSheet
         id="channel-managed-broadcast-delete"
