@@ -17138,6 +17138,7 @@ describe('AdminService.sendBroadcast', () => {
         scheduleMode: 'calendar',
         scheduleTimezone: 'Europe/Moscow',
         scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+        replaceConflictingSlots: true,
         sendAt: null,
         cycleEnabled: false,
         cycleEveryHours: 1,

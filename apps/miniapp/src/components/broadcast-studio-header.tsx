@@ -72,7 +72,15 @@ function BroadcastSignalIcon({ icon }: { icon: BroadcastStudioSignalIcon }) {
   if (icon === 'button') {
     return (
       <svg viewBox="0 0 20 20" fill="none" aria-hidden>
-        <rect x="3.3" y="5.3" width="13.4" height="9.4" rx="3" stroke="currentColor" strokeWidth="1.7" />
+        <rect
+          x="3.3"
+          y="5.3"
+          width="13.4"
+          height="9.4"
+          rx="3"
+          stroke="currentColor"
+          strokeWidth="1.7"
+        />
         <path d="M7 10h6" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
       </svg>
     );

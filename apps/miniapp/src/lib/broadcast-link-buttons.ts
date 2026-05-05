@@ -87,6 +87,10 @@ export function chunkBroadcastLinkButtons<T>(buttons: T[]): T[][] {
   return rows;
 }
 
+export function buildBroadcastPreviewButtonRows<T>(customButtons: T[], systemButtons: T[]): T[][] {
+  return [...chunkBroadcastLinkButtons(customButtons), ...systemButtons.map((button) => [button])];
+}
+
 export function formatBroadcastButtonsStatus(buttons: BroadcastLinkButton[]): string {
   const count = buttons.length;
   if (count === 0) {

@@ -5,7 +5,7 @@ import { MaxMarkdownEditor } from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
-import { chunkBroadcastLinkButtons } from '../lib/broadcast-link-buttons';
+import { buildBroadcastPreviewButtonRows } from '../lib/broadcast-link-buttons';
 import { openFileInputPicker } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -20,6 +20,7 @@ type BroadcastContentComposerProps = {
   maxLength: number;
   image: BroadcastContentComposerImage;
   buttons?: BroadcastLinkButton[];
+  systemButtons?: BroadcastLinkButton[];
   videoLabel?: string | null;
   disabled?: boolean;
   textError?: string;
@@ -35,6 +36,7 @@ export function BroadcastContentComposer({
   maxLength,
   image,
   buttons = [],
+  systemButtons = [],
   videoLabel = null,
   disabled = false,
   textError = '',
@@ -52,7 +54,8 @@ export function BroadcastContentComposer({
       : null;
   const normalizedText = text.trim();
   const previewButtons = buttons.filter((button) => button.text.trim());
-  const previewButtonRows = chunkBroadcastLinkButtons(previewButtons);
+  const previewSystemButtons = systemButtons.filter((button) => button.text.trim());
+  const previewButtonRows = buildBroadcastPreviewButtonRows(previewButtons, previewSystemButtons);
   const hasPreview = Boolean(normalizedText || imagePreviewUrl || videoLabel);
   const remainingLength = maxLength - text.length;
   const isBusy = disabled || isPreparingImage;
@@ -180,7 +183,10 @@ export function BroadcastContentComposer({
                         {row.map((button, buttonIndex) => (
                           <span
                             key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
-                            className="broadcast-message-card__button"
+                            className={cn(
+                              'broadcast-message-card__button',
+                              previewSystemButtons.includes(button) && 'is-system',
+                            )}
                           >
                             {button.text.trim()}
                           </span>

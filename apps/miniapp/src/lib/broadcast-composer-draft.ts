@@ -20,6 +20,10 @@ export type BroadcastComposerDraft = {
 };
 
 const STORAGE_VERSION = 1;
+const LOCAL_STORAGE_IMAGE_BASE64_LIMIT = 250_000;
+const DRAFT_DB_NAME = 'maxim-broadcast-composer';
+const DRAFT_DB_VERSION = 1;
+const DRAFT_STORE_NAME = 'drafts';
 
 function getStorageKey(entityType: BroadcastComposerDraftEntityType, entityId: string): string {
   return `maxim:broadcast-composer:${entityType}:${entityId}`;
@@ -27,6 +31,10 @@ function getStorageKey(entityType: BroadcastComposerDraftEntityType, entityId: s
 
 function canUseStorage(): boolean {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
+}
+
+function canUseIndexedDb(): boolean {
+  return typeof window !== 'undefined' && typeof window.indexedDB !== 'undefined';
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -79,6 +87,93 @@ function readButtons(value: unknown): BroadcastLinkButton[] {
     .filter((item): item is BroadcastLinkButton => item !== null);
 }
 
+function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerDraft | null {
+  if (!isObject(value) || value.version !== STORAGE_VERSION || !isObject(value.draft)) {
+    return null;
+  }
+
+  const draft = value.draft;
+  return {
+    text: readString(draft.text),
+    targetMode: readTargetMode(draft.targetMode, 'current'),
+    targetChatIds: readStringArray(draft.targetChatIds),
+    lastScopedTargetMode: readScopedMode(draft.lastScopedTargetMode, 'current'),
+    buttons: readButtons(draft.buttons),
+    imageEnabled: draft.imageEnabled === true,
+    imageBase64: readString(draft.imageBase64),
+    imageMimeType: readString(draft.imageMimeType),
+    imageFileName: readString(draft.imageFileName),
+    scheduledSlots: readStringArray(draft.scheduledSlots),
+    quickPreset: readQuickPreset(draft.quickPreset),
+    scheduleTimezone: readString(draft.scheduleTimezone),
+  };
+}
+
+function openBroadcastDraftDb(): Promise<IDBDatabase | null> {
+  if (!canUseIndexedDb()) {
+    return Promise.resolve(null);
+  }
+
+  return new Promise((resolve) => {
+    const request = window.indexedDB.open(DRAFT_DB_NAME, DRAFT_DB_VERSION);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(DRAFT_STORE_NAME)) {
+        db.createObjectStore(DRAFT_STORE_NAME);
+      }
+    };
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => resolve(request.result);
+  });
+}
+
+async function readBroadcastDraftFromIndexedDb(
+  key: string,
+): Promise<BroadcastComposerDraft | null> {
+  const db = await openBroadcastDraftDb();
+  if (!db) {
+    return null;
+  }
+
+  return new Promise((resolve) => {
+    const transaction = db.transaction(DRAFT_STORE_NAME, 'readonly');
+    const request = transaction.objectStore(DRAFT_STORE_NAME).get(key);
+
+    request.onerror = () => resolve(null);
+    request.onsuccess = () => resolve(parseBroadcastComposerDraftEnvelope(request.result));
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => db.close();
+  });
+}
+
+async function writeBroadcastDraftToIndexedDb(key: string, value: unknown | null): Promise<void> {
+  const db = await openBroadcastDraftDb();
+  if (!db) {
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    const transaction = db.transaction(DRAFT_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(DRAFT_STORE_NAME);
+
+    if (value === null) {
+      store.delete(key);
+    } else {
+      store.put(value, key);
+    }
+
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      resolve();
+    };
+  });
+}
+
 export function loadBroadcastComposerDraft(
   entityType: BroadcastComposerDraftEntityType,
   entityId: string,
@@ -93,29 +188,24 @@ export function loadBroadcastComposerDraft(
       return null;
     }
 
-    const parsed: unknown = JSON.parse(rawValue);
-    if (!isObject(parsed) || parsed.version !== STORAGE_VERSION || !isObject(parsed.draft)) {
-      return null;
-    }
-
-    const draft = parsed.draft;
-    return {
-      text: readString(draft.text),
-      targetMode: readTargetMode(draft.targetMode, 'current'),
-      targetChatIds: readStringArray(draft.targetChatIds),
-      lastScopedTargetMode: readScopedMode(draft.lastScopedTargetMode, 'current'),
-      buttons: readButtons(draft.buttons),
-      imageEnabled: draft.imageEnabled === true,
-      imageBase64: readString(draft.imageBase64),
-      imageMimeType: readString(draft.imageMimeType),
-      imageFileName: readString(draft.imageFileName),
-      scheduledSlots: readStringArray(draft.scheduledSlots),
-      quickPreset: readQuickPreset(draft.quickPreset),
-      scheduleTimezone: readString(draft.scheduleTimezone),
-    };
+    return parseBroadcastComposerDraftEnvelope(JSON.parse(rawValue));
   } catch {
     return null;
   }
+}
+
+export async function loadBroadcastComposerDraftAsync(
+  entityType: BroadcastComposerDraftEntityType,
+  entityId: string,
+): Promise<BroadcastComposerDraft | null> {
+  if (!entityId) {
+    return null;
+  }
+
+  return (
+    (await readBroadcastDraftFromIndexedDb(getStorageKey(entityType, entityId))) ??
+    loadBroadcastComposerDraft(entityType, entityId)
+  );
 }
 
 export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): boolean {
@@ -144,15 +234,32 @@ export function saveBroadcastComposerDraft(
     const key = getStorageKey(entityType, entityId);
     if (isBroadcastComposerDraftEmpty(draft)) {
       window.localStorage.removeItem(key);
+      void writeBroadcastDraftToIndexedDb(key, null);
       return;
     }
 
+    const envelope = {
+      version: STORAGE_VERSION,
+      savedAt: new Date().toISOString(),
+      draft,
+    };
+    const localDraft =
+      draft.imageEnabled && draft.imageBase64.length > LOCAL_STORAGE_IMAGE_BASE64_LIMIT
+        ? {
+            ...draft,
+            imageEnabled: false,
+            imageBase64: '',
+            imageMimeType: '',
+            imageFileName: '',
+          }
+        : draft;
+
+    void writeBroadcastDraftToIndexedDb(key, envelope);
     window.localStorage.setItem(
       key,
       JSON.stringify({
-        version: STORAGE_VERSION,
-        savedAt: new Date().toISOString(),
-        draft,
+        ...envelope,
+        draft: localDraft,
       }),
     );
   } catch {

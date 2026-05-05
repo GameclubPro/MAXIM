@@ -92,7 +92,8 @@ export function BroadcastAudienceControls({
   const currentModeActive = targetMode === 'current';
   const selectedModeActive = targetMode === 'selected';
   const allModeActive = targetMode === 'all';
-  const allChoicesLabel = choices.length > 0 ? formatAudienceCountLabel(choices.length) : 'Все чаты';
+  const allChoicesLabel =
+    choices.length > 0 ? formatAudienceCountLabel(choices.length) : 'Все чаты';
 
   useEffect(() => {
     if (targetMode !== 'selected') {

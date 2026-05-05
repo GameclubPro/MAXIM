@@ -512,6 +512,8 @@ const RULES_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
+const MANAGED_BROADCAST_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const MANAGED_BROADCAST_HISTORY_LIMIT = 8;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 const BROADCAST_TIMEOUT_RETRY_DELAYS_MS = [1_500, 4_000, 10_000];
@@ -9796,20 +9798,42 @@ export class AdminService implements OnModuleDestroy {
       await this.ensureEntityType(sourceChatId, user.userId, entityType);
     }
 
-    const rows = await this.prisma.managedBroadcast.findMany({
-      where: {
-        sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
-        status: {
-          in: [
-            PrismaManagedBroadcastStatus.ACTIVE,
-            PrismaManagedBroadcastStatus.PARTIAL,
-            PrismaManagedBroadcastStatus.FAILED,
-          ],
+    const baseWhere = {
+      sourceChatId,
+      entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+    };
+    const [activeRows, recentRows] = await Promise.all([
+      this.prisma.managedBroadcast.findMany({
+        where: {
+          ...baseWhere,
+          status: {
+            in: [
+              PrismaManagedBroadcastStatus.ACTIVE,
+              PrismaManagedBroadcastStatus.PARTIAL,
+              PrismaManagedBroadcastStatus.FAILED,
+            ],
+          },
         },
-      },
-      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
-    });
+        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
+      }),
+      this.prisma.managedBroadcast.findMany({
+        where: {
+          ...baseWhere,
+          status: {
+            in: [PrismaManagedBroadcastStatus.COMPLETED, PrismaManagedBroadcastStatus.CANCELED],
+          },
+          updatedAt: {
+            gte: new Date(Date.now() - MANAGED_BROADCAST_HISTORY_WINDOW_MS),
+          },
+        },
+        orderBy: [{ updatedAt: 'desc' }, { createdAt: 'desc' }],
+        take: MANAGED_BROADCAST_HISTORY_LIMIT,
+      }),
+    ]);
+    const rows = [
+      ...activeRows,
+      ...recentRows.filter((row) => !activeRows.some((active) => active.id === row.id)),
+    ];
 
     const [snapshots, upcomingSlotsMap] = await Promise.all([
       this.getManagedBroadcastDeliverySnapshots(rows),
@@ -9987,6 +10011,7 @@ export class AdminService implements OnModuleDestroy {
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
           excludeBroadcastId: existing.id,
+          allowOverwrite: request.payload.replaceConflictingSlots,
         });
       }
     });
@@ -10319,6 +10344,7 @@ export class AdminService implements OnModuleDestroy {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    this.validateManagedBroadcastMediaPayload(parsed.data);
 
     let targetChatIds = [sourceChatId];
     const availableTargets = options.resolveTargets ? await options.resolveTargets(user) : [];
@@ -10611,6 +10637,7 @@ export class AdminService implements OnModuleDestroy {
           fromOccurrenceIndex: nextOccurrenceIndex,
           slots: schedulePlan.upcomingSlots,
           excludeBroadcastId: createdBroadcast.id,
+          allowOverwrite: request.payload.replaceConflictingSlots,
         });
       }
 
@@ -10784,6 +10811,7 @@ export class AdminService implements OnModuleDestroy {
           scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
           scheduleTimezone: row.scheduleTimezone,
           scheduledSlots: [],
+          replaceConflictingSlots: false,
           sendAt: row.nextSendAt.toISOString(),
           cycleEnabled: row.cycleEnabled,
           cycleEveryHours: row.cycleEveryHours,
@@ -11223,6 +11251,22 @@ export class AdminService implements OnModuleDestroy {
     return {};
   }
 
+  private validateManagedBroadcastMediaPayload(payload: SendBroadcastRequest): void {
+    if (!payload.imageEnabled) {
+      return;
+    }
+
+    const imageMimeType = payload.imageMimeType.trim().toLowerCase();
+    if (!imageMimeType.startsWith('image/')) {
+      throw new BadRequestException('Поддерживаются только изображения.');
+    }
+
+    const imageBuffer = this.decodeBroadcastImageBase64(payload.imageBase64);
+    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
+    }
+  }
+
   private async uploadManagedBroadcastImage(
     payload: SendBroadcastRequest,
     entityType: ManagedEntityType,
@@ -11488,6 +11532,7 @@ export class AdminService implements OnModuleDestroy {
       fromOccurrenceIndex: number;
       slots: Date[];
       excludeBroadcastId: string | null;
+      allowOverwrite: boolean;
     },
   ): Promise<void> {
     if (options.slots.length === 0) {
@@ -11508,6 +11553,7 @@ export class AdminService implements OnModuleDestroy {
         entityType: options.entityType,
         slots: options.slots,
         excludeBroadcastId: options.excludeBroadcastId,
+        allowOverwrite: options.allowOverwrite,
       });
 
       try {
@@ -11530,6 +11576,7 @@ export class AdminService implements OnModuleDestroy {
       entityType: ChatEntityType;
       slots: Date[];
       excludeBroadcastId: string | null;
+      allowOverwrite: boolean;
     },
   ): Promise<void> {
     if (options.slots.length === 0) {
@@ -11553,6 +11600,13 @@ export class AdminService implements OnModuleDestroy {
     });
     if (conflicts.length === 0) {
       return;
+    }
+    if (!options.allowOverwrite) {
+      throw new BadRequestException({
+        code: 'BROADCAST_SLOT_CONFLICT',
+        message: 'На выбранное время уже есть рассылка. Обновите календарь или замените слот.',
+        conflicts: conflicts.map((conflict) => conflict.scheduledAt.toISOString()),
+      });
     }
 
     const overwrittenSlotsByBroadcastId = new Map<string, Set<number>>();

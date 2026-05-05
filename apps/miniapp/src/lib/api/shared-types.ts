@@ -28,6 +28,7 @@ export type SendBroadcastPayload = {
   scheduleMode: BroadcastScheduleMode;
   scheduleTimezone: string;
   scheduledSlots: string[];
+  replaceConflictingSlots?: boolean;
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;
@@ -52,6 +53,7 @@ export type BroadcastHandoffPayload = {
   scheduleMode: BroadcastScheduleMode;
   scheduleTimezone: string;
   scheduledSlots: string[];
+  replaceConflictingSlots?: boolean;
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;

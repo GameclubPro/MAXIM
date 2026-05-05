@@ -13,12 +13,33 @@ function looksLikeHtmlPayload(value: string): boolean {
   );
 }
 
+function collectApiMessages(value: unknown): string[] {
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized ? [normalized] : [];
+  }
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => collectApiMessages(item));
+  }
+
+  if (!value || typeof value !== 'object') {
+    return [];
+  }
+
+  const row = value as Record<string, unknown>;
+  const directMessages = collectApiMessages(row.message);
+  if (directMessages.length > 0) {
+    return directMessages;
+  }
+
+  return collectApiMessages(row.error);
+}
+
 function extractApiMessageFromJsonPayload(payload: string): string | null {
   try {
-    const parsed = JSON.parse(payload) as { message?: unknown };
-    if (typeof parsed.message === 'string' && parsed.message.trim()) {
-      return parsed.message.trim();
-    }
+    const messages = collectApiMessages(JSON.parse(payload));
+    return messages[0] ?? null;
   } catch {
     // Ignore invalid JSON payloads and fall back to status-based formatting.
   }

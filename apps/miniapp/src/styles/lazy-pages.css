@@ -4504,13 +4504,20 @@
 }
 
 .broadcast-link-editor__remove {
+  width: 34px;
   min-height: 34px;
   border: none;
   background: transparent;
-  padding: 0 4px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
   color: var(--danger);
-  font-size: 0.74rem;
-  font-weight: 700;
+  border-radius: 10px;
+}
+
+.broadcast-link-editor__remove svg {
+  width: 18px;
+  height: 18px;
 }
 
 .broadcast-link-editor__add {
@@ -19474,6 +19481,11 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
   white-space: nowrap;
 }
 
+.broadcast-message-card__button.is-system {
+  background: rgba(11, 126, 170, 0.1);
+  color: #075f82;
+}
+
 .broadcast-audience-card__mode {
   min-height: 50px;
 }
@@ -19648,6 +19660,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 }
 
 .broadcast-link-editor--compact .broadcast-link-editor__remove {
+  width: 30px;
   min-height: 30px;
 }
 
@@ -19991,6 +20004,24 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 .managed-broadcast-delivery-meter__meta small {
   color: #7b8fa1;
   font-size: 0.64rem;
+}
+
+.managed-broadcast-delivery-meter__breakdown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.managed-broadcast-delivery-meter__breakdown span {
+  min-height: 18px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  background: rgba(255, 157, 63, 0.12);
+  color: #9a5514;
+  font-size: 0.58rem;
+  font-weight: 850;
+  padding: 0 6px;
 }
 
 .giveaway-page__details-toggle svg {

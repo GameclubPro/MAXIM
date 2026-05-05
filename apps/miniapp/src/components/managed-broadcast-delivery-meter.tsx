@@ -5,16 +5,23 @@ import { cn } from '../lib/cn';
 type ManagedBroadcastDeliveryMeterProps = {
   broadcast: Pick<
     ManagedBroadcastSummary,
-    'targetChats' | 'deliveredChats' | 'failedChats' | 'pendingChats' | 'blockedChats' | 'status'
+    | 'targetChats'
+    | 'deliveredChats'
+    | 'failedChats'
+    | 'pendingChats'
+    | 'blockedChats'
+    | 'status'
+    | 'failureBreakdown'
   >;
 };
 
 export function ManagedBroadcastDeliveryMeter({ broadcast }: ManagedBroadcastDeliveryMeterProps) {
   const targetChats = Math.max(1, broadcast.targetChats);
   const delivered = Math.max(0, Math.min(broadcast.deliveredChats, targetChats));
+  const blocked = Math.max(0, Math.min(broadcast.blockedChats, targetChats - delivered));
   const failed = Math.max(
     0,
-    Math.min(broadcast.failedChats + broadcast.blockedChats, Math.max(0, targetChats - delivered)),
+    Math.min(broadcast.failedChats + blocked, Math.max(0, targetChats - delivered)),
   );
   const pending = Math.max(
     0,
@@ -48,8 +55,27 @@ export function ManagedBroadcastDeliveryMeter({ broadcast }: ManagedBroadcastDel
         <strong>
           {delivered}/{targetChats}
         </strong>
-        {failed > 0 ? <small>{failed} ошибок</small> : pending > 0 ? <small>{pending} ждёт</small> : null}
+        {blocked > 0 ? (
+          <small>{blocked} исключ.</small>
+        ) : failed > 0 ? (
+          <small>{failed} ошибок</small>
+        ) : pending > 0 ? (
+          <small>{pending} ждёт</small>
+        ) : null}
       </span>
+      {failed > 0 || blocked > 0 ? (
+        <span className="managed-broadcast-delivery-meter__breakdown" aria-hidden>
+          {broadcast.failureBreakdown.permanentTarget > 0 ? (
+            <span>{broadcast.failureBreakdown.permanentTarget} недост.</span>
+          ) : null}
+          {broadcast.failureBreakdown.transient > 0 ? (
+            <span>{broadcast.failureBreakdown.transient} повтор</span>
+          ) : null}
+          {broadcast.failureBreakdown.quarantined > 0 ? (
+            <span>{broadcast.failureBreakdown.quarantined} стоп</span>
+          ) : null}
+        </span>
+      ) : null}
     </div>
   );
 }

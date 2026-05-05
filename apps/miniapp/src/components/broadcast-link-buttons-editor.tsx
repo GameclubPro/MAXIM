@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import { Xmark as IconoirXmark } from 'iconoir-react';
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { ManagedLinkButtonFields } from './managed-link-button-fields';
 import type { ApiTransport } from '../lib/api/transport';
@@ -238,8 +239,10 @@ export function BroadcastLinkButtonsEditor({
                   className="broadcast-link-editor__remove"
                   onClick={() => handleRemove(index)}
                   disabled={disabled}
+                  aria-label={`Убрать кнопку ${index + 1}`}
+                  title="Убрать"
                 >
-                  Убрать
+                  <IconoirXmark aria-hidden focusable="false" />
                 </button>
               </div>
 

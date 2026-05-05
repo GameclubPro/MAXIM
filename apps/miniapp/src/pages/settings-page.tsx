@@ -124,9 +124,11 @@ import {
 } from '../lib/broadcast-schedule';
 import {
   loadBroadcastComposerDraft,
+  loadBroadcastComposerDraftAsync,
   saveBroadcastComposerDraft,
   type BroadcastComposerDraft,
 } from '../lib/broadcast-composer-draft';
+import { buildChatBroadcastSystemButtons } from '../lib/broadcast-system-buttons';
 import { cn } from '../lib/cn';
 import {
   normalizeBroadcastAudienceTargetChatIds,
@@ -2317,8 +2319,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setMailingWorkspaceView('compose');
-    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('chat', chatId) : null;
-    if (savedBroadcastDraft) {
+    let cancelled = false;
+    const applySavedBroadcastDraft = (savedBroadcastDraft: BroadcastComposerDraft) => {
+      if (cancelled) {
+        return;
+      }
       setMailingTargetMode(savedBroadcastDraft.targetMode);
       setMailingTargetChatIds(
         savedBroadcastDraft.targetChatIds.length > 0
@@ -2339,6 +2344,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingScheduleTimezone(
         savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       );
+    };
+    const savedBroadcastDraft = chatId ? loadBroadcastComposerDraft('chat', chatId) : null;
+    if (savedBroadcastDraft) {
+      applySavedBroadcastDraft(savedBroadcastDraft);
+    }
+    if (chatId) {
+      void loadBroadcastComposerDraftAsync('chat', chatId).then((draft) => {
+        if (draft) {
+          applySavedBroadcastDraft(draft);
+        }
+      });
     }
     setDuplicateWindowInputValue('');
     setPendingSpeechStyle(null);
@@ -2346,6 +2362,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       nonce: 0,
       behavior: 'default',
     });
+    return () => {
+      cancelled = true;
+    };
   }, [chatId]);
 
   const settingsScreenQuery = useQuery({
@@ -4437,6 +4456,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ) {
       setMailingAudienceError('Обновите выбор чатов.');
     }
+    if (
+      message.toLowerCase().includes('выбранное время') ||
+      message.includes('BROADCAST_SLOT_CONFLICT')
+    ) {
+      setMailingScheduleError('Календарь обновился. Выберите свободный слот.');
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+    }
     return message;
   }
 
@@ -4628,11 +4654,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
+    const hasConflictingSlots =
+      !quickSchedule && scheduledSlots.some((slot) => mailingOccupiedSlots.includes(slot));
+    const replaceConflictingSlots =
+      hasConflictingSlots &&
+      typeof window !== 'undefined' &&
+      window.confirm('На это время уже есть рассылка. Заменить занятый слот?');
+    if (hasConflictingSlots && !replaceConflictingSlots) {
+      setMailingScheduleError('Выберите свободное время или подтвердите замену.');
+      return;
+    }
+
     const handoffPayload = {
       ...buildMailingHandoffPayload(),
       targetMode: audiencePayload.targetMode,
       targetChatIds: audiencePayload.targetChatIds,
       applyToAllChats: audiencePayload.applyToAllChats,
+      replaceConflictingSlots,
     };
 
     if (editingManagedBroadcast) {
@@ -5383,6 +5421,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
+  const mailingSystemButtons = buildChatBroadcastSystemButtons({
+    commentsEnabled: draft?.commentsEnabled,
+    commentsChatBroadcastsEnabled: draft?.commentsChatBroadcastsEnabled,
+  });
   const mailingHeaderTargetLabel = resolveBroadcastAudienceTargetLabel({
     targetMode: mailingTargetMode,
     targetChatIds:
@@ -5460,9 +5502,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Контент' : null,
     !mailingAudienceReady ? 'Охват' : null,
-    !mailingScheduleReady || !mailingHasFutureSlots
-      ? 'Время'
-      : null,
+    !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
   const mailingPrimaryActionLabel =
@@ -5484,8 +5524,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
       ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
       : mailingQuickSchedule
-      ? mailingQuickSchedule.label
-      : mailingSelectionSummary || 'Рассылка';
+        ? mailingQuickSchedule.label
+        : mailingSelectionSummary || 'Рассылка';
   const mailingFooterMeta = [
     mailingHeaderTargetLabel,
     !editingManagedBroadcast && mailingBotHasContent ? 'В боте' : null,
@@ -10477,7 +10517,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   { value: 'compose', label: 'Сценарий' },
                                   {
                                     value: 'active',
-                                    label: 'В работе',
+                                    label: 'История',
                                     count: orderedManagedBroadcasts.length,
                                   },
                                 ]}
@@ -10581,6 +10621,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       maxNotify('error');
                                     }}
                                     buttons={normalizedMailingButtons}
+                                    systemButtons={mailingSystemButtons}
                                   />
                                 </Suspense>
                               </div>
@@ -10747,12 +10788,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="broadcast-stage-card broadcast-stage-card--feed">
                             <div className="broadcast-stage-card__head">
                               <div className="broadcast-stage-card__title-wrap">
-                                <strong>В работе</strong>
+                                <strong>История</strong>
                                 <small>
                                   {managedBroadcastsQuery.isLoading
                                     ? 'Загрузка'
                                     : orderedManagedBroadcasts.length > 0
-                                      ? `${orderedManagedBroadcasts.length} в работе`
+                                      ? `${orderedManagedBroadcasts.length} записей`
                                       : 'Пусто'}
                                 </small>
                               </div>
@@ -10763,7 +10804,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {orderedManagedBroadcasts.length === 0 &&
                                 !managedBroadcastsQuery.isLoading ? (
                                   <div className="managed-broadcasts-list__empty">
-                                    Активных рассылок нет.
+                                    Рассылок пока нет.
                                   </div>
                                 ) : null}
 
@@ -10775,7 +10816,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   );
                                   const cardFacts = buildManagedBroadcastFactChips(broadcast);
                                   const canEditBroadcastSchedule =
-                                    broadcast.scheduleMode === 'calendar';
+                                    broadcast.scheduleMode === 'calendar' &&
+                                    broadcast.status !== 'COMPLETED' &&
+                                    broadcast.status !== 'CANCELED';
+                                  const canCancelBroadcast =
+                                    broadcast.status !== 'COMPLETED' &&
+                                    broadcast.status !== 'CANCELED';
                                   const isDeletingBroadcast =
                                     cancelManagedBroadcastMutation.isPending &&
                                     cancelManagedBroadcastMutation.variables === broadcast.id;
@@ -10882,14 +10928,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             {isRetryingBroadcast ? 'Повторяем...' : 'Повторить'}
                                           </button>
                                         ) : null}
-                                        <button
-                                          type="button"
-                                          className="button button--danger"
-                                          onClick={() => handleDeleteManagedBroadcast(broadcast)}
-                                          disabled={isMailingBusy}
-                                        >
-                                          {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
-                                        </button>
+                                        {canCancelBroadcast ? (
+                                          <button
+                                            type="button"
+                                            className="button button--danger"
+                                            onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                            disabled={isMailingBusy}
+                                          >
+                                            {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                          </button>
+                                        ) : null}
                                       </div>
                                     </div>
                                   );

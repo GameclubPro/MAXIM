@@ -2935,6 +2935,7 @@ export const sendBroadcastRequestSchema = z
     scheduleMode: broadcastScheduleModeSchema.default('legacy'),
     scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
+    replaceConflictingSlots: z.boolean().default(false),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
