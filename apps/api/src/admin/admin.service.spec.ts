@@ -13191,6 +13191,7 @@ describe('AdminService.listChats', () => {
     ];
     jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
       items: verifiedItems,
+      fullScanCandidateIds: ['chat-1'],
       refresh: {
         complete: true,
         cursor: -1,
@@ -13211,7 +13212,7 @@ describe('AdminService.listChats', () => {
       }),
     ).resolves.toBeNull();
 
-    expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat', verifiedItems);
+    expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat', verifiedItems, ['chat-1']);
   });
 
   it('removes allowlist rows missing from a completed full refresh before rebuilding the snapshot', async () => {
@@ -13238,6 +13239,14 @@ describe('AdminService.listChats', () => {
           id: 'chat-denied',
           title: 'Бот больше не админ',
           createdAt: new Date('2026-03-01T09:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-unknown',
+          title: 'Временная ошибка проверки',
+          createdAt: new Date('2026-03-01T08:00:00.000Z'),
           entityType: 'CHAT',
         },
       },
@@ -13275,6 +13284,7 @@ describe('AdminService.listChats', () => {
       'admin-1',
       'chat',
       verifiedItems,
+      ['chat-keep', 'chat-denied', 'chat-unknown'],
     );
 
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
@@ -13292,6 +13302,12 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalledWith({
       where: {
         chatId: 'chat-keep',
+        userId: 'admin-1',
+      },
+    });
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-unknown',
         userId: 'admin-1',
       },
     });

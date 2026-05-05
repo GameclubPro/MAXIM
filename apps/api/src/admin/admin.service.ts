@@ -253,6 +253,7 @@ type ManagedEntityTypeFilter = ManagedEntityType | 'all';
 type ManagedEntitiesListResult = {
   items: ChatSummary[];
   refresh: ManagedEntitiesRefreshState | null;
+  fullScanCandidateIds?: string[];
   snapshot?: ManagedEntitiesResponseSnapshot | null;
   diff?: ManagedEntitiesResponseDiff | null;
 };
@@ -2880,6 +2881,7 @@ export class AdminService implements OnModuleDestroy {
         user.userId,
         entityType,
         result.items,
+        result.fullScanCandidateIds,
       );
       await this.rebuildManagedEntitiesPublishedSnapshot(user.userId, entityType);
       return null;
@@ -5091,6 +5093,7 @@ export class AdminService implements OnModuleDestroy {
     userId: string,
     entityType: ManagedEntityTypeFilter,
     verifiedItems: readonly ChatSummary[],
+    candidateIds: readonly string[] | null | undefined,
   ): Promise<void> {
     const allowlist = await this.listChatsFromAllowlist(userId, entityType);
     if (allowlist.length === 0) {
@@ -5098,6 +5101,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     const verifiedChatIds = new Set(verifiedItems.map((item) => item.id));
+    const candidateChatIds = new Set(candidateIds ?? verifiedItems.map((item) => item.id));
     await this.mapWithConcurrencyLimit(allowlist, 8, async (chat) => {
       const cachedAccess = (await this.chatContextCache.getAdminAccess?.(chat.id, userId)) ?? null;
       if (cachedAccess === 'user_denied' || cachedAccess === 'bot_denied') {
@@ -5105,8 +5109,12 @@ export class AdminService implements OnModuleDestroy {
         return null;
       }
 
-      if (!verifiedChatIds.has(chat.id)) {
+      if (!candidateChatIds.has(chat.id)) {
         await this.prunePersistedChatAccess(chat.id, userId);
+        return null;
+      }
+
+      if (!verifiedChatIds.has(chat.id)) {
         return null;
       }
 
@@ -5133,6 +5141,18 @@ export class AdminService implements OnModuleDestroy {
       await this.prunePersistedChatAccess(chat.id, userId);
       return null;
     });
+  }
+
+  private withManagedEntitiesFullScanCandidateIds(
+    result: ManagedEntitiesListResult,
+    candidateIds: readonly string[],
+  ): ManagedEntitiesListResult {
+    Object.defineProperty(result, 'fullScanCandidateIds', {
+      value: [...candidateIds],
+      enumerable: false,
+      configurable: true,
+    });
+    return result;
   }
 
   private async runManagedEntitiesLocalDiscovery(
@@ -5323,7 +5343,7 @@ export class AdminService implements OnModuleDestroy {
         }
       }
 
-      return {
+      const result: ManagedEntitiesListResult = {
         items: hydratedItems,
         refresh:
           options.includeRefreshState === true
@@ -5353,6 +5373,12 @@ export class AdminService implements OnModuleDestroy {
                 )
             : null,
       };
+      return options.fullScan === true
+        ? this.withManagedEntitiesFullScanCandidateIds(
+            result,
+            candidateChats.map((chat) => chat.chatId),
+          )
+        : result;
     } catch (error: unknown) {
       if (
         this.isManagedEntitiesRefreshThrottledError(error) ||
@@ -5824,7 +5850,7 @@ export class AdminService implements OnModuleDestroy {
           filtered.map((item) => item.chat),
         );
       }
-      return {
+      const result: ManagedEntitiesListResult = {
         items,
         refresh:
           options.includeRefreshState === true
@@ -5842,6 +5868,12 @@ export class AdminService implements OnModuleDestroy {
               : await this.readManagedEntitiesRefreshState(user.userId, entityType)
             : null,
       };
+      return options.fullScan === true
+        ? this.withManagedEntitiesFullScanCandidateIds(
+            result,
+            supportedCandidateChats.map((chat) => chat.chatId),
+          )
+        : result;
     } catch (error: unknown) {
       if (
         this.isManagedEntitiesRefreshThrottledError(error) ||
