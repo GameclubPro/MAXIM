@@ -242,7 +242,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     freshOnManualReload: false,
     persistLocalCache: true,
     localCacheScope: 'home',
-    preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
   });
   const channelsState = useManagedEntitiesSync({
@@ -257,7 +256,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     freshOnManualReload: false,
     persistLocalCache: true,
     localCacheScope: 'home',
-    preserveVisibleDataOnEmptyComplete: true,
     keepVisibleOnSameSnapshotVersion: true,
   });
 

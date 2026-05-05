@@ -13181,8 +13181,16 @@ describe('AdminService.listChats', () => {
       createConfigMock() as never,
     );
 
+    const verifiedItems = [
+      createChatSummaryFixture({
+        id: 'chat-1',
+        title: 'Живой чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ];
     jest.spyOn(service as any, 'discoverManagedEntities').mockResolvedValue({
-      items: [],
+      items: verifiedItems,
       refresh: {
         complete: true,
         cursor: -1,
@@ -13203,7 +13211,90 @@ describe('AdminService.listChats', () => {
       }),
     ).resolves.toBeNull();
 
-    expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat');
+    expect(repairSpy).toHaveBeenCalledWith('admin-1', 'chat', verifiedItems);
+  });
+
+  it('removes allowlist rows missing from a completed full refresh before rebuilding the snapshot', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-keep',
+          title: 'Живой чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-drop',
+          title: 'Старый чат',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-denied',
+          title: 'Бот больше не админ',
+          createdAt: new Date('2026-03-01T09:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
+        return chatId === 'chat-denied' ? 'bot_denied' : null;
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+        getChatAdminIds: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const verifiedItems = [
+      createChatSummaryFixture({
+        id: 'chat-keep',
+        title: 'Живой чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+      }),
+      createChatSummaryFixture({
+        id: 'chat-denied',
+        title: 'Бот больше не админ',
+        createdAt: '2026-03-01T09:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ];
+
+    await (service as any).repairManagedEntitiesAllowlistAfterFullRefresh(
+      'admin-1',
+      'chat',
+      verifiedItems,
+    );
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-drop',
+        userId: 'admin-1',
+      },
+    });
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-denied',
+        userId: 'admin-1',
+      },
+    });
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-keep',
+        userId: 'admin-1',
+      },
+    });
   });
 
   it('defers a reset-cursor managed refresh background job when the governor reports slow pressure', async () => {

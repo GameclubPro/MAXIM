@@ -2876,7 +2876,11 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (refresh.complete) {
-      await this.repairManagedEntitiesAllowlistAfterFullRefresh(user.userId, entityType);
+      await this.repairManagedEntitiesAllowlistAfterFullRefresh(
+        user.userId,
+        entityType,
+        result.items,
+      );
       await this.rebuildManagedEntitiesPublishedSnapshot(user.userId, entityType);
       return null;
     }
@@ -5086,13 +5090,26 @@ export class AdminService implements OnModuleDestroy {
   private async repairManagedEntitiesAllowlistAfterFullRefresh(
     userId: string,
     entityType: ManagedEntityTypeFilter,
+    verifiedItems: readonly ChatSummary[],
   ): Promise<void> {
     const allowlist = await this.listChatsFromAllowlist(userId, entityType);
     if (allowlist.length === 0) {
       return;
     }
 
+    const verifiedChatIds = new Set(verifiedItems.map((item) => item.id));
     await this.mapWithConcurrencyLimit(allowlist, 8, async (chat) => {
+      const cachedAccess = (await this.chatContextCache.getAdminAccess?.(chat.id, userId)) ?? null;
+      if (cachedAccess === 'user_denied' || cachedAccess === 'bot_denied') {
+        await this.prunePersistedChatAccess(chat.id, userId);
+        return null;
+      }
+
+      if (!verifiedChatIds.has(chat.id)) {
+        await this.prunePersistedChatAccess(chat.id, userId);
+        return null;
+      }
+
       if (!this.isFallbackTitle(chat.id, chat.title)) {
         return null;
       }
