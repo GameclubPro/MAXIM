@@ -17131,6 +17131,70 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 
+  it('does not resolve mass targets for a current chat broadcast', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-broadcast-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const massTargetsSpy = jest
+      .spyOn(service, 'listChatsForMassBroadcast')
+      .mockRejectedValue(new Error('mass target lookup should not run'));
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Локальное объявление',
+        textFormat: 'plain',
+        targetMode: 'current',
+        targetChatIds: ['chat-1'],
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(massTargetsSpy).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Локальное объявление',
+      undefined,
+    );
+    expect(result.targetChats).toBe(1);
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
+  });
+
   it('overwrites conflicting calendar slots from an older broadcast', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -18588,110 +18652,21 @@ describe('AdminService.sendBroadcast', () => {
     );
   });
 
-  it('rescans all managed chats for mass broadcast targets beyond the first refresh window', async () => {
+  it('uses cached-first managed chat targets for mass broadcast', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
     const prisma = createPrismaMock();
     wireManagedBroadcastDeliveryStore(prisma);
 
-    type AllowlistRow = {
-      chat: {
-        id: string;
-        title: string;
-        createdAt: Date;
-        entityType: 'CHAT';
-      };
-    };
-
-    const allowlistRows: AllowlistRow[] = [];
-    prisma.chat.findUnique.mockImplementation(async ({ where }: { where: { id: string } }) => ({
-      id: where.id,
-      title: where.id === 'chat-121' ? 'Хвостовой чат' : 'Чат 1',
-      entityType: 'CHAT',
-    }));
-    prisma.chat.upsert.mockImplementation(
-      async ({
-        where,
-        create,
-      }: {
-        where: { id: string };
-        create: { title?: string; entityType?: string };
-      }) => ({
-        id: where.id,
-        title: create.title ?? where.id,
-        createdAt: new Date('2026-03-03T10:00:00.000Z'),
-        entityType: create.entityType ?? 'CHAT',
-      }),
-    );
-    prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
-      const where = args?.where as
-        | {
-            userId?: string;
-            chatId?: { in?: string[] };
-            chat?: { entityType?: string };
-          }
-        | undefined;
-
-      let rows = allowlistRows;
-      if (Array.isArray(where?.chatId?.in)) {
-        rows = rows.filter((row) => where.chatId!.in!.includes(row.chat.id));
-      }
-      if (typeof where?.chat?.entityType === 'string') {
-        rows = rows.filter((row) => row.chat.entityType === where.chat!.entityType);
-      }
-
-      return rows;
-    });
-    prisma.chatAdminAllowlist.upsert.mockImplementation(
-      async ({ where }: { where: { chatId_userId: { chatId: string; userId: string } } }) => {
-        const chatId = where.chatId_userId.chatId;
-        if (!allowlistRows.some((row) => row.chat.id === chatId)) {
-          allowlistRows.push({
-            chat: {
-              id: chatId,
-              title: chatId === 'chat-121' ? 'Хвостовой чат' : 'Чат 1',
-              createdAt: new Date('2026-03-03T10:00:00.000Z'),
-              entityType: 'CHAT',
-            },
-          });
-        }
-        return undefined;
-      },
-    );
-
-    const remoteChats = Array.from({ length: 121 }, (_, index) => ({
-      chatId: `chat-${index + 1}`,
-      title: index === 120 ? 'Хвостовой чат' : `Чат ${index + 1}`,
-      lastEventTime: 500 - index,
-      entityType: 'chat' as const,
-      link: null,
-    }));
-
-    let storedCursor: number | null = null;
-    const chatContextCache = createChatContextCacheMock({
-      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
-      setManagedEntitiesRefreshCursor: jest
-        .fn()
-        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
-          storedCursor = cursor;
-        }),
-      clearManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => {
-        storedCursor = null;
-      }),
-    });
-
     const maxClient = {
-      listBotChats: jest.fn().mockResolvedValue(remoteChats),
-      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
-        if (chatId === 'chat-1' || chatId === 'chat-121') {
-          return ['admin-1'];
-        }
-        return [];
-      }),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       sendMessageImmediateWithId: jest.fn().mockImplementation(async (chatId: string) => ({
         messageId: `mid-${chatId}`,
         url: null,
       })),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
     };
 
     const service = new AdminService(
@@ -18700,15 +18675,24 @@ describe('AdminService.sendBroadcast', () => {
       chatContextCache as never,
       createConfigMock() as never,
     );
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+    const massTargetsSpy = jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      createChatSummaryFixture({
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+      }),
+    ]);
 
     const result = await service.sendBroadcast(
       'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
+      actor,
       {
         text: 'Напоминание',
         textFormat: 'plain',
@@ -18727,11 +18711,7 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
-    expect(chatContextCache.clearManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
-      'admin-1',
-      'chat',
-    );
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(massTargetsSpy).toHaveBeenCalledWith(actor, { discoveryMode: 'cached-first' });
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       1,
@@ -18741,7 +18721,7 @@ describe('AdminService.sendBroadcast', () => {
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
       2,
-      'chat-121',
+      'chat-2',
       'Напоминание',
       undefined,
     );

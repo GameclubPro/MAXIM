@@ -9668,7 +9668,8 @@ export class AdminService implements OnModuleDestroy {
     return this.sendManagedBroadcast(sourceChatId, user, body, {
       entityType: 'chat',
       source,
-      resolveTargets: (actor) => this.listChatsForMassBroadcast(actor),
+      resolveTargets: (actor) =>
+        this.listChatsForMassBroadcast(actor, { discoveryMode: 'cached-first' }),
     });
   }
 
@@ -9960,7 +9961,9 @@ export class AdminService implements OnModuleDestroy {
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
       entityType,
       resolveTargets:
-        entityType === 'chat' ? (actor) => this.listChatsForMassBroadcast(actor) : undefined,
+        entityType === 'chat'
+          ? (actor) => this.listChatsForMassBroadcast(actor, { discoveryMode: 'cached-first' })
+          : undefined,
     });
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
@@ -10396,7 +10399,10 @@ export class AdminService implements OnModuleDestroy {
     this.validateManagedBroadcastMediaPayload(parsed.data);
 
     let targetChatIds = [sourceChatId];
-    const availableTargets = options.resolveTargets ? await options.resolveTargets(user) : [];
+    const needsAvailableTargets =
+      parsed.data.targetMode === 'all' || parsed.data.targetMode === 'selected';
+    const availableTargets =
+      needsAvailableTargets && options.resolveTargets ? await options.resolveTargets(user) : [];
     const allowedTargetIds = new Set([
       sourceChatId,
       ...availableTargets

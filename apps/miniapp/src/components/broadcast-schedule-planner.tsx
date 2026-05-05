@@ -94,7 +94,7 @@ const SLOT_GROUPS: SlotGroup[] = [
   { label: 'День', start: 12 * 60, end: 18 * 60 },
   { label: 'Вечер', start: 18 * 60, end: 24 * 60 },
 ];
-const PLANNER_NOW_REFRESH_MS = 5_000;
+const PLANNER_NOW_REFRESH_MS = 30_000;
 
 function addDays(value: Date, days: number): Date {
   return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);

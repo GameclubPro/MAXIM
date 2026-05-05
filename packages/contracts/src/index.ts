@@ -2874,6 +2874,10 @@ function resolveBroadcastTargetMode(value: {
     return 'selected';
   }
 
+  if (value.targetMode === 'current') {
+    return 'current';
+  }
+
   if (normalizeBroadcastTargetChatIds(value.targetChatIds ?? []).length > 0) {
     return 'selected';
   }
