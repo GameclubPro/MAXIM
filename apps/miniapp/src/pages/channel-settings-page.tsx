@@ -22,6 +22,10 @@ import {
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import {
+  BroadcastStudioHeader,
+  type BroadcastStudioSignal,
+} from '../components/broadcast-studio-header';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -1726,6 +1730,54 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const broadcastStudioReadyCount = [
+    broadcastHasPublishableContent,
+    true,
+    broadcastScheduleReady && broadcastHasFutureSlots,
+    broadcastButtonDraftValid,
+  ].filter(Boolean).length;
+  const broadcastStudioSignals: BroadcastStudioSignal[] = [
+    {
+      label: 'Контент',
+      value: broadcastHasPublishableContent
+        ? broadcastBotHasContent && !broadcastHasDirectContent
+          ? 'В боте'
+          : broadcastImageEnabled || editingBroadcastHasVideo
+            ? 'Медиа'
+            : `${normalizedBroadcastText.length}/2000`
+        : 'Пусто',
+      tone: broadcastHasPublishableContent ? 'ready' : 'pending',
+    },
+    {
+      label: 'Канал',
+      value: 'Канал',
+      tone: 'ready',
+    },
+    {
+      label: 'Время',
+      value: broadcastQuickSchedule
+        ? broadcastQuickSchedule.summary
+        : broadcastPlannerState.futureSlotCount > 0
+          ? formatChannelCountLabel(
+              broadcastPlannerState.futureSlotCount,
+              'слот',
+              'слота',
+              'слотов',
+            )
+          : 'Не выбрано',
+      tone: broadcastScheduleReady && broadcastHasFutureSlots ? 'ready' : 'pending',
+    },
+    {
+      label: 'Кнопки',
+      value: broadcastHasButton
+        ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
+        : 'Без кнопки',
+      tone: broadcastButtonDraftValid ? (broadcastHasButton ? 'ready' : 'neutral') : 'danger',
+    },
+  ];
+  const broadcastStudioSubtitle = editingManagedBroadcast
+    ? 'Режим редактирования активной рассылки'
+    : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик рассылки';
   const broadcastPrimaryActionLabel =
     !broadcastHasDirectContent && !editingManagedBroadcast && broadcastBotHasContent
       ? 'Открыть бота'
@@ -2378,6 +2430,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
+                  <BroadcastStudioHeader
+                    title={editingManagedBroadcast ? 'Редактирование рассылки' : 'Новая публикация'}
+                    subtitle={broadcastStudioSubtitle}
+                    readyCount={broadcastStudioReadyCount}
+                    totalCount={4}
+                    signals={broadcastStudioSignals}
+                    busy={isBroadcastBusy}
+                    editing={editingManagedBroadcast !== null}
+                  />
+
                   {showBroadcastResetAction ? (
                     <div className="broadcast-studio-shell__topbar">
                       <button

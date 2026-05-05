@@ -57,6 +57,10 @@ import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
+import {
+  BroadcastStudioHeader,
+  type BroadcastStudioSignal,
+} from '../components/broadcast-studio-header';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -5477,6 +5481,62 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const mailingAudienceReady =
+    mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
+  const mailingStudioAudienceValue =
+    mailingTargetMode === 'all'
+      ? 'Все'
+      : mailingTargetMode === 'selected'
+        ? formatRussianCountLabel(
+            mailingAudiencePayload.targetChatIds.length,
+            'чат',
+            'чата',
+            'чатов',
+          )
+        : 'Чат';
+  const mailingStudioReadyCount = [
+    mailingHasPublishableContent,
+    mailingAudienceReady,
+    mailingScheduleReady && mailingHasFutureSlots,
+    mailingButtonDraftValid,
+  ].filter(Boolean).length;
+  const mailingStudioSignals: BroadcastStudioSignal[] = [
+    {
+      label: 'Контент',
+      value: mailingHasPublishableContent
+        ? mailingBotHasContent && !mailingHasDirectContent
+          ? 'В боте'
+          : mailingImageEnabled || editingMailingHasVideo
+            ? 'Медиа'
+            : `${normalizedMailingText.length}/2000`
+        : 'Пусто',
+      tone: mailingHasPublishableContent ? 'ready' : 'pending',
+    },
+    {
+      label: 'Охват',
+      value: mailingStudioAudienceValue,
+      tone: mailingAudienceReady ? (mailingTargetMode === 'all' ? 'warning' : 'ready') : 'danger',
+    },
+    {
+      label: 'Время',
+      value: mailingQuickSchedule
+        ? mailingQuickSchedule.summary
+        : mailingPlannerState.futureSlotCount > 0
+          ? formatRussianCountLabel(mailingPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
+          : 'Не выбрано',
+      tone: mailingScheduleReady && mailingHasFutureSlots ? 'ready' : 'pending',
+    },
+    {
+      label: 'Кнопки',
+      value: mailingButtonEnabled
+        ? formatBroadcastButtonsStatus(normalizedMailingButtons)
+        : 'Без кнопки',
+      tone: mailingButtonDraftValid ? (mailingButtonEnabled ? 'ready' : 'neutral') : 'danger',
+    },
+  ];
+  const mailingStudioSubtitle = editingManagedBroadcast
+    ? 'Режим редактирования активной рассылки'
+    : mailingFooterMeta || mailingHeaderSummary || 'Черновик рассылки';
   const mailingDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -10371,6 +10431,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell">
+                        <BroadcastStudioHeader
+                          title={
+                            editingManagedBroadcast ? 'Редактирование рассылки' : 'Новая рассылка'
+                          }
+                          subtitle={mailingStudioSubtitle}
+                          readyCount={mailingStudioReadyCount}
+                          totalCount={4}
+                          signals={mailingStudioSignals}
+                          busy={isMailingBusy}
+                          editing={editingManagedBroadcast !== null}
+                        />
+
                         {showMailingWorkspaceTabs || showMailingResetAction ? (
                           <div className="broadcast-studio-shell__topbar">
                             {showMailingWorkspaceTabs ? (

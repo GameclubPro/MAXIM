@@ -87,48 +87,82 @@ export function BroadcastContentComposer({
 
   return (
     <div className={cn('broadcast-content-composer', (textError || imageError) && 'field--error')}>
-      <div className="broadcast-content-composer__editor">
-        <MaxMarkdownEditor
-          value={text}
-          onChange={onTextChange}
-          maxLength={maxLength}
-          placeholder="Текст рассылки"
-          rows={5}
-          disabled={isBusy}
-          compactToolbar
-          ariaLabel="Текст рассылки"
-          className="broadcast-content-composer__markdown"
-        />
-
-        <div className="broadcast-content-composer__bar">
-          <div className="broadcast-content-composer__media-actions">
-            <button
-              type="button"
-              className={cn('broadcast-content-composer__tool', imagePreviewUrl && 'is-active')}
-              onClick={() => openFileInputPicker(imageInputRef.current)}
-              disabled={isBusy}
-              aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
-              title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+      <div className={cn('broadcast-content-composer__workspace', hasPreview && 'has-preview')}>
+        <div className="broadcast-content-composer__editor">
+          <div className="broadcast-content-composer__editor-head">
+            <span
+              className={cn(
+                'broadcast-content-composer__counter',
+                remainingLength < 0 && 'is-limit',
+              )}
             >
-              <IconoirCamera aria-hidden focusable="false" />
-            </button>
-            <input
-              ref={imageInputRef}
-              className="broadcast-content-composer__file-input"
-              type="file"
-              accept="image/*"
-              disabled={isBusy}
-              onChange={(event) => void handleImageFiles(event.currentTarget.files)}
-              tabIndex={-1}
-            />
+              {text.length}/{maxLength}
+            </span>
           </div>
 
-          <span
-            className={cn('broadcast-content-composer__counter', remainingLength < 0 && 'is-limit')}
-          >
-            {text.length}/{maxLength}
-          </span>
+          <MaxMarkdownEditor
+            value={text}
+            onChange={onTextChange}
+            maxLength={maxLength}
+            placeholder="Текст рассылки"
+            rows={5}
+            disabled={isBusy}
+            compactToolbar
+            ariaLabel="Текст рассылки"
+            className="broadcast-content-composer__markdown"
+          />
+
+          <div className="broadcast-content-composer__bar">
+            <div className="broadcast-content-composer__media-actions">
+              <button
+                type="button"
+                className={cn('broadcast-content-composer__tool', imagePreviewUrl && 'is-active')}
+                onClick={() => openFileInputPicker(imageInputRef.current)}
+                disabled={isBusy}
+                aria-label={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+                title={isPreparingImage ? 'Готовим фото' : 'Добавить фото'}
+              >
+                <IconoirCamera aria-hidden focusable="false" />
+              </button>
+              <input
+                ref={imageInputRef}
+                className="broadcast-content-composer__file-input"
+                type="file"
+                accept="image/*"
+                disabled={isBusy}
+                onChange={(event) => void handleImageFiles(event.currentTarget.files)}
+                tabIndex={-1}
+              />
+            </div>
+
+            {imagePreviewUrl || videoLabel ? (
+              <span className="broadcast-content-composer__media-label">
+                {imagePreviewUrl ? image.fileName || 'Фото' : videoLabel}
+              </span>
+            ) : null}
+          </div>
         </div>
+
+        {hasPreview ? (
+          <div className="broadcast-message-card" aria-label="Предпросмотр сообщения">
+            <div className="broadcast-message-card__surface">
+              <>
+                {imagePreviewUrl ? (
+                  <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
+                ) : null}
+                {videoLabel ? (
+                  <span className="broadcast-message-card__video-preview">{videoLabel}</span>
+                ) : null}
+                <MaxMarkdownPreview
+                  value={text}
+                  className="broadcast-message-card__preview"
+                  preserveLinks
+                  fallback={null}
+                />
+              </>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       {(imagePreviewUrl || videoLabel) && (
@@ -168,31 +202,6 @@ export function BroadcastContentComposer({
           ) : null}
         </div>
       )}
-
-      <div className={cn('broadcast-message-card', !hasPreview && 'is-empty')}>
-        <div className="broadcast-message-card__surface">
-          {hasPreview ? (
-            <>
-              {imagePreviewUrl ? (
-                <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
-              ) : null}
-              {videoLabel ? (
-                <span className="broadcast-message-card__video-preview">{videoLabel}</span>
-              ) : null}
-              <MaxMarkdownPreview
-                value={text}
-                className="broadcast-message-card__preview"
-                preserveLinks
-                fallback={null}
-              />
-            </>
-          ) : (
-            <span className="broadcast-message-card__preview broadcast-message-card__preview--placeholder">
-              Сообщение
-            </span>
-          )}
-        </div>
-      </div>
 
       {textError || imageError ? (
         <small className="field__hint">{textError || imageError}</small>

@@ -445,7 +445,6 @@ export function BroadcastSchedulePlanner({
   );
   const suggestedMinutes =
     sheetMode === 'time' ? getSuggestedMinutes(activeDayKey, minimumTime) : [];
-
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);

@@ -10,6 +10,7 @@ import {
   readHomeEntityFavorites,
   saveHomeEntityFavorites,
 } from '../lib/home-entity-favorites';
+import { cn } from '../lib/cn';
 import { getInitDataUserId } from '../lib/init-data';
 import { BroadcastAudienceSheet } from './broadcast-audience-sheet';
 import { SegmentedControl } from './ui/segmented-control';
@@ -77,6 +78,9 @@ export function BroadcastAudienceControls({
     : remoteError
       ? 'Обновить список'
       : selectedAudienceLabel;
+  const currentModeActive = targetMode === 'current';
+  const selectedModeActive = targetMode === 'selected';
+  const allModeActive = targetMode === 'all';
 
   useEffect(() => {
     if (targetMode !== 'selected') {
@@ -117,61 +121,83 @@ export function BroadcastAudienceControls({
   return (
     <>
       <div className="broadcast-audience-card">
-        <div className="broadcast-audience-card__toggle">
-          <div className="broadcast-audience-card__toggle-copy">
-            <strong>Все чаты</strong>
-            <span>{activeAudienceLabel}</span>
-          </div>
+        <div
+          className="broadcast-audience-card__mode-grid"
+          role="group"
+          aria-label="Охват рассылки"
+        >
+          <button
+            type="button"
+            className={cn('broadcast-audience-card__mode', currentModeActive && 'is-active')}
+            aria-pressed={currentModeActive}
+            disabled={disabled}
+            onClick={() => {
+              onToggleAllChats(false);
+              onChangeScopedMode('current');
+            }}
+          >
+            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
+            <strong>Текущий</strong>
+          </button>
 
-          <label className="settings-native-switch" aria-label="Отправить во все чаты">
-            <input
-              type="checkbox"
-              checked={targetMode === 'all'}
-              onChange={(event) => onToggleAllChats(event.target.checked)}
-              disabled={disabled}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </label>
+          <button
+            type="button"
+            className={cn('broadcast-audience-card__mode', selectedModeActive && 'is-active')}
+            aria-pressed={selectedModeActive}
+            disabled={disabled}
+            onClick={() => {
+              onToggleAllChats(false);
+              onChangeScopedMode('selected');
+              onClearValidationError();
+              setSheetOpen(true);
+            }}
+          >
+            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
+            <strong>Выбрать</strong>
+            {selectedModeActive ? <small>{triggerLabel}</small> : null}
+          </button>
+
+          <button
+            type="button"
+            className={cn('broadcast-audience-card__mode', allModeActive && 'is-active')}
+            aria-pressed={allModeActive}
+            disabled={disabled}
+            onClick={() => onToggleAllChats(true)}
+          >
+            <span className="broadcast-audience-card__mode-indicator" aria-hidden />
+            <strong>Все</strong>
+            {allModeActive ? <small>{activeAudienceLabel}</small> : null}
+          </button>
         </div>
 
-        {targetMode !== 'all' ? (
-          <>
-            <SegmentedControl
-              className="broadcast-scope-control"
-              ariaLabel="Охват рассылки"
-              value={scopedTargetMode}
-              onChange={(value) =>
-                onChangeScopedMode(value === 'selected' ? 'selected' : 'current')
-              }
-              options={[
-                { value: 'current', label: 'Текущий' },
-                { value: 'selected', label: 'Выбрать' },
-              ]}
-            />
-
-            {scopedTargetMode === 'selected' ? (
-              <button
-                type="button"
-                className="broadcast-audience-card__trigger"
-                onClick={() => {
-                  onClearValidationError();
-                  setSheetOpen(true);
-                }}
-                disabled={disabled}
-              >
-                <span className="broadcast-audience-card__trigger-copy">
-                  <strong>Активные чаты</strong>
-                  <small>{triggerLabel}</small>
-                </span>
-                <span className="broadcast-audience-card__trigger-badge">
-                  {targetChatIds.length}
-                </span>
-              </button>
-            ) : null}
-          </>
+        {selectedModeActive ? (
+          <button
+            type="button"
+            className="broadcast-audience-card__trigger"
+            onClick={() => {
+              onClearValidationError();
+              setSheetOpen(true);
+            }}
+            disabled={disabled}
+          >
+            <span className="broadcast-audience-card__trigger-copy">
+              <strong>Чаты</strong>
+              <small>{triggerLabel}</small>
+            </span>
+            <span className="broadcast-audience-card__trigger-badge">{targetChatIds.length}</span>
+          </button>
         ) : null}
+
+        <SegmentedControl
+          className="broadcast-scope-control broadcast-scope-control--legacy"
+          ariaLabel="Охват рассылки"
+          value={scopedTargetMode}
+          onChange={(value) => onChangeScopedMode(value === 'selected' ? 'selected' : 'current')}
+          options={[
+            { value: 'current', label: 'Текущий' },
+            { value: 'selected', label: 'Выбрать' },
+          ]}
+        />
 
         {validationError ? <small className="field__hint">{validationError}</small> : null}
       </div>
