@@ -1318,8 +1318,13 @@ export function BroadcastSchedulePlanner({
                               chipState.hasBusy && 'is-busy',
                               chipState.hasPastRestriction && 'is-disabled',
                             )}
+                            aria-label={
+                              chipState.hasBusy
+                                ? `${formatMinuteLabel(minutes)}, занято`
+                                : formatMinuteLabel(minutes)
+                            }
                             onClick={() => toggleSlot(minutes)}
-                            disabled={disabled || chipState.hasPastRestriction}
+                            disabled={disabled || chipState.hasPastRestriction || chipState.hasBusy}
                           >
                             {formatMinuteLabel(minutes)}
                           </button>
@@ -1373,8 +1378,15 @@ export function BroadcastSchedulePlanner({
                                     chipState.hasBusy && 'is-busy',
                                     chipState.hasPastRestriction && 'is-disabled',
                                   )}
+                                  aria-label={
+                                    chipState.hasBusy
+                                      ? `${formatMinuteLabel(minutes)}, занято`
+                                      : formatMinuteLabel(minutes)
+                                  }
                                   onClick={() => toggleSlot(minutes)}
-                                  disabled={disabled || chipState.hasPastRestriction}
+                                  disabled={
+                                    disabled || chipState.hasPastRestriction || chipState.hasBusy
+                                  }
                                 >
                                   <strong>{formatMinuteLabel(minutes)}</strong>
                                 </button>

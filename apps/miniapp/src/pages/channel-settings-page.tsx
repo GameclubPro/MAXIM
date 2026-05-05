@@ -27,6 +27,7 @@ import {
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-delivery-meter';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -1660,20 +1661,27 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const broadcastPlannerPending =
-    broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
-  const broadcastScheduleReady =
-    (broadcastScheduledSlots.length > 0 || broadcastQuickSchedule !== null) &&
-    !broadcastPlannerPending;
+  const broadcastPlannerPending = broadcastPlannerState.isDaySheetOpen;
   const broadcastHasFutureSlots =
     broadcastQuickSchedule !== null || broadcastPlannerState.futureSlotCount > 0;
-  const showBroadcastPrimaryAction =
-    isBroadcastBusy ||
-    (broadcastHasPublishableContent &&
-      broadcastScheduleReady &&
-      broadcastButtonDraftValid &&
-      (broadcastQuickSchedule !== null || broadcastPlannerState.isConfirmed) &&
-      broadcastHasFutureSlots);
+  const broadcastCalendarScheduleReady =
+    broadcastScheduledSlots.length > 0 &&
+    broadcastPlannerState.futureSlotCount > 0 &&
+    !broadcastPlannerPending;
+  const broadcastScheduleReady = broadcastQuickSchedule !== null || broadcastCalendarScheduleReady;
+  const broadcastPublishReady =
+    broadcastHasPublishableContent &&
+    broadcastScheduleReady &&
+    broadcastButtonDraftValid &&
+    broadcastHasFutureSlots;
+  const broadcastSendDisabled = isBroadcastBusy || !broadcastPublishReady;
+  const broadcastPublishIssueLabels = [
+    !broadcastHasPublishableContent ? 'Контент' : null,
+    !broadcastScheduleReady || !broadcastHasFutureSlots
+      ? 'Время'
+      : null,
+    !broadcastButtonDraftValid ? 'Кнопки' : null,
+  ].filter((item): item is string => Boolean(item));
   const showBroadcastResetAction =
     editingManagedBroadcast !== null ||
     broadcastQuickPreset !== null ||
@@ -1718,7 +1726,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : 'Очистить рассылку';
   const broadcastFooterTitle = editingManagedBroadcast
     ? 'Сохранить рассылку'
-    : broadcastQuickSchedule
+    : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
+      ? `Нужно: ${broadcastPublishIssueLabels.join(' · ')}`
+      : broadcastQuickSchedule
       ? broadcastQuickSchedule.label
       : broadcastSelectionSummary || 'Рассылка';
   const broadcastFooterMeta = [
@@ -1747,11 +1757,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             : `${normalizedBroadcastText.length}/2000`
         : 'Пусто',
       tone: broadcastHasPublishableContent ? 'ready' : 'pending',
+      icon: 'content',
     },
     {
       label: 'Канал',
       value: 'Канал',
       tone: 'ready',
+      icon: 'channel',
     },
     {
       label: 'Время',
@@ -1766,6 +1778,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             )
           : 'Не выбрано',
       tone: broadcastScheduleReady && broadcastHasFutureSlots ? 'ready' : 'pending',
+      icon: 'time',
     },
     {
       label: 'Кнопки',
@@ -1773,6 +1786,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
         : 'Без кнопки',
       tone: broadcastButtonDraftValid ? (broadcastHasButton ? 'ready' : 'neutral') : 'danger',
+      icon: 'button',
     },
   ];
   const broadcastStudioSubtitle = editingManagedBroadcast
@@ -1790,13 +1804,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
         <strong>{broadcastFooterTitle}</strong>
-        <small>{broadcastFooterMeta}</small>
+        <small>{broadcastFooterMeta || 'Черновик'}</small>
+        {broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy ? (
+          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
+            {broadcastPublishIssueLabels.map((label) => (
+              <span key={`channel-broadcast-publish-issue-${label}`}>{label}</span>
+            ))}
+          </span>
+        ) : null}
       </div>
       <button
         type="button"
         className="button button--accent broadcast-publish-bar__button"
         onClick={handleSendChannelBroadcast}
-        disabled={isBroadcastBusy}
+        disabled={broadcastSendDisabled}
       >
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
@@ -2421,7 +2442,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           tone="sky"
           className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast"
           onClose={() => toggleSection('broadcast')}
-          footer={showBroadcastPrimaryAction ? broadcastDrilldownFooter : undefined}
+          footer={broadcastDrilldownFooter}
         >
           <div
             id="channel-settings-broadcast"
@@ -2822,6 +2843,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                       <span key={`${broadcast.id}-${fact}`}>{fact}</span>
                                     ))}
                                   </div>
+
+                                  <ManagedBroadcastDeliveryMeter broadcast={broadcast} />
 
                                   {broadcast.lastError ? (
                                     <small className="managed-broadcast-card__error">

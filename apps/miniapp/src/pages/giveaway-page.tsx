@@ -437,6 +437,16 @@ function GiveawayGlyphIcon({ tone, glyph }: { tone: GiveawayTone; glyph: Giveawa
   );
 }
 
+function GiveawayDetailsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" aria-hidden>
+      <path d="M6 9.1h12v10.4H6z" strokeLinejoin="round" />
+      <path d="M4.8 9.1h14.4M12 9.1v10.4" strokeLinecap="round" />
+      <path d="M12 9.1H8.9a2.3 2.3 0 1 1 0-4.6c1.9 0 3.1 2 3.1 4.6Zm0 0h3.1a2.3 2.3 0 1 0 0-4.6c-1.9 0-3.1 2-3.1 4.6Z" />
+    </svg>
+  );
+}
+
 export function GiveawayPage({ api }: { api: ApiTransport }) {
   const { giveawayId = '' } = useParams();
   const navigate = useNavigate();
@@ -1055,7 +1065,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               aria-expanded={detailsOpen}
               onClick={toggleDetails}
             >
-              <span aria-hidden>i</span>
+              <GiveawayDetailsIcon />
             </button>
           ) : null}
 
@@ -1066,6 +1076,44 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                   {statusPresentation.label}
                 </span>
                 <h1>{giveaway.title}</h1>
+                {giveawayImageSource ? (
+                  <img
+                    className="giveaway-page__main-image"
+                    src={giveawayImageSource}
+                    alt=""
+                    loading="eager"
+                  />
+                ) : null}
+                {visiblePrizes.length > 0 ? (
+                  <div className="giveaway-page__main-prizes" aria-label="Призы">
+                    {visiblePrizes.map((prize) => (
+                      <span key={`giveaway-main-prize-${prize.id}`}>
+                        <small>{prize.position}</small>
+                        <strong>{prize.title}</strong>
+                      </span>
+                    ))}
+                    {hiddenPrizeCount > 0 ? (
+                      <span className="giveaway-page__main-prizes-more">
+                        <small>+</small>
+                        <strong>{hiddenPrizeCount}</strong>
+                      </span>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="giveaway-page__main-metrics" aria-label="Параметры">
+                  <span>
+                    <strong>{formatCompactCount(giveaway.entriesCount)}</strong>
+                    <small>уч.</small>
+                  </span>
+                  <span>
+                    <strong>{formatCompactCount(giveaway.prizes.length)}</strong>
+                    <small>приз.</small>
+                  </span>
+                  <span>
+                    <strong>{formatCompactCount(giveaway.winnersCount)}</strong>
+                    <small>поб.</small>
+                  </span>
+                </div>
                 {activeCountdown ? (
                   <div className="giveaway-page__main-timer" aria-label={activeCountdown.label}>
                     <span>{activeCountdown.label}</span>

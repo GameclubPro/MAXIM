@@ -19797,3 +19797,326 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
     min-height: 46px;
   }
 }
+
+.broadcast-studio-command__signal {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-content: stretch;
+  gap: 6px;
+  text-align: left;
+}
+
+.broadcast-studio-command__signal-icon {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+  color: currentColor;
+}
+
+.broadcast-studio-command__signal-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
+.broadcast-studio-command__signal-copy {
+  min-width: 0;
+  display: grid;
+  gap: 1px;
+}
+
+.broadcast-studio-command__signal-label {
+  color: rgba(70, 88, 104, 0.72);
+  font-size: 0.55rem;
+  font-weight: 850;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.broadcast-studio-command__signal strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.broadcast-publish-bar__issues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.broadcast-publish-bar__issues span {
+  min-height: 22px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 176, 84, 0.24);
+  background: rgba(255, 247, 232, 0.9);
+  color: #9a5a16;
+  font-size: 0.62rem;
+  font-weight: 850;
+  line-height: 1;
+  padding: 0 8px;
+}
+
+.broadcast-publish-bar__button:disabled {
+  opacity: 0.62;
+}
+
+.broadcast-audience-confirm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 176, 84, 0.28);
+  background:
+    linear-gradient(135deg, rgba(255, 246, 226, 0.96), rgba(255, 255, 255, 0.94)),
+    rgba(255, 255, 255, 0.94);
+  padding: 10px;
+}
+
+.broadcast-audience-confirm__copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.broadcast-audience-confirm__copy strong {
+  color: #392511;
+  font-size: 0.86rem;
+  line-height: 1.08;
+}
+
+.broadcast-audience-confirm__copy small {
+  color: #8a5f29;
+  font-size: 0.68rem;
+  font-weight: 800;
+  line-height: 1.16;
+}
+
+.broadcast-audience-confirm__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.broadcast-audience-confirm__ghost,
+.broadcast-audience-confirm__primary {
+  min-height: 34px;
+  border: 0;
+  border-radius: 12px;
+  font-size: 0.72rem;
+  font-weight: 860;
+  padding: 0 10px;
+}
+
+.broadcast-audience-confirm__ghost {
+  background: rgba(255, 255, 255, 0.84);
+  color: #6f4d22;
+}
+
+.broadcast-audience-confirm__primary {
+  background: linear-gradient(135deg, #ff9d3f, #ff6d59);
+  color: #fff;
+  box-shadow: 0 10px 20px rgba(255, 109, 89, 0.2);
+}
+
+.broadcast-audience-sheet__option-row--meta {
+  display: flex;
+  min-width: 0;
+}
+
+.broadcast-audience-sheet__option-row--meta small {
+  min-width: 0;
+  overflow: hidden;
+  color: #748698;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-broadcast-delivery-meter {
+  display: grid;
+  gap: 6px;
+}
+
+.managed-broadcast-delivery-meter__rail {
+  position: relative;
+  overflow: hidden;
+  height: 8px;
+  display: flex;
+  border-radius: 999px;
+  background: rgba(128, 145, 163, 0.16);
+}
+
+.managed-broadcast-delivery-meter__segment {
+  height: 100%;
+  flex: 0 0 auto;
+}
+
+.managed-broadcast-delivery-meter__segment.is-delivered {
+  width: var(--managed-broadcast-delivered);
+  background: linear-gradient(90deg, #19c37d, #0d9fbc);
+}
+
+.managed-broadcast-delivery-meter__segment.is-failed {
+  width: var(--managed-broadcast-failed);
+  background: linear-gradient(90deg, #ff6b6b, #ff9d3f);
+}
+
+.managed-broadcast-delivery-meter__segment.is-pending {
+  width: var(--managed-broadcast-pending);
+  background: rgba(132, 151, 169, 0.28);
+}
+
+.managed-broadcast-delivery-meter__meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #5c7083;
+  font-size: 0.66rem;
+  font-weight: 850;
+  line-height: 1;
+}
+
+.managed-broadcast-delivery-meter__meta strong {
+  color: #173149;
+  font-size: 0.68rem;
+  letter-spacing: 0;
+}
+
+.managed-broadcast-delivery-meter__meta small {
+  color: #7b8fa1;
+  font-size: 0.64rem;
+}
+
+.giveaway-page__details-toggle svg {
+  width: 20px;
+  height: 20px;
+}
+
+.giveaway-page__main-image {
+  width: 100%;
+  height: 132px;
+  display: block;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  object-fit: cover;
+  box-shadow: 0 18px 38px rgba(0, 0, 0, 0.24);
+}
+
+.giveaway-page__main-prizes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.giveaway-page__main-prizes span {
+  min-width: 0;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.045);
+  padding: 7px 9px 7px 7px;
+}
+
+.giveaway-page__main-prizes small {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: rgba(255, 197, 103, 0.13);
+  color: #ffe1a8;
+  font-size: 0.66rem;
+  font-weight: 860;
+  line-height: 1;
+}
+
+.giveaway-page__main-prizes strong {
+  min-width: 0;
+  color: rgba(248, 251, 255, 0.94);
+  font-size: 0.78rem;
+  line-height: 1.14;
+  overflow-wrap: anywhere;
+}
+
+.giveaway-page__main-prizes .giveaway-page__main-prizes-more {
+  justify-items: center;
+}
+
+.giveaway-page__main-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.giveaway-page__main-metrics span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+  border-radius: 15px;
+  border: 1px solid rgba(255, 255, 255, 0.075);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 8px 6px;
+  text-align: center;
+}
+
+.giveaway-page__main-metrics strong {
+  color: #fbfdff;
+  font-size: 0.94rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.giveaway-page__main-metrics small {
+  color: rgba(164, 186, 209, 0.72);
+  font-size: 0.6rem;
+  font-weight: 820;
+  line-height: 1;
+}
+
+@media (max-width: 430px) {
+  .broadcast-studio-command__signal {
+    gap: 4px;
+    padding: 5px;
+  }
+
+  .broadcast-studio-command__signal-icon {
+    width: 20px;
+    height: 20px;
+    border-radius: 8px;
+  }
+
+  .broadcast-studio-command__signal-label {
+    font-size: 0.5rem;
+  }
+
+  .broadcast-audience-confirm {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .broadcast-audience-confirm__actions {
+    justify-content: stretch;
+  }
+
+  .broadcast-audience-confirm__ghost,
+  .broadcast-audience-confirm__primary {
+    flex: 1 1 0;
+  }
+
+  .giveaway-page__main-image {
+    height: 112px;
+  }
+
+  .giveaway-page__main-prizes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

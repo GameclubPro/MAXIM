@@ -15,6 +15,21 @@ import { getInitDataUserId } from '../lib/init-data';
 import { BroadcastAudienceSheet } from './broadcast-audience-sheet';
 import { SegmentedControl } from './ui/segmented-control';
 
+function formatAudienceCountLabel(count: number): string {
+  const normalized = Math.abs(count) % 100;
+  const remainder = normalized % 10;
+  if (normalized > 10 && normalized < 20) {
+    return `${count} чатов`;
+  }
+  if (remainder === 1) {
+    return `${count} чат`;
+  }
+  if (remainder > 1 && remainder < 5) {
+    return `${count} чата`;
+  }
+  return `${count} чатов`;
+}
+
 type BroadcastAudienceControlsProps = {
   targetMode: BroadcastTargetMode;
   currentChatId: string;
@@ -53,6 +68,7 @@ export function BroadcastAudienceControls({
   onRefreshChoices,
 }: BroadcastAudienceControlsProps) {
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [allConfirmOpen, setAllConfirmOpen] = useState(false);
   const favoriteStorageScope = useMemo(() => {
     const normalizedUserId = favoriteUserId?.trim() || getInitDataUserId()?.trim() || '';
     return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
@@ -64,11 +80,6 @@ export function BroadcastAudienceControls({
   const scopedTargetMode: BroadcastScopedTargetMode =
     targetMode === 'selected' ? 'selected' : 'current';
   const effectiveFavoriteChatIds = favoriteChatIds ?? storedFavoriteChatIds;
-  const activeAudienceLabel = resolveBroadcastAudienceTargetLabel({
-    targetMode,
-    targetChatIds,
-    currentLabel: 'Текущий чат',
-  });
   const selectedAudienceLabel = resolveBroadcastAudienceTargetLabel({
     targetMode: 'selected',
     targetChatIds,
@@ -81,10 +92,15 @@ export function BroadcastAudienceControls({
   const currentModeActive = targetMode === 'current';
   const selectedModeActive = targetMode === 'selected';
   const allModeActive = targetMode === 'all';
+  const allChoicesLabel = choices.length > 0 ? formatAudienceCountLabel(choices.length) : 'Все чаты';
 
   useEffect(() => {
     if (targetMode !== 'selected') {
       setSheetOpen(false);
+    }
+
+    if (targetMode !== 'all') {
+      setAllConfirmOpen(false);
     }
   }, [targetMode]);
 
@@ -133,6 +149,7 @@ export function BroadcastAudienceControls({
             disabled={disabled}
             onClick={() => {
               onToggleAllChats(false);
+              setAllConfirmOpen(false);
               onChangeScopedMode('current');
             }}
           >
@@ -147,6 +164,7 @@ export function BroadcastAudienceControls({
             disabled={disabled}
             onClick={() => {
               onToggleAllChats(false);
+              setAllConfirmOpen(false);
               onChangeScopedMode('selected');
               onClearValidationError();
               setSheetOpen(true);
@@ -162,13 +180,48 @@ export function BroadcastAudienceControls({
             className={cn('broadcast-audience-card__mode', allModeActive && 'is-active')}
             aria-pressed={allModeActive}
             disabled={disabled}
-            onClick={() => onToggleAllChats(true)}
+            onClick={() => {
+              if (allModeActive) {
+                return;
+              }
+              setAllConfirmOpen(true);
+            }}
           >
             <span className="broadcast-audience-card__mode-indicator" aria-hidden />
             <strong>Все</strong>
-            {allModeActive ? <small>{activeAudienceLabel}</small> : null}
+            {allModeActive ? <small>{allChoicesLabel}</small> : null}
           </button>
         </div>
+
+        {allConfirmOpen ? (
+          <div className="broadcast-audience-confirm" role="alertdialog" aria-label="Все чаты">
+            <span className="broadcast-audience-confirm__copy">
+              <strong>Все</strong>
+              <small>{allChoicesLabel}</small>
+            </span>
+            <span className="broadcast-audience-confirm__actions">
+              <button
+                type="button"
+                className="broadcast-audience-confirm__ghost"
+                onClick={() => setAllConfirmOpen(false)}
+                disabled={disabled}
+              >
+                Назад
+              </button>
+              <button
+                type="button"
+                className="broadcast-audience-confirm__primary"
+                onClick={() => {
+                  onToggleAllChats(true);
+                  setAllConfirmOpen(false);
+                }}
+                disabled={disabled}
+              >
+                Все {choices.length > 0 ? choices.length : ''}
+              </button>
+            </span>
+          </div>
+        ) : null}
 
         {selectedModeActive ? (
           <button

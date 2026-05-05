@@ -62,6 +62,7 @@ import {
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
 import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import { ManagedBroadcastDeliveryMeter } from '../components/managed-broadcast-delivery-meter';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import type { PublishedRulesButtonToggleProps } from '../components/published-rules-button-toggle';
@@ -5439,20 +5440,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedMailingButtons),
   );
-  const mailingPlannerPending =
-    mailingPlannerState.pickedDayCount > 0 || mailingPlannerState.isDaySheetOpen;
-  const mailingScheduleReady =
-    (mailingScheduledSlots.length > 0 || mailingQuickSchedule !== null) && !mailingPlannerPending;
+  const mailingPlannerPending = mailingPlannerState.isDaySheetOpen;
+  const mailingAudienceReady =
+    mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
   const mailingHasFutureSlots =
     mailingQuickSchedule !== null || mailingPlannerState.futureSlotCount > 0;
-  const showMailingPrimaryAction =
-    isMailingBusy ||
-    (mailingHasPublishableContent &&
-      mailingScheduleReady &&
-      mailingButtonDraftValid &&
-      (mailingQuickSchedule !== null || mailingPlannerState.isConfirmed) &&
-      mailingHasFutureSlots);
-  const mailingSendDisabled = isMailingBusy;
+  const mailingCalendarScheduleReady =
+    mailingScheduledSlots.length > 0 &&
+    mailingPlannerState.futureSlotCount > 0 &&
+    !mailingPlannerPending;
+  const mailingScheduleReady = mailingQuickSchedule !== null || mailingCalendarScheduleReady;
+  const mailingPublishReady =
+    mailingHasPublishableContent &&
+    mailingAudienceReady &&
+    mailingScheduleReady &&
+    mailingButtonDraftValid &&
+    mailingHasFutureSlots;
+  const mailingSendDisabled = isMailingBusy || !mailingPublishReady;
+  const mailingPublishIssueLabels = [
+    !mailingHasPublishableContent ? 'Контент' : null,
+    !mailingAudienceReady ? 'Охват' : null,
+    !mailingScheduleReady || !mailingHasFutureSlots
+      ? 'Время'
+      : null,
+    !mailingButtonDraftValid ? 'Кнопки' : null,
+  ].filter((item): item is string => Boolean(item));
   const mailingPrimaryActionLabel =
     !mailingHasDirectContent && !editingManagedBroadcast && mailingBotHasContent
       ? 'Открыть бота'
@@ -5469,7 +5481,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : 'Очистить рассылку';
   const mailingFooterTitle = editingManagedBroadcast
     ? 'Сохранить рассылку'
-    : mailingQuickSchedule
+    : mailingPublishIssueLabels.length > 0 && !isMailingBusy
+      ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
+      : mailingQuickSchedule
       ? mailingQuickSchedule.label
       : mailingSelectionSummary || 'Рассылка';
   const mailingFooterMeta = [
@@ -5481,8 +5495,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const mailingAudienceReady =
-    mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
   const mailingStudioAudienceValue =
     mailingTargetMode === 'all'
       ? 'Все'
@@ -5511,11 +5523,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             : `${normalizedMailingText.length}/2000`
         : 'Пусто',
       tone: mailingHasPublishableContent ? 'ready' : 'pending',
+      icon: 'content',
     },
     {
       label: 'Охват',
       value: mailingStudioAudienceValue,
       tone: mailingAudienceReady ? (mailingTargetMode === 'all' ? 'warning' : 'ready') : 'danger',
+      icon: 'audience',
     },
     {
       label: 'Время',
@@ -5525,6 +5539,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? formatRussianCountLabel(mailingPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
           : 'Не выбрано',
       tone: mailingScheduleReady && mailingHasFutureSlots ? 'ready' : 'pending',
+      icon: 'time',
     },
     {
       label: 'Кнопки',
@@ -5532,6 +5547,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? formatBroadcastButtonsStatus(normalizedMailingButtons)
         : 'Без кнопки',
       tone: mailingButtonDraftValid ? (mailingButtonEnabled ? 'ready' : 'neutral') : 'danger',
+      icon: 'button',
     },
   ];
   const mailingStudioSubtitle = editingManagedBroadcast
@@ -5541,7 +5557,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
         <strong>{mailingFooterTitle}</strong>
-        <small>{mailingFooterMeta}</small>
+        <small>{mailingFooterMeta || 'Черновик'}</small>
+        {mailingPublishIssueLabels.length > 0 && !isMailingBusy ? (
+          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
+            {mailingPublishIssueLabels.map((label) => (
+              <span key={`mailing-publish-issue-${label}`}>{label}</span>
+            ))}
+          </span>
+        ) : null}
       </div>
       <button
         type="button"
@@ -10419,7 +10442,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 tone="sky"
                 className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing"
                 onClose={() => toggleSection('mailing')}
-                footer={showMailingPrimaryAction ? mailingDrilldownFooter : undefined}
+                footer={mailingDrilldownFooter}
               >
                 <div
                   id="settings-mailing-content"
@@ -10806,6 +10829,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           <span key={`${broadcast.id}-${fact}`}>{fact}</span>
                                         ))}
                                       </div>
+
+                                      <ManagedBroadcastDeliveryMeter broadcast={broadcast} />
 
                                       {broadcast.lastError ? (
                                         <small className="managed-broadcast-card__error">
