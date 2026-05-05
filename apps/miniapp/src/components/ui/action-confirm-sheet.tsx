@@ -14,6 +14,11 @@ type ActionConfirmSheetProps = {
   cancelLabel?: string;
   tone?: 'danger' | 'accent';
   isBusy?: boolean;
+  extraActionLabel?: string;
+  extraActionBusyLabel?: string;
+  extraActionBusy?: boolean;
+  extraActionDisabled?: boolean;
+  onExtraAction?: () => void;
   onClose: () => void;
   onConfirm: () => void;
 };
@@ -30,6 +35,11 @@ export function ActionConfirmSheet({
   cancelLabel = 'Отмена',
   tone = 'danger',
   isBusy = false,
+  extraActionLabel,
+  extraActionBusyLabel = '...',
+  extraActionBusy = false,
+  extraActionDisabled = false,
+  onExtraAction,
   onClose,
   onConfirm,
 }: ActionConfirmSheetProps) {
@@ -104,6 +114,16 @@ export function ActionConfirmSheet({
           ) : null}
 
           <div className="action-confirm-sheet__actions">
+            {extraActionLabel && onExtraAction ? (
+              <button
+                type="button"
+                className="action-confirm-sheet__button action-confirm-sheet__button--ghost"
+                onClick={onExtraAction}
+                disabled={isBusy || extraActionBusy || extraActionDisabled}
+              >
+                {extraActionBusy ? extraActionBusyLabel : extraActionLabel}
+              </button>
+            ) : null}
             <button
               type="button"
               className="action-confirm-sheet__button action-confirm-sheet__button--ghost"

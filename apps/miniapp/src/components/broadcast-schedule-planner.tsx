@@ -40,6 +40,7 @@ type BroadcastSchedulePlannerProps = {
   quickPreset?: BroadcastQuickPreset | null;
   onSelectQuickPreset?: (preset: BroadcastQuickPreset) => void;
   onClearQuickPreset?: () => void;
+  viewMode?: 'compose' | 'calendar';
 };
 
 export type BroadcastSchedulePlannerSelectionState = {
@@ -373,10 +374,12 @@ export function BroadcastSchedulePlanner({
   quickPreset = null,
   onSelectQuickPreset,
   onClearQuickPreset,
+  viewMode = 'compose',
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const normalizedValue = useMemo(() => sortAndUniqueBroadcastSlots(value), [value]);
+  const calendarOnly = viewMode === 'calendar';
   const scheduledDayKeys = useMemo(
     () => sortDayKeys(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
     [normalizedValue],
@@ -392,7 +395,9 @@ export function BroadcastSchedulePlanner({
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
-  const [calendarExpanded, setCalendarExpanded] = useState(() => normalizedValue.length > 0);
+  const [calendarExpanded, setCalendarExpanded] = useState(
+    () => calendarOnly || normalizedValue.length > 0,
+  );
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
 
   const windowStart = startOfDay(anchorNow);
@@ -562,6 +567,12 @@ export function BroadcastSchedulePlanner({
     setIsConfirmed(false);
     setCalendarExpanded(false);
   }, [quickPreset]);
+
+  useEffect(() => {
+    if (calendarOnly) {
+      setCalendarExpanded(true);
+    }
+  }, [calendarOnly]);
 
   useEffect(() => {
     const nextState = {
@@ -816,53 +827,63 @@ export function BroadcastSchedulePlanner({
 
   return (
     <>
-      <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
+      <section
+        className={cn(
+          'broadcast-planner',
+          calendarOnly && 'is-calendar-only',
+          disabled && 'is-disabled',
+        )}
+      >
         <div className="broadcast-planner__calendar-card">
-          <div className="broadcast-planner__smart-head">
-            <span className="broadcast-planner__smart-copy">
-              <span>Время</span>
-              <strong>{scheduleStatusLabel}</strong>
-              <small>{scheduleStatusSummary}</small>
-            </span>
-            <span
-              className={cn(
-                'broadcast-planner__smart-badge',
-                (quickSelection || futureSlotCount > 0) && 'is-ready',
-              )}
-            >
-              {quickSelection || futureSlotCount > 0 ? 'OK' : '--'}
-            </span>
-          </div>
-
-          <div className="broadcast-planner__quick-row" aria-label="Быстрые действия">
-            {BROADCAST_QUICK_PRESETS.map((preset) => {
-              const action = resolveBroadcastQuickScheduleSelection(preset, liveNowMs);
-              return (
-                <button
-                  key={preset}
-                  type="button"
+          {!calendarOnly ? (
+            <>
+              <div className="broadcast-planner__smart-head">
+                <span className="broadcast-planner__smart-copy">
+                  <span>Время</span>
+                  <strong>{scheduleStatusLabel}</strong>
+                  <small>{scheduleStatusSummary}</small>
+                </span>
+                <span
                   className={cn(
-                    'broadcast-planner__quick-chip',
-                    quickPreset === preset && 'is-active',
+                    'broadcast-planner__smart-badge',
+                    (quickSelection || futureSlotCount > 0) && 'is-ready',
                   )}
-                  onClick={() => onSelectQuickPreset?.(preset)}
+                >
+                  {quickSelection || futureSlotCount > 0 ? 'OK' : '--'}
+                </span>
+              </div>
+
+              <div className="broadcast-planner__quick-row" aria-label="Быстрые действия">
+                {BROADCAST_QUICK_PRESETS.map((preset) => {
+                  const action = resolveBroadcastQuickScheduleSelection(preset, liveNowMs);
+                  return (
+                    <button
+                      key={preset}
+                      type="button"
+                      className={cn(
+                        'broadcast-planner__quick-chip',
+                        quickPreset === preset && 'is-active',
+                      )}
+                      onClick={() => onSelectQuickPreset?.(preset)}
+                      disabled={disabled}
+                    >
+                      <strong>{action.label}</strong>
+                      <small>{action.summary}</small>
+                    </button>
+                  );
+                })}
+                <button
+                  type="button"
+                  className={cn('broadcast-planner__quick-chip', calendarExpanded && 'is-calendar')}
+                  onClick={openCalendar}
                   disabled={disabled}
                 >
-                  <strong>{action.label}</strong>
-                  <small>{action.summary}</small>
+                  <strong>Календарь</strong>
+                  <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'Дата и время'}</small>
                 </button>
-              );
-            })}
-            <button
-              type="button"
-              className={cn('broadcast-planner__quick-chip', calendarExpanded && 'is-calendar')}
-              onClick={openCalendar}
-              disabled={disabled}
-            >
-              <strong>Календарь</strong>
-              <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'Дата и время'}</small>
-            </button>
-          </div>
+              </div>
+            </>
+          ) : null}
 
           {calendarExpanded ? (
             <>

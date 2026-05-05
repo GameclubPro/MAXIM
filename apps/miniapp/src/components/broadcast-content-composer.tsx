@@ -1,6 +1,7 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Xmark as IconoirXmark } from 'iconoir-react';
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MaxMarkdownEditor } from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
@@ -86,6 +87,7 @@ export function BroadcastContentComposer({
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
+  const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [savedTemplates, setSavedTemplates] = useState(() =>
     templateScope ? readBroadcastTextTemplates(templateScope) : [],
   );
@@ -106,6 +108,18 @@ export function BroadcastContentComposer({
   useEffect(() => {
     setSavedTemplates(templateScope ? readBroadcastTextTemplates(templateScope) : []);
   }, [templateScope]);
+
+  useEffect(() => {
+    if (!templateSheetOpen || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [templateSheetOpen]);
 
   async function handleImageFiles(files: FileList | null) {
     const file = files?.[0] ?? null;
@@ -144,6 +158,7 @@ export function BroadcastContentComposer({
   function applyTemplate(value: string) {
     const nextValue = text.trim().length > 0 ? `${text.trimEnd()}\n\n${value}` : value;
     onTextChange(nextValue.slice(0, maxLength));
+    setTemplateSheetOpen(false);
   }
 
   function saveTemplate() {
@@ -184,52 +199,14 @@ export function BroadcastContentComposer({
           </div>
 
           <div className="broadcast-content-composer__template-row" aria-label="Быстрый текст">
-            {BROADCAST_TEXT_TEMPLATES.map((template) => (
-              <button
-                key={template.id}
-                type="button"
-                className="broadcast-content-composer__template-chip"
-                onClick={() => applyTemplate(template.text)}
-                disabled={isBusy}
-              >
-                {template.label}
-              </button>
-            ))}
-            {BROADCAST_TEXT_SNIPPETS.map((snippet) => (
-              <button
-                key={snippet.id}
-                type="button"
-                className="broadcast-content-composer__template-chip is-snippet"
-                onClick={() => applyTemplate(snippet.text)}
-                disabled={isBusy}
-              >
-                {snippet.label}
-              </button>
-            ))}
-            {savedTemplates.map((template) => (
-              <span key={template.id} className="broadcast-content-composer__template-chip-shell">
-                <button
-                  type="button"
-                  className="broadcast-content-composer__template-chip is-saved"
-                  onClick={() => applyTemplate(template.text)}
-                  disabled={isBusy}
-                >
-                  {template.label}
-                </button>
-                {canUseTemplates ? (
-                  <button
-                    type="button"
-                    className="broadcast-content-composer__template-delete"
-                    onClick={() => deleteTemplate(template.id)}
-                    disabled={isBusy}
-                    aria-label={`Удалить шаблон ${template.label}`}
-                    title="Удалить шаблон"
-                  >
-                    <IconoirXmark aria-hidden focusable="false" />
-                  </button>
-                ) : null}
-              </span>
-            ))}
+            <button
+              type="button"
+              className="broadcast-content-composer__template-chip"
+              onClick={() => setTemplateSheetOpen(true)}
+              disabled={isBusy}
+            >
+              Шаблоны
+            </button>
             {canUseTemplates ? (
               <button
                 type="button"
@@ -387,6 +364,89 @@ export function BroadcastContentComposer({
       {textError || imageError ? (
         <small className="field__hint">{textError || imageError}</small>
       ) : null}
+
+      {templateSheetOpen && typeof document !== 'undefined'
+        ? createPortal(
+            <div className="broadcast-template-sheet" aria-hidden={!templateSheetOpen}>
+              <button
+                type="button"
+                className="broadcast-template-sheet__backdrop"
+                aria-label="Закрыть шаблоны"
+                onClick={() => setTemplateSheetOpen(false)}
+              />
+
+              <section
+                className="broadcast-template-sheet__panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="broadcast-template-sheet-title"
+              >
+                <div className="broadcast-template-sheet__grabber" aria-hidden />
+                <div className="broadcast-template-sheet__head">
+                  <strong id="broadcast-template-sheet-title">Шаблоны</strong>
+                  <button
+                    type="button"
+                    className="broadcast-template-sheet__close"
+                    onClick={() => setTemplateSheetOpen(false)}
+                    aria-label="Закрыть"
+                  >
+                    <IconoirXmark aria-hidden focusable="false" />
+                  </button>
+                </div>
+
+                <div className="broadcast-template-sheet__grid">
+                  {BROADCAST_TEXT_TEMPLATES.map((template) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      className="broadcast-template-sheet__item"
+                      onClick={() => applyTemplate(template.text)}
+                      disabled={isBusy}
+                    >
+                      <strong>{template.label}</strong>
+                    </button>
+                  ))}
+                  {BROADCAST_TEXT_SNIPPETS.map((snippet) => (
+                    <button
+                      key={snippet.id}
+                      type="button"
+                      className="broadcast-template-sheet__item is-snippet"
+                      onClick={() => applyTemplate(snippet.text)}
+                      disabled={isBusy}
+                    >
+                      <strong>{snippet.label}</strong>
+                    </button>
+                  ))}
+                  {savedTemplates.map((template) => (
+                    <span key={template.id} className="broadcast-template-sheet__saved">
+                      <button
+                        type="button"
+                        className="broadcast-template-sheet__item is-saved"
+                        onClick={() => applyTemplate(template.text)}
+                        disabled={isBusy}
+                      >
+                        <strong>{template.label}</strong>
+                      </button>
+                      {canUseTemplates ? (
+                        <button
+                          type="button"
+                          className="broadcast-template-sheet__delete"
+                          onClick={() => deleteTemplate(template.id)}
+                          disabled={isBusy}
+                          aria-label={`Удалить шаблон ${template.label}`}
+                          title="Удалить"
+                        >
+                          <IconoirXmark aria-hidden focusable="false" />
+                        </button>
+                      ) : null}
+                    </span>
+                  ))}
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
