@@ -2,14 +2,12 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
   lazy,
-  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
-  type UIEvent as ReactUIEvent,
 } from 'react';
 import {
   RefreshDouble as IconoirRefreshDouble,
@@ -83,8 +81,7 @@ const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 93;
-const CHAT_LIST_VIRTUAL_ROW_HEIGHT_COMPACT = 84;
-const CHAT_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 520;
+const CHAT_LIST_VIRTUAL_VIEWPORT_HEIGHT = 620;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -213,89 +210,14 @@ function ChevronGlyph() {
   );
 }
 
-function resolveChatListVirtualRowHeight(): number {
-  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
-    return CHAT_LIST_VIRTUAL_ROW_HEIGHT;
-  }
-
-  return window.matchMedia('(max-width: 560px)').matches
-    ? CHAT_LIST_VIRTUAL_ROW_HEIGHT_COMPACT
-    : CHAT_LIST_VIRTUAL_ROW_HEIGHT;
-}
-
-function useChatListVirtualization(itemCount: number, enabled: boolean) {
-  const viewportRef = useRef<HTMLElement | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
-  const [rowHeight, setRowHeight] = useState(resolveChatListVirtualRowHeight);
-
-  const reset = useCallback(() => {
-    setScrollTop(0);
-    if (viewportRef.current) {
-      viewportRef.current.scrollTop = 0;
-    }
-  }, []);
-
-  const handleScroll = useCallback((event: ReactUIEvent<HTMLElement>) => {
-    setScrollTop(event.currentTarget.scrollTop);
-  }, []);
-
-  useEffect(() => {
-    if (!enabled) {
-      setScrollTop(0);
-      return undefined;
-    }
-    if (typeof window === 'undefined') {
-      return undefined;
-    }
-
-    const measure = () => {
-      setRowHeight(resolveChatListVirtualRowHeight());
-      setViewportHeight(viewportRef.current?.clientHeight ?? 0);
-    };
-
-    measure();
-    const element = viewportRef.current;
-    const resizeObserver =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
-    if (resizeObserver && element) {
-      resizeObserver.observe(element);
-    }
-    window.addEventListener('resize', measure);
-
-    return () => {
-      resizeObserver?.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, [enabled, itemCount]);
-
-  const range = useMemo(
-    () =>
-      resolveVirtualListRange({
-        itemCount,
-        scrollTop,
-        viewportHeight: viewportHeight || CHAT_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
-        rowHeight,
-        overscan: CHAT_LIST_VIRTUAL_OVERSCAN,
-      }),
-    [itemCount, rowHeight, scrollTop, viewportHeight],
-  );
-
-  return {
-    viewportRef,
-    rowHeight,
-    range,
-    handleScroll,
-    reset,
-  };
-}
-
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [canAccessSystem, setCanAccessSystem] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(() => getInitDataUserId());
+  const virtualListViewportRef = useRef<HTMLElement | null>(null);
+  const [virtualListScrollTop, setVirtualListScrollTop] = useState(0);
   const favoriteStorageScope = useMemo(() => {
     const normalizedUserId = currentUserId?.trim();
     return normalizedUserId ? `u:${normalizedUserId}` : getHomeEntityFavoritesFallbackScope();
@@ -426,9 +348,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
   const shouldVirtualizeEntities =
     filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD && !isLoading && !queryError;
-  const virtualList = useChatListVirtualization(filteredEntities.length, shouldVirtualizeEntities);
+  const virtualRange = useMemo(
+    () =>
+      resolveVirtualListRange({
+        itemCount: filteredEntities.length,
+        scrollTop: shouldVirtualizeEntities ? virtualListScrollTop : 0,
+        viewportHeight: CHAT_LIST_VIRTUAL_VIEWPORT_HEIGHT,
+        rowHeight: CHAT_LIST_VIRTUAL_ROW_HEIGHT,
+        overscan: CHAT_LIST_VIRTUAL_OVERSCAN,
+      }),
+    [filteredEntities.length, shouldVirtualizeEntities, virtualListScrollTop],
+  );
   const renderedEntities = shouldVirtualizeEntities
-    ? filteredEntities.slice(virtualList.range.startIndex, virtualList.range.endIndex)
+    ? filteredEntities.slice(virtualRange.startIndex, virtualRange.endIndex)
     : filteredEntities;
   const settledRefreshMarker = useMemo(
     () =>
@@ -505,8 +437,11 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeTab]);
 
   useEffect(() => {
-    virtualList.reset();
-  }, [activeTab, query, shouldVirtualizeEntities, virtualList.reset]);
+    setVirtualListScrollTop(0);
+    if (virtualListViewportRef.current) {
+      virtualListViewportRef.current.scrollTop = 0;
+    }
+  }, [activeTab, query, shouldVirtualizeEntities]);
 
   useEffect(() => {
     document.body.classList.add('chats-home-page-open');
@@ -645,7 +580,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       style.animationDelay = `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms`;
     }
     if (shouldVirtualizeEntities) {
-      style.top = `${index * virtualList.rowHeight}px`;
+      style.top = `${index * CHAT_LIST_VIRTUAL_ROW_HEIGHT}px`;
     }
 
     const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
@@ -974,24 +909,25 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         <section
           className={cn('chat-grid', shouldVirtualizeEntities && 'chat-grid--virtual')}
           aria-label="Список"
-          ref={shouldVirtualizeEntities ? virtualList.viewportRef : undefined}
-          onScroll={shouldVirtualizeEntities ? virtualList.handleScroll : undefined}
+          ref={shouldVirtualizeEntities ? virtualListViewportRef : undefined}
+          onScroll={
+            shouldVirtualizeEntities
+              ? (event) => setVirtualListScrollTop(event.currentTarget.scrollTop)
+              : undefined
+          }
           tabIndex={shouldVirtualizeEntities ? 0 : undefined}
           style={
             shouldVirtualizeEntities
               ? ({
-                  '--chat-list-row-height': `${virtualList.rowHeight}px`,
+                  '--chat-list-row-height': `${CHAT_LIST_VIRTUAL_ROW_HEIGHT}px`,
                 } as CSSProperties)
               : undefined
           }
         >
           {shouldVirtualizeEntities ? (
-            <div
-              className="chat-grid__virtual-spacer"
-              style={{ height: virtualList.range.totalHeight }}
-            >
+            <div className="chat-grid__virtual-spacer" style={{ height: virtualRange.totalHeight }}>
               {renderedEntities.map((entity, index) =>
-                renderEntityCard(entity, virtualList.range.startIndex + index),
+                renderEntityCard(entity, virtualRange.startIndex + index),
               )}
             </div>
           ) : (
