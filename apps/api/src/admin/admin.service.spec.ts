@@ -11,7 +11,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { ChatEntityType } from '@prisma/client';
+import { ChatBotMembershipStatus, ChatEntityType } from '@prisma/client';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { AdminService } from './admin.service';
@@ -1205,6 +1205,166 @@ describe('AdminService managed bot chat catalog', () => {
       }),
       'Using managed bot chat catalog fallback after MAX chat discovery failure',
     );
+  });
+
+  it('uses active chat bot memberships when MAX discovery and catalog rows are unavailable', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    const membershipLastSeenAt = new Date('2026-05-06T12:00:00.000Z');
+    const catalog = {
+      upsert: jest.fn(),
+      updateMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([]),
+    };
+    const chatBotMembership = {
+      findMany: jest.fn().mockResolvedValue([
+        {
+          botId: 'bot-1',
+          lastSeenAt: membershipLastSeenAt,
+          lastWebhookAt: null,
+          chat: {
+            id: 'chat-1',
+            title: 'Known membership chat',
+            entityType: ChatEntityType.CHAT,
+            botId: 'bot-1',
+            primaryBotId: 'bot-1',
+          },
+        },
+      ]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: catalog,
+      chatBotMembership,
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+    };
+
+    await expect(
+      service.loadManagedBotChatsForDiscovery('bot-1', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'chat-1',
+        title: 'Known membership chat',
+        link: null,
+        avatarUrl: null,
+        entityType: 'chat',
+        lastEventTime: membershipLastSeenAt.getTime(),
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(chatBotMembership.findMany).toHaveBeenCalledWith({
+      where: {
+        botId: 'bot-1',
+        status: ChatBotMembershipStatus.ACTIVE,
+      },
+      select: {
+        botId: true,
+        lastSeenAt: true,
+        lastWebhookAt: true,
+        chat: {
+          select: {
+            id: true,
+            title: true,
+            entityType: true,
+            botId: true,
+            primaryBotId: true,
+          },
+        },
+      },
+      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+      take: 20000,
+    });
+  });
+
+  it('keeps partial multi-bot discovery when one bot has no remote or catalog fallback', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    service.chatContextCache = {};
+    service.maxChatAdminRosterSyncService = null;
+    service.managedEntitiesDiscoveryHeaderPrimeCooldownUntilMs = new Map();
+    service.managedEntitiesDiscoveryHeaderPrimeRuns = new Map();
+    service.managedEntitiesCatalogSyncCursorByScope = new Map();
+    service.maxBotRegistry = {
+      getBotById: jest.fn().mockImplementation((botId: string | null | undefined) =>
+        botId ? { id: botId } : null,
+      ),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: {
+        upsert: jest.fn().mockResolvedValue({}),
+        updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockImplementation((options: { botId?: string }) => {
+        if (options.botId === 'bot-2') {
+          return Promise.reject(new Error('bot-2 unavailable'));
+        }
+        return Promise.resolve([
+          {
+            chatId: 'chat-1',
+            title: 'Команда MAX',
+            lastEventTime: 1778090000123,
+            entityType: 'chat',
+            link: null,
+            avatarUrl: null,
+          },
+        ]);
+      }),
+    };
+
+    await expect(
+      service.loadManagedEntitiesDiscoverySnapshot('chat', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        lastEventTime: 1778090000123,
+        entityType: 'chat',
+        link: null,
+        avatarUrl: null,
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        entityType: 'chat',
+        failedBots: 1,
+        discoveryBots: 2,
+        errors: [
+          {
+            botId: 'bot-2',
+            err: 'bot-2 unavailable',
+          },
+        ],
+      }),
+      'Continuing managed entities discovery with partial bot results',
+    );
+  });
+
+  it('keeps all-bot discovery failure visible when no bot has remote or catalog data', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    service.maxBotRegistry = {
+      getBotById: jest.fn().mockImplementation((botId: string | null | undefined) =>
+        botId ? { id: botId } : null,
+      ),
+      getDiscoveryBots: jest.fn().mockReturnValue([{ id: 'bot-1' }, { id: 'bot-2' }]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+    };
+
+    await expect(
+      service.loadManagedEntitiesDiscoverySnapshot('chat', { trafficClass: 'background' }),
+    ).rejects.toThrow('MAX unavailable');
   });
 });
 
