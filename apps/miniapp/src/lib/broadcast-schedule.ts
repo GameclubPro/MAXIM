@@ -76,7 +76,7 @@ export function resolveBroadcastQuickScheduleSelection(
       scheduledAt = addMinutes(new Date(nowMs), 30);
       break;
     case 'tonight': {
-      label = '20:00';
+      label = 'Вечером';
       const candidate = new Date(nowMs);
       candidate.setHours(20, 0, 0, 0);
       if (candidate.getTime() < minimumDate.getTime()) {

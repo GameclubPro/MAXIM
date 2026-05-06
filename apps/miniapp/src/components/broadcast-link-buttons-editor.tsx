@@ -36,7 +36,7 @@ export function BroadcastLinkButtonsEditor({
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
   title = 'Сетка кнопок',
-  subtitle = 'До 8 ссылочных кнопок. MAX покажет их рядами по 3.',
+  subtitle = 'До 8 кнопок',
   compact = false,
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
@@ -73,9 +73,9 @@ export function BroadcastLinkButtonsEditor({
   const nextButtonHint = compact
     ? ''
     : buttons.length === 0
-      ? 'Запустит каскадный редактор снизу.'
+      ? ''
       : buttons.length === 1
-        ? 'Вторая появится сразу под первой. Это следующий шаг.'
+        ? ''
         : `Осталось ${MAX_BROADCAST_LINK_BUTTONS - buttons.length}.`;
 
   useEffect(() => {
@@ -278,9 +278,6 @@ export function BroadcastLinkButtonsEditor({
         >
           <span className="broadcast-link-editor__add-icon">+</span>
           <span className="broadcast-link-editor__add-copy">
-            {shouldSpotlightNextStep ? (
-              <span className="broadcast-link-editor__add-step">Следующий шаг</span>
-            ) : null}
             <strong>{nextButtonLabel}</strong>
             {nextButtonHint ? <small>{nextButtonHint}</small> : null}
           </span>

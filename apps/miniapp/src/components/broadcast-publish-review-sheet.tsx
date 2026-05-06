@@ -32,19 +32,27 @@ export function BroadcastPublishReviewSheet({
   onClose,
   onConfirm,
 }: BroadcastPublishReviewSheetProps) {
+  const hasAllAudience = facts.some((fact) => /все\s+чат/iu.test(fact));
+
   return (
     <ActionConfirmSheet
       id={id}
       open={open}
-      title="Подтвердить"
+      title="Проверка"
+      summary={hasAllAudience ? 'Все чаты' : undefined}
       previewTitle={
         text || hasMedia ? (
-          <MaxMarkdownPreview
-            value={text}
-            className="action-confirm-sheet__preview-markdown max-markdown-preview--clamp-2"
-            normalizeWhitespace
-            fallback={hasMedia ? 'Медиа' : null}
-          />
+          <span className="broadcast-review-card">
+            {hasMedia ? <span className="broadcast-review-card__media">Медиа</span> : null}
+            <span className="broadcast-review-card__bubble">
+              <MaxMarkdownPreview
+                value={text}
+                className="broadcast-review-card__markdown max-markdown-preview--clamp-2"
+                normalizeWhitespace
+                fallback={hasMedia ? 'Медиа' : null}
+              />
+            </span>
+          </span>
         ) : undefined
       }
       previewMeta={

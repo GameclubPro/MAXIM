@@ -23,7 +23,6 @@ import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
-  BroadcastStudioChecklist,
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
@@ -1846,7 +1845,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       icon: 'channel',
     },
     {
-      label: 'Время',
+      label: 'Когда',
       value: broadcastQuickSchedule
         ? broadcastQuickSchedule.summary
         : broadcastPlannerState.futureSlotCount > 0
@@ -1870,8 +1869,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   ];
   const broadcastStudioSubtitle = editingManagedBroadcast
-    ? 'Режим редактирования активной рассылки'
-    : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик рассылки';
+    ? 'Редактирование'
+    : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик';
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
     : broadcastQuickPreset === 'now'
@@ -1881,11 +1880,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
     : 'compose';
-  const broadcastReadinessSummary = broadcastPublishReady
-    ? broadcastPrimaryActionLabel
-    : broadcastPublishIssueLabels.length > 0
-      ? `Нужно: ${broadcastPublishIssueLabels.join(' · ')}`
-      : 'Черновик';
   const broadcastDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -2679,7 +2673,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         ? 'Редактирование рассылки'
                         : duplicatedManagedBroadcast
                           ? 'Копия рассылки'
-                          : 'Новая публикация'
+                          : 'Новая рассылка'
                     }
                     subtitle={broadcastStudioSubtitle}
                     readyCount={broadcastStudioReadyCount}
@@ -2799,7 +2793,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       <div className="broadcast-stage-card broadcast-stage-card--planner">
                         <div className="broadcast-stage-card__head">
                           <div className="broadcast-stage-card__title-wrap">
-                            <strong>Расписание</strong>
+                            <strong>Когда</strong>
                           </div>
                         </div>
 
@@ -2922,12 +2916,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </div>
                       </div>
-
-                      <BroadcastStudioChecklist
-                        summary={broadcastReadinessSummary}
-                        ready={broadcastPublishReady}
-                        signals={broadcastStudioSignals}
-                      />
                     </div>
                   ) : activeBroadcastWorkspaceView === 'calendar' ? (
                     <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">

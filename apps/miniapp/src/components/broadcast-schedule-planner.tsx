@@ -450,7 +450,7 @@ export function BroadcastSchedulePlanner({
     ? quickSelection.summary
     : normalizedValue.length > 0
       ? formatCountLabel(selectedDayCount, 'день', 'дня', 'дней')
-      : 'Быстрый запуск или календарь';
+      : '';
   const scheduledDayCards = scheduledDayKeys.map((dayKey) => ({
     dayKey,
     slots: getSelectedDaySlots(dayKey, normalizedValue),
@@ -839,9 +839,8 @@ export function BroadcastSchedulePlanner({
             <>
               <div className="broadcast-planner__smart-head">
                 <span className="broadcast-planner__smart-copy">
-                  <span>Время</span>
                   <strong>{scheduleStatusLabel}</strong>
-                  <small>{scheduleStatusSummary}</small>
+                  {scheduleStatusSummary ? <small>{scheduleStatusSummary}</small> : null}
                 </span>
                 <span
                   className={cn(
@@ -849,7 +848,7 @@ export function BroadcastSchedulePlanner({
                     (quickSelection || futureSlotCount > 0) && 'is-ready',
                   )}
                 >
-                  {quickSelection || futureSlotCount > 0 ? 'OK' : '--'}
+                  {quickSelection || futureSlotCount > 0 ? 'OK' : ''}
                 </span>
               </div>
 

@@ -118,6 +118,8 @@ export function BroadcastStudioHeader({
   const normalizedReadyCount = Math.min(Math.max(0, readyCount), safeTotal);
   const progress = Math.round((normalizedReadyCount / safeTotal) * 100);
   const progressStyle = { '--broadcast-studio-progress': `${progress}%` } as CSSProperties;
+  const readyLabel =
+    normalizedReadyCount === safeTotal ? 'Готово' : `${normalizedReadyCount}/${safeTotal}`;
 
   return (
     <section
@@ -134,9 +136,7 @@ export function BroadcastStudioHeader({
           className="broadcast-studio-command__score"
           aria-label={`Готово ${normalizedReadyCount} из ${safeTotal}`}
         >
-          <strong>
-            {normalizedReadyCount}/{safeTotal}
-          </strong>
+          <strong>{readyLabel}</strong>
         </div>
       </div>
 

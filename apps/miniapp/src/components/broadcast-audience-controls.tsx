@@ -147,7 +147,7 @@ export function BroadcastAudienceControls({
         <div
           className="broadcast-audience-card__mode-grid"
           role="group"
-          aria-label="Охват рассылки"
+          aria-label="Кому отправить"
         >
           <button
             type="button"
@@ -251,7 +251,7 @@ export function BroadcastAudienceControls({
 
         <SegmentedControl
           className="broadcast-scope-control broadcast-scope-control--legacy"
-          ariaLabel="Охват рассылки"
+          ariaLabel="Кому отправить"
           value={scopedTargetMode}
           onChange={(value) => onChangeScopedMode(value === 'selected' ? 'selected' : 'current')}
           options={[

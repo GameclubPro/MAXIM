@@ -58,7 +58,6 @@ import botSpeechPoliceImage from '../../../../police.webp';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
 import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
-  BroadcastStudioChecklist,
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
 } from '../components/broadcast-studio-header';
@@ -5559,7 +5558,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : '';
   const pendingMailingReviewFacts = pendingMailingReviewPayload
     ? [
-        `Охват · ${pendingMailingReviewAudienceLabel}`,
+        `Кому · ${pendingMailingReviewAudienceLabel}`,
         `Время · ${formatBroadcastPayloadScheduleLabel(pendingMailingReviewPayload)}`,
         pendingMailingReviewPayload.buttonEnabled
           ? `Кнопки · ${formatBroadcastButtonsStatus(pendingMailingReviewPayload.buttons)}`
@@ -5682,7 +5681,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingSendDisabled = isMailingBusy || !mailingPublishReady;
   const mailingPublishIssueLabels = [
     !mailingHasPublishableContent ? 'Контент' : null,
-    !mailingAudienceReady ? 'Охват' : null,
+    !mailingAudienceReady ? 'Кому' : null,
     !mailingScheduleReady || !mailingHasFutureSlots ? 'Время' : null,
     !mailingButtonDraftValid ? 'Кнопки' : null,
   ].filter((item): item is string => Boolean(item));
@@ -5739,13 +5738,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       icon: 'content',
     },
     {
-      label: 'Охват',
+      label: 'Кому',
       value: mailingStudioAudienceValue,
       tone: mailingAudienceReady ? (mailingTargetMode === 'all' ? 'warning' : 'ready') : 'danger',
       icon: 'audience',
     },
     {
-      label: 'Время',
+      label: 'Когда',
       value: mailingQuickSchedule
         ? mailingQuickSchedule.summary
         : mailingPlannerState.futureSlotCount > 0
@@ -5764,13 +5763,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   ];
   const mailingStudioSubtitle = editingManagedBroadcast
-    ? 'Режим редактирования активной рассылки'
-    : mailingFooterMeta || mailingHeaderSummary || 'Черновик рассылки';
-  const mailingReadinessSummary = mailingPublishReady
-    ? mailingPrimaryActionLabel
-    : mailingPublishIssueLabels.length > 0
-      ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
-      : 'Черновик';
+    ? 'Редактирование'
+    : mailingFooterMeta || mailingHeaderSummary || 'Черновик';
   const mailingDrilldownFooter = (
     <div className="broadcast-publish-bar">
       <div className="broadcast-publish-bar__copy">
@@ -6947,7 +6941,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       })
                                     }
                                     title="Сетка кнопок"
-                                    subtitle="До 8 ссылочных кнопок. MAX покажет их рядами по 3."
+                                    subtitle="До 8 кнопок"
                                     urlPlaceholder="https://max.ru/channel/..."
                                     textPlaceholder="Открыть"
                                   />
@@ -10786,7 +10780,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--scope">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Охват</strong>
+                                  <strong>Кому</strong>
                                 </div>
                               </div>
 
@@ -10816,7 +10810,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--planner">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Расписание</strong>
+                                  <strong>Когда</strong>
                                 </div>
                               </div>
 
@@ -10939,12 +10933,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ) : null}
                               </div>
                             </div>
-
-                            <BroadcastStudioChecklist
-                              summary={mailingReadinessSummary}
-                              ready={mailingPublishReady}
-                              signals={mailingStudioSignals}
-                            />
                           </div>
                         ) : mailingWorkspaceView === 'calendar' ? (
                           <div className="broadcast-stage-card broadcast-stage-card--planner broadcast-stage-card--calendar">
