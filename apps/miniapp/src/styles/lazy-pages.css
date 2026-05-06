@@ -21647,7 +21647,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 
 .settings-drilldown__panel--broadcast-screen .settings-drilldown__header {
   min-height: 54px;
-  padding: calc(8px + env(safe-area-inset-top, 0px)) 14px 8px;
+  padding: 8px 14px;
   border-bottom: 1px solid rgba(138, 159, 178, 0.18);
   background: rgba(250, 252, 254, 0.94);
   backdrop-filter: blur(18px) saturate(150%);
@@ -22105,7 +22105,7 @@ html[data-max-legacy-settings-drilldown='true'] .settings-drilldown__footer-acti
 @media (max-width: 430px) {
   .settings-drilldown__panel--broadcast-screen .settings-drilldown__header {
     min-height: 50px;
-    padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px;
+    padding: 6px 10px;
   }
 
   .settings-drilldown__panel--broadcast-screen .settings-drilldown__title {
