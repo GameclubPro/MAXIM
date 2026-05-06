@@ -151,7 +151,7 @@ export function BroadcastContentComposer({
               'broadcast-message-card--editable',
               !hasPreview && 'is-empty',
             )}
-            aria-label="Сообщение рассылки"
+            aria-label="Сообщение автопостинга"
           >
             <div className="broadcast-message-card__phone">
               <div className="broadcast-message-card__bubble">
@@ -194,9 +194,9 @@ export function BroadcastContentComposer({
                   value={text}
                   onChange={onTextChange}
                   maxLength={maxLength}
-                  placeholder="Текст рассылки"
+                  placeholder="Текст автопостинга"
                   disabled={isBusy}
-                  ariaLabel="Текст рассылки"
+                  ariaLabel="Текст автопостинга"
                   className="broadcast-message-card__rich-editor"
                 />
 

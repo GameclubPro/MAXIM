@@ -496,12 +496,12 @@ function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): 
     return 'Нужно повторить отправку';
   }
   if (broadcast.status === 'COMPLETED') {
-    return 'Рассылка завершена';
+    return 'Автопостинг завершён';
   }
   if (broadcast.status === 'CANCELED') {
-    return 'Рассылка остановлена';
+    return 'Автопостинг остановлен';
   }
-  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активная рассылка';
+  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активный автопостинг';
 }
 
 function resolveManagedBroadcastMetric(
@@ -1342,7 +1342,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['channel-broadcast-handoff', chatId] });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Рассылка готова',
+        title: result.failedChats > 0 ? 'Часть публикаций с ошибкой' : 'Автопостинг готов',
         description: formatChannelBroadcastResultDescription(result),
       });
       maxNotify(result.failedChats > 0 ? 'warning' : 'success');
@@ -1358,7 +1358,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'danger',
-        title: 'Не удалось запустить рассылку',
+        title: 'Не удалось запустить автопостинг',
         description,
       });
       maxNotify('error');
@@ -1418,7 +1418,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       resetBroadcastComposer();
       pushToast({
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
-        title: 'Рассылка обновлена',
+        title: 'Автопостинг обновлён',
         description: broadcast.nextSendAt
           ? `Следующая отправка: ${formatManagedBroadcastDateTime(
               broadcast.nextSendAt,
@@ -1438,7 +1438,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'danger',
-        title: 'Не удалось обновить рассылку',
+        title: 'Не удалось обновить автопостинг',
         description,
       });
       maxNotify('error');
@@ -1456,13 +1456,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'info',
-        title: 'Рассылка удалена',
+        title: 'Автопостинг удалён',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить рассылку',
+        title: 'Не удалось удалить автопостинг',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -1491,7 +1491,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось повторить рассылку',
+        title: 'Не удалось повторить автопостинг',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -1561,7 +1561,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       applyManagedBroadcastToComposer(broadcast, 'edit');
       pushToast({
         tone: 'info',
-        title: 'Редактирование рассылки',
+        title: 'Редактирование автопостинга',
         description: broadcast.nextSendAt
           ? `Следующая отправка: ${formatManagedBroadcastDateTime(
               broadcast.nextSendAt,
@@ -1573,7 +1573,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось открыть рассылку',
+        title: 'Не удалось открыть автопостинг',
         description: normalizeApiError(error),
       });
       maxNotify('error');
@@ -1860,16 +1860,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               : 'Пусто';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
-    : 'Очистить рассылку';
+    : 'Очистить автопостинг';
   const broadcastFooterTitle = editingManagedBroadcast
-    ? 'Сохранить рассылку'
+    ? 'Сохранить автопостинг'
     : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
       ? `Нужно: ${broadcastPublishIssueLabels.join(' · ')}`
       : broadcastTimingMode === 'now'
         ? 'Сразу'
         : broadcastTimingMode === 'cycle'
           ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
-          : broadcastSelectionSummary || 'Рассылка';
+          : broadcastSelectionSummary || 'Автопостинг';
   const broadcastFooterMeta = [
     'Текущий канал',
     broadcastImageEnabled ? 'Фото' : null,
@@ -2722,7 +2722,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
-            title="Рассылки"
+            title="Автопостинг"
             summary={broadcastHeaderSummary}
             status={broadcastCardStatus}
             icon="send"
@@ -2736,7 +2736,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <SettingsDrilldownPanel
           id="channel-settings-broadcast"
           open={expandedSections.broadcast}
-          title="Рассылки"
+          title="Автопостинг"
           summary={broadcastHeaderSummary}
           variant="screen"
           tone="sky"
@@ -2755,10 +2755,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <BroadcastStudioHeader
                       title={
                         editingManagedBroadcast
-                          ? 'Редактирование рассылки'
+                          ? 'Редактирование автопостинга'
                           : duplicatedManagedBroadcast
-                            ? 'Копия рассылки'
-                            : 'Новая рассылка'
+                            ? 'Копия автопостинга'
+                            : 'Новый автопостинг'
                       }
                       subtitle={broadcastStudioSubtitle}
                       readyCount={broadcastStudioReadyCount}
@@ -3010,7 +3010,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                 <span className={cn('managed-broadcast-card__badge', 'is-active')}>
                                   Черновик
                                 </span>
-                                <strong>Редактирование рассылки</strong>
+                                <strong>Редактирование автопостинга</strong>
                                 <MaxMarkdownPreview
                                   value={editingManagedBroadcast.text}
                                   className="managed-broadcast-card__preview max-markdown-preview--clamp-2"
@@ -3078,7 +3078,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           <div className="managed-broadcasts-list">
                             {filteredBroadcasts.length === 0 ? (
                               <div className="managed-broadcasts-list__empty">
-                                Рассылок пока нет.
+                                Автопостингов пока нет.
                               </div>
                             ) : null}
 
@@ -3366,7 +3366,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         id="channel-broadcast-slot-conflict"
         open={pendingBroadcastSlotConflict !== null}
         title="Заменить слот?"
-        summary="На это время уже есть рассылка."
+        summary="На это время уже есть автопостинг."
         previewTitle={
           pendingBroadcastConflictPreviewSlot
             ? formatCompactManagedBroadcastDateTime(
@@ -3383,7 +3383,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 'занятых слота',
                 'занятых слотов',
               )
-            : 'Текущая рассылка на это время будет заменена.'
+            : 'Текущий автопостинг на это время будет заменён.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"
@@ -3395,7 +3395,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="channel-managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить рассылку?"
+        title="Удалить автопостинг?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <MaxMarkdownPreview

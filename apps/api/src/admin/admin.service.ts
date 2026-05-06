@@ -10326,7 +10326,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     if (!row) {
-      throw new BadRequestException('Рассылка не найдена.');
+      throw new BadRequestException('Автопостинг не найден.');
     }
 
     const [snapshot, upcomingSlots] = await Promise.all([
@@ -10363,7 +10363,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     if (!existing) {
-      throw new BadRequestException('Рассылка не найдена или уже завершена.');
+      throw new BadRequestException('Автопостинг не найден или уже завершён.');
     }
 
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
@@ -10385,7 +10385,7 @@ export class AdminService implements OnModuleDestroy {
     });
     if (currentOccurrenceDelivered > 0) {
       throw new BadRequestException(
-        'Текущая отправка уже частично доставлена. Сначала повторите ошибки или остановите рассылку.',
+        'Текущая отправка уже частично доставлена. Сначала повторите ошибки или остановите автопостинг.',
       );
     }
 
@@ -10480,7 +10480,7 @@ export class AdminService implements OnModuleDestroy {
       where: { id: existing.id },
     });
     if (!updated) {
-      throw new BadRequestException('Рассылка не найдена.');
+      throw new BadRequestException('Автопостинг не найден.');
     }
 
     await this.prisma.auditLog.create({
@@ -10537,7 +10537,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     if (!existing) {
-      throw new BadRequestException('Рассылка не найдена или уже завершена.');
+      throw new BadRequestException('Автопостинг не найден или уже завершён.');
     }
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
@@ -10616,7 +10616,7 @@ export class AdminService implements OnModuleDestroy {
       },
     });
     if (!existing) {
-      throw new BadRequestException('Для повтора нет неуспешной рассылки.');
+      throw new BadRequestException('Для повтора нет неуспешного автопостинга.');
     }
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
@@ -10647,7 +10647,7 @@ export class AdminService implements OnModuleDestroy {
         where: { id: existing.id },
       });
       if (!finalized) {
-        throw new BadRequestException('Рассылка не найдена.');
+        throw new BadRequestException('Автопостинг не найден.');
       }
 
       await this.prisma.auditLog.create({
@@ -10723,7 +10723,7 @@ export class AdminService implements OnModuleDestroy {
       where: { id: existing.id },
     });
     if (!updated) {
-      throw new BadRequestException('Рассылка не найдена.');
+      throw new BadRequestException('Автопостинг не найден.');
     }
 
     await this.prisma.auditLog.create({
@@ -10954,13 +10954,13 @@ export class AdminService implements OnModuleDestroy {
     ]);
     if (parsed.data.targetMode === 'all') {
       if (!options.resolveTargets) {
-        throw new BadRequestException('Массовая рассылка по каналам пока недоступна.');
+        throw new BadRequestException('Массовый автопостинг по каналам пока недоступен.');
       }
 
       targetChatIds = [...allowedTargetIds];
     } else if (parsed.data.targetMode === 'selected') {
       if (!options.resolveTargets) {
-        throw new BadRequestException('Выбор нескольких чатов для этой рассылки недоступен.');
+        throw new BadRequestException('Выбор нескольких чатов для этого автопостинга недоступен.');
       }
 
       const invalidTargetChatIds = parsed.data.targetChatIds.filter(
@@ -11105,7 +11105,7 @@ export class AdminService implements OnModuleDestroy {
     }
 
     if (sentChatIds.length === 0 && failedChatIds.length > 0) {
-      const fallbackMessage = 'Не удалось отправить рассылку.';
+      const fallbackMessage = 'Не удалось отправить автопостинг.';
       const maxApiMessage = this.extractMaxApiErrorMessage(firstSendError);
       throw new BadRequestException(maxApiMessage || fallbackMessage);
     }
@@ -11271,7 +11271,7 @@ export class AdminService implements OnModuleDestroy {
       where: { id: created.id },
     });
     if (!updated) {
-      throw new BadRequestException('Рассылка не найдена.');
+      throw new BadRequestException('Автопостинг не найден.');
     }
 
     const legacyCycleEveryDays = this.toLegacyCycleEveryDays(schedulePlan.cycleEveryHours);
@@ -11450,7 +11450,7 @@ export class AdminService implements OnModuleDestroy {
         const fatalProcessingErrorMessage =
           this.resolveManagedBroadcastFatalProcessingFailureMessage(
             fatalRecoveredDelivery.lastError,
-          ) ?? 'Не удалось обработать рассылку.';
+          ) ?? 'Не удалось обработать автопостинг.';
         await this.failManagedBroadcastAfterFatalProcessingError(
           row,
           currentOccurrence,
@@ -11747,7 +11747,7 @@ export class AdminService implements OnModuleDestroy {
         lastError:
           error instanceof Error && error.message.trim().length > 0
             ? error.message
-            : 'Не удалось обработать рассылку.',
+            : 'Не удалось обработать автопостинг.',
         lockedAt: null,
       });
       if (!updated) {
@@ -12202,7 +12202,7 @@ export class AdminService implements OnModuleDestroy {
     if (!options.allowOverwrite) {
       throw new BadRequestException({
         code: 'BROADCAST_SLOT_CONFLICT',
-        message: 'На выбранное время уже есть рассылка. Обновите календарь или замените слот.',
+        message: 'На выбранное время уже есть автопостинг. Обновите календарь или замените слот.',
         conflicts: conflicts.map((conflict) => conflict.scheduledAt.toISOString()),
       });
     }
@@ -12402,18 +12402,18 @@ export class AdminService implements OnModuleDestroy {
 
     const scheduledAt = new Date(sendAt);
     if (Number.isNaN(scheduledAt.getTime())) {
-      throw new BadRequestException('Некорректное время рассылки.');
+      throw new BadRequestException('Некорректное время автопостинга.');
     }
     const calculatedDelayMs = scheduledAt.getTime() - Date.now();
     if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
       const message =
         options.sentCount > 0
           ? 'Следующую отправку можно поставить минимум через 30 секунд.'
-          : 'Укажите время рассылки минимум через 30 секунд.';
+          : 'Укажите время автопостинга минимум через 30 секунд.';
       throw new BadRequestException(message);
     }
     if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Максимальный таймер рассылки: 31 день.');
+      throw new BadRequestException('Максимальный таймер автопостинга: 31 день.');
     }
     return scheduledAt;
   }
@@ -13380,7 +13380,7 @@ export class AdminService implements OnModuleDestroy {
           ? 'Фото без текста'
           : hasVideo
             ? 'Видео без текста'
-            : 'Пустая рассылка',
+            : 'Пустой автопостинг',
       textLength: row.text.length,
       targetMode,
       applyToAllChats: row.applyToAllChats,
@@ -13711,7 +13711,7 @@ export class AdminService implements OnModuleDestroy {
   private decodeBroadcastImageBase64(value: string): Buffer {
     const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
     if (!normalized) {
-      throw new BadRequestException('Добавьте фото для рассылки.');
+      throw new BadRequestException('Добавьте фото для автопостинга.');
     }
 
     let imageBuffer: Buffer;

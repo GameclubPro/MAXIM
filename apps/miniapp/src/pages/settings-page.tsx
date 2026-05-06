@@ -1470,12 +1470,12 @@ function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): 
     return 'Нужно повторить отправку';
   }
   if (broadcast.status === 'COMPLETED') {
-    return 'Рассылка завершена';
+    return 'Автопостинг завершён';
   }
   if (broadcast.status === 'CANCELED') {
-    return 'Рассылка остановлена';
+    return 'Автопостинг остановлен';
   }
-  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активная рассылка';
+  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активный автопостинг';
 }
 
 function resolveManagedBroadcastScopeLabel(broadcast: ManagedBroadcastListItem): string {
@@ -3203,7 +3203,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       void queryClient.invalidateQueries({ queryKey: ['broadcast-handoff-state', chatId] });
       pushToast({
         tone: result.failedChats > 0 ? 'info' : 'success',
-        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Рассылка готова',
+        title: result.failedChats > 0 ? 'Часть чатов с ошибкой' : 'Автопостинг готов',
         description: formatMiniappBroadcastResultDescription(result),
       });
       maxNotify(result.failedChats > 0 ? 'warning' : 'success');
@@ -3212,7 +3212,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       const description = reportMailingAudienceApiError(error);
       pushToast({
         tone: 'danger',
-        title: 'Не удалось запустить рассылку',
+        title: 'Не удалось запустить автопостинг',
         description,
       });
       maxNotify('error');
@@ -3351,7 +3351,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       resetMailingComposer();
       pushToast({
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
-        title: 'Рассылка обновлена',
+        title: 'Автопостинг обновлён',
         description: broadcast.nextSendAt
           ? `Следующая отправка: ${formatRemovalDateTime(
               broadcast.nextSendAt,
@@ -3364,7 +3364,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       const description = reportMailingAudienceApiError(error);
       pushToast({
         tone: 'danger',
-        title: 'Не удалось обновить рассылку',
+        title: 'Не удалось обновить автопостинг',
         description,
       });
     },
@@ -3380,14 +3380,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'info',
-        title: 'Рассылка удалена',
+        title: 'Автопостинг удалён',
         description: 'Будущие отправки сняты, карточка убрана из списка.',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить рассылку',
+        title: 'Не удалось удалить автопостинг',
         description: formatApiError(error),
       });
     },
@@ -3414,7 +3414,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось повторить рассылку',
+        title: 'Не удалось повторить автопостинг',
         description: formatApiError(error),
       });
     },
@@ -3501,19 +3501,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       applyManagedBroadcastToMailingComposer(broadcast, 'edit');
       pushToast({
         tone: 'info',
-        title: 'Редактирование рассылки',
+        title: 'Редактирование автопостинга',
         description: broadcast.nextSendAt
           ? `Следующая отправка: ${formatRemovalDateTime(
               broadcast.nextSendAt,
               broadcast.scheduleTimezone,
             )}.`
-          : 'Измените время и сохраните рассылку.',
+          : 'Измените время и сохраните автопостинг.',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось открыть рассылку',
+        title: 'Не удалось открыть автопостинг',
         description: formatApiError(error),
       });
     },
@@ -4762,7 +4762,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const hasDirectContent = Boolean(normalizedText || mailingImageEnabled || keepVideoMedia);
     if (editingManagedBroadcast) {
       if (!normalizedText && !mailingImageEnabled && !keepVideoMedia) {
-        setMailingTextError('В сохранённой рассылке нет текста, фото или видео.');
+        setMailingTextError('В сохранённом автопостинге нет текста, фото или видео.');
         hasError = true;
       } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
         setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
@@ -4773,7 +4773,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       if (mailingImageEnabled) {
         if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
-          setMailingImageError('В сохранённой рассылке отсутствует фото.');
+          setMailingImageError('В сохранённом автопостинге отсутствует фото.');
           hasError = true;
         } else {
           setMailingImageError('');
@@ -5648,7 +5648,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     retryManagedBroadcastMutation.isPending;
   const commentsTargetSummary = [
     draft?.commentsAdminsEnabled ? 'посты админов' : null,
-    draft?.commentsChatBroadcastsEnabled ? 'рассылки' : null,
+    draft?.commentsChatBroadcastsEnabled ? 'автопостинг' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -5763,16 +5763,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
-    : 'Очистить рассылку';
+    : 'Очистить автопостинг';
   const mailingFooterTitle = editingManagedBroadcast
-    ? 'Сохранить рассылку'
+    ? 'Сохранить автопостинг'
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
       ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
       : mailingTimingMode === 'now'
         ? 'Сразу'
         : mailingTimingMode === 'cycle'
           ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
-          : mailingSelectionSummary || 'Рассылка';
+          : mailingSelectionSummary || 'Автопостинг';
   const mailingFooterMeta = [
     mailingHeaderTargetLabel,
     mailingImageEnabled ? 'Фото' : null,
@@ -10705,11 +10705,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
               style={{ animationDelay: '315ms', order: 5 }}
-              aria-label="Рассылки"
+              aria-label="Автопостинг"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Рассылки"
+                  title="Автопостинг"
                   icon="send"
                   tone="sky"
                   open={expandedSections.mailing}
@@ -10721,7 +10721,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-mailing-content"
                 open={expandedSections.mailing}
-                title="Рассылки"
+                title="Автопостинг"
                 summary={mailingHeaderSummary}
                 variant="screen"
                 tone="sky"
@@ -10743,10 +10743,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <BroadcastStudioHeader
                             title={
                               editingManagedBroadcast
-                                ? 'Редактирование рассылки'
+                                ? 'Редактирование автопостинга'
                                 : duplicatedManagedBroadcast
-                                  ? 'Копия рассылки'
-                                  : 'Новая рассылка'
+                                  ? 'Копия автопостинга'
+                                  : 'Новый автопостинг'
                             }
                             subtitle={mailingStudioSubtitle}
                             readyCount={mailingStudioReadyCount}
@@ -11029,7 +11029,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {filteredManagedBroadcasts.length === 0 &&
                                 !managedBroadcastsQuery.isLoading ? (
                                   <div className="managed-broadcasts-list__empty">
-                                    Рассылок пока нет.
+                                    Автопостингов пока нет.
                                   </div>
                                 ) : null}
 
@@ -11239,7 +11239,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот
                                 сам публикует сообщение с кнопкой комментариев. Для постов админа
                                 бот отправляет копию с той же разметкой и удаляет исходное
-                                сообщение, а для рассылок кнопка ставится сразу на сообщение бота.
+                                сообщение, а для автопостинга кнопка ставится сразу на сообщение бота.
                               </SettingsHintAnchor>
                             </div>
                           </div>
@@ -11320,15 +11320,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">Для рассылки</span>
+                                <span className="settings-native-toggle__title">Для автопостинга</span>
                                 <div className="settings-native-toggle__title-actions">
                                   <SettingsHintAnchor
                                     hintKey="commentsChatBroadcasts"
                                     openHintKey={openHintKey}
                                     onToggleHint={toggleHint}
-                                    label="Как работают комментарии для рассылок"
+                                    label="Как работают комментарии для автопостинга"
                                   >
-                                    Для рассылки бот публикует сообщение сам и сразу добавляет в
+                                    Для автопостинга бот публикует сообщение сам и сразу добавляет в
                                     него кнопку комментариев. Сообщения участников чата при этом не
                                     заменяются.
                                   </SettingsHintAnchor>
@@ -11337,7 +11337,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Комментарии для рассылки в чатах"
+                                aria-label="Комментарии для автопостинга в чатах"
                               >
                                 <input
                                   type="checkbox"
@@ -12643,7 +12643,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         id="mailing-slot-conflict"
         open={pendingMailingSlotConflict !== null}
         title="Заменить слот?"
-        summary="На это время уже есть рассылка."
+        summary="На это время уже есть автопостинг."
         previewTitle={
           pendingMailingConflictPreviewSlot
             ? formatCompactBroadcastDateTime(
@@ -12660,7 +12660,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 'занятых слота',
                 'занятых слотов',
               )
-            : 'Текущая рассылка на это время будет заменена.'
+            : 'Текущий автопостинг на это время будет заменён.'
         }
         confirmLabel="Заменить"
         cancelLabel="Другое время"
@@ -12672,7 +12672,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <ActionConfirmSheet
         id="managed-broadcast-delete"
         open={managedBroadcastDeleteTarget !== null}
-        title="Удалить рассылку?"
+        title="Удалить автопостинг?"
         previewTitle={
           managedBroadcastDeleteTarget ? (
             <MaxMarkdownPreview

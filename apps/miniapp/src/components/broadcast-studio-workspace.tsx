@@ -122,7 +122,7 @@ export function BroadcastWorkspaceTabs({
           onChange(nextValue);
         }
       }}
-      ariaLabel="Раздел рассылок"
+      ariaLabel="Раздел автопостинга"
       options={[
         { value: 'compose', label: 'Создать' },
         { value: 'calendar', label: 'План' },
@@ -142,7 +142,7 @@ export function BroadcastHistoryFilterTabs({
       className="broadcast-history-filters"
       value={value}
       onChange={onChange}
-      ariaLabel="История рассылок"
+      ariaLabel="История автопостинга"
       options={[
         { value: 'future', label: 'Будущие', count: counts.future },
         { value: 'active', label: 'В процессе', count: counts.active },

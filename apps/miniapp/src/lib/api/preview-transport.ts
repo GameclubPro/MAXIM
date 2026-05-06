@@ -808,7 +808,7 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
   return {
     id: details.id,
     status: details.status,
-    textPreview: details.text.trim().slice(0, 120) || 'Пустая рассылка',
+    textPreview: details.text.trim().slice(0, 120) || 'Пустой автопостинг',
     textLength: details.text.length,
     targetMode: details.targetMode,
     applyToAllChats: details.applyToAllChats,

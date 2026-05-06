@@ -2251,9 +2251,9 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
+    expect(getLastEditedText(maxClient)).toContain('Автопостинг запускается.');
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
+    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
   });
 
   it('formats scheduled broadcast time in the broadcast timezone for private bot messages', async () => {
@@ -2279,9 +2279,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
     await flushBackgroundBroadcast();
 
-    expect(getLastEditedText(maxClient)).toContain('Рассылка запускается.');
+    expect(getLastEditedText(maxClient)).toContain('Автопостинг запускается.');
     expect(getLastSentText(maxClient)).toContain(
-      '✅ Всё успешно. Рассылка запланирована на 24.03.2026, 17:00.',
+      '✅ Всё успешно. Автопостинг запланирован на 24.03.2026, 17:00.',
     );
   });
 
@@ -2317,7 +2317,7 @@ describe('PrivateControlService', () => {
         textFormat: 'markdown',
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('**Рассылка**');
+    expect(getLastSentText(maxClient)).toContain('**Автопостинг**');
     expect(getLastSentText(maxClient)).toContain('**Контент**');
     expect(getLastSentText(maxClient)).toContain('**Важный** анонс\n\n  Второй абзац с  пробелом');
     expect(getLastSentText(maxClient)).toContain('Дальше: Пришлите новый текст, фото или видео.');
@@ -2416,7 +2416,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
     await service.handleUpdate(createPrivateTextUpdate('Промо блок'));
 
-    expect(getLastUiText(maxClient)).toContain('Рассылка');
+    expect(getLastUiText(maxClient)).toContain('Автопостинг');
     expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastUiText(maxClient)).toContain('Контент:');
     expect(getLastUiText(maxClient)).toContain('Промо блок');
@@ -2543,7 +2543,7 @@ describe('PrivateControlService', () => {
     await secondSend;
 
     expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastEditedText(maxClient)).toContain('Эта рассылка уже отправляется.');
+    expect(getLastEditedText(maxClient)).toContain('Этот автопостинг уже отправляется.');
 
     resolveSend({ targetChats: 1, sentChats: 1, failedChats: 0 });
     await firstSend;
@@ -2570,7 +2570,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
     expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
-    expect(getLastEditedText(maxClient)).toContain('Эта рассылка уже была запущена.');
+    expect(getLastEditedText(maxClient)).toContain('Этот автопостинг уже был запущен.');
   });
 
   it('hands off chat broadcast from miniapp into private bot content flow and sends success follow-up', async () => {
@@ -2627,7 +2627,7 @@ describe('PrivateControlService', () => {
       'private_bot',
     );
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
+    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
   });
 
   it('proactively delivers broadcast handoff into a known private chat and skips duplicate bot_started reply', async () => {
@@ -2675,7 +2675,7 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
-    await service.handleUpdate(createPrivateTextUpdate('Массовая рассылка'));
+    await service.handleUpdate(createPrivateTextUpdate('Массовый автопостинг'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_toggle|apply_to_all'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
@@ -2684,7 +2684,7 @@ describe('PrivateControlService', () => {
 
     expect(adminService.sendBroadcast).toHaveBeenCalledTimes(1);
     expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
-    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
+    expect(getLastSentText(maxClient)).toContain('Автопостинг отправлен без ошибок.');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
 
@@ -3293,10 +3293,10 @@ describe('PrivateControlService', () => {
     expect(handoffState.applyToAllChats).toBe(false);
 
     await service.handleBotStarted(createBotStartedPrivateUpdate());
-    await service.handleUpdate(createPrivateTextUpdate('Точная рассылка'));
+    await service.handleUpdate(createPrivateTextUpdate('Точный автопостинг'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
-    expect(getLastEditedText(maxClient)).toContain('Подтвердите массовую рассылку');
+    expect(getLastEditedText(maxClient)).toContain('Подтвердите массовый автопостинг');
     expect(sendBroadcast).not.toHaveBeenCalled();
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
@@ -3306,7 +3306,7 @@ describe('PrivateControlService', () => {
       chats[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
-        text: 'Точная рассылка',
+        text: 'Точный автопостинг',
         targetMode: 'selected',
         targetChatIds: [chats[0].id, 'chat-selected-2'],
         applyToAllChats: false,
@@ -3593,7 +3593,7 @@ describe('PrivateControlService', () => {
   it('logs callback and session details for bad request errors in broadcast flow', async () => {
     const sendChannelBroadcast = jest.fn().mockRejectedValue(
       new BadRequestException({
-        message: 'Рассылка недоступна',
+        message: 'Автопостинг недоступен',
         reason: 'quota',
       }),
     );
@@ -3619,9 +3619,9 @@ describe('PrivateControlService', () => {
     expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.objectContaining({
-        badRequestDetails: 'Рассылка недоступна',
+        badRequestDetails: 'Автопостинг недоступен',
         badRequestResponse: expect.objectContaining({
-          message: 'Рассылка недоступна',
+          message: 'Автопостинг недоступен',
           reason: 'quota',
         }),
         callbackAction: 'broadcast_send',
@@ -3635,7 +3635,7 @@ describe('PrivateControlService', () => {
       }),
       'Async private broadcast publish failed after confirmation',
     );
-    expect(getLastSentText(maxClient)).toContain('Рассылка недоступна');
+    expect(getLastSentText(maxClient)).toContain('Автопостинг недоступен');
   });
 
   it('shows nested validation details instead of generic bad request exception in broadcast flow', async () => {
@@ -3643,7 +3643,7 @@ describe('PrivateControlService', () => {
       new BadRequestException({
         _errors: [],
         text: {
-          _errors: ['Текст рассылки слишком длинный. Максимум 2000 символов.'],
+          _errors: ['Текст автопостинга слишком длинный. Максимум 2000 символов.'],
         },
       }),
     );
@@ -3656,13 +3656,13 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
-    await service.handleUpdate(createPrivateTextUpdate('Слишком длинная рассылка'));
+    await service.handleUpdate(createPrivateTextUpdate('Слишком длинный автопостинг'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
     await flushBackgroundBroadcast();
 
     expect(sendBroadcast).toHaveBeenCalledTimes(1);
     expect(getLastSentText(maxClient)).toContain(
-      'Текст рассылки слишком длинный. Максимум 2000 символов.',
+      'Текст автопостинга слишком длинный. Максимум 2000 символов.',
     );
     expect(getLastSentText(maxClient)).not.toContain('Bad Request Exception');
   });

@@ -2918,7 +2918,7 @@ export const sendBroadcastRequestSchema = z
   .object({
     text: z
       .string()
-      .max(2_000, 'Текст рассылки слишком длинный. Максимум 2000 символов.')
+      .max(2_000, 'Текст автопостинга слишком длинный. Максимум 2000 символов.')
       .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
     targetMode: broadcastTargetModeSchema.optional(),
@@ -2979,7 +2979,7 @@ export const sendBroadcastRequestSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['mediaType'],
-        message: 'В одной рассылке можно добавить либо фото, либо видео.',
+        message: 'В одном автопостинге можно добавить либо фото, либо видео.',
       });
     }
 
@@ -2987,7 +2987,7 @@ export const sendBroadcastRequestSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['mediaPayload'],
-        message: 'Видео рассылки не загружено.',
+        message: 'Видео автопостинга не загружено.',
       });
     }
 
@@ -3020,7 +3020,7 @@ export const sendBroadcastRequestSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['imageBase64'],
-          message: 'Добавьте фото для рассылки.',
+          message: 'Добавьте фото для автопостинга.',
         });
       }
 
@@ -3054,7 +3054,7 @@ export const sendBroadcastRequestSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['cycleEveryHours'],
-          message: 'Укажите интервал циклической рассылки.',
+          message: 'Укажите интервал циклического автопостинга.',
         });
       }
     }
@@ -3170,7 +3170,7 @@ export const broadcastHandoffRequestSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['cycleEveryHours'],
-          message: 'Укажите интервал циклической рассылки.',
+          message: 'Укажите интервал циклического автопостинга.',
         });
       }
     }

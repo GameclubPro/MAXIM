@@ -3045,7 +3045,7 @@ export class PrivateControlService {
       const view = await this.renderEntityBroadcastMovedToMiniappScreen(context, session);
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
-        notification: 'Параметры рассылки открываются в mini app',
+        notification: 'Параметры автопостинга открываются в mini app',
       });
       return;
     }
@@ -3642,7 +3642,7 @@ export class PrivateControlService {
           const view = await this.renderBroadcastScreen(context, session);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
-            notification: 'Рассылка отменена',
+            notification: 'Автопостинг отменён',
           });
           return;
         }
@@ -3695,15 +3695,15 @@ export class PrivateControlService {
           if (publishClaim === 'active' || publishClaim === 'recent') {
             const notice =
               publishClaim === 'active'
-                ? 'Эта рассылка уже отправляется.'
-                : 'Эта рассылка уже была запущена.';
+                ? 'Этот автопостинг уже отправляется.'
+                : 'Этот автопостинг уже был запущен.';
             session.pendingMassAction = null;
             const view = await this.renderBroadcastScreen(context, session, notice);
             await this.respond(context, session, view, {
               callbackId: context.callbackId,
               notification:
                 publishClaim === 'active'
-                  ? 'Рассылка уже отправляется'
+                  ? 'Автопостинг уже отправляется'
                   : 'Повторная отправка пропущена',
             });
             return;
@@ -3724,7 +3724,7 @@ export class PrivateControlService {
           const view = this.renderBroadcastLaunchingView(session);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
-            notification: 'Запускаю рассылку',
+            notification: 'Запускаю автопостинг',
           });
           void this.finishConfirmedBroadcastPublish({
             privateChatId: context.chatId,
@@ -3987,7 +3987,7 @@ export class PrivateControlService {
         const view = await this.renderBroadcastScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Открываю рассылку',
+          notification: 'Открываю автопостинг',
         });
         return;
       }
@@ -4506,14 +4506,14 @@ export class PrivateControlService {
         if (publishClaim === 'active' || publishClaim === 'recent') {
           const notice =
             publishClaim === 'active'
-              ? 'Эта рассылка уже отправляется.'
-              : 'Эта рассылка уже была запущена.';
+              ? 'Этот автопостинг уже отправляется.'
+              : 'Этот автопостинг уже был запущен.';
           const view = await this.renderBroadcastScreen(context, session, notice);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification:
               publishClaim === 'active'
-                ? 'Рассылка уже отправляется'
+                ? 'Автопостинг уже отправляется'
                 : 'Повторная отправка пропущена',
           });
           return;
@@ -4533,7 +4533,7 @@ export class PrivateControlService {
         const view = this.renderBroadcastLaunchingView(session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Запускаю рассылку',
+          notification: 'Запускаю автопостинг',
         });
         void this.finishConfirmedBroadcastPublish({
           privateChatId: context.chatId,
@@ -5497,7 +5497,7 @@ export class PrivateControlService {
         const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
         if (imageSourceAttachment && videoSourceAttachment) {
           throw new BadRequestException(
-            'В одну рассылку можно добавить либо фото, либо одно видео.',
+            'В один автопостинг можно добавить либо фото, либо одно видео.',
           );
         }
         if (!imageSourceAttachment && !videoSourceAttachment) {
@@ -6131,7 +6131,7 @@ export class PrivateControlService {
     const videoSourceAttachment = this.extractFirstVideoSourceAttachment(context.update);
 
     if (imageSourceAttachment && videoSourceAttachment) {
-      throw new BadRequestException('В одну рассылку можно добавить либо фото, либо одно видео.');
+      throw new BadRequestException('В один автопостинг можно добавить либо фото, либо одно видео.');
     }
 
     if (!normalizedText && !imageSourceAttachment && !videoSourceAttachment) {
@@ -6414,7 +6414,7 @@ export class PrivateControlService {
     } catch (error: unknown) {
       const userMessage =
         this.extractBadRequestDetails(error) ??
-        'Рассылка недоступна. Попробуйте ещё раз через несколько секунд.';
+        'Автопостинг недоступен. Попробуйте ещё раз через несколько секунд.';
       const badRequestDetails = this.extractBadRequestDetails(error);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       this.logger.warn(
@@ -7627,7 +7627,7 @@ export class PrivateControlService {
       rows.push([this.buildMiniappLaunchButton('📱 В приложение', plannerRoute, plannerUrl)]);
     }
 
-    const lines = ['Рассылка запускается.'];
+    const lines = ['Автопостинг запускается.'];
     if (selectedChatId) {
       lines.push(`${entityLabel}: ${selectedChatId}`);
     }
@@ -7915,7 +7915,7 @@ export class PrivateControlService {
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat?: MaxSendMessageOptions['textFormat'] } {
-    const lines: string[] = ['Рассылка'];
+    const lines: string[] = ['Автопостинг'];
 
     if (payload.entityLead) {
       lines.push('', payload.entityLead);
@@ -7947,7 +7947,7 @@ export class PrivateControlService {
     promptText: string | null;
     notice: string | null;
   }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
-    const lines: string[] = [this.markdownTitle('Рассылка')];
+    const lines: string[] = [this.markdownTitle('Автопостинг')];
 
     if (payload.entityLead) {
       lines.push('', payload.entityLead);
@@ -8164,7 +8164,7 @@ export class PrivateControlService {
 
   private buildBroadcastSuccessMessage(result: SendBroadcastResult): string {
     if (result.sentChats === 0 && result.nextSendAt) {
-      return `✅ Всё успешно. Рассылка запланирована на ${this.formatDateTimeLabel(
+      return `✅ Всё успешно. Автопостинг запланирован на ${this.formatDateTimeLabel(
         result.nextSendAt,
         result.scheduleTimezone,
       )}.`;
@@ -8177,7 +8177,7 @@ export class PrivateControlService {
       )}.`;
     }
 
-    return '✅ Всё успешно. Рассылка отправлена без ошибок.';
+    return '✅ Всё успешно. Автопостинг отправлен без ошибок.';
   }
 
   private renderGiveawayClaimView(
@@ -8571,7 +8571,7 @@ export class PrivateControlService {
       duplicate: ['дубль', 'повтор'],
       spam: ['спам'],
       night: ['ночной', 'тишина'],
-      broadcast: ['рассылка'],
+      broadcast: ['автопостинг'],
       button: ['кнопка', 'url'],
       message: ['сообщение', 'текст'],
       ban: ['бан'],
@@ -9321,11 +9321,11 @@ export class PrivateControlService {
             'Применить эти настройки во всех доступных чатах?',
           ].join('\n')
         : [
-            this.markdownTitle('Подтвердите массовую рассылку'),
+            this.markdownTitle('Подтвердите массовый автопостинг'),
             '',
             `Количество чатов: ${pendingMassAction.targetChats}`,
             '',
-            'Отправить рассылку во все эти чаты?',
+            'Отправить автопостинг во все эти чаты?',
           ].join('\n');
 
     return {
@@ -9387,7 +9387,7 @@ export class PrivateControlService {
     switch (input.kind) {
       case 'broadcast_content':
         return {
-          title: 'Контент рассылки',
+          title: 'Контент автопостинга',
           description:
             'Отправьте следующим сообщением текст, фото, видео или подпись к медиа. Бот добавит это в черновик.',
         };
@@ -9410,22 +9410,22 @@ export class PrivateControlService {
         };
       case 'broadcast_text':
         return {
-          title: 'Текст рассылки',
-          description: 'Введите текст рассылки (до 2000 символов).',
+          title: 'Текст автопостинга',
+          description: 'Введите текст автопостинга (до 2000 символов).',
         };
       case 'broadcast_button_url':
         return {
-          title: 'Ссылка кнопки рассылки',
+          title: 'Ссылка кнопки автопостинга',
           description: 'Введите URL кнопки. Чтобы очистить, отправьте `-`.',
         };
       case 'broadcast_button_text':
         return {
-          title: 'Текст кнопки рассылки',
+          title: 'Текст кнопки автопостинга',
           description: 'Введите текст кнопки. Чтобы очистить, отправьте `-`.',
         };
       case 'broadcast_send_at':
         return {
-          title: 'Время рассылки',
+          title: 'Время автопостинга',
           description:
             'Введите ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Чтобы отключить таймер, отправьте `-`.',
         };
@@ -9441,7 +9441,7 @@ export class PrivateControlService {
         };
       case 'broadcast_photo':
         return {
-          title: 'Медиа для рассылки',
+          title: 'Медиа для автопостинга',
           description: 'Отправьте фото или видео следующим сообщением. Бот добавит его в черновик.',
         };
       case 'rules_text':
@@ -11342,7 +11342,7 @@ export class PrivateControlService {
     session: PrivateSession,
   ): Promise<PrivateView> {
     return this.renderEntitySettingsMovedToMiniappScreen(context, session, 'broadcast', {
-      title: 'Параметры рассылки в mini app',
+      title: 'Параметры автопостинга в mini app',
       description:
         'В боте остался только быстрый composer: пришлите контент, проверьте превью и подтвердите публикацию.',
     });

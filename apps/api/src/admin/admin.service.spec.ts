@@ -17485,7 +17485,7 @@ describe('AdminService.sendBroadcast', () => {
       sourceChatId: 'chat-1',
       entityType: 'CHAT',
       actorUserId: 'admin-1',
-      text: 'Старая рассылка',
+      text: 'Старый автопостинг',
       textFormat: 'plain',
       applyToAllChats: false,
       targetChatIds: ['chat-1'],
@@ -17576,7 +17576,7 @@ describe('AdminService.sendBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: 'Новая рассылка',
+        text: 'Новый автопостинг',
         textFormat: 'plain',
         applyToAllChats: false,
         buttonEnabled: false,
@@ -18464,7 +18464,7 @@ describe('AdminService.sendBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: 'Обновлённая рассылка',
+        text: 'Обновлённый автопостинг',
         textFormat: 'plain',
         targetMode: 'selected',
         targetChatIds: ['chat-2'],
@@ -19266,7 +19266,7 @@ describe('AdminService.sendBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: 'Календарная рассылка',
+        text: 'Календарный автопостинг',
         textFormat: 'plain',
         applyToAllChats: false,
         buttonEnabled: false,
@@ -20193,7 +20193,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: '\n  **Новая рассылка**\n\n  Второй абзац с  пробелом\n',
+        text: '\n  **Новый автопостинг**\n\n  Второй абзац с  пробелом\n',
         textFormat: 'markdown',
         applyToAllChats: false,
         buttonEnabled: false,
@@ -20215,7 +20215,7 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(prisma.managedBroadcast.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        text: '\n  **Новая рассылка**\n\n  Второй абзац с  пробелом\n',
+        text: '\n  **Новый автопостинг**\n\n  Второй абзац с  пробелом\n',
       }),
     });
   });
@@ -20647,7 +20647,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: 'Поздняя рассылка',
+        text: 'Поздний автопостинг',
         textFormat: 'plain',
         applyToAllChats: false,
         buttonEnabled: false,

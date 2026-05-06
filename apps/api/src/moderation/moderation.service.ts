@@ -6790,7 +6790,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<void> {
     const { chatId, userLabel, warningCount } = params;
     const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
-    const warningText = `${userLabel}, похоже на массовую рассылку по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
+    const warningText = `${userLabel}, похоже на массовый автопостинг по чатам. Предупреждение ${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}.`;
     try {
       await this.maxClient.sendMessage(
         chatId,

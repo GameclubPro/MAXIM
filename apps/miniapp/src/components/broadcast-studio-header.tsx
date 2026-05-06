@@ -124,7 +124,7 @@ export function BroadcastStudioHeader({
   return (
     <section
       className={cn('broadcast-studio-command', busy && 'is-busy', editing && 'is-editing')}
-      aria-label="Сводка рассылки"
+      aria-label="Сводка автопостинга"
     >
       <div className="broadcast-studio-command__hero">
         <div className="broadcast-studio-command__copy">
@@ -174,7 +174,7 @@ export function BroadcastStudioChecklist({
   return (
     <section
       className={cn('broadcast-flight-check', ready && 'is-ready')}
-      aria-label="Проверка рассылки"
+      aria-label="Проверка автопостинга"
     >
       <div className="broadcast-flight-check__head">
         <span className="broadcast-flight-check__copy">

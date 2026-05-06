@@ -70,7 +70,7 @@ export function BroadcastButtonsSheet({
       <button
         type="button"
         className="broadcast-buttons-sheet__backdrop"
-        aria-label="Закрыть кнопки рассылки"
+        aria-label="Закрыть кнопки автопостинга"
         onClick={onClose}
       />
 

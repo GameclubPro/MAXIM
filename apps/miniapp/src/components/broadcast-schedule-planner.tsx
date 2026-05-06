@@ -1016,7 +1016,7 @@ export function BroadcastSchedulePlanner({
                     dayAriaLabelParts.push('выбран для настройки');
                   } else if (agendaCount > 0) {
                     dayAriaLabelParts.push(
-                      `${formatCountLabel(agendaCount, 'рассылка', 'рассылки', 'рассылок')} запланировано`,
+                      `${formatCountLabel(agendaCount, 'автопостинг', 'автопостинга', 'автопостингов')} запланировано`,
                     );
                   } else if (busyCount > 0) {
                     dayAriaLabelParts.push('есть занятое время');
@@ -1365,9 +1365,9 @@ export function BroadcastSchedulePlanner({
                           : sheetMode === 'agenda'
                             ? `${formatCountLabel(
                                 agendaDayEntries.length,
-                                'рассылка',
-                                'рассылки',
-                                'рассылок',
+                                'автопостинг',
+                                'автопостинга',
+                                'автопостингов',
                               )} · ${formatCountLabel(agendaSlotCount, 'слот', 'слота', 'слотов')}`
                             : applyToAllPickedDays && pickedDayKeys.length > 1
                               ? `${pickedDayLabel} · общее время`
