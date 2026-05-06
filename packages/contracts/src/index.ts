@@ -130,6 +130,7 @@ export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 999;
 export const DEFAULT_BROADCAST_BUTTON_TEXT = 'Открыть';
 export const MAX_BROADCAST_LINK_BUTTONS = 8;
 export const MAX_BROADCAST_LINK_BUTTONS_PER_ROW = 3;
+export const MAX_BROADCAST_IMAGE_BASE64_LENGTH = 8_000_000;
 export const DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES = 0.5;
 export const DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES = 60;
 export const DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES = 2;
@@ -280,7 +281,11 @@ const requiredSubscriptionChannelIdsSchema = z
   .max(REQUIRED_SUBSCRIPTION_MAX_CHANNELS)
   .default([]);
 const chatRulesTextSchema = z.string().max(2_000).default('');
-const chatRulesImageBase64Schema = z.string().trim().max(1_500_000).default('');
+const chatRulesImageBase64Schema = z
+  .string()
+  .trim()
+  .max(MAX_BROADCAST_IMAGE_BASE64_LENGTH)
+  .default('');
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
 const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
 const managedPollQuestionSchema = z.string().max(MANAGED_POLL_QUESTION_MAX_LENGTH).default('');
@@ -1559,7 +1564,7 @@ export const updateManagedGiveawayRequestSchema = z
     title: managedGiveawayTitleSchema,
     description: managedGiveawayDescriptionSchema,
     imageEnabled: z.boolean().default(false),
-    imageBase64: z.string().trim().max(1_500_000).default(''),
+    imageBase64: z.string().trim().max(MAX_BROADCAST_IMAGE_BASE64_LENGTH).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
     startsAt: z.string().datetime().nullable().default(null),
@@ -2929,7 +2934,7 @@ export const sendBroadcastRequestSchema = z
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
     imageEnabled: z.boolean().default(false),
-    imageBase64: z.string().trim().max(4_000_000).default(''),
+    imageBase64: z.string().trim().max(MAX_BROADCAST_IMAGE_BASE64_LENGTH).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
     mediaType: broadcastMediaTypeSchema.nullable().default(null),
@@ -3370,7 +3375,8 @@ export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
 export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 10;
 export const MAX_CHANNEL_DIALOG_ATTACHMENTS = 5;
 export const MAX_CHANNEL_DIALOG_COMMENT_FILES = 3;
-export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 5_200_000;
+export const MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH = 8_000_000;
+export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 24_000_000;
 
 export const publishChannelEngagementRequestSchema = /*#__PURE__*/ z
   .object({
@@ -3407,7 +3413,7 @@ export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngage
 
 export const channelDialogImageInputSchema = /*#__PURE__*/ z
   .object({
-    base64: z.string().trim().max(4_000_000).default(''),
+    base64: z.string().trim().max(MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH).default(''),
     mimeType: z.string().trim().max(128).default(''),
     fileName: z.string().trim().max(128).default(''),
   })
@@ -3436,7 +3442,7 @@ export type ChannelDialogAttachmentKind = z.infer<typeof channelDialogAttachment
 export const channelDialogAttachmentInputSchema = /*#__PURE__*/ z
   .object({
     type: channelDialogAttachmentKindSchema,
-    base64: z.string().trim().max(4_000_000).default(''),
+    base64: z.string().trim().max(MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH).default(''),
     mimeType: z.string().trim().max(128).default(''),
     fileName: z.string().trim().max(128).default(''),
     width: z.number().int().min(1).optional(),
@@ -3482,7 +3488,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       .array(channelDialogAttachmentInputSchema)
       .max(MAX_CHANNEL_DIALOG_ATTACHMENTS)
       .default([]),
-    imageBase64: z.string().trim().max(4_000_000).default(''),
+    imageBase64: z.string().trim().max(MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
     images: z

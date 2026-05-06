@@ -119,6 +119,7 @@ import {
   type AllowlistMatchType,
   type BroadcastScheduleMode,
   DEFAULT_BROADCAST_BUTTON_TEXT,
+  MAX_BROADCAST_IMAGE_BASE64_LENGTH,
   MAX_BROADCAST_LINK_BUTTONS,
   MAX_BROADCAST_LINK_BUTTONS_PER_ROW,
   INVITATION_ACCESS_REQUIRED_COUNT_MAX,
@@ -533,8 +534,9 @@ type MembershipEventRow = {
   sender_name: string | null;
 };
 
-const RULES_IMAGE_MAX_BYTES = 1_000_000;
-const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
+const MAX_UPLOADED_IMAGE_BYTES = Math.floor((MAX_BROADCAST_IMAGE_BASE64_LENGTH * 3) / 4);
+const RULES_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
+const BROADCAST_IMAGE_MAX_BYTES = MAX_UPLOADED_IMAGE_BYTES;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const MANAGED_BROADCAST_HISTORY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -7207,7 +7209,7 @@ export class AdminService implements OnModuleDestroy {
     if (normalizedDraft.imageBase64) {
       const imageBuffer = this.decodeRulesImageBase64(normalizedDraft.imageBase64);
       if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
+        throw new BadRequestException('Фото правил слишком большое.');
       }
       if (!normalizedDraft.imageMimeType.toLowerCase().startsWith('image/')) {
         throw new BadRequestException('Поддерживаются только изображения.');
@@ -7402,7 +7404,7 @@ export class AdminService implements OnModuleDestroy {
 
       const imageBuffer = this.decodeRulesImageBase64(rules.imageBase64);
       if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
+        throw new BadRequestException('Фото правил слишком большое.');
       }
 
       try {

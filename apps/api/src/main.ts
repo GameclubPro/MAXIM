@@ -5,7 +5,7 @@ import { AppModule } from './app.module';
 import { getAppRole, roleRunsHttp } from './runtime/app-role';
 
 async function bootstrap() {
-  const bodyLimit = Number(process.env.JSON_BODY_LIMIT ?? 6_291_456);
+  const bodyLimit = Number(process.env.JSON_BODY_LIMIT ?? 33_554_432);
   const port = Number(process.env.PORT ?? 3001);
   const role = getAppRole();
   const httpEnabled = roleRunsHttp(role);

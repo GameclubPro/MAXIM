@@ -1,6 +1,8 @@
-const MAX_BROADCAST_IMAGE_BYTES = 3_000_000;
-const IMAGE_DIMENSION_STEPS = [1920, 1600, 1280, 960, 800, 640];
-const IMAGE_QUALITY_STEPS = [0.86, 0.8, 0.74, 0.68, 0.62, 0.56, 0.5, 0.44];
+export const MAX_PREPARED_IMAGE_BYTES = 6_000_000;
+const MAX_SOURCE_IMAGE_BYTES = 64_000_000;
+const MIN_PREPARED_IMAGE_BYTES = 96_000;
+const IMAGE_DIMENSION_STEPS = [2560, 2200, 1920, 1600, 1440, 1280, 1080, 960, 800, 640];
+const IMAGE_QUALITY_STEPS = [0.92, 0.88, 0.84, 0.8, 0.76, 0.72];
 const FALLBACK_IMAGE_ERROR = 'Не удалось подготовить фото. Выберите другое изображение.';
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',
@@ -33,6 +35,18 @@ export type PreparedBroadcastImage = {
 
 type PrepareBroadcastImageOptions = {
   maxBytes?: number;
+  maxSourceBytes?: number;
+};
+
+type LoadedImageSource = {
+  width: number;
+  height: number;
+  draw: (
+    context: CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D,
+    width: number,
+    height: number,
+  ) => void;
+  close: () => void;
 };
 
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
@@ -62,13 +76,38 @@ async function blobToBase64(blob: Blob): Promise<string> {
   return payload;
 }
 
-function loadImageFromBlob(blob: Blob): Promise<HTMLImageElement> {
+async function loadImageFromBlob(blob: Blob): Promise<LoadedImageSource> {
+  if (typeof createImageBitmap === 'function') {
+    try {
+      const bitmap = await createImageBitmap(blob, {
+        imageOrientation: 'from-image',
+      } as ImageBitmapOptions);
+      return {
+        width: bitmap.width,
+        height: bitmap.height,
+        draw: (context, width, height) => {
+          context.drawImage(bitmap, 0, 0, width, height);
+        },
+        close: () => bitmap.close(),
+      };
+    } catch {
+      // Fall through to HTMLImageElement for WebViews with partial bitmap support.
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const image = new Image();
     const objectUrl = URL.createObjectURL(blob);
     image.onload = () => {
       URL.revokeObjectURL(objectUrl);
-      resolve(image);
+      resolve({
+        width: image.naturalWidth || image.width,
+        height: image.naturalHeight || image.height,
+        draw: (context, width, height) => {
+          context.drawImage(image, 0, 0, width, height);
+        },
+        close: () => undefined,
+      });
     };
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl);
@@ -144,25 +183,36 @@ function scaleImageSize(
   };
 }
 
-function renderToCanvas(image: HTMLImageElement, width: number, height: number): HTMLCanvasElement {
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
+function renderToCanvas(
+  image: LoadedImageSource,
+  width: number,
+  height: number,
+): HTMLCanvasElement | OffscreenCanvas {
+  const canvas =
+    typeof OffscreenCanvas === 'function'
+      ? new OffscreenCanvas(width, height)
+      : Object.assign(document.createElement('canvas'), { width, height });
 
-  const context = canvas.getContext('2d');
+  const context = canvas.getContext('2d', { alpha: false });
   if (!context) {
     throw new Error('Не удалось подготовить изображение.');
   }
 
-  context.drawImage(image, 0, 0, width, height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = 'high';
+  image.draw(context, width, height);
   return canvas;
 }
 
 function canvasToBlob(
-  canvas: HTMLCanvasElement,
+  canvas: HTMLCanvasElement | OffscreenCanvas,
   mimeType: string,
   quality: number,
 ): Promise<Blob | null> {
+  if ('convertToBlob' in canvas) {
+    return canvas.convertToBlob({ type: mimeType, quality }).catch(() => null);
+  }
+
   return new Promise((resolve) => {
     canvas.toBlob((blob) => resolve(blob), mimeType, quality);
   });
@@ -183,97 +233,115 @@ async function readOriginalImage(
   };
 }
 
-function resolveImageMaxBytes(options: PrepareBroadcastImageOptions): number {
-  const rawMaxBytes = Math.trunc(options.maxBytes ?? MAX_BROADCAST_IMAGE_BYTES);
+export function resolvePreparedImageMaxBytes(options: PrepareBroadcastImageOptions = {}): number {
+  const rawMaxBytes = Math.trunc(options.maxBytes ?? MAX_PREPARED_IMAGE_BYTES);
   if (!Number.isFinite(rawMaxBytes)) {
-    return MAX_BROADCAST_IMAGE_BYTES;
+    return MAX_PREPARED_IMAGE_BYTES;
   }
 
-  return Math.max(64_000, Math.min(MAX_BROADCAST_IMAGE_BYTES, rawMaxBytes));
+  return Math.max(MIN_PREPARED_IMAGE_BYTES, Math.min(MAX_PREPARED_IMAGE_BYTES, rawMaxBytes));
+}
+
+function resolveSourceImageMaxBytes(options: PrepareBroadcastImageOptions): number {
+  const rawMaxBytes = Math.trunc(options.maxSourceBytes ?? MAX_SOURCE_IMAGE_BYTES);
+  if (!Number.isFinite(rawMaxBytes)) {
+    return MAX_SOURCE_IMAGE_BYTES;
+  }
+
+  return Math.max(MAX_PREPARED_IMAGE_BYTES, rawMaxBytes);
 }
 
 export async function prepareBroadcastImage(
   file: File,
   options: PrepareBroadcastImageOptions = {},
 ): Promise<PreparedBroadcastImage> {
-  const maxImageBytes = resolveImageMaxBytes(options);
+  const maxImageBytes = resolvePreparedImageMaxBytes(options);
+  const maxSourceBytes = resolveSourceImageMaxBytes(options);
   const inputMimeType = resolveInputImageMimeType(file);
   const sourceBlob = ensureTypedImageBlob(file, inputMimeType);
   const targetMimeTypes = resolveMaxUploadImageTargetMimeTypes(inputMimeType);
 
+  if (file.size > maxSourceBytes) {
+    throw new Error('Фото слишком большое для обработки на телефоне.');
+  }
+
   try {
     const image = await loadImageFromBlob(sourceBlob);
-    const sourceWidth = image.naturalWidth || image.width;
-    const sourceHeight = image.naturalHeight || image.height;
+    const sourceWidth = image.width;
+    const sourceHeight = image.height;
 
-    if (!sourceWidth || !sourceHeight) {
-      throw new Error(FALLBACK_IMAGE_ERROR);
-    }
-
-    if (inputMimeType === 'image/gif') {
-      if (file.size > maxImageBytes) {
+    try {
+      if (!sourceWidth || !sourceHeight) {
         throw new Error(FALLBACK_IMAGE_ERROR);
       }
 
-      return readOriginalImage(sourceBlob, inputMimeType, file.name, {
-        width: sourceWidth,
-        height: sourceHeight,
-      });
-    }
+      if (inputMimeType === 'image/gif') {
+        if (file.size > maxImageBytes) {
+          throw new Error(FALLBACK_IMAGE_ERROR);
+        }
 
-    let bestBlob: Blob | null = null;
-    let bestMimeType = targetMimeTypes[0] ?? 'image/jpeg';
-    let bestWidth = sourceWidth;
-    let bestHeight = sourceHeight;
+        return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+          width: sourceWidth,
+          height: sourceHeight,
+        });
+      }
 
-    for (const maxDimension of IMAGE_DIMENSION_STEPS) {
-      const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
-      const canvas = renderToCanvas(image, scaled.width, scaled.height);
+      let bestBlob: Blob | null = null;
+      let bestMimeType = targetMimeTypes[0] ?? 'image/jpeg';
+      let bestWidth = sourceWidth;
+      let bestHeight = sourceHeight;
 
-      for (const targetMimeType of targetMimeTypes) {
-        const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
-        for (const quality of qualitySteps) {
-          const blob = await canvasToBlob(canvas, targetMimeType, quality);
-          if (!blob || !blob.size) {
-            continue;
-          }
+      for (const maxDimension of IMAGE_DIMENSION_STEPS) {
+        const scaled = scaleImageSize(sourceWidth, sourceHeight, maxDimension);
+        const canvas = renderToCanvas(image, scaled.width, scaled.height);
 
-          const actualMimeType = blob.type || targetMimeType;
-          if (!bestBlob || blob.size < bestBlob.size) {
-            bestBlob = blob;
-            bestMimeType = actualMimeType;
-            bestWidth = scaled.width;
-            bestHeight = scaled.height;
-          }
+        for (const targetMimeType of targetMimeTypes) {
+          const qualitySteps = targetMimeType === 'image/png' ? [1] : IMAGE_QUALITY_STEPS;
+          for (const quality of qualitySteps) {
+            const blob = await canvasToBlob(canvas, targetMimeType, quality);
+            if (!blob || !blob.size) {
+              continue;
+            }
 
-          if (blob.size <= maxImageBytes) {
-            return {
-              base64: await blobToBase64(blob),
-              mimeType: actualMimeType,
-              fileName: resolveOutputFileName(file.name, actualMimeType),
-              width: scaled.width,
-              height: scaled.height,
-            };
+            const actualMimeType = blob.type || targetMimeType;
+            if (!bestBlob || blob.size < bestBlob.size) {
+              bestBlob = blob;
+              bestMimeType = actualMimeType;
+              bestWidth = scaled.width;
+              bestHeight = scaled.height;
+            }
+
+            if (blob.size <= maxImageBytes) {
+              return {
+                base64: await blobToBase64(blob),
+                mimeType: actualMimeType,
+                fileName: resolveOutputFileName(file.name, actualMimeType),
+                width: scaled.width,
+                height: scaled.height,
+              };
+            }
           }
         }
       }
-    }
 
-    if (inputMimeType && file.size <= maxImageBytes) {
-      return readOriginalImage(sourceBlob, inputMimeType, file.name, {
-        width: sourceWidth,
-        height: sourceHeight,
-      });
-    }
+      if (inputMimeType && file.size <= maxImageBytes) {
+        return readOriginalImage(sourceBlob, inputMimeType, file.name, {
+          width: sourceWidth,
+          height: sourceHeight,
+        });
+      }
 
-    if (bestBlob && bestBlob.size <= maxImageBytes) {
-      return {
-        base64: await blobToBase64(bestBlob),
-        mimeType: bestMimeType,
-        fileName: resolveOutputFileName(file.name, bestMimeType),
-        width: bestWidth,
-        height: bestHeight,
-      };
+      if (bestBlob && bestBlob.size <= maxImageBytes) {
+        return {
+          base64: await blobToBase64(bestBlob),
+          mimeType: bestMimeType,
+          fileName: resolveOutputFileName(file.name, bestMimeType),
+          width: bestWidth,
+          height: bestHeight,
+        };
+      }
+    } finally {
+      image.close();
     }
   } catch (error: unknown) {
     if (!inputMimeType) {

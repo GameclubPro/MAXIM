@@ -1,4 +1,9 @@
-import { prepareBroadcastImage } from './broadcast-image';
+import { MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 } from '@maxim/contracts';
+import {
+  MAX_PREPARED_IMAGE_BYTES,
+  prepareBroadcastImage,
+  resolvePreparedImageMaxBytes,
+} from './broadcast-image';
 
 export type PreparedCommentDialogAttachment = {
   type: 'image' | 'file';
@@ -19,8 +24,8 @@ const PREVIEWABLE_IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ]);
 
-const MAX_COMMENT_ATTACHMENT_BASE64_LENGTH = 4_000_000;
-const MAX_SUGGESTION_DIALOG_IMAGE_BYTES = 380_000;
+const MAX_COMMENT_ATTACHMENT_BASE64_LENGTH = 8_000_000;
+const SUGGESTION_DIALOG_BASE64_HEADROOM = 32_000;
 const COMMENT_IMAGE_FALLBACK_MAX_BYTES = Math.floor((MAX_COMMENT_ATTACHMENT_BASE64_LENGTH * 3) / 4);
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',
@@ -196,9 +201,39 @@ export async function prepareCommentDialogImageAttachment(
 
 export function prepareSuggestionDialogImageAttachment(
   file: File,
+  options: { imageCount?: number; currentBase64Length?: number; maxBytes?: number } = {},
 ): Promise<PreparedCommentDialogAttachment> {
   return prepareCommentDialogImageAttachment(file, {
-    maxBytes: MAX_SUGGESTION_DIALOG_IMAGE_BYTES,
+    maxBytes:
+      options.maxBytes ??
+      resolveSuggestionDialogImageMaxBytes(
+        options.imageCount ?? 1,
+        options.currentBase64Length ?? 0,
+      ),
+  });
+}
+
+export function resolveSuggestionDialogImageMaxBytes(
+  imageCount: number,
+  currentBase64Length = 0,
+): number {
+  const rawCount = Math.trunc(imageCount);
+  const rawCurrentBase64Length = Math.trunc(currentBase64Length);
+  const normalizedCount = Number.isFinite(rawCount) ? Math.max(1, rawCount) : 1;
+  const safeCurrentBase64Length = Number.isFinite(rawCurrentBase64Length)
+    ? Math.max(0, rawCurrentBase64Length)
+    : 0;
+  const availableBase64Length = Math.max(
+    0,
+    MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 -
+      SUGGESTION_DIALOG_BASE64_HEADROOM -
+      safeCurrentBase64Length,
+  );
+  const base64PerImage = Math.floor(availableBase64Length / normalizedCount);
+  const bytesPerImage = Math.floor((base64PerImage * 3) / 4);
+
+  return resolvePreparedImageMaxBytes({
+    maxBytes: Math.min(MAX_PREPARED_IMAGE_BYTES, bytesPerImage),
   });
 }
 

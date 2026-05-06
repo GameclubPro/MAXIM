@@ -219,7 +219,7 @@ const envSchema = z.object({
   CHANNEL_STATS_STARTUP_MAX_PAGES: z.coerce.number().int().positive().default(20),
   MANUAL_FANOUT_LOOKUP_SPACING_MS: z.coerce.number().int().min(0).default(180),
   MANUAL_FANOUT_ACTION_SPACING_MS: z.coerce.number().int().min(0).default(120),
-  JSON_BODY_LIMIT: z.coerce.number().int().positive().default(6_291_456),
+  JSON_BODY_LIMIT: z.coerce.number().int().positive().default(33_554_432),
 });
 
 export type EnvSchema = z.infer<typeof envSchema>;

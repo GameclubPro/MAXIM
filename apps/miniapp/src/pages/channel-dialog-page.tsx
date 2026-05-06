@@ -8,6 +8,7 @@ import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
+  MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH,
   MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
 } from '@maxim/contracts';
 import {
@@ -65,6 +66,7 @@ import {
   prepareCommentDialogFileAttachment,
   prepareCommentDialogImageAttachment,
   prepareSuggestionDialogImageAttachment,
+  resolveSuggestionDialogImageMaxBytes,
   type PreparedCommentDialogAttachment,
 } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
@@ -2013,6 +2015,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           continue;
         }
 
+        if (attachment.base64.length > MAX_CHANNEL_DIALOG_IMAGE_BASE64_LENGTH) {
+          rejectedBySize += 1;
+          continue;
+        }
+
         const nextTotalBase64Length = totalBase64Length + attachment.base64.length;
         if (nextTotalBase64Length > MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64) {
           rejectedBySize += 1;
@@ -2133,13 +2140,22 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     try {
       const prepared: CommentDraftAttachment[] = [];
       let firstError: string | null = null;
+      const suggestionImageMaxBytes =
+        kind === 'image' && dialogType === 'suggest'
+          ? resolveSuggestionDialogImageMaxBytes(
+              selectableFiles.length,
+              calculateDraftAttachmentsBase64Length(draftAttachments),
+            )
+          : null;
 
       for (const file of selectableFiles) {
         try {
           prepared.push(
             kind === 'image'
               ? dialogType === 'suggest'
-                ? await prepareSuggestionDialogImageAttachment(file)
+                ? await prepareSuggestionDialogImageAttachment(file, {
+                    maxBytes: suggestionImageMaxBytes ?? undefined,
+                  })
                 : await prepareCommentDialogImageAttachment(file)
               : await prepareCommentDialogFileAttachment(file),
           );

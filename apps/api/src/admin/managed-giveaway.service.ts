@@ -8,6 +8,7 @@ import {
   managedGiveawaySummarySchema,
   managedGiveawayWinnerSchema,
   markManagedGiveawayWinnerDeliveredRequestSchema,
+  MAX_BROADCAST_IMAGE_BASE64_LENGTH,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   rerollManagedGiveawayWinnerRequestSchema,
@@ -75,7 +76,7 @@ import { AdminService } from './admin.service';
 
 type GiveawayActionSource = 'miniapp' | 'private_bot' | 'runner' | 'private_claim';
 
-const GIVEAWAY_IMAGE_MAX_BYTES = 1_000_000;
+const GIVEAWAY_IMAGE_MAX_BYTES = Math.floor((MAX_BROADCAST_IMAGE_BASE64_LENGTH * 3) / 4);
 const GIVEAWAY_LOCK_STALE_MS = 60_000;
 const GIVEAWAY_DUE_BATCH_SIZE = 20;
 const GIVEAWAY_DUE_FETCH_BATCH_SIZE = GIVEAWAY_DUE_BATCH_SIZE * 4;
@@ -1056,7 +1057,7 @@ export class ManagedGiveawayService {
     if (normalized.imageEnabled) {
       const imageBuffer = this.decodeImageBase64(normalized.imageBase64);
       if (imageBuffer.length > GIVEAWAY_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Изображение розыгрыша слишком большое. Максимум 1 MB.');
+        throw new BadRequestException('Изображение розыгрыша слишком большое.');
       }
     }
 
