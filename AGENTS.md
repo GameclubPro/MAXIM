@@ -6,16 +6,26 @@
 - If `AGENTS.md` conflicts with `package.json`, Docker Compose, scripts, or the current code, trust the repo and update this file.
 - Keep this file short, stable, and repo-verified. Do not store temporary incidents, dated prod observations, or assumptions that will drift.
 
+## Project shape
+
+- Monorepo workspaces:
+  - `apps/api`: NestJS/Fastify API, Prisma, BullMQ workers, Postgres, Redis.
+  - `apps/miniapp`: React 19 + Vite MAX mini app. MAX Bridge is loaded from `https://st.max.ru/js/max-web-app.js`.
+  - `packages/contracts`: shared Zod/API contracts. Contract changes normally require matching API, mini app, tests, and typechecks.
+- Production API uses one shared API image split by `APP_ROLE`; `api-ingress` is the public API role, `api-admin` is the local admin/API role, and moderation/action/enqueue roles process queues.
+- Production mini app is served under `/app/`. Standalone bot stacks can use their own prefixed app/API paths, for example `/reshenie/app/` and `/reshenie/api/`.
+
 ## Core workflow
 
-- For runtime-affecting changes in `apps/api`, `apps/miniapp`, Prisma, Docker, or MAX integration, the default finish is: local validation plus VPS deploy, unless the user explicitly says not to deploy.
+- For runtime-affecting changes in `apps/api`, `apps/miniapp`, `packages/contracts`, Prisma, Docker, or MAX integration, the default finish is: local validation plus VPS deploy, unless the user explicitly says not to deploy.
 - Docs, `AGENTS.md`, `README.md`, test-only changes, and cleanup changes do not require VPS deploy unless the user asks for it.
 - Prefer repo scripts over long manual sequences:
   - local push: `./infra/scripts/local-commit-push.sh "<message>" main`
-  - VPS update: `./infra/scripts/vps-pull-build-up.sh main [services...]`
+  - local VPS deploy wrapper: `./infra/scripts/vps-connect.sh deploy main [services...]`
+  - direct VPS deploy script, from the VPS host only: `./infra/scripts/vps-pull-build-up.sh main [services...]`
 - `./infra/scripts/local-commit-push.sh` excludes `AGENTS.md` by default. Use `--include-agents` only when you intentionally want to commit agent-note changes.
 - Rebuild only changed services. In practice that is usually `miniapp-static` and/or the shared API image.
-- If shared API code changed, recreate every prod API role that uses that image:
+- If shared API code or `packages/contracts` changed, recreate every prod API role that uses that image:
   - `api-ingress`
   - `api-admin`
   - `api-enqueue`
@@ -28,10 +38,12 @@
   - `api-moderation-background`
   - `api-action`
 - Prefer workspace-scoped validation before broader runs:
+  - `npm run typecheck:contracts`
   - `npm run check:api`
   - `npm run check:miniapp`
   - `npm run typecheck --workspace @maxim/api`
   - `npm run typecheck --workspace @maxim/miniapp`
+  - `npm run build --workspace @maxim/miniapp` for Vite build and bundle budgets
   - `npm test --workspace @maxim/api -- <spec-or-pattern>`
 - Use `npm run check` for a full local CI-style pass before broad or risky changes.
 - If `apps/api/prisma/schema.prisma` changes, include a migration before push.
@@ -47,10 +59,11 @@
 - Mini app iteration:
   - `npm run emulator:miniapp -- --device iphone --reuse-server`
   - `npm run emulator:miniapp:android -- --reuse-server`
+  - `npm run emulator:miniapp -- --device iphone-se --reuse-server`
   - add `--route '<path>'` to jump directly to the screen under work
 - For material UI changes, verify in the emulator or screenshots instead of judging only by code.
 - Prefer checking both iPhone and Android sized previews, safe-area behavior, and keyboard behavior.
-- Use screenshots after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
+- Use `npm run screenshots:miniapp` after the layout is close. Local screenshot output lives under `artifacts/miniapp-screenshots/`.
 - Prefer local iteration for mini app CSS/TSX work. Avoid full Docker rebuilds unless container parity is the point of the task.
 
 ## Deploy and VPS
@@ -63,6 +76,7 @@
   - copy `infra/env/vps.env.example` to root `.env.vps` and keep it out of git
   - verify with `./infra/scripts/vps-connect.sh doctor`
   - use `./infra/scripts/vps-connect.sh shell|health|ps|logs <service>|deploy main [services...]`
+  - `npm run vps -- <command>` and `npm run prod -- <command>` call the same wrapper
 - If plain SSH stalls before the banner or times out, treat that as a Yandex Cloud access issue first. Prefer `yc compute ssh` as the recovery path and verify that the VM security group allows `22/tcp` from the current public IP.
 - Keep Yandex Cloud service-account keys only in local ignored files or configured `yc` profiles, never in git.
 - Use `docker compose` only.
@@ -95,16 +109,22 @@
   2. `https://dev.max.ru/docs-api/`
   3. `https://help.max.ru/help/bots`
   4. `https://github.com/max-messenger`
+- MAX API calls must send the bot token in `Authorization: <token>`. Do not use token query parameters.
+- Production event delivery must use Webhook. Long Polling is for development/testing only and cannot be active with a webhook subscription.
+- Keep `platform-api.max.ru` traffic within the documented 30 rps global limit. Prefer existing queues, source tags, route priorities, and per-role env limits over ad hoc direct calls in hot paths.
+- When creating or reconciling webhook subscriptions, treat `POST /subscriptions` as the transport source of truth: public HTTPS on port 443, trusted full-chain TLS, HTTP 200 within 30 seconds, and `X-Max-Bot-Api-Secret` validation when a `secret` is configured.
+- Keep required webhook event coverage aligned with `apps/api/src/max/max-webhook-subscription.constants.ts`; current product flows depend on `message_created`, `message_callback`, `user_added`, `user_removed`, `bot_added`, `bot_removed`, and `bot_started`.
 - When users format text in the MAX client, treat formatting as `message.body.markup`, not as literal markdown typed by the user. Preserve or reconstruct formatting from `markup` when importing, editing, or republishing text.
 - Treat MAX `markup.from` and `markup.length` as JavaScript string offsets for the original text. Do not remap them through `Array.from(...)` or code-point indexing, especially on emoji-rich text.
-- Treat `initDataUnsafe` as convenience only. Authentication and trust must rely on validated `initData`.
+- Treat `initDataUnsafe` as convenience only. Authentication and trust must rely on validated `initData` / `WebAppData` using the MAX HMAC flow with the correct bot token.
 - Keep bot tokens and webhook secrets only in VPS secrets or `.env`, never in git.
 - Treat MAX mini apps as bot-scoped entry points. Do not assume the launch context identifies a managed target chat or channel on home; user-facing discovery should rely on allowlist, published snapshots, and recent `bot_added` signals.
 - For comment/dialog buttons that must open an internal mini app screen, prefer bot-scoped `https://max.ru/<bot>?startapp=...` links over direct `open_app` `webApp` URLs. Keep direct `webApp` launch only as a fallback.
+- MAX `startapp` payloads are limited to 512 chars and `[A-Za-z0-9_-]`. Use `MaxBotLinkService`, `max-deep-link.util.ts`, and `apps/miniapp/src/lib/launch-route.ts` patterns instead of hand-built payloads.
+- In mini app code, use `window.WebApp.openMaxLink` only for `https://max.ru/...` deep links; use `openLink` for external links.
 - In hot moderation paths, prefer targeted MAX access checks such as `getCurrentChatMemberAccess` or `getChatMembersAccess` over full admin-list fetches unless the feature truly needs the full roster.
 - After changing webhook host or domain, re-read `GET /subscriptions` and recreate the target subscription instead of assuming MAX updated its bound secret automatically.
 - Keep `APP_BASE_URL` and `MAX_WEBHOOK_BASE_URL` aligned when the intended canonical prod host is `https://maxim.play-team.ru`.
-- For MAX deep links, keep `startapp` payloads within the current documented constraints and use MAX-specific navigation only for MAX URLs.
 
 ## Data model and product rules
 
