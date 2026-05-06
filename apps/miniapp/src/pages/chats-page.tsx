@@ -2,12 +2,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   Suspense,
   lazy,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
+  type UIEvent as ReactUIEvent,
 } from 'react';
 import {
   RefreshDouble as IconoirRefreshDouble,
@@ -56,6 +58,7 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './lazy-pages';
+import { resolveVirtualListRange } from '../lib/virtual-list';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
@@ -77,6 +80,11 @@ const FAVORITE_DOCK_LIMIT = 10;
 const DEFAULT_DASHBOARD_RANGE = '24h';
 const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
+const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
+const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
+const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 93;
+const CHAT_LIST_VIRTUAL_ROW_HEIGHT_COMPACT = 84;
+const CHAT_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT = 520;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -203,6 +211,83 @@ function ChevronGlyph() {
       <path d="m9 6 6 6-6 6" />
     </svg>
   );
+}
+
+function resolveChatListVirtualRowHeight(): number {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return CHAT_LIST_VIRTUAL_ROW_HEIGHT;
+  }
+
+  return window.matchMedia('(max-width: 560px)').matches
+    ? CHAT_LIST_VIRTUAL_ROW_HEIGHT_COMPACT
+    : CHAT_LIST_VIRTUAL_ROW_HEIGHT;
+}
+
+function useChatListVirtualization(itemCount: number, enabled: boolean) {
+  const viewportRef = useRef<HTMLElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+  const [rowHeight, setRowHeight] = useState(resolveChatListVirtualRowHeight);
+
+  const reset = useCallback(() => {
+    setScrollTop(0);
+    if (viewportRef.current) {
+      viewportRef.current.scrollTop = 0;
+    }
+  }, []);
+
+  const handleScroll = useCallback((event: ReactUIEvent<HTMLElement>) => {
+    setScrollTop(event.currentTarget.scrollTop);
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) {
+      setScrollTop(0);
+      return undefined;
+    }
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const measure = () => {
+      setRowHeight(resolveChatListVirtualRowHeight());
+      setViewportHeight(viewportRef.current?.clientHeight ?? 0);
+    };
+
+    measure();
+    const element = viewportRef.current;
+    const resizeObserver =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
+    if (resizeObserver && element) {
+      resizeObserver.observe(element);
+    }
+    window.addEventListener('resize', measure);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [enabled, itemCount]);
+
+  const range = useMemo(
+    () =>
+      resolveVirtualListRange({
+        itemCount,
+        scrollTop,
+        viewportHeight: viewportHeight || CHAT_LIST_VIRTUAL_DEFAULT_VIEWPORT_HEIGHT,
+        rowHeight,
+        overscan: CHAT_LIST_VIRTUAL_OVERSCAN,
+      }),
+    [itemCount, rowHeight, scrollTop, viewportHeight],
+  );
+
+  return {
+    viewportRef,
+    rowHeight,
+    range,
+    handleScroll,
+    reset,
+  };
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
@@ -339,6 +424,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
+  const shouldVirtualizeEntities =
+    filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD && !isLoading && !queryError;
+  const virtualList = useChatListVirtualization(filteredEntities.length, shouldVirtualizeEntities);
+  const renderedEntities = shouldVirtualizeEntities
+    ? filteredEntities.slice(virtualList.range.startIndex, virtualList.range.endIndex)
+    : filteredEntities;
   const settledRefreshMarker = useMemo(
     () =>
       buildManagedEntitiesSettledMarker({
@@ -412,6 +503,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     saveLastEntityType(activeTab);
   }, [activeTab]);
+
+  useEffect(() => {
+    virtualList.reset();
+  }, [activeTab, query, shouldVirtualizeEntities, virtualList.reset]);
 
   useEffect(() => {
     document.body.classList.add('chats-home-page-open');
@@ -534,6 +629,99 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
   const searchPlaceholder = 'Поиск';
   const showSystemCard = canAccessSystem;
+
+  function renderEntityCard(entity: ManagedHomeEntity, index: number) {
+    const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
+    const staggerIndex = limitedStagger === null ? index : index < limitedStagger ? index : null;
+    const className = cn(
+      'chat-card',
+      favorite && 'is-favorite',
+      staggerIndex !== null && 'stagger-in',
+      homeSyncStatus.tone === 'cache' && 'is-from-cache',
+      homeSyncStatus.tone === 'warning' && 'is-paused',
+    );
+    const style: CSSProperties = {};
+    if (staggerIndex !== null) {
+      style.animationDelay = `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms`;
+    }
+    if (shouldVirtualizeEntities) {
+      style.top = `${index * virtualList.rowHeight}px`;
+    }
+
+    const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
+    const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
+    const routeState = buildEntityRouteState(activeTab, entity);
+    const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
+
+    return (
+      <GlassCard
+        as="article"
+        key={entity.id}
+        className={className}
+        style={Object.keys(style).length > 0 ? style : undefined}
+      >
+        <Link
+          to={settingsRoute}
+          className="chat-card__primary-link"
+          state={routeState}
+          onClick={() => rememberEntity(activeTab, entity)}
+          onPointerEnter={(event) => {
+            if (shouldPrefetchFromPointerEvent(event)) {
+              prefetchEntitySettings(activeTab, entity.id);
+            }
+          }}
+          aria-label={`Открыть настройки: ${entity.title}`}
+        />
+
+        <div className="chat-card__header">
+          <div className="chat-card__identity">
+            <EntityAvatar
+              title={entity.title}
+              entityType={activeTab}
+              avatarUrl={entity.avatarUrl ?? null}
+              className="chat-card__avatar"
+            />
+            <div className="chat-card__title-wrap">
+              <h3>{entity.title}</h3>
+            </div>
+          </div>
+          <ChevronGlyph />
+        </div>
+
+        <div className="chat-card__quick-actions">
+          <button
+            type="button"
+            className={cn('chat-card__favorite', favorite && 'is-active')}
+            onClick={() => handleToggleHomeEntityFavorite(activeTab, entity.id)}
+            aria-pressed={favorite}
+            aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+            title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
+          >
+            <IconoirStar aria-hidden />
+          </button>
+
+          <Link
+            to={activityRoute}
+            className="chat-card__action"
+            state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
+            onClick={() => {
+              rememberEntity(activeTab, entity);
+              prefetchEntityActivity(activeTab, entity.id);
+            }}
+            onPointerEnter={(event) => {
+              if (shouldPrefetchFromPointerEvent(event)) {
+                prefetchEntityActivity(activeTab, entity.id);
+              }
+            }}
+            aria-label={activityLabel}
+            title={activityLabel}
+          >
+            <ActivityGlyph />
+          </Link>
+        </div>
+      </GlassCard>
+    );
+  }
 
   return (
     <div className={cn('page-stack page-enter chats-home', `chats-home--${activeTab}`)}>
@@ -783,91 +971,32 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {!isLoading && !queryError && !showEmptyState && filteredEntities.length > 0 ? (
-        <section className="chat-grid" aria-label="Список">
-          {filteredEntities.map((entity, index) => {
-            const favorite = isHomeEntityFavorite(homeEntityFavorites, activeTab, entity.id);
-            const staggerIndex =
-              limitedStagger === null ? index : index < limitedStagger ? index : null;
-            const className = cn(
-              'chat-card',
-              favorite && 'is-favorite',
-              staggerIndex !== null && 'stagger-in',
-              homeSyncStatus.tone === 'cache' && 'is-from-cache',
-              homeSyncStatus.tone === 'warning' && 'is-paused',
-            );
-            const style =
-              staggerIndex === null
-                ? undefined
-                : { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
-            const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
-            const activityRoute = buildEntityActivityRoute(activeTab, entity.id);
-            const routeState = buildEntityRouteState(activeTab, entity);
-            const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
-
-            return (
-              <GlassCard as="article" key={entity.id} className={className} style={style}>
-                <Link
-                  to={settingsRoute}
-                  className="chat-card__primary-link"
-                  state={routeState}
-                  onClick={() => rememberEntity(activeTab, entity)}
-                  onPointerEnter={(event) => {
-                    if (shouldPrefetchFromPointerEvent(event)) {
-                      prefetchEntitySettings(activeTab, entity.id);
-                    }
-                  }}
-                  aria-label={`Открыть настройки: ${entity.title}`}
-                />
-
-                <div className="chat-card__header">
-                  <div className="chat-card__identity">
-                    <EntityAvatar
-                      title={entity.title}
-                      entityType={activeTab}
-                      avatarUrl={entity.avatarUrl ?? null}
-                      className="chat-card__avatar"
-                    />
-                    <div className="chat-card__title-wrap">
-                      <h3>{entity.title}</h3>
-                    </div>
-                  </div>
-                  <ChevronGlyph />
-                </div>
-
-                <div className="chat-card__quick-actions">
-                  <button
-                    type="button"
-                    className={cn('chat-card__favorite', favorite && 'is-active')}
-                    onClick={() => handleToggleHomeEntityFavorite(activeTab, entity.id)}
-                    aria-pressed={favorite}
-                    aria-label={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
-                    title={favorite ? 'Убрать из избранного' : 'Добавить в избранное'}
-                  >
-                    <IconoirStar aria-hidden />
-                  </button>
-
-                  <Link
-                    to={activityRoute}
-                    className="chat-card__action"
-                    state={{ chatTitle: entity.title, avatarUrl: entity.avatarUrl ?? null }}
-                    onClick={() => {
-                      rememberEntity(activeTab, entity);
-                      prefetchEntityActivity(activeTab, entity.id);
-                    }}
-                    onPointerEnter={(event) => {
-                      if (shouldPrefetchFromPointerEvent(event)) {
-                        prefetchEntityActivity(activeTab, entity.id);
-                      }
-                    }}
-                    aria-label={activityLabel}
-                    title={activityLabel}
-                  >
-                    <ActivityGlyph />
-                  </Link>
-                </div>
-              </GlassCard>
-            );
-          })}
+        <section
+          className={cn('chat-grid', shouldVirtualizeEntities && 'chat-grid--virtual')}
+          aria-label="Список"
+          ref={shouldVirtualizeEntities ? virtualList.viewportRef : undefined}
+          onScroll={shouldVirtualizeEntities ? virtualList.handleScroll : undefined}
+          tabIndex={shouldVirtualizeEntities ? 0 : undefined}
+          style={
+            shouldVirtualizeEntities
+              ? ({
+                  '--chat-list-row-height': `${virtualList.rowHeight}px`,
+                } as CSSProperties)
+              : undefined
+          }
+        >
+          {shouldVirtualizeEntities ? (
+            <div
+              className="chat-grid__virtual-spacer"
+              style={{ height: virtualList.range.totalHeight }}
+            >
+              {renderedEntities.map((entity, index) =>
+                renderEntityCard(entity, virtualList.range.startIndex + index),
+              )}
+            </div>
+          ) : (
+            filteredEntities.map((entity, index) => renderEntityCard(entity, index))
+          )}
         </section>
       ) : null}
 

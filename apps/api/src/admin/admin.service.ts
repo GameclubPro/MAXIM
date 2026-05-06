@@ -300,6 +300,16 @@ type ManagedEntitiesListOptions = {
 };
 
 type ManagedEntitiesDiscoverySnapshot = MaxBotChat[];
+type ManagedBotChatCatalogSnapshotRow = {
+  botId: string;
+  chatId: string;
+  entityType: ChatEntityType;
+  title: string | null;
+  link: string | null;
+  avatarUrl: string | null;
+  lastEventTime: string | null;
+  lastSeenAt: Date;
+};
 type ManagedEntityBotProfileSnapshot = {
   avatarUrl: string | null;
 };
@@ -582,6 +592,9 @@ const MANAGED_ENTITIES_REFRESH_QUEUE_LAG_SLOW_PATH_MAX_SEC = 30;
 const MANAGED_ENTITIES_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_COOLDOWN_MS = 60_000;
 const MANAGED_ENTITIES_DISCOVERY_HEADER_PRIME_CONCURRENCY = 24;
+const MANAGED_BOT_CHAT_CATALOG_WRITE_CONCURRENCY = 8;
+const MANAGED_BOT_CHAT_CATALOG_FALLBACK_LIMIT = 20_000;
+const MANAGED_BOT_CHAT_CATALOG_MARK_MISSING_MAX_SEEN = 10_000;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
 const MANAGED_ENTITY_HEADER_HYDRATION_BATCH_SIZE = 8;
 const MANAGED_ENTITY_HEADER_HYDRATION_CONCURRENCY = 1;
@@ -5938,13 +5951,7 @@ export class AdminService implements OnModuleDestroy {
 
     const discoveryBots = this.maxBotRegistry?.getDiscoveryBots() ?? [];
     if (discoveryBots.length === 0) {
-      const legacyChats = await this.maxClient.listBotChats({
-        trafficClass: options.trafficClass,
-        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-        ...(options.bypassCache === true ? { bypassCache: true } : {}),
-        ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
-      });
+      const legacyChats = await this.loadManagedBotChatsForDiscovery(null, options);
       const candidateChats =
         entityType === 'all'
           ? legacyChats
@@ -5960,20 +5967,7 @@ export class AdminService implements OnModuleDestroy {
 
     const remoteGroups = await Promise.all(
       discoveryBots.map(async (bot) => {
-        const chats = await this.maxClient.listBotChats({
-          trafficClass: options.trafficClass,
-          actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
-          sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
-          ...(options.bypassCache === true ? { bypassCache: true } : {}),
-          ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
-          botId: bot.id,
-        });
-
-        return chats.map((chat) => ({
-          ...chat,
-          botId: bot.id,
-          botIds: Array.from(new Set([...(chat.botIds ?? []), bot.id])),
-        }));
+        return this.loadManagedBotChatsForDiscovery(bot.id, options);
       }),
     );
 
@@ -5988,6 +5982,276 @@ export class AdminService implements OnModuleDestroy {
     this.scheduleManagedEntitiesDiscoveryHeaderPrime(supportedChats, `multi:${entityType}`);
     this.scheduleManagedEntitiesCatalogSync(supportedChats, options.trafficClass);
     return supportedChats;
+  }
+
+  private async loadManagedBotChatsForDiscovery(
+    botId: string | null,
+    options: {
+      trafficClass: 'critical' | 'interactive' | 'background';
+      bypassCache?: boolean;
+      timeoutMs?: number;
+    },
+  ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    const normalizedBotId = this.normalizeRuntimeManagedEntityBotId(botId);
+    try {
+      const chats = await this.maxClient.listBotChats({
+        trafficClass: options.trafficClass,
+        actionHealthLane: ADMIN_ACTION_HEALTH_LANE,
+        sourceTag: MAX_API_SOURCE_TAGS.MANAGED_REFRESH,
+        ...(options.bypassCache === true ? { bypassCache: true } : {}),
+        ...(typeof options.timeoutMs === 'number' ? { timeoutMs: options.timeoutMs } : {}),
+        ...(normalizedBotId ? { botId: normalizedBotId } : {}),
+      });
+      const normalizedChats = chats.map((chat) =>
+        this.normalizeManagedBotChatDiscoverySnapshot(chat, normalizedBotId),
+      );
+      await this.replaceManagedBotChatCatalogSnapshot(normalizedChats, normalizedBotId).catch(
+        (catalogError: unknown) => {
+          this.logger.warn(
+            {
+              botId: normalizedBotId,
+              candidateChats: normalizedChats.length,
+              err: catalogError instanceof Error ? catalogError.message : String(catalogError),
+            },
+            'Failed to persist managed bot chat catalog snapshot',
+          );
+        },
+      );
+      return normalizedChats;
+    } catch (error: unknown) {
+      const fallbackChats = await this.loadManagedBotChatCatalogSnapshot(normalizedBotId).catch(
+        (fallbackError: unknown) => {
+          this.logger.warn(
+            {
+              botId: normalizedBotId,
+              err: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+            },
+            'Failed to load managed bot chat catalog fallback',
+          );
+          return [];
+        },
+      );
+
+      if (fallbackChats.length > 0) {
+        this.logger.warn(
+          {
+            botId: normalizedBotId,
+            fallbackChats: fallbackChats.length,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Using managed bot chat catalog fallback after MAX chat discovery failure',
+        );
+        return fallbackChats;
+      }
+
+      throw error;
+    }
+  }
+
+  private normalizeManagedBotChatDiscoverySnapshot(
+    chat: MaxBotChat,
+    preferredBotId: string | null,
+  ): MaxBotChat {
+    const normalizedChatId = this.readTrimmedString(chat.chatId) ?? chat.chatId;
+    const botIds = this.collectManagedBotChatCatalogBotIds(chat, preferredBotId);
+    return {
+      ...chat,
+      chatId: normalizedChatId,
+      botId:
+        this.normalizeRuntimeManagedEntityBotId(chat.botId) ?? preferredBotId ?? botIds[0] ?? null,
+      botIds,
+    };
+  }
+
+  private async replaceManagedBotChatCatalogSnapshot(
+    chats: readonly MaxBotChat[],
+    pinnedBotId: string | null,
+  ): Promise<void> {
+    const catalog = this.prisma.managedBotChatCatalog;
+    if (!catalog) {
+      return;
+    }
+
+    const entriesByKey = new Map<
+      string,
+      {
+        botId: string;
+        chatId: string;
+        entityType: ChatEntityType;
+        title: string | null;
+        link: string | null;
+        avatarUrl: string | null;
+        lastEventTime: string | null;
+      }
+    >();
+    const seenChatIdsForPinnedBot = new Set<string>();
+
+    for (const chat of chats) {
+      const chatId = this.readTrimmedString(chat.chatId);
+      if (!chatId) {
+        continue;
+      }
+      const botIds = this.collectManagedBotChatCatalogBotIds(chat, pinnedBotId);
+      if (pinnedBotId) {
+        seenChatIdsForPinnedBot.add(chatId);
+      }
+
+      for (const botId of botIds) {
+        entriesByKey.set(`${botId}\u0000${chatId}`, {
+          botId,
+          chatId,
+          entityType: this.toPrismaEntityType(chat.entityType),
+          title: this.readTrimmedString(chat.title),
+          link: this.readTrimmedString(chat.link),
+          avatarUrl: this.readTrimmedString(chat.avatarUrl),
+          lastEventTime:
+            typeof chat.lastEventTime === 'number' && Number.isFinite(chat.lastEventTime)
+              ? String(Math.trunc(chat.lastEventTime))
+              : null,
+        });
+      }
+    }
+
+    const entries = [...entriesByKey.values()];
+    if (entries.length === 0) {
+      return;
+    }
+
+    const now = new Date();
+    await this.mapWithConcurrencyLimit(
+      entries,
+      MANAGED_BOT_CHAT_CATALOG_WRITE_CONCURRENCY,
+      async (entry) => {
+        const update: Prisma.ManagedBotChatCatalogUpdateInput = {
+          entityType: entry.entityType,
+          status: 'ACTIVE',
+          source: 'max_chats',
+          lastEventTime: entry.lastEventTime,
+          lastSeenAt: now,
+        };
+        if (entry.title !== null) {
+          update.title = entry.title;
+        }
+        if (entry.link !== null) {
+          update.link = entry.link;
+        }
+        if (entry.avatarUrl !== null) {
+          update.avatarUrl = entry.avatarUrl;
+        }
+
+        await catalog.upsert({
+          where: {
+            botId_chatId: {
+              botId: entry.botId,
+              chatId: entry.chatId,
+            },
+          },
+          create: {
+            botId: entry.botId,
+            chatId: entry.chatId,
+            entityType: entry.entityType,
+            title: entry.title,
+            link: entry.link,
+            avatarUrl: entry.avatarUrl,
+            lastEventTime: entry.lastEventTime,
+            status: 'ACTIVE',
+            source: 'max_chats',
+            lastSeenAt: now,
+          },
+          update,
+        });
+        return null;
+      },
+    );
+
+    if (
+      pinnedBotId &&
+      seenChatIdsForPinnedBot.size > 0 &&
+      seenChatIdsForPinnedBot.size <= MANAGED_BOT_CHAT_CATALOG_MARK_MISSING_MAX_SEEN
+    ) {
+      await catalog.updateMany({
+        where: {
+          botId: pinnedBotId,
+          status: 'ACTIVE',
+          chatId: { notIn: [...seenChatIdsForPinnedBot] },
+        },
+        data: {
+          status: 'MISSING',
+        },
+      });
+    }
+  }
+
+  private async loadManagedBotChatCatalogSnapshot(
+    botId: string | null,
+  ): Promise<ManagedEntitiesDiscoverySnapshot> {
+    const catalog = this.prisma.managedBotChatCatalog;
+    if (!catalog) {
+      return [];
+    }
+
+    const runtimeBotIds = [...this.managedEntitiesRuntimeBotIds];
+    const where: Prisma.ManagedBotChatCatalogWhereInput = {
+      status: 'ACTIVE',
+      ...(botId ? { botId } : runtimeBotIds.length > 0 ? { botId: { in: runtimeBotIds } } : {}),
+    };
+    const rows = await catalog.findMany({
+      where,
+      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+      take: MANAGED_BOT_CHAT_CATALOG_FALLBACK_LIMIT,
+    });
+
+    return this.mergeManagedBotChatCatalogRows(rows);
+  }
+
+  private mergeManagedBotChatCatalogRows(
+    rows: readonly ManagedBotChatCatalogSnapshotRow[],
+  ): ManagedEntitiesDiscoverySnapshot {
+    const byChatId = new Map<string, MaxBotChat>();
+    for (const row of rows) {
+      const chatId = this.readTrimmedString(row.chatId);
+      const botId = this.normalizeRuntimeManagedEntityBotId(row.botId);
+      if (!chatId || !botId) {
+        continue;
+      }
+
+      const lastEventTimeNumber =
+        row.lastEventTime !== null ? Number.parseInt(row.lastEventTime, 10) : Number.NaN;
+      const existing = byChatId.get(chatId);
+      if (existing) {
+        existing.botIds = Array.from(new Set([...(existing.botIds ?? []), botId]));
+        if (!existing.botId) {
+          existing.botId = botId;
+        }
+        continue;
+      }
+
+      byChatId.set(chatId, {
+        chatId,
+        title: this.readTrimmedString(row.title),
+        link: this.readTrimmedString(row.link),
+        avatarUrl: this.readTrimmedString(row.avatarUrl),
+        entityType: this.fromPrismaEntityType(row.entityType),
+        lastEventTime: Number.isFinite(lastEventTimeNumber) ? lastEventTimeNumber : null,
+        botId,
+        botIds: [botId],
+      });
+    }
+
+    return [...byChatId.values()];
+  }
+
+  private collectManagedBotChatCatalogBotIds(
+    chat: MaxBotChat,
+    preferredBotId: string | null,
+  ): string[] {
+    return Array.from(
+      new Set(
+        [preferredBotId, chat.botId, ...(chat.botIds ?? [])]
+          .map((candidate) => this.normalizeRuntimeManagedEntityBotId(candidate))
+          .filter((candidate): candidate is string => Boolean(candidate)),
+      ),
+    );
   }
 
   private scheduleManagedEntitiesDiscoveryHeaderPrime(

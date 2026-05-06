@@ -11,6 +11,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { ChatEntityType } from '@prisma/client';
 import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { buildActiveMuteStateKey } from '../moderation/moderation-state.util';
 import { AdminService } from './admin.service';
@@ -69,6 +70,18 @@ function createManagedEntityHeaderFixture(
     assignedBots: overrides.assignedBots ?? [],
     sharedMode: overrides.sharedMode ?? 'owned',
   };
+}
+
+function createBareAdminServiceForCatalogTests() {
+  const service = Object.create(AdminService.prototype) as any;
+  service.maxBotRegistry = {
+    getBotById: jest.fn().mockReturnValue(null),
+  };
+  service.managedEntitiesRuntimeBotIds = new Set(['bot-1']);
+  service.logger = {
+    warn: jest.fn(),
+  };
+  return service;
 }
 
 function createPrismaMock() {
@@ -1087,6 +1100,113 @@ async function publishSuggestDialogToken(
 
   return readDialogButtonToken(suggestButton);
 }
+
+describe('AdminService managed bot chat catalog', () => {
+  it('keeps remote discovery results when catalog persistence fails', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    const catalog = {
+      upsert: jest.fn().mockRejectedValue(new Error('db unavailable')),
+      updateMany: jest.fn(),
+      findMany: jest.fn(),
+    };
+    service.prisma = {
+      managedBotChatCatalog: catalog,
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: ' chat-1 ',
+          title: 'Команда MAX',
+          lastEventTime: 1778090000123,
+          entityType: 'chat',
+          link: null,
+          avatarUrl: null,
+        },
+      ]),
+    };
+
+    await expect(
+      service.loadManagedBotChatsForDiscovery('bot-1', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'chat-1',
+        title: 'Команда MAX',
+        lastEventTime: 1778090000123,
+        entityType: 'chat',
+        link: null,
+        avatarUrl: null,
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(catalog.upsert).toHaveBeenCalledTimes(1);
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        botId: 'bot-1',
+        candidateChats: 1,
+        err: 'db unavailable',
+      }),
+      'Failed to persist managed bot chat catalog snapshot',
+    );
+  });
+
+  it('uses catalog rows when MAX chat discovery fails', async () => {
+    const service = createBareAdminServiceForCatalogTests();
+    const catalog = {
+      upsert: jest.fn(),
+      updateMany: jest.fn(),
+      findMany: jest.fn().mockResolvedValue([
+        {
+          botId: 'bot-1',
+          chatId: 'chat-1',
+          entityType: ChatEntityType.CHAT,
+          title: 'Cached chat',
+          link: 'https://max.ru/join/chat-1',
+          avatarUrl: 'https://cdn.example/avatar.png',
+          lastEventTime: '1778090000123',
+          lastSeenAt: new Date('2026-05-06T12:00:00.000Z'),
+        },
+      ]),
+    };
+    service.prisma = {
+      managedBotChatCatalog: catalog,
+    };
+    service.maxClient = {
+      listBotChats: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+    };
+
+    await expect(
+      service.loadManagedBotChatsForDiscovery('bot-1', { trafficClass: 'background' }),
+    ).resolves.toEqual([
+      {
+        chatId: 'chat-1',
+        title: 'Cached chat',
+        link: 'https://max.ru/join/chat-1',
+        avatarUrl: 'https://cdn.example/avatar.png',
+        entityType: 'chat',
+        lastEventTime: 1778090000123,
+        botId: 'bot-1',
+        botIds: ['bot-1'],
+      },
+    ]);
+    expect(catalog.findMany).toHaveBeenCalledWith({
+      where: {
+        botId: 'bot-1',
+        status: 'ACTIVE',
+      },
+      orderBy: [{ lastSeenAt: 'desc' }, { updatedAt: 'desc' }],
+      take: 20000,
+    });
+    expect(service.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        botId: 'bot-1',
+        fallbackChats: 1,
+        err: 'MAX unavailable',
+      }),
+      'Using managed bot chat catalog fallback after MAX chat discovery failure',
+    );
+  });
+});
 
 describe('AdminService getMe', () => {
   it('returns init data profile when username is already present', async () => {
@@ -18690,26 +18810,22 @@ describe('AdminService.sendBroadcast', () => {
       }),
     ]);
 
-    const result = await service.sendBroadcast(
-      'chat-1',
-      actor,
-      {
-        text: 'Напоминание',
-        textFormat: 'plain',
-        applyToAllChats: true,
-        buttonEnabled: false,
-        buttonUrl: '',
-        buttonText: 'Открыть',
-        imageEnabled: false,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-        sendAt: null,
-        cycleEnabled: false,
-        cycleEveryHours: 1,
-        cycleCount: 1,
-      },
-    );
+    const result = await service.sendBroadcast('chat-1', actor, {
+      text: 'Напоминание',
+      textFormat: 'plain',
+      applyToAllChats: true,
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 1,
+    });
 
     expect(massTargetsSpy).toHaveBeenCalledWith(actor, { discoveryMode: 'cached-first' });
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);

@@ -626,6 +626,27 @@ model ManagedEntityLocalActivity {
   @@map("managed_entity_local_activities")
 }
 
+model ManagedBotChatCatalog {
+  botId         String         @map("bot_id")
+  chatId        String         @map("chat_id")
+  entityType    ChatEntityType @default(CHAT) @map("entity_type")
+  title         String?
+  link          String?
+  avatarUrl     String?        @map("avatar_url")
+  lastEventTime String?        @map("last_event_time")
+  status        String         @default("ACTIVE")
+  source        String         @default("max_chats")
+  firstSeenAt   DateTime       @default(now()) @map("first_seen_at")
+  lastSeenAt    DateTime       @default(now()) @map("last_seen_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  @@id([botId, chatId])
+  @@index([chatId, status], map: "managed_bot_chat_catalog_chat_status_idx")
+  @@index([botId, entityType, status, lastSeenAt(sort: Desc)], map: "managed_bot_chat_catalog_bot_type_status_seen_idx")
+  @@map("managed_bot_chat_catalog")
+}
+
 model AuditLog {
   id          String   @id @default(cuid())
   chatId      String   @map("chat_id")
