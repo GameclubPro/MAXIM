@@ -2717,8 +2717,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           open={expandedSections.broadcast}
           title="Рассылки"
           summary={broadcastHeaderSummary}
+          variant="screen"
           tone="sky"
-          className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast"
+          className="settings-drilldown__panel--campaign settings-drilldown__panel--broadcast settings-drilldown__panel--broadcast-screen"
           onClose={() => toggleSection('broadcast')}
           footer={activeBroadcastWorkspaceView === 'compose' ? broadcastDrilldownFooter : null}
         >
@@ -2728,7 +2729,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           >
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
-                <div className="channel-broadcast-studio">
+                <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
                   <BroadcastStudioHeader
                     title={
                       editingManagedBroadcast
@@ -2748,7 +2749,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   />
 
                   {showBroadcastWorkspaceTabs || showBroadcastResetAction ? (
-                    <div className="broadcast-studio-shell__topbar">
+                    <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
                       {showBroadcastWorkspaceTabs ? (
                         <BroadcastWorkspaceTabs
                           value={activeBroadcastWorkspaceView}
@@ -2782,11 +2783,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
 
                   {activeBroadcastWorkspaceView === 'compose' ? (
-                    <div className="broadcast-compose-flow">
-                      <div className="broadcast-stage-card broadcast-stage-card--message">
+                    <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                      <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
                         <div className="broadcast-stage-card__head">
                           <div className="broadcast-stage-card__title-wrap">
-                            <strong>Контент</strong>
+                            <strong>Сообщение</strong>
                           </div>
                           <span
                             className={cn(

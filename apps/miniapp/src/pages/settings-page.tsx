@@ -10701,8 +10701,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.mailing}
                 title="Рассылки"
                 summary={mailingHeaderSummary}
+                variant="screen"
                 tone="sky"
-                className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing"
+                className="settings-drilldown__panel--campaign settings-drilldown__panel--mailing settings-drilldown__panel--broadcast-screen"
                 onClose={() => toggleSection('mailing')}
                 footer={mailingWorkspaceView === 'compose' ? mailingDrilldownFooter : null}
               >
@@ -10715,7 +10716,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
-                      <div className="broadcast-studio-shell">
+                      <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
                         <BroadcastStudioHeader
                           title={
                             editingManagedBroadcast
@@ -10735,7 +10736,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         />
 
                         {showMailingWorkspaceTabs || showMailingResetAction ? (
-                          <div className="broadcast-studio-shell__topbar">
+                          <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
                             {showMailingWorkspaceTabs ? (
                               <BroadcastWorkspaceTabs
                                 value={mailingWorkspaceView}
@@ -10769,11 +10770,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         {mailingWorkspaceView === 'compose' ? (
-                          <div className="broadcast-compose-flow">
-                            <div className="broadcast-stage-card broadcast-stage-card--message">
+                          <div className="broadcast-compose-flow broadcast-compose-flow--screen">
+                            <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Контент</strong>
+                                  <strong>Сообщение</strong>
                                 </div>
                                 <span
                                   className={cn(

@@ -8,6 +8,7 @@ type SettingsDrilldownPanelProps = {
   open: boolean;
   title: string;
   summary?: string;
+  variant?: 'sheet' | 'screen';
   tone?: 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
   onClose: () => void;
   children: ReactNode;
@@ -43,6 +44,7 @@ export function SettingsDrilldownPanel({
   open,
   title,
   summary,
+  variant = 'sheet',
   tone = 'sky',
   onClose,
   children,
@@ -115,7 +117,10 @@ export function SettingsDrilldownPanel({
     Boolean(footer) && (!isKeyboardOpen || keepFooterVisibleWhenKeyboardOpen);
 
   return createPortal(
-    <div className="settings-drilldown" aria-hidden={!open}>
+    <div
+      className={cn('settings-drilldown', variant === 'screen' && 'settings-drilldown--screen')}
+      aria-hidden={!open}
+    >
       <button
         ref={backdropRef}
         type="button"
