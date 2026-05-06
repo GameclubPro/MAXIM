@@ -23418,6 +23418,112 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
+  it('does not duplicate mini app suggestion images when the payload contains an attachment mirror', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-image-dedupe-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T09:11:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-image-dedupe-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: '',
+        delivered: true,
+        deliveredToUserId: 'admin-1',
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageCount: 1,
+        imageFileName: 'suggestion.webp',
+        imageFileNames: ['suggestion.webp'],
+        source: 'miniapp_dialog',
+      },
+      createdAt: new Date('2026-03-25T09:11:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6b', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-suggest-miniapp-1' }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-admin-2b', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+    const image = {
+      base64:
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+      mimeType: 'image/png',
+      fileName: 'suggestion.webp',
+    };
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'suggest',
+      {
+        token: suggestToken,
+        text: '',
+        images: [image],
+        attachments: [{ type: 'image', ...image }],
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            imageCount: 1,
+            imageFileNames: ['suggestion.webp'],
+            images: [expect.objectContaining({ fileName: 'suggestion.webp' })],
+          }),
+        }),
+      }),
+    );
+    expect(result.message).toMatchObject({
+      id: 'suggestion-image-dedupe-1',
+      type: 'suggest',
+      hasImage: true,
+      imageCount: 1,
+    });
+  });
+
   it('queues mini app suggestions for async admin delivery when the queue is available', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

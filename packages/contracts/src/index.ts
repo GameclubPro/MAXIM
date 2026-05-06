@@ -3367,7 +3367,7 @@ export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreen
 
 export const channelDialogTypeSchema = /*#__PURE__*/ z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
-export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 5;
+export const MAX_CHANNEL_DIALOG_SUGGEST_IMAGES = 10;
 export const MAX_CHANNEL_DIALOG_ATTACHMENTS = 5;
 export const MAX_CHANNEL_DIALOG_COMMENT_FILES = 3;
 export const MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64 = 5_200_000;
@@ -3476,6 +3476,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
   .object({
     token: z.string().trim().min(16).max(256),
     text: z.string().trim().max(2_000).default(''),
+    textFormat: broadcastTextFormatSchema.default('plain'),
     replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
     attachments: z
       .array(channelDialogAttachmentInputSchema)
@@ -3502,24 +3503,27 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       });
     }
 
+    const legacyImageAttachment =
+      value.images.length === 0 && value.imageBase64
+        ? {
+            type: 'image' as const,
+            base64: value.imageBase64.trim(),
+            mimeType: value.imageMimeType.trim(),
+            fileName: value.imageFileName.trim(),
+          }
+        : null;
     const normalizedAttachments = [
       ...value.attachments,
+      ...(legacyImageAttachment ? [legacyImageAttachment] : []),
+    ];
+    const normalizedMedia = [
+      ...normalizedAttachments,
       ...value.images.map((image) => ({
         type: 'image' as const,
         base64: image.base64,
         mimeType: image.mimeType,
         fileName: image.fileName,
       })),
-      ...(value.images.length === 0 && value.imageBase64
-        ? [
-            {
-              type: 'image' as const,
-              base64: value.imageBase64.trim(),
-              mimeType: value.imageMimeType.trim(),
-              fileName: value.imageFileName.trim(),
-            },
-          ]
-        : []),
     ];
 
     if (normalizedAttachments.length > MAX_CHANNEL_DIALOG_ATTACHMENTS) {
@@ -3541,7 +3545,7 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
       });
     }
 
-    const totalBase64Length = normalizedAttachments.reduce(
+    const totalBase64Length = normalizedMedia.reduce(
       (acc, attachment) => acc + attachment.base64.trim().length,
       0,
     );
@@ -3569,27 +3573,18 @@ export const createChannelDialogMessageRequestSchema = /*#__PURE__*/ z
           : [],
     attachments: [
       ...value.attachments,
-      ...(value.images.length > 0
-        ? value.images.map((image) => ({
-            type: 'image' as const,
-            base64: image.base64.trim(),
-            mimeType: image.mimeType.trim(),
-            fileName: image.fileName.trim(),
-            width: undefined,
-            height: undefined,
-          }))
-        : value.imageBase64
-          ? [
-              {
-                type: 'image' as const,
-                base64: value.imageBase64.trim(),
-                mimeType: value.imageMimeType.trim(),
-                fileName: value.imageFileName.trim(),
-                width: undefined,
-                height: undefined,
-              },
-            ]
-          : []),
+      ...(value.images.length === 0 && value.imageBase64
+        ? [
+            {
+              type: 'image' as const,
+              base64: value.imageBase64.trim(),
+              mimeType: value.imageMimeType.trim(),
+              fileName: value.imageFileName.trim(),
+              width: undefined,
+              height: undefined,
+            },
+          ]
+        : []),
     ].slice(0, MAX_CHANNEL_DIALOG_ATTACHMENTS),
   }));
 export type CreateChannelDialogMessageRequest = z.infer<
@@ -3639,6 +3634,7 @@ export const channelDialogMessageSchema = /*#__PURE__*/ z.object({
   authorDisplayName: z.string().nullable(),
   isAdmin: z.boolean().default(false),
   avatarUrl: z.string().trim().url().nullable().default(null),
+  textFormat: broadcastTextFormatSchema.optional(),
   createdAt: z.string().datetime(),
   editedAt: z.string().datetime().nullable().optional(),
   replyToMessageId: z.string().nullable().optional(),

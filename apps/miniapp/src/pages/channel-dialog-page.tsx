@@ -14,6 +14,7 @@ import {
   Attachment as IconoirAttachment,
   BubbleStar as IconoirEmoji,
   Camera as IconoirCamera,
+  Link as IconoirLink,
 } from 'iconoir-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -33,6 +34,15 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import {
+  MAX_MARKDOWN_TOOL_DEFINITIONS,
+  type MaxMarkdownTool,
+} from '../components/max-markdown-editor';
+import { MaxMarkdownPreview } from '../components/max-markdown-preview';
+import {
+  MaxRichTextEditor,
+  type MaxRichTextEditorHandle,
+} from '../components/max-rich-text-editor';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { isSessionExpiredApiMessage, isTerminalDialogApiMessage } from '../lib/api-error';
@@ -54,6 +64,7 @@ import {
   formatDialogAttachmentSize,
   prepareCommentDialogFileAttachment,
   prepareCommentDialogImageAttachment,
+  prepareSuggestionDialogImageAttachment,
   type PreparedCommentDialogAttachment,
 } from '../lib/dialog-attachments';
 import { openFileInputPicker, resolveFileInputActivationMode } from '../lib/file-input-picker';
@@ -110,6 +121,7 @@ const COMMENT_DRAFT_MAX_LENGTH = 2_000;
 const COMMENTS_NEAR_BOTTOM_THRESHOLD = 72;
 const COMMENTS_STICK_TO_BOTTOM_THRESHOLD = 160;
 const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
+const ATTACHMENT_SELECTION_DEDUPE_MS = 2_500;
 const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
 const SWIPE_REPLY_TRIGGER_DISTANCE = 54;
 const SWIPE_REPLY_MAX_OFFSET = 78;
@@ -1190,9 +1202,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     image: null,
     file: null,
   });
+  const recentAttachmentSelectionRef = useRef<
+    Record<AttachmentInputKind, { signature: string; handledAt: number } | null>
+  >({
+    image: null,
+    file: null,
+  });
   const messageNodeRefs = useRef(new Map<string, HTMLElement>());
   const messageLayoutContextRef = useRef<string | null>(null);
   const messageRectsRef = useRef(new Map<string, DOMRect>());
+  const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const ignoreNextBubbleClickRef = useRef(false);
   const launchErrorRedirectedRef = useRef(false);
   const queryClient = useQueryClient();
@@ -2119,7 +2138,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         try {
           prepared.push(
             kind === 'image'
-              ? await prepareCommentDialogImageAttachment(file)
+              ? dialogType === 'suggest'
+                ? await prepareSuggestionDialogImageAttachment(file)
+                : await prepareCommentDialogImageAttachment(file)
               : await prepareCommentDialogFileAttachment(file),
           );
         } catch (error: unknown) {
@@ -2170,6 +2191,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     const signature = buildAttachmentSelectionSignature(files);
+    const recentSelection = recentAttachmentSelectionRef.current[kind];
+    if (
+      recentSelection?.signature === signature &&
+      Date.now() - recentSelection.handledAt < ATTACHMENT_SELECTION_DEDUPE_MS
+    ) {
+      attachmentInputWatchCleanupRef.current[kind]?.();
+      attachmentInputWatchCleanupRef.current[kind] = null;
+      return true;
+    }
+
     if (lastHandledAttachmentSelectionRef.current[kind] === signature) {
       attachmentInputWatchCleanupRef.current[kind]?.();
       attachmentInputWatchCleanupRef.current[kind] = null;
@@ -2177,6 +2208,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     lastHandledAttachmentSelectionRef.current[kind] = signature;
+    recentAttachmentSelectionRef.current[kind] = {
+      signature,
+      handledAt: Date.now(),
+    };
     attachmentInputWatchCleanupRef.current[kind]?.();
     attachmentInputWatchCleanupRef.current[kind] = null;
     void prepareDraftAttachmentsFromFiles(kind, files);
@@ -2269,6 +2304,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return {
         token,
         text: payload.text,
+        textFormat: 'markdown' as const,
         images: payload.attachments
           .filter((attachment) => attachment.type === 'image')
           .map((attachment) => ({
@@ -2457,6 +2493,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const isComposePending = sendMutation.isPending || updateMutation.isPending;
   const isCommentActionPending =
     reactionMutation.isPending || updateMutation.isPending || deleteMutation.isPending;
+
+  const applySuggestTextModifier = (tool: MaxMarkdownTool) => {
+    if (dialogType !== 'suggest' || isComposePending || isPreparingAttachment) {
+      return;
+    }
+
+    richTextEditorRef.current?.applyTool(tool);
+    maxSelectionChanged();
+  };
 
   const openMessageActions = (
     messageId: string,
@@ -2968,6 +3013,37 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     </div>
 
                     <div
+                      className="channel-suggest-composer__modifier-row"
+                      role="toolbar"
+                      aria-label="Форматирование"
+                    >
+                      {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
+                        <button
+                          key={tool.id}
+                          type="button"
+                          className={cn(
+                            'channel-suggest-composer__modifier',
+                            tool.id === 'italic' && 'is-italic',
+                            tool.id === 'code' && 'is-code',
+                          )}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onClick={() => applySuggestTextModifier(tool.id)}
+                          disabled={isComposePending || isPreparingAttachment}
+                          title={tool.title}
+                          aria-label={tool.title}
+                        >
+                          {tool.id === 'link' ? (
+                            <IconoirLink aria-hidden focusable="false" />
+                          ) : (
+                            tool.label
+                          )}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div
                       className={cn(
                         'channel-suggest-composer__phone',
                         !draft.trim() && draftImageAttachments.length === 0 && 'is-empty',
@@ -2987,16 +3063,18 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           }}
                         />
 
-                        <label className="channel-suggest-composer__field">
-                          <textarea
-                            ref={composeFieldRef}
-                            rows={1}
+                        <div className="channel-suggest-composer__field">
+                          <MaxRichTextEditor
+                            ref={richTextEditorRef}
                             value={draft}
-                            onChange={(event) => setDraft(event.target.value)}
+                            onChange={setDraft}
                             placeholder={viewModel.placeholder}
                             maxLength={COMMENT_DRAFT_MAX_LENGTH}
+                            disabled={isComposePending}
+                            ariaLabel="Текст предложки"
+                            className="channel-suggest-composer__rich-editor"
                           />
-                        </label>
+                        </div>
 
                         <span className="channel-suggest-composer__tail" aria-hidden />
                       </div>
@@ -3112,6 +3190,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     <div className="channel-suggest-list channel-suggest-list--history">
                       {messages.map((message) => {
                         const status = resolveSuggestionStatus(message);
+                        const suggestionText = resolveSuggestionText(message);
+                        const hasSuggestionText = message.text.trim().length > 0;
                         const hasMedia =
                           message.hasImage ||
                           message.hasVideo ||
@@ -3138,8 +3218,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               </time>
                             </div>
 
-                            <p className={cn(!message.text.trim() && 'is-muted')}>
-                              {resolveSuggestionText(message)}
+                            <p className={cn(!hasSuggestionText && 'is-muted')}>
+                              {hasSuggestionText && message.textFormat === 'markdown' ? (
+                                <MaxMarkdownPreview
+                                  value={message.text}
+                                  preserveLinks
+                                  fallback={suggestionText}
+                                />
+                              ) : (
+                                suggestionText
+                              )}
                             </p>
 
                             {hasMedia ? (

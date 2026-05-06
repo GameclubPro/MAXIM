@@ -1183,6 +1183,7 @@ function buildPreviewDialogMessage(payload: {
   id: string;
   type: ChannelDialogType;
   text: string;
+  textFormat?: ChannelDialogMessage['textFormat'];
   authorUserId: string;
   authorDisplayName: string | null;
   isAdmin?: boolean;
@@ -1205,6 +1206,7 @@ function buildPreviewDialogMessage(payload: {
     id: payload.id,
     type: payload.type,
     text: payload.text,
+    ...(payload.textFormat !== undefined ? { textFormat: payload.textFormat } : {}),
     authorUserId: payload.authorUserId,
     authorDisplayName: payload.authorDisplayName,
     isAdmin: payload.isAdmin ?? payload.authorUserId.startsWith('preview-admin'),
@@ -3017,6 +3019,7 @@ async function handleChatRequest(
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
+              textFormat: payload.textFormat,
               hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
               imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
               imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,
@@ -3688,6 +3691,7 @@ async function handleChannelRequest(
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
               reviewStatus: 'pending',
+              textFormat: payload.textFormat,
               hasImage: payload.images.length > 0 || Boolean(payload.imageBase64),
               imageCount: payload.images.length || (payload.imageBase64 ? 1 : 0),
               imageFileName: payload.images[0]?.fileName || payload.imageFileName || null,

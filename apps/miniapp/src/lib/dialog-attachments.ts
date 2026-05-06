@@ -20,6 +20,7 @@ const PREVIEWABLE_IMAGE_MIME_TYPES = new Set([
 ]);
 
 const MAX_COMMENT_ATTACHMENT_BASE64_LENGTH = 4_000_000;
+const MAX_SUGGESTION_DIALOG_IMAGE_BYTES = 380_000;
 const COMMENT_IMAGE_FALLBACK_MAX_BYTES = Math.floor((MAX_COMMENT_ATTACHMENT_BASE64_LENGTH * 3) / 4);
 const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
   bmp: 'image/bmp',
@@ -145,9 +146,10 @@ function readFileAsDataUrl(file: Blob): Promise<string> {
 
 export async function prepareCommentDialogImageAttachment(
   file: File,
+  options: { maxBytes?: number } = {},
 ): Promise<PreparedCommentDialogAttachment> {
   try {
-    const prepared = await prepareBroadcastImage(file);
+    const prepared = await prepareBroadcastImage(file, options);
     const size = Math.max(1, Math.floor((prepared.base64.length * 3) / 4));
 
     return {
@@ -190,6 +192,14 @@ export async function prepareCommentDialogImageAttachment(
       size: file.size || Math.max(1, Math.floor((parsed.base64.length * 3) / 4)),
     };
   }
+}
+
+export function prepareSuggestionDialogImageAttachment(
+  file: File,
+): Promise<PreparedCommentDialogAttachment> {
+  return prepareCommentDialogImageAttachment(file, {
+    maxBytes: MAX_SUGGESTION_DIALOG_IMAGE_BYTES,
+  });
 }
 
 export async function prepareCommentDialogFileAttachment(

@@ -63,6 +63,7 @@ export type BroadcastHandoffPayload = {
 export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
+  textFormat?: BroadcastTextFormat;
   replyToMessageId?: string | null;
   attachments?: Array<{
     type: 'image' | 'file';

@@ -31,6 +31,10 @@ export type PreparedBroadcastImage = {
   height: number | null;
 };
 
+type PrepareBroadcastImageOptions = {
+  maxBytes?: number;
+};
+
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -179,7 +183,20 @@ async function readOriginalImage(
   };
 }
 
-export async function prepareBroadcastImage(file: File): Promise<PreparedBroadcastImage> {
+function resolveImageMaxBytes(options: PrepareBroadcastImageOptions): number {
+  const rawMaxBytes = Math.trunc(options.maxBytes ?? MAX_BROADCAST_IMAGE_BYTES);
+  if (!Number.isFinite(rawMaxBytes)) {
+    return MAX_BROADCAST_IMAGE_BYTES;
+  }
+
+  return Math.max(64_000, Math.min(MAX_BROADCAST_IMAGE_BYTES, rawMaxBytes));
+}
+
+export async function prepareBroadcastImage(
+  file: File,
+  options: PrepareBroadcastImageOptions = {},
+): Promise<PreparedBroadcastImage> {
+  const maxImageBytes = resolveImageMaxBytes(options);
   const inputMimeType = resolveInputImageMimeType(file);
   const sourceBlob = ensureTypedImageBlob(file, inputMimeType);
   const targetMimeTypes = resolveMaxUploadImageTargetMimeTypes(inputMimeType);
@@ -194,7 +211,7 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
     }
 
     if (inputMimeType === 'image/gif') {
-      if (file.size > MAX_BROADCAST_IMAGE_BYTES) {
+      if (file.size > maxImageBytes) {
         throw new Error(FALLBACK_IMAGE_ERROR);
       }
 
@@ -229,7 +246,7 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
             bestHeight = scaled.height;
           }
 
-          if (blob.size <= MAX_BROADCAST_IMAGE_BYTES) {
+          if (blob.size <= maxImageBytes) {
             return {
               base64: await blobToBase64(blob),
               mimeType: actualMimeType,
@@ -242,14 +259,14 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
       }
     }
 
-    if (inputMimeType && file.size <= MAX_BROADCAST_IMAGE_BYTES) {
+    if (inputMimeType && file.size <= maxImageBytes) {
       return readOriginalImage(sourceBlob, inputMimeType, file.name, {
         width: sourceWidth,
         height: sourceHeight,
       });
     }
 
-    if (bestBlob && bestBlob.size <= MAX_BROADCAST_IMAGE_BYTES) {
+    if (bestBlob && bestBlob.size <= maxImageBytes) {
       return {
         base64: await blobToBase64(bestBlob),
         mimeType: bestMimeType,
@@ -263,7 +280,7 @@ export async function prepareBroadcastImage(file: File): Promise<PreparedBroadca
       throw new Error('Нужен файл изображения.');
     }
 
-    if (file.size <= MAX_BROADCAST_IMAGE_BYTES) {
+    if (file.size <= maxImageBytes) {
       return readOriginalImage(sourceBlob, inputMimeType, file.name);
     }
 

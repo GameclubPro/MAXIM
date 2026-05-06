@@ -8340,13 +8340,20 @@ export class AdminService implements OnModuleDestroy {
     const normalizedAttachments = this.normalizeChannelDialogCommentInputAttachments(
       parsed.data.attachments,
     );
-    const images = normalizedAttachments
+    const parsedImages = parsed.data.images.map((image) => ({
+      base64: image.base64?.trim() ?? '',
+      mimeType: image.mimeType?.trim() ?? '',
+      fileName: image.fileName?.trim() ?? '',
+    }));
+    const attachmentImages = normalizedAttachments
       .filter((attachment) => attachment.kind === 'image')
       .map((image) => ({
         base64: image.base64?.trim() ?? '',
         mimeType: image.mimeType?.trim() ?? '',
         fileName: image.fileName?.trim() ?? '',
       }));
+    const images =
+      dialogType === 'suggest' && parsedImages.length > 0 ? parsedImages : attachmentImages;
     const fileAttachments = normalizedAttachments.filter(
       (attachment) => attachment.kind === 'file',
     );
@@ -8402,6 +8409,7 @@ export class AdminService implements OnModuleDestroy {
         threadId,
         source,
         text,
+        textFormat: parsed.data.textFormat,
         images,
       });
       return createChannelDialogMessageResponseSchema.parse({
@@ -20640,6 +20648,9 @@ export class AdminService implements OnModuleDestroy {
     const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
     const avatarUrl = this.readTrimmedString(payload.authorAvatarUrl);
     const text = this.readTrimmedString(payload.text) ?? '';
+    const textFormat = this.normalizeBroadcastTextFormat(
+      this.readTrimmedString(payload.textFormat) ?? 'plain',
+    );
     const editedAt = this.readTrimmedString(payload.editedAt);
     const replyTo = this.readDialogReplyPreview(payload.replyTo);
     const attachments = this.buildChannelDialogCommentAttachments(
@@ -20717,6 +20728,7 @@ export class AdminService implements OnModuleDestroy {
             deliveredToUserId: deliveredToUserId ?? null,
             reviewStatus: reviewStatus ?? 'pending',
             publishedUrl: publishedUrl ?? null,
+            textFormat,
             hasImage,
             imageCount,
             imageFileName,
