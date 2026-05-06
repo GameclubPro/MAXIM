@@ -1,13 +1,8 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useRef, useState } from 'react';
-import {
-  MAX_MARKDOWN_TOOL_DEFINITIONS,
-  MaxMarkdownEditor,
-  type MaxMarkdownEditorHandle,
-  type MaxMarkdownTool,
-} from './max-markdown-editor';
-import { MaxMarkdownPreview } from './max-markdown-preview';
+import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
+import { MaxRichTextEditor, type MaxRichTextEditorHandle } from './max-rich-text-editor';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { buildBroadcastPreviewButtonRows } from '../lib/broadcast-link-buttons';
@@ -60,7 +55,7 @@ export function BroadcastContentComposer({
   onError,
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
-  const markdownEditorRef = useRef<MaxMarkdownEditorHandle | null>(null);
+  const richTextEditorRef = useRef<MaxRichTextEditorHandle | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
   const imagePreviewUrl =
     image.enabled && image.base64 && image.mimeType
@@ -109,19 +104,13 @@ export function BroadcastContentComposer({
   }
 
   function applyTextModifier(tool: MaxMarkdownTool) {
-    markdownEditorRef.current?.applyTool(tool);
+    richTextEditorRef.current?.applyTool(tool);
   }
 
   return (
     <div className={cn('broadcast-content-composer', (textError || imageError) && 'field--error')}>
-      <div
-        className={cn(
-          'broadcast-content-composer__workspace',
-          'has-preview',
-          !hasPreview && 'is-empty-preview',
-        )}
-      >
-        <div className="broadcast-content-composer__editor">
+      <div className="broadcast-content-composer__workspace broadcast-content-composer__workspace--rich">
+        <div className="broadcast-content-composer__editor broadcast-content-composer__editor--rich">
           <div className="broadcast-content-composer__editor-head">
             <span
               className={cn(
@@ -156,18 +145,89 @@ export function BroadcastContentComposer({
             ))}
           </div>
 
-          <MaxMarkdownEditor
-            ref={markdownEditorRef}
-            value={text}
-            onChange={onTextChange}
-            maxLength={maxLength}
-            placeholder="Текст рассылки"
-            rows={3}
-            disabled={isBusy}
-            showToolbar={false}
-            ariaLabel="Текст рассылки"
-            className="broadcast-content-composer__markdown"
-          />
+          <div
+            className={cn(
+              'broadcast-message-card',
+              'broadcast-message-card--editable',
+              !hasPreview && 'is-empty',
+            )}
+            aria-label="Сообщение рассылки"
+          >
+            <div className="broadcast-message-card__phone">
+              <div className="broadcast-message-card__bubble">
+                {imagePreviewUrl ? (
+                  <figure className="broadcast-message-card__media-frame">
+                    <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
+                    <button
+                      type="button"
+                      className="broadcast-message-card__media-remove"
+                      onClick={clearImage}
+                      disabled={isBusy}
+                      aria-label="Убрать фото"
+                      title="Убрать фото"
+                    >
+                      <IconoirXmark aria-hidden focusable="false" />
+                    </button>
+                  </figure>
+                ) : null}
+
+                {videoLabel ? (
+                  <span className="broadcast-message-card__video-preview">
+                    {videoLabel}
+                    {onClearVideo ? (
+                      <button
+                        type="button"
+                        className="broadcast-message-card__media-remove"
+                        onClick={onClearVideo}
+                        disabled={isBusy}
+                        aria-label="Убрать видео"
+                        title="Убрать видео"
+                      >
+                        <IconoirXmark aria-hidden focusable="false" />
+                      </button>
+                    ) : null}
+                  </span>
+                ) : null}
+
+                <MaxRichTextEditor
+                  ref={richTextEditorRef}
+                  value={text}
+                  onChange={onTextChange}
+                  maxLength={maxLength}
+                  placeholder="Текст рассылки"
+                  disabled={isBusy}
+                  ariaLabel="Текст рассылки"
+                  className="broadcast-message-card__rich-editor"
+                />
+
+                {previewButtonRows.length > 0 ? (
+                  <div className="broadcast-message-card__buttons">
+                    {previewButtonRows.map((row, rowIndex) => (
+                      <div
+                        key={`preview-row-${rowIndex}`}
+                        className="broadcast-message-card__button-row"
+                      >
+                        {row.map((button, buttonIndex) => (
+                          <span
+                            key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
+                            className={cn(
+                              'broadcast-message-card__button',
+                              previewSystemButtons.includes(button) && 'is-system',
+                            )}
+                          >
+                            {button.text.trim()}
+                          </span>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+
+                <span className="broadcast-message-card__tail" />
+                <span className="broadcast-message-card__checks" />
+              </div>
+            </div>
+          </div>
 
           <div className="broadcast-content-composer__bar">
             <div className="broadcast-content-composer__media-actions">
@@ -230,105 +290,7 @@ export function BroadcastContentComposer({
             </span>
           </div>
         </div>
-
-        <div
-          className={cn('broadcast-message-card', !hasPreview && 'is-empty')}
-          aria-label="Предпросмотр сообщения"
-        >
-          <div className="broadcast-message-card__phone" aria-hidden>
-            <div className="broadcast-message-card__bubble">
-              {imagePreviewUrl ? (
-                <img className="broadcast-message-card__image" src={imagePreviewUrl} alt="" />
-              ) : null}
-
-              {videoLabel ? (
-                <span className="broadcast-message-card__video-preview">{videoLabel}</span>
-              ) : null}
-
-              {normalizedText ? (
-                <MaxMarkdownPreview
-                  value={text}
-                  className="broadcast-message-card__preview"
-                  preserveLinks
-                  fallback={null}
-                />
-              ) : null}
-
-              {!hasPreview ? (
-                <span className="broadcast-message-card__empty-lines">
-                  <span />
-                  <span />
-                  <span />
-                </span>
-              ) : null}
-
-              {previewButtonRows.length > 0 ? (
-                <div className="broadcast-message-card__buttons">
-                  {previewButtonRows.map((row, rowIndex) => (
-                    <div
-                      key={`preview-row-${rowIndex}`}
-                      className="broadcast-message-card__button-row"
-                    >
-                      {row.map((button, buttonIndex) => (
-                        <span
-                          key={`${rowIndex}-${buttonIndex}-${button.text}-${button.url}`}
-                          className={cn(
-                            'broadcast-message-card__button',
-                            previewSystemButtons.includes(button) && 'is-system',
-                          )}
-                        >
-                          {button.text.trim()}
-                        </span>
-                      ))}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-
-              <span className="broadcast-message-card__tail" />
-              <span className="broadcast-message-card__checks" />
-            </div>
-          </div>
-        </div>
       </div>
-
-      {(imagePreviewUrl || videoLabel) && (
-        <div className="broadcast-content-composer__media-grid">
-          {imagePreviewUrl ? (
-            <figure className="broadcast-content-composer__media">
-              <img src={imagePreviewUrl} alt="" />
-              <button
-                type="button"
-                className="broadcast-content-composer__media-remove"
-                onClick={clearImage}
-                disabled={isBusy}
-                aria-label="Убрать фото"
-                title="Убрать фото"
-              >
-                <IconoirXmark aria-hidden focusable="false" />
-              </button>
-            </figure>
-          ) : null}
-
-          {videoLabel ? (
-            <div className="broadcast-content-composer__video">
-              <span>{videoLabel}</span>
-              {onClearVideo ? (
-                <button
-                  type="button"
-                  className="broadcast-content-composer__media-remove"
-                  onClick={onClearVideo}
-                  disabled={isBusy}
-                  aria-label="Убрать видео"
-                  title="Убрать видео"
-                >
-                  <IconoirXmark aria-hidden focusable="false" />
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      )}
 
       {textError || imageError ? (
         <small className="field__hint">{textError || imageError}</small>
