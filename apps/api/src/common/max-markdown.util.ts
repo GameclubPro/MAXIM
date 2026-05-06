@@ -11,7 +11,7 @@ type RenderMarkdownOptions = {
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const SUPPORTED_MARKDOWN_PATTERN =
-  /(?:^#{1,6}\s+\S.*$|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
+  /(?:^#{1,6}\s+\S.*$|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
 const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
 
 export function containsSupportedMarkdownSyntax(source: string): boolean {
@@ -200,6 +200,22 @@ function matchToken(value: string): {
       node: {
         type: 'code',
         content: codeMatch[1] ?? '',
+      },
+    };
+  }
+
+  const boldItalicMatch = /^(?:\*\*\*([^\n]+?)\*\*\*|___([^\n]+?)___)/u.exec(value);
+  if (boldItalicMatch) {
+    return {
+      rawLength: boldItalicMatch[0].length,
+      node: {
+        type: 'bold',
+        children: [
+          {
+            type: 'italic',
+            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? ''),
+          },
+        ],
       },
     };
   }

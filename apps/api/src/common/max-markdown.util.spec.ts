@@ -49,6 +49,23 @@ describe('renderSupportedMarkdownAsHtml', () => {
     ).toBe('<p><u><strong><em><u>MAX Docs</u></em></strong></u></p>');
   });
 
+  it('renders compact bold italic marker runs without leaking markdown punctuation', () => {
+    expect(renderSupportedMarkdownAsHtml('***MAX Docs***')).toBe(
+      '<p><strong><em>MAX Docs</em></strong></p>',
+    );
+    expect(renderSupportedMarkdownAsHtml('___++~~MAX Docs~~++___')).toBe(
+      '<p><strong><em><u><s>MAX Docs</s></u></em></strong></p>',
+    );
+    expect(stripSupportedMarkdownToPlainText('___++~~MAX Docs~~++___')).toBe('MAX Docs');
+  });
+
+  it('renders every nested rich text modifier combination without leaking markers', () => {
+    for (const source of buildNestedModifierSamples()) {
+      expect(renderSupportedMarkdownAsHtml(source)).not.toMatch(/(?:\*\*|__|\+\+|~~)/u);
+      expect(stripSupportedMarkdownToPlainText(source)).toBe('MAX Docs');
+    }
+  });
+
   it('preserves paragraphs, indentation and repeated spaces in html output', () => {
     expect(
       renderSupportedMarkdownAsHtml('**Анонс**\n\n  Второй абзац с  двойным пробелом\tи табом'),
@@ -85,3 +102,29 @@ describe('renderSupportedMarkdownAsHtml', () => {
     ).toBe('Заголовок\nТекст с курсивом, подчеркиванием, зачеркиванием и кодом.\n\nОткрыть MAX');
   });
 });
+
+function buildNestedModifierSamples(): string[] {
+  const wrappers: Array<[string, string]> = [
+    ['**', '**'],
+    ['_', '_'],
+    ['++', '++'],
+    ['~~', '~~'],
+  ];
+
+  return permute(wrappers).map((permutation) =>
+    permutation.reduce((content, [prefix, suffix]) => `${prefix}${content}${suffix}`, 'MAX Docs'),
+  );
+}
+
+function permute<T>(items: T[]): T[][] {
+  if (items.length === 0) {
+    return [[]];
+  }
+
+  return items.flatMap((item, index) =>
+    permute([...items.slice(0, index), ...items.slice(index + 1)]).map((permutation) => [
+      item,
+      ...permutation,
+    ]),
+  );
+}

@@ -237,6 +237,22 @@ function matchToken(value: string): { rawLength: number; node: InlineToken } | n
     };
   }
 
+  const boldItalicMatch = /^(?:\*\*\*([^\n]+?)\*\*\*|___([^\n]+?)___)/u.exec(value);
+  if (boldItalicMatch) {
+    return {
+      rawLength: boldItalicMatch[0].length,
+      node: {
+        type: 'bold',
+        children: [
+          {
+            type: 'italic',
+            children: parseInlineTokens(boldItalicMatch[1] ?? boldItalicMatch[2] ?? ''),
+          },
+        ],
+      },
+    };
+  }
+
   const boldMatch = /^(?:\*\*([^\n]+?)\*\*|__([^\n]+?)__)/u.exec(value);
   if (boldMatch) {
     return {
