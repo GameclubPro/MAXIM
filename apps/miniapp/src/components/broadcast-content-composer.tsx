@@ -38,37 +38,6 @@ type BroadcastContentComposerProps = {
   onError?: (message: string) => void;
 };
 
-const BROADCAST_TEXT_TEMPLATES = [
-  {
-    id: 'announce',
-    label: 'Анонс',
-    text: '**Анонс**\n\nКоротко о главном:\n\n• \n\nПодробнее ниже.',
-  },
-  {
-    id: 'promo',
-    label: 'Акция',
-    text: '**Специальное предложение**\n\nУсловия:\n\n• \n\nДействует до ',
-  },
-  {
-    id: 'digest',
-    label: 'Итоги',
-    text: '**Итоги недели**\n\nГлавное:\n\n• \n• \n• ',
-  },
-] as const;
-
-const BROADCAST_TEXT_SNIPPETS = [
-  {
-    id: 'cta',
-    label: 'CTA',
-    text: 'Нажмите кнопку ниже, чтобы открыть.',
-  },
-  {
-    id: 'urgent',
-    label: 'Важно',
-    text: '**Важно:** ',
-  },
-] as const;
-
 export function BroadcastContentComposer({
   text,
   maxLength,
@@ -104,6 +73,7 @@ export function BroadcastContentComposer({
   const isBusy = disabled || isPreparingImage;
   const canUseTemplates = Boolean(templateScope);
   const canSaveTemplate = Boolean(canUseTemplates && normalizedText);
+  const canOpenTemplates = savedTemplates.length > 0;
 
   useEffect(() => {
     setSavedTemplates(templateScope ? readBroadcastTextTemplates(templateScope) : []);
@@ -199,14 +169,16 @@ export function BroadcastContentComposer({
           </div>
 
           <div className="broadcast-content-composer__template-row" aria-label="Быстрый текст">
-            <button
-              type="button"
-              className="broadcast-content-composer__template-chip"
-              onClick={() => setTemplateSheetOpen(true)}
-              disabled={isBusy}
-            >
-              Шаблоны
-            </button>
+            {canOpenTemplates ? (
+              <button
+                type="button"
+                className="broadcast-content-composer__template-chip"
+                onClick={() => setTemplateSheetOpen(true)}
+                disabled={isBusy}
+              >
+                Шаблоны
+              </button>
+            ) : null}
             {canUseTemplates ? (
               <button
                 type="button"
@@ -395,28 +367,6 @@ export function BroadcastContentComposer({
                 </div>
 
                 <div className="broadcast-template-sheet__grid">
-                  {BROADCAST_TEXT_TEMPLATES.map((template) => (
-                    <button
-                      key={template.id}
-                      type="button"
-                      className="broadcast-template-sheet__item"
-                      onClick={() => applyTemplate(template.text)}
-                      disabled={isBusy}
-                    >
-                      <strong>{template.label}</strong>
-                    </button>
-                  ))}
-                  {BROADCAST_TEXT_SNIPPETS.map((snippet) => (
-                    <button
-                      key={snippet.id}
-                      type="button"
-                      className="broadcast-template-sheet__item is-snippet"
-                      onClick={() => applyTemplate(snippet.text)}
-                      disabled={isBusy}
-                    >
-                      <strong>{snippet.label}</strong>
-                    </button>
-                  ))}
                   {savedTemplates.map((template) => (
                     <span key={template.id} className="broadcast-template-sheet__saved">
                       <button

@@ -1,5 +1,10 @@
 import type { BroadcastLinkButton, BroadcastTargetMode } from '@maxim/contracts';
-import type { BroadcastQuickPreset } from './broadcast-schedule';
+import {
+  normalizeBroadcastCycleDraft,
+  normalizeBroadcastTimingMode,
+  type BroadcastCycleDraft,
+  type BroadcastTimingMode,
+} from './broadcast-schedule';
 import type { BroadcastScopedTargetMode } from './broadcast-audience';
 
 export type BroadcastComposerDraftEntityType = 'chat' | 'channel';
@@ -14,9 +19,10 @@ export type BroadcastComposerDraft = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  timingMode: BroadcastTimingMode;
   scheduledSlots: string[];
-  quickPreset: BroadcastQuickPreset | null;
   scheduleTimezone: string;
+  cycle: BroadcastCycleDraft;
 };
 
 const STORAGE_VERSION = 1;
@@ -62,10 +68,13 @@ function readScopedMode(
   return value === 'selected' || value === 'current' ? value : fallback;
 }
 
-function readQuickPreset(value: unknown): BroadcastQuickPreset | null {
-  return value === 'now' || value === 'plus30' || value === 'tonight' || value === 'tomorrow'
-    ? value
-    : null;
+function readTimingMode(value: unknown, legacyQuickPreset: unknown): BroadcastTimingMode {
+  const normalized = normalizeBroadcastTimingMode(value);
+  if (normalized) {
+    return normalized;
+  }
+
+  return legacyQuickPreset === 'now' ? 'now' : 'scheduled';
 }
 
 function readButtons(value: unknown): BroadcastLinkButton[] {
@@ -103,9 +112,10 @@ function parseBroadcastComposerDraftEnvelope(value: unknown): BroadcastComposerD
     imageBase64: readString(draft.imageBase64),
     imageMimeType: readString(draft.imageMimeType),
     imageFileName: readString(draft.imageFileName),
+    timingMode: readTimingMode(draft.timingMode, draft.quickPreset),
     scheduledSlots: readStringArray(draft.scheduledSlots),
-    quickPreset: readQuickPreset(draft.quickPreset),
     scheduleTimezone: readString(draft.scheduleTimezone),
+    cycle: normalizeBroadcastCycleDraft(isObject(draft.cycle) ? draft.cycle : null),
   };
 }
 
@@ -216,8 +226,8 @@ export function isBroadcastComposerDraftEmpty(draft: BroadcastComposerDraft): bo
     draft.lastScopedTargetMode === 'current' &&
     draft.buttons.length === 0 &&
     !draft.imageEnabled &&
-    draft.scheduledSlots.length === 0 &&
-    draft.quickPreset === null
+    draft.timingMode === 'scheduled' &&
+    draft.scheduledSlots.length === 0
   );
 }
 

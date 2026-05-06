@@ -73,10 +73,15 @@ import {
   type BroadcastLinkButtonFieldErrors,
 } from '../lib/broadcast-link-buttons';
 import {
-  resolveBroadcastQuickScheduleSelection,
+  createDefaultBroadcastCycleDraft,
+  formatBroadcastCycleSummary,
+  getBroadcastCycleValidationError,
+  normalizeBroadcastCycleDraft,
+  resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
-  type BroadcastQuickPreset,
+  type BroadcastCycleDraft,
+  type BroadcastTimingMode,
 } from '../lib/broadcast-schedule';
 import {
   loadBroadcastComposerDraft,
@@ -787,8 +792,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastVideoCleared, setBroadcastVideoCleared] = useState(false);
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
-  const [broadcastQuickPreset, setBroadcastQuickPreset] = useState<BroadcastQuickPreset | null>(
-    null,
+  const [broadcastTimingMode, setBroadcastTimingMode] = useState<BroadcastTimingMode>('scheduled');
+  const [broadcastCycleDraft, setBroadcastCycleDraft] = useState<BroadcastCycleDraft>(() =>
+    createDefaultBroadcastCycleDraft(),
   );
   const [broadcastScheduleTimezone, setBroadcastScheduleTimezone] = useState(() =>
     resolveBroadcastScheduleTimezone(),
@@ -803,7 +809,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [, setBroadcastCycleEnabled] = useState(false);
   const [, setBroadcastCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
   const [, setBroadcastCycleCount] = useState(2);
-  const [, setBroadcastCycleError] = useState('');
+  const [broadcastCycleError, setBroadcastCycleError] = useState('');
   const [broadcastPlannerResetKey, setBroadcastPlannerResetKey] = useState(0);
   const [broadcastPlannerState, setBroadcastPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
@@ -975,7 +981,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setDuplicatedManagedBroadcast(null);
     setBroadcastButtons(broadcastHandoffStateQuery.data.buttons);
-    setBroadcastQuickPreset(null);
+    setBroadcastTimingMode(
+      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ? 'scheduled' : 'now',
+    );
     setBroadcastScheduledSlots(
       sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
     );
@@ -1005,7 +1013,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastVideoCleared(false);
-    setBroadcastQuickPreset(null);
+    setBroadcastTimingMode('scheduled');
+    setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
     setBroadcastImageError('');
@@ -1033,7 +1042,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       setBroadcastImageBase64(savedBroadcastDraft.imageBase64);
       setBroadcastImageMimeType(savedBroadcastDraft.imageMimeType);
       setBroadcastImageFileName(savedBroadcastDraft.imageFileName);
-      setBroadcastQuickPreset(savedBroadcastDraft.quickPreset);
+      setBroadcastTimingMode(savedBroadcastDraft.timingMode);
+      setBroadcastCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setBroadcastScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
       setBroadcastScheduleTimezone(
         savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
@@ -1072,22 +1082,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: broadcastImageBase64,
       imageMimeType: broadcastImageMimeType,
       imageFileName: broadcastImageFileName,
+      timingMode: broadcastTimingMode,
       scheduledSlots: broadcastScheduledSlots,
-      quickPreset: broadcastQuickPreset,
       scheduleTimezone: broadcastScheduleTimezone,
+      cycle: broadcastCycleDraft,
     };
 
     saveBroadcastComposerDraft('channel', chatId, draftToPersist);
   }, [
     broadcastButtons,
+    broadcastCycleDraft,
     broadcastImageBase64,
     broadcastImageEnabled,
     broadcastImageFileName,
     broadcastImageMimeType,
-    broadcastQuickPreset,
     broadcastScheduleTimezone,
     broadcastScheduledSlots,
     broadcastText,
+    broadcastTimingMode,
     chatId,
     editingManagedBroadcast,
   ]);
@@ -1503,9 +1515,33 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType(broadcast.imageMimeType);
     setBroadcastImageFileName(broadcast.imageFileName);
     setBroadcastVideoCleared(false);
-    setBroadcastQuickPreset(null);
+    const restoredTimingMode: BroadcastTimingMode =
+      broadcast.scheduleMode === 'calendar'
+        ? 'scheduled'
+        : broadcast.cycleEnabled
+          ? 'cycle'
+          : broadcast.nextSendAt
+            ? 'scheduled'
+            : 'now';
+    setBroadcastTimingMode(restoredTimingMode);
+    setBroadcastCycleDraft(
+      normalizeBroadcastCycleDraft({
+        startMode: broadcast.nextSendAt ? 'later' : 'now',
+        startAt: broadcast.nextSendAt ?? createDefaultBroadcastCycleDraft().startAt,
+        everyHours: broadcast.cycleEveryHours,
+        count: Math.max(2, broadcast.cycleCount),
+      }),
+    );
     setBroadcastScheduledSlots(
-      mode === 'edit' ? sortAndUniqueBroadcastSlots(broadcast.scheduledSlots) : [],
+      mode === 'edit'
+        ? sortAndUniqueBroadcastSlots(
+            broadcast.scheduleMode === 'calendar'
+              ? broadcast.scheduledSlots
+              : broadcast.nextSendAt && !broadcast.cycleEnabled
+                ? [broadcast.nextSendAt]
+                : [],
+          )
+        : [],
     );
     setBroadcastScheduleTimezone(
       broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
@@ -1728,14 +1764,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastButtonDraftValid = !hasBroadcastLinkButtonErrors(
     validateBroadcastLinkButtons(normalizedBroadcastButtons),
   );
-  const broadcastQuickSchedule = broadcastQuickPreset
-    ? resolveBroadcastQuickScheduleSelection(broadcastQuickPreset)
-    : null;
-  const broadcastSlotsSummary = broadcastQuickSchedule
-    ? broadcastQuickSchedule.summary
-    : broadcastScheduledSlots.length > 0
-      ? broadcastSlotsLabel
-      : 'без слотов';
+  const broadcastNormalizedCycle = normalizeBroadcastCycleDraft(
+    broadcastCycleDraft,
+    broadcastNowMs,
+  );
+  const broadcastCycleValidationError =
+    broadcastTimingMode === 'cycle'
+      ? getBroadcastCycleValidationError(broadcastNormalizedCycle, broadcastNowMs)
+      : null;
+  const broadcastTimingSummary =
+    broadcastTimingMode === 'now'
+      ? 'сразу'
+      : broadcastTimingMode === 'cycle'
+        ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
+        : broadcastScheduledSlots.length > 0
+          ? broadcastSlotsLabel
+          : 'без слотов';
   const broadcastSelectionSummary = [
     broadcastPlannerState.selectedDayCount > 0
       ? formatChannelCountLabel(broadcastPlannerState.selectedDayCount, 'день', 'дня', 'дней')
@@ -1748,12 +1792,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     .join(' · ');
   const broadcastPlannerPending = broadcastPlannerState.isDaySheetOpen;
   const broadcastHasFutureSlots =
-    broadcastQuickSchedule !== null || broadcastPlannerState.futureSlotCount > 0;
+    broadcastTimingMode === 'now' ||
+    (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
+    (broadcastTimingMode === 'scheduled' && broadcastPlannerState.futureSlotCount > 0);
   const broadcastCalendarScheduleReady =
+    broadcastTimingMode === 'scheduled' &&
     broadcastScheduledSlots.length > 0 &&
     broadcastPlannerState.futureSlotCount > 0 &&
     !broadcastPlannerPending;
-  const broadcastScheduleReady = broadcastQuickSchedule !== null || broadcastCalendarScheduleReady;
+  const broadcastScheduleReady =
+    broadcastTimingMode === 'now' ||
+    (broadcastTimingMode === 'cycle' && !broadcastCycleValidationError) ||
+    broadcastCalendarScheduleReady;
   const broadcastPublishReady =
     broadcastHasPublishableContent &&
     broadcastScheduleReady &&
@@ -1769,12 +1819,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showBroadcastResetAction =
     editingManagedBroadcast !== null ||
     duplicatedManagedBroadcast !== null ||
-    broadcastQuickPreset !== null ||
+    broadcastTimingMode !== 'scheduled' ||
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
     broadcastHasButton;
-  const broadcastHeaderSummary = broadcastSlotsSummary;
+  const broadcastHeaderSummary = broadcastTimingSummary;
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение через бота выключено'
     : draft.commentsModerationEnabled
@@ -1796,13 +1846,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       : 'Бот'
     : 'Ручн';
   const broadcastCardStatus =
-    broadcastScheduledSlots.length > 0
-      ? 'Календ'
-      : broadcastHasButton
-        ? formatBroadcastButtonsStatus(broadcastButtons)
-        : broadcastHasPublishableContent
-          ? 'Контент'
-          : 'Пусто';
+    broadcastTimingMode === 'cycle'
+      ? 'Цикл'
+      : broadcastTimingMode === 'now'
+        ? 'Сейчас'
+        : broadcastScheduledSlots.length > 0
+          ? 'Календ'
+          : broadcastHasButton
+            ? formatBroadcastButtonsStatus(broadcastButtons)
+            : broadcastHasPublishableContent
+              ? 'Контент'
+              : 'Пусто';
   const broadcastResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
     : 'Очистить рассылку';
@@ -1810,9 +1864,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить рассылку'
     : broadcastPublishIssueLabels.length > 0 && !isBroadcastBusy
       ? `Нужно: ${broadcastPublishIssueLabels.join(' · ')}`
-      : broadcastQuickSchedule
-        ? broadcastQuickSchedule.label
-        : broadcastSelectionSummary || 'Рассылка';
+      : broadcastTimingMode === 'now'
+        ? 'Сразу'
+        : broadcastTimingMode === 'cycle'
+          ? formatBroadcastCycleSummary(broadcastNormalizedCycle, broadcastNowMs)
+          : broadcastSelectionSummary || 'Рассылка';
   const broadcastFooterMeta = [
     'Текущий канал',
     broadcastImageEnabled ? 'Фото' : null,
@@ -1846,16 +1902,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
     {
       label: 'Когда',
-      value: broadcastQuickSchedule
-        ? broadcastQuickSchedule.summary
-        : broadcastPlannerState.futureSlotCount > 0
-          ? formatChannelCountLabel(
-              broadcastPlannerState.futureSlotCount,
-              'слот',
-              'слота',
-              'слотов',
-            )
-          : 'Не выбрано',
+      value:
+        broadcastTimingMode === 'now'
+          ? 'Сейчас'
+          : broadcastTimingMode === 'cycle'
+            ? 'Цикл'
+            : broadcastPlannerState.futureSlotCount > 0
+              ? formatChannelCountLabel(
+                  broadcastPlannerState.futureSlotCount,
+                  'слот',
+                  'слота',
+                  'слотов',
+                )
+              : 'Не выбрано',
       tone: broadcastScheduleReady && broadcastHasFutureSlots ? 'ready' : 'pending',
       icon: 'time',
     },
@@ -1873,9 +1932,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     : broadcastFooterMeta || broadcastHeaderSummary || 'Черновик';
   const broadcastPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
-    : broadcastQuickPreset === 'now'
+    : broadcastTimingMode === 'now'
       ? 'Отправить'
-      : 'Запланировать';
+      : broadcastTimingMode === 'cycle'
+        ? 'Запустить'
+        : 'Запланировать';
   const showBroadcastWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const activeBroadcastWorkspaceView = showBroadcastWorkspaceTabs
     ? broadcastWorkspaceView
@@ -1910,7 +1971,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
           : sendBroadcastMutation.isPending
-            ? broadcastQuickPreset === 'now'
+            ? broadcastTimingMode === 'now'
               ? 'Отправляем...'
               : 'Планируем...'
             : isOpeningManagedBroadcastEditor
@@ -1937,7 +1998,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastVideoCleared(false);
-    setBroadcastQuickPreset(null);
+    setBroadcastTimingMode('scheduled');
+    setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
     setBroadcastImageError('');
@@ -1970,17 +2032,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     clearBroadcastHandoffMutation.mutate();
-  }
-
-  function handleSelectBroadcastQuickPreset(preset: BroadcastQuickPreset) {
-    setBroadcastQuickPreset((current) => (current === preset ? null : preset));
-    setBroadcastScheduledSlots([]);
-    setBroadcastScheduleError('');
-    resetBroadcastPlanner();
-  }
-
-  function handleClearBroadcastQuickPreset() {
-    setBroadcastQuickPreset(null);
   }
 
   function handleBroadcastPlannerStateChange(nextState: BroadcastSchedulePlannerSelectionState) {
@@ -2079,9 +2130,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   function buildBroadcastPublishBasePayload(): BroadcastHandoffPayload {
     const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
     const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedBroadcastButtons);
-    const quickSchedule = broadcastQuickPreset
-      ? resolveBroadcastQuickScheduleSelection(broadcastQuickPreset)
-      : null;
+    const cycleDraft = normalizeBroadcastCycleDraft(broadcastCycleDraft);
+    const isCalendarSchedule = broadcastTimingMode === 'scheduled';
+    const isCycleSchedule = broadcastTimingMode === 'cycle';
 
     return {
       targetMode: 'current',
@@ -2091,13 +2142,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
-      scheduleMode: quickSchedule ? 'legacy' : 'calendar',
+      scheduleMode: isCalendarSchedule ? 'calendar' : 'legacy',
       scheduleTimezone: broadcastScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
-      scheduledSlots: quickSchedule ? [] : scheduledSlots,
-      sendAt: quickSchedule?.sendAt ?? null,
-      cycleEnabled: false,
-      cycleEveryHours: 1,
-      cycleCount: quickSchedule ? 1 : Math.max(scheduledSlots.length, 1),
+      scheduledSlots: isCalendarSchedule ? scheduledSlots : [],
+      sendAt: isCycleSchedule ? resolveBroadcastCycleSendAt(cycleDraft) : null,
+      cycleEnabled: isCycleSchedule,
+      cycleEveryHours: isCycleSchedule ? cycleDraft.everyHours : 1,
+      cycleCount: isCycleSchedule
+        ? cycleDraft.count
+        : isCalendarSchedule
+          ? Math.max(scheduledSlots.length, 1)
+          : 1,
     };
   }
 
@@ -2200,9 +2255,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
-    const quickSchedule = broadcastQuickPreset
-      ? resolveBroadcastQuickScheduleSelection(broadcastQuickPreset)
-      : null;
+    const cycleDraft = normalizeBroadcastCycleDraft(broadcastCycleDraft);
+    const cycleError =
+      broadcastTimingMode === 'cycle'
+        ? getBroadcastCycleValidationError(cycleDraft, Date.now())
+        : null;
     setBroadcastScheduleError('');
     setBroadcastCycleError('');
 
@@ -2252,14 +2309,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       hasError = true;
     }
 
-    if (!quickSchedule && scheduledSlots.length === 0) {
+    if (broadcastTimingMode === 'scheduled' && scheduledSlots.length === 0) {
       setBroadcastScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
-    } else if (!quickSchedule && broadcastPlannerState.futureSlotCount === 0) {
+    } else if (broadcastTimingMode === 'scheduled' && broadcastPlannerState.futureSlotCount === 0) {
       setBroadcastScheduleError('Добавьте хотя бы один будущий слот публикации.');
       hasError = true;
+    } else if (broadcastTimingMode === 'cycle' && cycleError) {
+      setBroadcastCycleError(cycleError);
+      hasError = true;
+    } else {
+      setBroadcastScheduleError('');
+      setBroadcastCycleError('');
     }
-    setBroadcastCycleError('');
 
     if (hasError) {
       return;
@@ -2803,7 +2865,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               resetKey={broadcastPlannerResetKey}
                               value={broadcastScheduledSlots}
                               occupiedSlots={broadcastOccupiedSlots}
-                              error={broadcastScheduleError}
+                              error={broadcastScheduleError || broadcastCycleError}
                               disabled={isBroadcastBusy}
                               managedBroadcasts={managedBroadcasts}
                               managedBroadcastsLoading={
@@ -2823,14 +2885,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                   ? cancelManagedBroadcastMutation.variables
                                   : null
                               }
-                              quickPreset={broadcastQuickPreset}
-                              onSelectQuickPreset={handleSelectBroadcastQuickPreset}
-                              onClearQuickPreset={handleClearBroadcastQuickPreset}
+                              timingMode={broadcastTimingMode}
+                              cycle={broadcastCycleDraft}
+                              onTimingModeChange={(nextMode) => {
+                                setBroadcastTimingMode(nextMode);
+                                setBroadcastScheduleError('');
+                                setBroadcastCycleError('');
+                              }}
+                              onCycleChange={(nextCycle) => {
+                                setBroadcastCycleDraft(nextCycle);
+                                setBroadcastCycleError('');
+                              }}
                               onSelectionStateChange={handleBroadcastPlannerStateChange}
                               onChange={(nextValue) => {
-                                if (broadcastQuickPreset) {
-                                  setBroadcastQuickPreset(null);
-                                }
                                 setBroadcastScheduledSlots(nextValue);
                                 if (broadcastScheduleError) {
                                   setBroadcastScheduleError('');
@@ -2954,7 +3021,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             viewMode="calendar"
                             onSelectionStateChange={handleBroadcastPlannerStateChange}
                             onChange={(nextValue) => {
-                              setBroadcastQuickPreset(null);
+                              setBroadcastTimingMode('scheduled');
                               setBroadcastScheduledSlots(nextValue);
                               setBroadcastScheduleError('');
                               setBroadcastWorkspaceView('compose');

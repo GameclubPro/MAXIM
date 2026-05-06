@@ -5,17 +5,26 @@ import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { formatBroadcastButtonsStatus } from '../lib/broadcast-link-buttons';
 import {
-  BROADCAST_QUICK_PRESETS,
+  BROADCAST_CYCLE_INTERVAL_PRESETS,
   BROADCAST_SCHEDULE_MAX_DAYS,
   BROADCAST_SCHEDULE_STEP_MINUTES,
   buildBroadcastScheduleSlotIso,
+  clampBroadcastCycleCount,
+  clampBroadcastCycleEveryHours,
   countBroadcastScheduleDays,
+  createDefaultBroadcastCycleDraft,
+  formatBroadcastCycleIntervalLabel,
+  formatBroadcastCycleLastSendLabel,
+  formatBroadcastCycleSummary,
   formatBroadcastScheduleDay,
   formatBroadcastScheduleSlot,
+  formatLocalDateTimeInputValue,
   getBroadcastScheduleDayKey,
-  resolveBroadcastQuickScheduleSelection,
+  normalizeBroadcastCycleDraft,
+  parseLocalDateTimeInputValue,
   sortAndUniqueBroadcastSlots,
-  type BroadcastQuickPreset,
+  type BroadcastCycleDraft,
+  type BroadcastTimingMode,
 } from '../lib/broadcast-schedule';
 import { formatSupportedMarkdownPreview } from '../lib/max-markdown';
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
@@ -37,9 +46,10 @@ type BroadcastSchedulePlannerProps = {
   onDeleteBroadcast?: (broadcastId: string) => void;
   pendingEditBroadcastId?: string | null;
   pendingDeleteBroadcastId?: string | null;
-  quickPreset?: BroadcastQuickPreset | null;
-  onSelectQuickPreset?: (preset: BroadcastQuickPreset) => void;
-  onClearQuickPreset?: () => void;
+  timingMode?: BroadcastTimingMode;
+  cycle?: BroadcastCycleDraft;
+  onTimingModeChange?: (mode: BroadcastTimingMode) => void;
+  onCycleChange?: (cycle: BroadcastCycleDraft) => void;
   viewMode?: 'compose' | 'calendar';
 };
 
@@ -371,9 +381,10 @@ export function BroadcastSchedulePlanner({
   onDeleteBroadcast,
   pendingEditBroadcastId = null,
   pendingDeleteBroadcastId = null,
-  quickPreset = null,
-  onSelectQuickPreset,
-  onClearQuickPreset,
+  timingMode = 'scheduled',
+  cycle,
+  onTimingModeChange,
+  onCycleChange,
   viewMode = 'compose',
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
@@ -396,7 +407,7 @@ export function BroadcastSchedulePlanner({
   const [isConfirmed, setIsConfirmed] = useState(false);
   const [showFullTimeGrid, setShowFullTimeGrid] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(
-    () => calendarOnly || normalizedValue.length > 0,
+    () => calendarOnly || timingMode === 'scheduled' || normalizedValue.length > 0,
   );
   const lastSelectionStateRef = useRef<BroadcastSchedulePlannerSelectionState | null>(null);
 
@@ -415,9 +426,10 @@ export function BroadcastSchedulePlanner({
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
-  const quickSelection = quickPreset
-    ? resolveBroadcastQuickScheduleSelection(quickPreset, liveNowMs)
-    : null;
+  const normalizedCycle = normalizeBroadcastCycleDraft(
+    cycle ?? createDefaultBroadcastCycleDraft(liveNowMs),
+    liveNowMs,
+  );
   const agendaEntries = buildAgendaEntries(
     managedBroadcasts,
     currentTargetLabel,
@@ -441,16 +453,22 @@ export function BroadcastSchedulePlanner({
     (slot) => new Date(slot).getTime() < minimumTime,
   ).length;
   const futureSlotCount = normalizedValue.length - pastSlotCount;
-  const scheduleStatusLabel = quickSelection
-    ? quickSelection.label
-    : futureSlotCount > 0
-      ? formatCountLabel(futureSlotCount, 'слот', 'слота', 'слотов')
-      : 'Не выбрано';
-  const scheduleStatusSummary = quickSelection
-    ? quickSelection.summary
-    : normalizedValue.length > 0
-      ? formatCountLabel(selectedDayCount, 'день', 'дня', 'дней')
-      : '';
+  const scheduleStatusLabel =
+    timingMode === 'now'
+      ? 'Сейчас'
+      : timingMode === 'cycle'
+        ? 'Цикл'
+        : futureSlotCount > 0
+          ? formatCountLabel(futureSlotCount, 'слот', 'слота', 'слотов')
+          : 'Не выбрано';
+  const scheduleStatusSummary =
+    timingMode === 'now'
+      ? 'сразу'
+      : timingMode === 'cycle'
+        ? formatBroadcastCycleSummary(normalizedCycle, liveNowMs)
+        : normalizedValue.length > 0
+          ? formatCountLabel(selectedDayCount, 'день', 'дня', 'дней')
+          : '';
   const scheduledDayCards = scheduledDayKeys.map((dayKey) => ({
     dayKey,
     slots: getSelectedDaySlots(dayKey, normalizedValue),
@@ -461,6 +479,7 @@ export function BroadcastSchedulePlanner({
   );
   const suggestedMinutes =
     sheetMode === 'time' ? getSuggestedMinutes(activeDayKey, minimumTime) : [];
+  const showCalendar = calendarOnly || (timingMode === 'scheduled' && calendarExpanded);
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
@@ -556,7 +575,8 @@ export function BroadcastSchedulePlanner({
   }, [activeDayKey, applyToAllPickedDays, sheetMode, suggestedMinutes.length]);
 
   useEffect(() => {
-    if (!quickPreset) {
+    if (timingMode === 'scheduled') {
+      setCalendarExpanded(true);
       return;
     }
 
@@ -564,9 +584,9 @@ export function BroadcastSchedulePlanner({
     setSheetMode(null);
     setAgendaDayKey(null);
     setApplyToAllPickedDays(false);
-    setIsConfirmed(false);
+    setIsConfirmed(timingMode === 'now' || timingMode === 'cycle');
     setCalendarExpanded(false);
-  }, [quickPreset]);
+  }, [timingMode]);
 
   useEffect(() => {
     if (calendarOnly) {
@@ -617,9 +637,9 @@ export function BroadcastSchedulePlanner({
     onChange(sortAndUniqueBroadcastSlots(nextSlots));
   }
 
-  function clearQuickPresetIfNeeded() {
-    if (quickPreset) {
-      onClearQuickPreset?.();
+  function activateScheduledMode() {
+    if (timingMode !== 'scheduled') {
+      onTimingModeChange?.('scheduled');
     }
   }
 
@@ -628,9 +648,37 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setCalendarExpanded(true);
     maxImpact('soft');
+  }
+
+  function selectTimingMode(nextMode: BroadcastTimingMode) {
+    if (disabled || calendarOnly) {
+      return;
+    }
+
+    onTimingModeChange?.(nextMode);
+    setBroadcastModeSideEffects(nextMode);
+    maxSelectionChanged();
+  }
+
+  function setBroadcastModeSideEffects(nextMode: BroadcastTimingMode) {
+    setIsConfirmed(false);
+    setPickedDayKeys([]);
+    setSheetMode(null);
+    setAgendaDayKey(null);
+    setApplyToAllPickedDays(false);
+
+    if (nextMode === 'scheduled') {
+      setCalendarExpanded(true);
+      return;
+    }
+
+    if (normalizedValue.length > 0) {
+      onChange([]);
+    }
+    setCalendarExpanded(false);
   }
 
   function getMinuteChipState(minutes: number) {
@@ -670,7 +718,7 @@ export function BroadcastSchedulePlanner({
   }
 
   function openAgendaDay(dayKey: string) {
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setActiveDayKey(dayKey);
     setAgendaDayKey(dayKey);
     setSheetMode('agenda');
@@ -683,7 +731,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setIsConfirmed(false);
     setPickedDayKeys((current) => {
       const exists = current.includes(dayKey);
@@ -708,7 +756,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setIsConfirmed(false);
     if (!pickedDayKeys.includes(activeDayKey)) {
       setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
@@ -750,7 +798,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setIsConfirmed(false);
     setPickedDayKeys([agendaDayKey]);
     setActiveDayKey(agendaDayKey);
@@ -784,7 +832,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     setPickedDayKeys([dayKey]);
     setActiveDayKey(dayKey);
     setApplyToAllPickedDays(false);
@@ -800,7 +848,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    clearQuickPresetIfNeeded();
+    activateScheduledMode();
     const hasPastRestriction = targetDayKeys.some(
       (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
     );
@@ -824,6 +872,12 @@ export function BroadcastSchedulePlanner({
   }
 
   const monthCells = getMonthCells(visibleMonthKey);
+  const scheduleReady =
+    timingMode === 'now' ||
+    timingMode === 'cycle' ||
+    (timingMode === 'scheduled' && futureSlotCount > 0);
+  const cycleStartInputValue = formatLocalDateTimeInputValue(normalizedCycle.startAt);
+  const cycleStartMinValue = formatLocalDateTimeInputValue(new Date(liveNowMs + 30_000));
 
   return (
     <>
@@ -842,49 +896,56 @@ export function BroadcastSchedulePlanner({
                   <strong>{scheduleStatusLabel}</strong>
                   {scheduleStatusSummary ? <small>{scheduleStatusSummary}</small> : null}
                 </span>
-                <span
-                  className={cn(
-                    'broadcast-planner__smart-badge',
-                    (quickSelection || futureSlotCount > 0) && 'is-ready',
-                  )}
-                >
-                  {quickSelection || futureSlotCount > 0 ? 'OK' : ''}
+                <span className={cn('broadcast-planner__smart-badge', scheduleReady && 'is-ready')}>
+                  {scheduleReady ? 'OK' : ''}
                 </span>
               </div>
 
-              <div className="broadcast-planner__quick-row" aria-label="Быстрые действия">
-                {BROADCAST_QUICK_PRESETS.map((preset) => {
-                  const action = resolveBroadcastQuickScheduleSelection(preset, liveNowMs);
-                  return (
-                    <button
-                      key={preset}
-                      type="button"
-                      className={cn(
-                        'broadcast-planner__quick-chip',
-                        quickPreset === preset && 'is-active',
-                      )}
-                      onClick={() => onSelectQuickPreset?.(preset)}
-                      disabled={disabled}
-                    >
-                      <strong>{action.label}</strong>
-                      <small>{action.summary}</small>
-                    </button>
-                  );
-                })}
+              <div className="broadcast-planner__intent-row" aria-label="Режим отправки">
                 <button
                   type="button"
-                  className={cn('broadcast-planner__quick-chip', calendarExpanded && 'is-calendar')}
-                  onClick={openCalendar}
+                  className={cn(
+                    'broadcast-planner__intent-chip',
+                    timingMode === 'now' && 'is-active',
+                  )}
+                  onClick={() => selectTimingMode('now')}
                   disabled={disabled}
+                  aria-pressed={timingMode === 'now'}
                 >
-                  <strong>Календарь</strong>
-                  <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'Дата и время'}</small>
+                  <strong>Сейчас</strong>
+                  <small>сразу</small>
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__intent-chip',
+                    timingMode === 'scheduled' && 'is-active',
+                  )}
+                  onClick={() => selectTimingMode('scheduled')}
+                  disabled={disabled}
+                  aria-pressed={timingMode === 'scheduled'}
+                >
+                  <strong>План</strong>
+                  <small>{futureSlotCount > 0 ? scheduleStatusLabel : 'слоты'}</small>
+                </button>
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__intent-chip',
+                    timingMode === 'cycle' && 'is-active',
+                  )}
+                  onClick={() => selectTimingMode('cycle')}
+                  disabled={disabled}
+                  aria-pressed={timingMode === 'cycle'}
+                >
+                  <strong>Цикл</strong>
+                  <small>{formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)}</small>
                 </button>
               </div>
             </>
           ) : null}
 
-          {calendarExpanded ? (
+          {showCalendar ? (
             <>
               <div className="broadcast-planner__calendar-head">
                 <button
@@ -1046,7 +1107,164 @@ export function BroadcastSchedulePlanner({
             </>
           ) : null}
 
-          {calendarExpanded && pickedDayKeys.length > 0 ? (
+          {timingMode === 'cycle' && !calendarOnly ? (
+            <div className="broadcast-planner__cycle-card">
+              <div className="broadcast-planner__cycle-grid">
+                <div className="broadcast-planner__cycle-field">
+                  <span>Старт</span>
+                  <div className="broadcast-planner__cycle-toggle">
+                    <button
+                      type="button"
+                      className={cn(
+                        'broadcast-planner__cycle-toggle-button',
+                        normalizedCycle.startMode === 'now' && 'is-active',
+                      )}
+                      onClick={() =>
+                        onCycleChange?.(
+                          normalizeBroadcastCycleDraft({
+                            ...normalizedCycle,
+                            startMode: 'now',
+                          }),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Сейчас
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        'broadcast-planner__cycle-toggle-button',
+                        normalizedCycle.startMode === 'later' && 'is-active',
+                      )}
+                      onClick={() =>
+                        onCycleChange?.(
+                          normalizeBroadcastCycleDraft({
+                            ...normalizedCycle,
+                            startMode: 'later',
+                          }),
+                        )
+                      }
+                      disabled={disabled}
+                    >
+                      Позже
+                    </button>
+                  </div>
+                  {normalizedCycle.startMode === 'later' ? (
+                    <input
+                      type="datetime-local"
+                      value={cycleStartInputValue}
+                      min={cycleStartMinValue}
+                      onChange={(event) => {
+                        const nextStartAt = parseLocalDateTimeInputValue(event.target.value);
+                        if (nextStartAt) {
+                          onCycleChange?.(
+                            normalizeBroadcastCycleDraft({
+                              ...normalizedCycle,
+                              startMode: 'later',
+                              startAt: nextStartAt,
+                            }),
+                          );
+                        }
+                      }}
+                      disabled={disabled}
+                      aria-label="Старт цикла"
+                    />
+                  ) : null}
+                </div>
+
+                <div className="broadcast-planner__cycle-field">
+                  <span>Интервал</span>
+                  <div className="broadcast-planner__cycle-presets">
+                    {BROADCAST_CYCLE_INTERVAL_PRESETS.map((hours) => (
+                      <button
+                        key={hours}
+                        type="button"
+                        className={cn(
+                          'broadcast-planner__cycle-preset',
+                          normalizedCycle.everyHours === hours && 'is-active',
+                        )}
+                        onClick={() =>
+                          onCycleChange?.(
+                            normalizeBroadcastCycleDraft({
+                              ...normalizedCycle,
+                              everyHours: hours,
+                            }),
+                          )
+                        }
+                        disabled={disabled}
+                      >
+                        {formatBroadcastCycleIntervalLabel(hours)}
+                      </button>
+                    ))}
+                  </div>
+                  <label className="broadcast-planner__cycle-number">
+                    <input
+                      type="number"
+                      min={1}
+                      max={14 * 24}
+                      value={normalizedCycle.everyHours}
+                      onChange={(event) =>
+                        onCycleChange?.(
+                          normalizeBroadcastCycleDraft({
+                            ...normalizedCycle,
+                            everyHours: clampBroadcastCycleEveryHours(Number(event.target.value)),
+                          }),
+                        )
+                      }
+                      disabled={disabled}
+                      aria-label="Интервал в часах"
+                    />
+                    <small>ч</small>
+                  </label>
+                </div>
+
+                <div className="broadcast-planner__cycle-field">
+                  <span>Повторы</span>
+                  <div className="broadcast-planner__cycle-stepper">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onCycleChange?.(
+                          normalizeBroadcastCycleDraft({
+                            ...normalizedCycle,
+                            count: clampBroadcastCycleCount(normalizedCycle.count - 1),
+                          }),
+                        )
+                      }
+                      disabled={disabled || normalizedCycle.count <= 2}
+                      aria-label="Меньше повторов"
+                    >
+                      −
+                    </button>
+                    <strong>{normalizedCycle.count}</strong>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onCycleChange?.(
+                          normalizeBroadcastCycleDraft({
+                            ...normalizedCycle,
+                            count: clampBroadcastCycleCount(normalizedCycle.count + 1),
+                          }),
+                        )
+                      }
+                      disabled={disabled || normalizedCycle.count >= 100}
+                      aria-label="Больше повторов"
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className={cn('broadcast-planner__dock', 'is-cycle')}>
+                <div className="broadcast-planner__dock-copy">
+                  <strong>{formatBroadcastCycleSummary(normalizedCycle, liveNowMs)}</strong>
+                  <small>до {formatBroadcastCycleLastSendLabel(normalizedCycle, liveNowMs)}</small>
+                </div>
+              </div>
+            </div>
+          ) : showCalendar && pickedDayKeys.length > 0 ? (
             <div className="broadcast-planner__dock">
               <div className="broadcast-planner__dock-copy">
                 <strong>{pickedDaySummary}</strong>
@@ -1076,25 +1294,7 @@ export function BroadcastSchedulePlanner({
                 </button>
               </div>
             </div>
-          ) : quickSelection ? (
-            <div className={cn('broadcast-planner__dock', 'is-quick')}>
-              <div className="broadcast-planner__dock-copy">
-                <strong>{quickSelection.label}</strong>
-                <small>{quickSelection.summary}</small>
-              </div>
-              <div className="broadcast-planner__dock-actions">
-                <button
-                  type="button"
-                  className="broadcast-planner__dock-clear"
-                  onClick={() => onClearQuickPreset?.()}
-                  disabled={disabled}
-                  aria-label="Отменить быстрое время"
-                >
-                  ×
-                </button>
-              </div>
-            </div>
-          ) : calendarExpanded && scheduledDayCards.length > 0 ? (
+          ) : showCalendar && scheduledDayCards.length > 0 ? (
             <div className="broadcast-planner__schedule-list">
               {scheduledDayCards.map(({ dayKey, slots }) => (
                 <button

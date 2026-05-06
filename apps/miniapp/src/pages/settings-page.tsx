@@ -125,10 +125,15 @@ import {
 } from '../lib/broadcast-link-buttons';
 import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import {
-  resolveBroadcastQuickScheduleSelection,
+  createDefaultBroadcastCycleDraft,
+  formatBroadcastCycleSummary,
+  getBroadcastCycleValidationError,
+  normalizeBroadcastCycleDraft,
+  resolveBroadcastCycleSendAt,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
-  type BroadcastQuickPreset,
+  type BroadcastCycleDraft,
+  type BroadcastTimingMode,
 } from '../lib/broadcast-schedule';
 import {
   loadBroadcastComposerDraft,
@@ -2165,7 +2170,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
-  const [mailingQuickPreset, setMailingQuickPreset] = useState<BroadcastQuickPreset | null>(null);
+  const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('scheduled');
+  const [mailingCycleDraft, setMailingCycleDraft] = useState<BroadcastCycleDraft>(() =>
+    createDefaultBroadcastCycleDraft(),
+  );
   const [mailingScheduleTimezone, setMailingScheduleTimezone] = useState(() =>
     resolveBroadcastScheduleTimezone(),
   );
@@ -2183,7 +2191,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
   const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
-  const [, setMailingCycleError] = useState('');
+  const [mailingCycleError, setMailingCycleError] = useState('');
   const [requiredSubscriptionExternalChannelValue, setRequiredSubscriptionExternalChannelValue] =
     useState('');
   const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
@@ -2317,7 +2325,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingVideoCleared(false);
-    setMailingQuickPreset(null);
+    setMailingTimingMode('scheduled');
+    setMailingCycleDraft(createDefaultBroadcastCycleDraft());
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
     setMailingScheduleEnabled(false);
@@ -2358,7 +2367,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingImageBase64(savedBroadcastDraft.imageBase64);
       setMailingImageMimeType(savedBroadcastDraft.imageMimeType);
       setMailingImageFileName(savedBroadcastDraft.imageFileName);
-      setMailingQuickPreset(savedBroadcastDraft.quickPreset);
+      setMailingTimingMode(savedBroadcastDraft.timingMode);
+      setMailingCycleDraft(normalizeBroadcastCycleDraft(savedBroadcastDraft.cycle));
       setMailingScheduledSlots(sortAndUniqueBroadcastSlots(savedBroadcastDraft.scheduledSlots));
       setMailingScheduleTimezone(
         savedBroadcastDraft.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
@@ -2731,7 +2741,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
     setMailingAudienceError('');
     setMailingButtons(broadcastHandoffStateQuery.data.buttons);
-    setMailingQuickPreset(null);
+    setMailingTimingMode(
+      broadcastHandoffStateQuery.data.scheduledSlots.length > 0 ? 'scheduled' : 'now',
+    );
     setMailingScheduledSlots(
       sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
     );
@@ -2766,9 +2778,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       imageBase64: mailingImageBase64,
       imageMimeType: mailingImageMimeType,
       imageFileName: mailingImageFileName,
+      timingMode: mailingTimingMode,
       scheduledSlots: mailingScheduledSlots,
-      quickPreset: mailingQuickPreset,
       scheduleTimezone: mailingScheduleTimezone,
+      cycle: mailingCycleDraft,
     };
 
     saveBroadcastComposerDraft('chat', chatId, draftToPersist);
@@ -2776,17 +2789,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     chatId,
     editingManagedBroadcast,
     mailingButtons,
+    mailingCycleDraft,
     mailingImageBase64,
     mailingImageEnabled,
     mailingImageFileName,
     mailingImageMimeType,
     mailingLastScopedTargetMode,
-    mailingQuickPreset,
     mailingScheduleTimezone,
     mailingScheduledSlots,
     mailingTargetChatIds,
     mailingTargetMode,
     mailingText,
+    mailingTimingMode,
   ]);
 
   useEffect(() => {
@@ -3438,9 +3452,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType(broadcast.imageMimeType);
     setMailingImageFileName(broadcast.imageFileName);
     setMailingVideoCleared(false);
-    setMailingQuickPreset(null);
+    const restoredTimingMode: BroadcastTimingMode =
+      broadcast.scheduleMode === 'calendar'
+        ? 'scheduled'
+        : broadcast.cycleEnabled
+          ? 'cycle'
+          : broadcast.nextSendAt
+            ? 'scheduled'
+            : 'now';
+    setMailingTimingMode(restoredTimingMode);
+    setMailingCycleDraft(
+      normalizeBroadcastCycleDraft({
+        startMode: broadcast.nextSendAt ? 'later' : 'now',
+        startAt: broadcast.nextSendAt ?? createDefaultBroadcastCycleDraft().startAt,
+        everyHours: broadcast.cycleEveryHours,
+        count: Math.max(2, broadcast.cycleCount),
+      }),
+    );
     setMailingScheduledSlots(
-      mode === 'edit' ? sortAndUniqueBroadcastSlots(broadcast.scheduledSlots) : [],
+      mode === 'edit'
+        ? sortAndUniqueBroadcastSlots(
+            broadcast.scheduleMode === 'calendar'
+              ? broadcast.scheduledSlots
+              : broadcast.nextSendAt && !broadcast.cycleEnabled
+                ? [broadcast.nextSendAt]
+                : [],
+          )
+        : [],
     );
     setMailingScheduleTimezone(
       broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
@@ -4375,7 +4413,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingVideoCleared(false);
-    setMailingQuickPreset(null);
+    setMailingTimingMode('scheduled');
+    setMailingCycleDraft(createDefaultBroadcastCycleDraft());
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
     setMailingScheduleEnabled(false);
@@ -4488,17 +4527,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return message;
   }
 
-  function handleSelectMailingQuickPreset(preset: BroadcastQuickPreset) {
-    setMailingQuickPreset((current) => (current === preset ? null : preset));
-    setMailingScheduledSlots([]);
-    setMailingScheduleError('');
-    resetMailingPlanner();
-  }
-
-  function handleClearMailingQuickPreset() {
-    setMailingQuickPreset(null);
-  }
-
   function handleMailingPlannerStateChange(nextState: BroadcastSchedulePlannerSelectionState) {
     setMailingPlannerState((current) =>
       areBroadcastPlannerStatesEqual(current, nextState) ? current : nextState,
@@ -4564,9 +4592,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function buildMailingPublishBasePayload(): BroadcastHandoffPayload {
     const buttonState = buildBroadcastLinkButtonLegacyFields(normalizedMailingButtons);
     const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
-    const quickSchedule = mailingQuickPreset
-      ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
-      : null;
+    const cycleDraft = normalizeBroadcastCycleDraft(mailingCycleDraft);
+    const isCalendarSchedule = mailingTimingMode === 'scheduled';
+    const isCycleSchedule = mailingTimingMode === 'cycle';
     const audiencePayload = resolveBroadcastAudiencePayload({
       targetMode: mailingTargetMode,
       targetChatIds: mailingTargetChatIds,
@@ -4581,13 +4609,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: buttonState.buttonEnabled,
       buttonUrl: buttonState.buttonUrl,
       buttonText: buttonState.buttonText,
-      scheduleMode: quickSchedule ? 'legacy' : 'calendar',
+      scheduleMode: isCalendarSchedule ? 'calendar' : 'legacy',
       scheduleTimezone: mailingScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
-      scheduledSlots: quickSchedule ? [] : scheduledSlots,
-      sendAt: quickSchedule?.sendAt ?? null,
-      cycleEnabled: false,
-      cycleEveryHours: 1,
-      cycleCount: quickSchedule ? 1 : Math.max(scheduledSlots.length, 1),
+      scheduledSlots: isCalendarSchedule ? scheduledSlots : [],
+      sendAt: isCycleSchedule ? resolveBroadcastCycleSendAt(cycleDraft) : null,
+      cycleEnabled: isCycleSchedule,
+      cycleEveryHours: isCycleSchedule ? cycleDraft.everyHours : 1,
+      cycleCount: isCycleSchedule
+        ? cycleDraft.count
+        : isCalendarSchedule
+          ? Math.max(scheduledSlots.length, 1)
+          : 1,
     };
   }
 
@@ -4691,9 +4723,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const normalizedText = mailingText.trim();
     const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
-    const quickSchedule = mailingQuickPreset
-      ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
-      : null;
+    const cycleDraft = normalizeBroadcastCycleDraft(mailingCycleDraft);
+    const cycleError =
+      mailingTimingMode === 'cycle'
+        ? getBroadcastCycleValidationError(cycleDraft, Date.now())
+        : null;
     const audiencePayload = resolveBroadcastAudiencePayload({
       targetMode: mailingTargetMode,
       targetChatIds: mailingTargetChatIds,
@@ -4763,16 +4797,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingAudienceError('');
     }
 
-    if (!quickSchedule && scheduledSlots.length === 0) {
+    if (mailingTimingMode === 'scheduled' && scheduledSlots.length === 0) {
       setMailingScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
-    } else if (!quickSchedule && mailingPlannerState.futureSlotCount === 0) {
+    } else if (mailingTimingMode === 'scheduled' && mailingPlannerState.futureSlotCount === 0) {
       setMailingScheduleError('Добавьте хотя бы один будущий слот публикации.');
+      hasError = true;
+    } else if (mailingTimingMode === 'cycle' && cycleError) {
+      setMailingCycleError(cycleError);
       hasError = true;
     } else {
       setMailingScheduleError('');
+      setMailingCycleError('');
     }
-    setMailingCycleError('');
 
     if (hasError) {
       return;
@@ -5630,9 +5667,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     normalizedMailingText || mailingImageEnabled || editingMailingHasVideo,
   );
   const mailingHasPublishableContent = mailingHasDirectContent;
-  const mailingQuickSchedule = mailingQuickPreset
-    ? resolveBroadcastQuickScheduleSelection(mailingQuickPreset)
-    : null;
+  const mailingNormalizedCycle = normalizeBroadcastCycleDraft(mailingCycleDraft, mailingNowMs);
+  const mailingCycleValidationError =
+    mailingTimingMode === 'cycle'
+      ? getBroadcastCycleValidationError(mailingNormalizedCycle, mailingNowMs)
+      : null;
+  const mailingTimingSummary =
+    mailingTimingMode === 'now'
+      ? 'сразу'
+      : mailingTimingMode === 'cycle'
+        ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
+        : mailingScheduledSlots.length > 0
+          ? mailingSlotsLabel
+          : 'без слотов';
   const mailingSelectionSummary = [
     mailingPlannerState.selectedDayCount > 0
       ? formatRussianCountLabel(mailingPlannerState.selectedDayCount, 'день', 'дня', 'дней')
@@ -5643,17 +5690,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const mailingHeaderSummary = [
-    mailingHeaderTargetLabel,
-    mailingQuickSchedule ? mailingQuickSchedule.summary : mailingSlotsLabel,
-  ]
+  const mailingHeaderSummary = [mailingHeaderTargetLabel, mailingTimingSummary]
     .filter(Boolean)
     .join(' · ');
   const showMailingResetAction =
     editingManagedBroadcast !== null ||
     duplicatedManagedBroadcast !== null ||
     mailingTargetMode !== 'current' ||
-    mailingQuickPreset !== null ||
+    mailingTimingMode !== 'scheduled' ||
     mailingScheduledSlots.length > 0 ||
     normalizedMailingText.length > 0 ||
     mailingImageEnabled ||
@@ -5665,12 +5709,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingAudienceReady =
     mailingTargetMode !== 'selected' || mailingAudiencePayload.targetChatIds.length > 0;
   const mailingHasFutureSlots =
-    mailingQuickSchedule !== null || mailingPlannerState.futureSlotCount > 0;
+    mailingTimingMode === 'now' ||
+    (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
+    (mailingTimingMode === 'scheduled' && mailingPlannerState.futureSlotCount > 0);
   const mailingCalendarScheduleReady =
+    mailingTimingMode === 'scheduled' &&
     mailingScheduledSlots.length > 0 &&
     mailingPlannerState.futureSlotCount > 0 &&
     !mailingPlannerPending;
-  const mailingScheduleReady = mailingQuickSchedule !== null || mailingCalendarScheduleReady;
+  const mailingScheduleReady =
+    mailingTimingMode === 'now' ||
+    (mailingTimingMode === 'cycle' && !mailingCycleValidationError) ||
+    mailingCalendarScheduleReady;
   const mailingPublishReady =
     mailingHasPublishableContent &&
     mailingAudienceReady &&
@@ -5687,9 +5737,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter((item): item is string => Boolean(item));
   const mailingPrimaryActionLabel = editingManagedBroadcast
     ? 'Сохранить'
-    : mailingQuickPreset === 'now'
+    : mailingTimingMode === 'now'
       ? 'Отправить'
-      : 'Запланировать';
+      : mailingTimingMode === 'cycle'
+        ? 'Запустить'
+        : 'Запланировать';
   const showMailingWorkspaceTabs = !editingManagedBroadcast && !duplicatedManagedBroadcast;
   const mailingResetActionLabel = editingManagedBroadcast
     ? 'Сбросить изменения'
@@ -5698,9 +5750,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'Сохранить рассылку'
     : mailingPublishIssueLabels.length > 0 && !isMailingBusy
       ? `Нужно: ${mailingPublishIssueLabels.join(' · ')}`
-      : mailingQuickSchedule
-        ? mailingQuickSchedule.label
-        : mailingSelectionSummary || 'Рассылка';
+      : mailingTimingMode === 'now'
+        ? 'Сразу'
+        : mailingTimingMode === 'cycle'
+          ? formatBroadcastCycleSummary(mailingNormalizedCycle, mailingNowMs)
+          : mailingSelectionSummary || 'Рассылка';
   const mailingFooterMeta = [
     mailingHeaderTargetLabel,
     mailingImageEnabled ? 'Фото' : null,
@@ -5745,11 +5799,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
     {
       label: 'Когда',
-      value: mailingQuickSchedule
-        ? mailingQuickSchedule.summary
-        : mailingPlannerState.futureSlotCount > 0
-          ? formatRussianCountLabel(mailingPlannerState.futureSlotCount, 'слот', 'слота', 'слотов')
-          : 'Не выбрано',
+      value:
+        mailingTimingMode === 'now'
+          ? 'Сейчас'
+          : mailingTimingMode === 'cycle'
+            ? 'Цикл'
+            : mailingPlannerState.futureSlotCount > 0
+              ? formatRussianCountLabel(
+                  mailingPlannerState.futureSlotCount,
+                  'слот',
+                  'слота',
+                  'слотов',
+                )
+              : 'Не выбрано',
       tone: mailingScheduleReady && mailingHasFutureSlots ? 'ready' : 'pending',
       icon: 'time',
     },
@@ -5795,7 +5857,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
           : sendBroadcastMutation.isPending
-            ? mailingQuickPreset === 'now'
+            ? mailingTimingMode === 'now'
               ? 'Отправляем...'
               : 'Планируем...'
             : isOpeningManagedBroadcastEditor
@@ -10820,7 +10882,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     resetKey={mailingPlannerResetKey}
                                     value={mailingScheduledSlots}
                                     occupiedSlots={mailingOccupiedSlots}
-                                    error={mailingScheduleError}
+                                    error={mailingScheduleError || mailingCycleError}
                                     disabled={isMailingBusy}
                                     managedBroadcasts={managedBroadcasts}
                                     managedBroadcastsLoading={
@@ -10841,14 +10903,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ? cancelManagedBroadcastMutation.variables
                                         : null
                                     }
-                                    quickPreset={mailingQuickPreset}
-                                    onSelectQuickPreset={handleSelectMailingQuickPreset}
-                                    onClearQuickPreset={handleClearMailingQuickPreset}
+                                    timingMode={mailingTimingMode}
+                                    cycle={mailingCycleDraft}
+                                    onTimingModeChange={(nextMode) => {
+                                      setMailingTimingMode(nextMode);
+                                      setMailingScheduleError('');
+                                      setMailingCycleError('');
+                                    }}
+                                    onCycleChange={(nextCycle) => {
+                                      setMailingCycleDraft(nextCycle);
+                                      setMailingCycleError('');
+                                    }}
                                     onSelectionStateChange={handleMailingPlannerStateChange}
                                     onChange={(nextValue) => {
-                                      if (mailingQuickPreset) {
-                                        setMailingQuickPreset(null);
-                                      }
                                       setMailingScheduledSlots(nextValue);
                                       if (mailingScheduleError) {
                                         setMailingScheduleError('');
@@ -10971,7 +11038,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   viewMode="calendar"
                                   onSelectionStateChange={handleMailingPlannerStateChange}
                                   onChange={(nextValue) => {
-                                    setMailingQuickPreset(null);
+                                    setMailingTimingMode('scheduled');
                                     setMailingScheduledSlots(nextValue);
                                     setMailingScheduleError('');
                                     setMailingWorkspaceView('compose');

@@ -1,14 +1,20 @@
 export const BROADCAST_SCHEDULE_MAX_DAYS = 31;
 export const BROADCAST_SCHEDULE_STEP_MINUTES = 30;
-export const BROADCAST_QUICK_PRESETS = ['now', 'plus30', 'tonight', 'tomorrow'] as const;
+export const BROADCAST_CYCLE_MIN_HOURS = 1;
+export const BROADCAST_CYCLE_MAX_HOURS = 14 * 24;
+export const BROADCAST_CYCLE_MIN_COUNT = 2;
+export const BROADCAST_CYCLE_MAX_COUNT = 100;
+export const BROADCAST_CYCLE_MAX_WINDOW_DAYS = 31;
+export const BROADCAST_CYCLE_INTERVAL_PRESETS = [1, 2, 6, 12, 24] as const;
 
-export type BroadcastQuickPreset = (typeof BROADCAST_QUICK_PRESETS)[number];
+export type BroadcastTimingMode = 'now' | 'scheduled' | 'cycle';
+export type BroadcastCycleStartMode = 'now' | 'later';
 
-export type BroadcastQuickScheduleSelection = {
-  preset: BroadcastQuickPreset;
-  label: string;
-  summary: string;
-  sendAt: string | null;
+export type BroadcastCycleDraft = {
+  startMode: BroadcastCycleStartMode;
+  startAt: string;
+  everyHours: number;
+  count: number;
 };
 
 function pad(value: number): string {
@@ -19,88 +25,164 @@ export function resolveBroadcastScheduleTimezone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Moscow';
 }
 
-function addMinutes(value: Date, minutes: number): Date {
-  return new Date(value.getTime() + minutes * 60 * 1_000);
-}
+function formatCountLabel(count: number, singular: string, few: string, plural: string): string {
+  const remainder10 = count % 10;
+  const remainder100 = count % 100;
 
-function addDays(value: Date, days: number): Date {
-  return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);
-}
-
-function formatQuickSummary(date: Date, nowMs: number): string {
-  const now = new Date(nowMs);
-  const todayKey = getBroadcastScheduleDayKey(now);
-  const tomorrowKey = getBroadcastScheduleDayKey(addDays(now, 1));
-  const targetKey = getBroadcastScheduleDayKey(date);
-  const timeLabel = new Intl.DateTimeFormat('ru-RU', {
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
-
-  if (targetKey === todayKey) {
-    return timeLabel;
+  if (remainder10 === 1 && remainder100 !== 11) {
+    return `${count} ${singular}`;
   }
 
-  if (targetKey === tomorrowKey) {
-    return `Завтра ${timeLabel}`;
+  if (remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14)) {
+    return `${count} ${few}`;
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: 'numeric',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(date);
+  return `${count} ${plural}`;
 }
 
-export function resolveBroadcastQuickScheduleSelection(
-  preset: BroadcastQuickPreset,
+export function createDefaultBroadcastCycleDraft(nowMs = Date.now()): BroadcastCycleDraft {
+  return {
+    startMode: 'now',
+    startAt: new Date(nowMs + 60 * 60 * 1_000).toISOString(),
+    everyHours: BROADCAST_CYCLE_MIN_HOURS,
+    count: 5,
+  };
+}
+
+export function clampBroadcastCycleEveryHours(value: number): number {
+  if (!Number.isFinite(value)) {
+    return BROADCAST_CYCLE_MIN_HOURS;
+  }
+
+  return Math.min(
+    BROADCAST_CYCLE_MAX_HOURS,
+    Math.max(BROADCAST_CYCLE_MIN_HOURS, Math.trunc(value)),
+  );
+}
+
+export function clampBroadcastCycleCount(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 5;
+  }
+
+  return Math.min(
+    BROADCAST_CYCLE_MAX_COUNT,
+    Math.max(BROADCAST_CYCLE_MIN_COUNT, Math.trunc(value)),
+  );
+}
+
+export function normalizeBroadcastTimingMode(value: unknown): BroadcastTimingMode | null {
+  return value === 'now' || value === 'scheduled' || value === 'cycle' ? value : null;
+}
+
+export function normalizeBroadcastCycleDraft(
+  value: Partial<BroadcastCycleDraft> | null | undefined,
   nowMs = Date.now(),
-): BroadcastQuickScheduleSelection {
-  if (preset === 'now') {
-    return {
-      preset,
-      label: 'Сейчас',
-      summary: 'сразу',
-      sendAt: null,
-    };
-  }
-
-  const minimumDate = new Date(nowMs + 30_000);
-  let scheduledAt: Date;
-  let label: string;
-
-  switch (preset) {
-    case 'plus30':
-      label = '+30 мин';
-      scheduledAt = addMinutes(new Date(nowMs), 30);
-      break;
-    case 'tonight': {
-      label = 'Вечером';
-      const candidate = new Date(nowMs);
-      candidate.setHours(20, 0, 0, 0);
-      if (candidate.getTime() < minimumDate.getTime()) {
-        candidate.setDate(candidate.getDate() + 1);
-      }
-      scheduledAt = candidate;
-      break;
-    }
-    case 'tomorrow': {
-      label = 'Завтра';
-      const candidate = addDays(new Date(nowMs), 1);
-      candidate.setHours(9, 0, 0, 0);
-      scheduledAt =
-        candidate.getTime() < minimumDate.getTime() ? addMinutes(minimumDate, 30) : candidate;
-      break;
-    }
-  }
+): BroadcastCycleDraft {
+  const fallback = createDefaultBroadcastCycleDraft(nowMs);
+  const startMode = value?.startMode === 'later' ? 'later' : 'now';
+  const parsedStartAt = typeof value?.startAt === 'string' ? new Date(value.startAt) : null;
+  const startAt =
+    parsedStartAt && Number.isFinite(parsedStartAt.getTime())
+      ? parsedStartAt.toISOString()
+      : fallback.startAt;
 
   return {
-    preset,
-    label,
-    summary: formatQuickSummary(scheduledAt, nowMs),
-    sendAt: scheduledAt.toISOString(),
+    startMode,
+    startAt,
+    everyHours: clampBroadcastCycleEveryHours(value?.everyHours ?? fallback.everyHours),
+    count: clampBroadcastCycleCount(value?.count ?? fallback.count),
   };
+}
+
+export function resolveBroadcastCycleSendAt(cycle: BroadcastCycleDraft): string | null {
+  return cycle.startMode === 'later' ? cycle.startAt : null;
+}
+
+export function formatBroadcastCycleIntervalLabel(hours: number): string {
+  const normalizedHours = clampBroadcastCycleEveryHours(hours);
+  if (normalizedHours % 24 === 0) {
+    const days = normalizedHours / 24;
+    return formatCountLabel(days, 'день', 'дня', 'дней');
+  }
+
+  return `${normalizedHours} ч`;
+}
+
+export function resolveBroadcastCycleLastSendAt(
+  cycle: BroadcastCycleDraft,
+  nowMs = Date.now(),
+): string {
+  const normalizedCycle = normalizeBroadcastCycleDraft(cycle, nowMs);
+  const firstSendAt =
+    normalizedCycle.startMode === 'later' ? new Date(normalizedCycle.startAt) : new Date(nowMs);
+  const lastSendAt = new Date(
+    firstSendAt.getTime() + (normalizedCycle.count - 1) * normalizedCycle.everyHours * 60 * 60_000,
+  );
+  return lastSendAt.toISOString();
+}
+
+export function formatBroadcastCycleSummary(
+  cycle: BroadcastCycleDraft,
+  nowMs = Date.now(),
+): string {
+  const normalizedCycle = normalizeBroadcastCycleDraft(cycle, nowMs);
+  return `каждые ${formatBroadcastCycleIntervalLabel(normalizedCycle.everyHours)} · ${normalizedCycle.count} раз`;
+}
+
+export function formatBroadcastCycleLastSendLabel(
+  cycle: BroadcastCycleDraft,
+  nowMs = Date.now(),
+): string {
+  return formatBroadcastScheduleSlot(resolveBroadcastCycleLastSendAt(cycle, nowMs));
+}
+
+export function getBroadcastCycleValidationError(
+  cycle: BroadcastCycleDraft,
+  nowMs = Date.now(),
+): string | null {
+  const normalizedCycle = normalizeBroadcastCycleDraft(cycle, nowMs);
+  const firstSendMs =
+    normalizedCycle.startMode === 'later' ? new Date(normalizedCycle.startAt).getTime() : nowMs;
+  if (!Number.isFinite(firstSendMs)) {
+    return 'Некорректный старт цикла.';
+  }
+
+  if (normalizedCycle.startMode === 'later' && firstSendMs - nowMs < 30_000) {
+    return 'Старт минимум через 30 секунд.';
+  }
+
+  const lastSendMs = new Date(resolveBroadcastCycleLastSendAt(normalizedCycle, nowMs)).getTime();
+  const maxWindowMs = BROADCAST_CYCLE_MAX_WINDOW_DAYS * 24 * 60 * 60_000;
+  if (lastSendMs - nowMs > maxWindowMs) {
+    return 'Цикл должен уложиться в 31 день.';
+  }
+
+  return null;
+}
+
+export function formatLocalDateTimeInputValue(value: string | Date): string {
+  const date = typeof value === 'string' ? new Date(value) : value;
+  if (!Number.isFinite(date.getTime())) {
+    return '';
+  }
+
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(
+    date.getHours(),
+  )}:${pad(date.getMinutes())}`;
+}
+
+export function parseLocalDateTimeInputValue(value: string): string | null {
+  if (!value.trim()) {
+    return null;
+  }
+
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString();
 }
 
 export function sortAndUniqueBroadcastSlots(values: string[]): string[] {
