@@ -8,6 +8,7 @@ import {
   MAX_CHANNEL_DIALOG_ATTACHMENTS,
   MAX_CHANNEL_DIALOG_ATTACHMENTS_TOTAL_BASE64,
   MAX_CHANNEL_DIALOG_COMMENT_FILES,
+  MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
 } from '@maxim/contracts';
 import {
   Attachment as IconoirAttachment,
@@ -904,6 +905,58 @@ function CommentComposeFileList({
   });
 }
 
+function SuggestComposeImageGrid({
+  attachments,
+  onRemove,
+}: {
+  attachments: CommentComposeAttachment[];
+  onRemove: (index: number) => void;
+}) {
+  if (!attachments.length) {
+    return null;
+  }
+
+  return (
+    <div
+      className={cn(
+        'channel-suggest-composer__image-grid',
+        `is-count-${Math.min(attachments.length, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES)}`,
+      )}
+      role="list"
+      aria-label={`Фото: ${attachments.length}`}
+    >
+      {attachments.map((attachment, attachmentIndex) => {
+        const previewUrl = getCommentComposeAttachmentPreviewUrl(attachment);
+        const fileName = attachment.fileName?.trim() || `Фото ${attachmentIndex + 1}`;
+
+        return (
+          <div
+            key={`${fileName}-${attachmentIndex}`}
+            className="channel-suggest-composer__image-tile"
+            role="listitem"
+            aria-label={fileName}
+          >
+            {previewUrl ? (
+              <img src={previewUrl} alt={fileName} loading="lazy" />
+            ) : (
+              <CommentAttachmentGlyph kind="image" />
+            )}
+
+            <button
+              type="button"
+              className="channel-suggest-composer__image-remove"
+              onClick={() => onRemove(attachmentIndex)}
+              aria-label={`Убрать ${fileName}`}
+            >
+              <CloseIcon />
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SendArrowIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -1528,9 +1581,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     field.style.height = '0px';
-    const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
+    const minHeight = dialogType === 'suggest' ? 118 : 46;
+    const maxHeight = dialogType === 'suggest' ? 240 : 132;
+    const nextHeight = Math.max(minHeight, Math.min(field.scrollHeight, maxHeight));
     field.style.height = `${nextHeight}px`;
-  }, [draft, editingMessage, replyTarget, draftAttachments.length]);
+  }, [draft, editingMessage, replyTarget, draftAttachments.length, dialogType]);
 
   useEffect(
     () => () => {
@@ -1913,6 +1968,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     setDraftAttachments((current) => {
       const accepted = [...current];
+      const totalAttachmentLimit =
+        dialogType === 'suggest'
+          ? MAX_CHANNEL_DIALOG_SUGGEST_IMAGES
+          : MAX_CHANNEL_DIALOG_ATTACHMENTS;
       let fileCount = current.filter((attachment) => attachment.type === 'file').length;
       let totalBase64Length = calculateDraftAttachmentsBase64Length(current);
       let rejectedByCount = 0;
@@ -1920,8 +1979,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       let rejectedBySize = 0;
 
       for (const attachment of nextAttachments) {
-        if (accepted.length >= MAX_CHANNEL_DIALOG_ATTACHMENTS) {
+        if (accepted.length >= totalAttachmentLimit) {
           rejectedByCount += 1;
+          continue;
+        }
+
+        if (dialogType === 'suggest' && attachment.type !== 'image') {
+          rejectedByFileLimit += 1;
           continue;
         }
 
@@ -1947,9 +2011,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       if (addedCount === 0) {
         const description =
           rejectedByCount > 0
-            ? `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`
+            ? dialogType === 'suggest'
+              ? `Можно добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`
+              : `Можно добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`
             : rejectedByFileLimit > 0
-              ? `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`
+              ? dialogType === 'suggest'
+                ? 'В предложке пока поддерживаются только фото.'
+                : `Можно прикрепить до ${MAX_CHANNEL_DIALOG_COMMENT_FILES} файлов.`
               : 'Уберите часть файлов или фото и попробуйте снова.';
 
         pushToast({
@@ -1958,7 +2026,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             rejectedBySize > 0
               ? 'Вложения слишком тяжёлые'
               : rejectedByFileLimit > 0
-                ? 'Слишком много файлов'
+                ? dialogType === 'suggest'
+                  ? 'Нужны фото'
+                  : 'Слишком много файлов'
                 : 'Слишком много вложений',
           description,
         });
@@ -1969,9 +2039,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         const rejectedCount = rejectedByCount + rejectedByFileLimit + rejectedBySize;
         const description =
           rejectedByCount > 0
-            ? `Лимит комментария — ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений. Остальные фото не добавили.`
+            ? dialogType === 'suggest'
+              ? `Лимит предложки — ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото. Остальные не добавили.`
+              : `Лимит комментария — ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений. Остальные фото не добавили.`
             : rejectedByFileLimit > 0
-              ? `Лимит файлов — ${MAX_CHANNEL_DIALOG_COMMENT_FILES}. Остальные вложения пропустили.`
+              ? dialogType === 'suggest'
+                ? 'Остальные вложения пропустили: нужны фото.'
+                : `Лимит файлов — ${MAX_CHANNEL_DIALOG_COMMENT_FILES}. Остальные вложения пропустили.`
               : 'Часть фото не добавили, потому что суммарный размер получился слишком большим.';
 
         pushToast({
@@ -1999,15 +2073,19 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const selectableFiles =
       kind === 'image'
         ? (() => {
-            const remainingSlots = Math.max(
-              0,
-              MAX_CHANNEL_DIALOG_ATTACHMENTS - draftAttachmentCount,
-            );
+            const imageLimit =
+              dialogType === 'suggest'
+                ? MAX_CHANNEL_DIALOG_SUGGEST_IMAGES
+                : MAX_CHANNEL_DIALOG_ATTACHMENTS;
+            const remainingSlots = Math.max(0, imageLimit - draftAttachmentCount);
             if (remainingSlots <= 0) {
               pushToast({
                 tone: 'info',
                 title: 'Больше фото не поместится',
-                description: `В одном комментарии может быть до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
+                description:
+                  dialogType === 'suggest'
+                    ? `В одной предложке может быть до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото.`
+                    : `В одном комментарии может быть до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} вложений.`,
               });
               return [];
             }
@@ -2017,8 +2095,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 tone: 'info',
                 title: `Добавим ${remainingSlots} фото`,
                 description:
-                  remainingSlots === MAX_CHANNEL_DIALOG_ATTACHMENTS
-                    ? `За один раз можно выбрать до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото.`
+                  remainingSlots === imageLimit
+                    ? `За один раз можно выбрать до ${imageLimit} фото.`
                     : `Сейчас осталось места только для ${remainingSlots} фото.`,
               });
             }
@@ -2183,35 +2261,44 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     resetAttachmentPickers();
   };
 
+  const buildCreateMessagePayload = (payload: {
+    text: string;
+    attachments: CommentDraftAttachment[];
+  }) => {
+    if (dialogType === 'suggest') {
+      return {
+        token,
+        text: payload.text,
+        images: payload.attachments
+          .filter((attachment) => attachment.type === 'image')
+          .map((attachment) => ({
+            base64: attachment.base64,
+            mimeType: attachment.mimeType,
+            fileName: attachment.fileName,
+          })),
+      };
+    }
+
+    return {
+      token,
+      text: payload.text,
+      replyToMessageId: replyToMessageId,
+      attachments: payload.attachments.map((attachment) => ({
+        type: attachment.type,
+        base64: attachment.base64,
+        mimeType: attachment.mimeType,
+        fileName: attachment.fileName,
+        ...(attachment.width ? { width: attachment.width } : {}),
+        ...(attachment.height ? { height: attachment.height } : {}),
+      })),
+    };
+  };
+
   const sendMutation = useMutation({
     mutationFn: (payload: { text: string; attachments: CommentDraftAttachment[] }) =>
       entityType === 'channel'
-        ? createChannelDialogMessage(api, chatId, dialogType, {
-            token,
-            text: payload.text,
-            replyToMessageId: dialogType === 'comments' ? replyToMessageId : null,
-            attachments: payload.attachments.map((attachment) => ({
-              type: attachment.type,
-              base64: attachment.base64,
-              mimeType: attachment.mimeType,
-              fileName: attachment.fileName,
-              ...(attachment.width ? { width: attachment.width } : {}),
-              ...(attachment.height ? { height: attachment.height } : {}),
-            })),
-          })
-        : createChatDialogMessage(api, chatId, dialogType, {
-            token,
-            text: payload.text,
-            replyToMessageId: dialogType === 'comments' ? replyToMessageId : null,
-            attachments: payload.attachments.map((attachment) => ({
-              type: attachment.type,
-              base64: attachment.base64,
-              mimeType: attachment.mimeType,
-              fileName: attachment.fileName,
-              ...(attachment.width ? { width: attachment.width } : {}),
-              ...(attachment.height ? { height: attachment.height } : {}),
-            })),
-          }),
+        ? createChannelDialogMessage(api, chatId, dialogType, buildCreateMessagePayload(payload))
+        : createChatDialogMessage(api, chatId, dialogType, buildCreateMessagePayload(payload)),
     onSuccess: (result) => {
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         updateDialogMessage(current, result.message),
@@ -2857,63 +2944,226 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
             {!dialogQuery.isLoading && !dialogQuery.error ? (
               dialogType === 'suggest' ? (
-                <div className="channel-suggest-list">
-                  {messages.length ? (
-                    messages.map((message) => {
-                      const status = resolveSuggestionStatus(message);
-                      const hasMedia =
-                        message.hasImage ||
-                        message.hasVideo ||
-                        Boolean(message.imageFileName || message.videoFileName);
+                <div className="channel-suggest-workspace">
+                  <section
+                    className={cn(
+                      'channel-suggest-composer',
+                      canSubmitMessage && 'is-ready',
+                      isComposePending && 'is-busy',
+                    )}
+                    aria-label="Предложить пост"
+                  >
+                    <div className="channel-suggest-composer__head">
+                      <span
+                        className={cn(
+                          'channel-suggest-composer__status',
+                          canSubmitMessage ? 'is-ready' : 'is-empty',
+                        )}
+                      >
+                        {canSubmitMessage ? 'Готов' : 'Пусто'}
+                      </span>
+                      <span className="channel-suggest-composer__counter">
+                        {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                      </span>
+                    </div>
 
-                      return (
-                        <article
-                          key={message.id}
-                          ref={(node) => {
-                            if (node) {
-                              messageNodeRefs.current.set(message.id, node);
-                              return;
+                    <div
+                      className={cn(
+                        'channel-suggest-composer__phone',
+                        !draft.trim() && draftImageAttachments.length === 0 && 'is-empty',
+                      )}
+                    >
+                      <div className="channel-suggest-composer__bubble">
+                        <SuggestComposeImageGrid
+                          attachments={draftImageAttachments}
+                          onRemove={(filteredIndex) => {
+                            const attachment = draftImageAttachments[filteredIndex];
+                            const originalIndex = attachment
+                              ? draftAttachments.indexOf(attachment)
+                              : -1;
+                            if (originalIndex >= 0) {
+                              handleDraftAttachmentRemove(originalIndex);
                             }
-                            messageNodeRefs.current.delete(message.id);
                           }}
-                          className={cn('channel-suggest-card', `is-${status.tone}`)}
-                        >
-                          <div className="channel-suggest-card__head">
-                            <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
-                              {status.badge}
-                            </span>
-                            <time dateTime={message.createdAt}>
-                              {formatMessageTime(message.createdAt)}
-                            </time>
-                          </div>
+                        />
 
-                          <p className={cn(!message.text.trim() && 'is-muted')}>
-                            {resolveSuggestionText(message)}
-                          </p>
+                        <label className="channel-suggest-composer__field">
+                          <textarea
+                            ref={composeFieldRef}
+                            rows={1}
+                            value={draft}
+                            onChange={(event) => setDraft(event.target.value)}
+                            placeholder={viewModel.placeholder}
+                            maxLength={COMMENT_DRAFT_MAX_LENGTH}
+                          />
+                        </label>
 
-                          {hasMedia ? (
-                            <span className="channel-suggest-card__media">
-                              <IconoirAttachment aria-hidden focusable="false" />
-                              {resolveSuggestionAttachmentLabel(message)}
-                            </span>
-                          ) : null}
+                        <span className="channel-suggest-composer__tail" aria-hidden />
+                      </div>
+                    </div>
 
-                          {message.publishedUrl ? (
-                            <a
-                              className="channel-suggest-card__link"
-                              href={message.publishedUrl}
-                              target="_blank"
-                              rel="noreferrer"
+                    <div className="channel-suggest-composer__bar">
+                      <div className="channel-suggest-composer__tools">
+                        {useNativeTapFileInputs ? (
+                          <label
+                            className={cn(
+                              'channel-suggest-composer__tool',
+                              (isComposePending || isPreparingAttachment) && 'is-disabled',
+                              draftImageAttachments.length > 0 && 'is-active',
+                            )}
+                            aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
+                            aria-disabled={isComposePending || isPreparingAttachment}
+                            role="button"
+                            tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                            onClick={() => {
+                              armDraftAttachmentInputWatcher('image');
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter' && event.key !== ' ') {
+                                return;
+                              }
+                              event.preventDefault();
+                              armDraftAttachmentInputWatcher('image');
+                              imageInputRef.current?.click();
+                            }}
+                          >
+                            <input
+                              ref={imageInputRef}
+                              className="channel-dialog-compose__attach-input"
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              disabled={isComposePending || isPreparingAttachment}
+                              onChange={handleDraftImagesChange}
+                              onInput={handleDraftImagesInput}
+                              onClickCapture={() => {
+                                armDraftAttachmentInputWatcher('image');
+                              }}
+                              onPointerDownCapture={() => {
+                                armDraftAttachmentInputWatcher('image');
+                              }}
+                              tabIndex={-1}
+                            />
+                            <IconoirCamera aria-hidden focusable="false" />
+                          </label>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              className={cn(
+                                'channel-suggest-composer__tool',
+                                draftImageAttachments.length > 0 && 'is-active',
+                              )}
+                              aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES} фото`}
+                              disabled={isComposePending || isPreparingAttachment}
+                              onClick={() => {
+                                armDraftAttachmentInputWatcher('image');
+                                openFileInputPicker(imageInputRef.current);
+                              }}
                             >
-                              Открыть
-                            </a>
-                          ) : null}
-                        </article>
-                      );
-                    })
-                  ) : (
-                    <div className="channel-suggest-empty">Пока пусто</div>
-                  )}
+                              <IconoirCamera aria-hidden focusable="false" />
+                            </button>
+                            <input
+                              ref={imageInputRef}
+                              className="channel-dialog-compose__picker-input"
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              disabled={isComposePending || isPreparingAttachment}
+                              onChange={handleDraftImagesChange}
+                              onInput={handleDraftImagesInput}
+                              onClickCapture={() => {
+                                armDraftAttachmentInputWatcher('image');
+                              }}
+                              onPointerDownCapture={() => {
+                                armDraftAttachmentInputWatcher('image');
+                              }}
+                              tabIndex={-1}
+                            />
+                          </>
+                        )}
+                      </div>
+
+                      <span className="channel-suggest-composer__asset">
+                        {isPreparingAttachment
+                          ? 'Готовим фото'
+                          : draftImageAttachments.length > 0
+                            ? `${draftImageAttachments.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES}`
+                            : null}
+                      </span>
+
+                      <button
+                        type="button"
+                        className="channel-suggest-composer__submit"
+                        onClick={onSubmit}
+                        disabled={!canSubmitMessage || isComposePending}
+                      >
+                        {isComposePending ? (
+                          <span className="channel-dialog-submit__loader" aria-hidden />
+                        ) : (
+                          <SendArrowIcon />
+                        )}
+                        <span>{sendMutation.isPending ? 'Отправка' : 'Отправить'}</span>
+                      </button>
+                    </div>
+                  </section>
+
+                  {messages.length ? (
+                    <div className="channel-suggest-list channel-suggest-list--history">
+                      {messages.map((message) => {
+                        const status = resolveSuggestionStatus(message);
+                        const hasMedia =
+                          message.hasImage ||
+                          message.hasVideo ||
+                          Boolean(message.imageFileName || message.videoFileName);
+
+                        return (
+                          <article
+                            key={message.id}
+                            ref={(node) => {
+                              if (node) {
+                                messageNodeRefs.current.set(message.id, node);
+                                return;
+                              }
+                              messageNodeRefs.current.delete(message.id);
+                            }}
+                            className={cn('channel-suggest-card', `is-${status.tone}`)}
+                          >
+                            <div className="channel-suggest-card__head">
+                              <span className={cn('channel-suggest-status', `is-${status.tone}`)}>
+                                {status.badge}
+                              </span>
+                              <time dateTime={message.createdAt}>
+                                {formatMessageTime(message.createdAt)}
+                              </time>
+                            </div>
+
+                            <p className={cn(!message.text.trim() && 'is-muted')}>
+                              {resolveSuggestionText(message)}
+                            </p>
+
+                            {hasMedia ? (
+                              <span className="channel-suggest-card__media">
+                                <IconoirAttachment aria-hidden focusable="false" />
+                                {resolveSuggestionAttachmentLabel(message)}
+                              </span>
+                            ) : null}
+
+                            {message.publishedUrl ? (
+                              <a
+                                className="channel-suggest-card__link"
+                                href={message.publishedUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                Открыть
+                              </a>
+                            ) : null}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               ) : (
                 <div className="channel-dialog-message-list">
@@ -3101,163 +3351,250 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           </>
         </section>
 
-        <section className="channel-dialog-compose">
-          {showJumpToLatest ? (
-            <button
-              type="button"
-              className="channel-dialog-jump-latest"
-              onClick={handleJumpToLatest}
-              aria-label={`Перейти к ${unreadCount} ${
-                dialogType === 'suggest' ? 'новым предложкам' : 'новым комментариям'
-              }`}
-            >
-              <span className="channel-dialog-jump-latest__icon" aria-hidden>
-                <SendArrowIcon />
-              </span>
-              <span>К новым</span>
-              <b>{unreadCount}</b>
-            </button>
-          ) : null}
-
-          <div className="channel-dialog-compose__surface">
-            {editingMessage ? (
-              <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
-                <button
-                  type="button"
-                  className={cn('channel-dialog-compose__reply-copy', 'is-link')}
-                  onClick={() => scrollToMessage(editingMessage.id)}
-                >
-                  <span>Редактирование комментария</span>
-                  <p>
-                    {summarizeReplyText(
-                      editingMessage.text || editingAttachmentSummary || 'Комментарий',
-                      84,
-                    )}
-                  </p>
-                </button>
-                <button
-                  type="button"
-                  className="channel-dialog-compose__reply-dismiss"
-                  onClick={() => cancelEditing({ restoreDraft: true })}
-                  aria-label="Отменить редактирование"
-                >
-                  <CloseIcon />
-                </button>
-              </div>
-            ) : replyTarget ? (
-              <div className="channel-dialog-compose__reply">
-                <button
-                  type="button"
-                  className={cn('channel-dialog-compose__reply-copy', 'is-link')}
-                  onClick={handleComposeReplySourceJump}
-                >
-                  <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
-                  <p>{summarizeReplyText(replyTarget.text, 84)}</p>
-                </button>
-                <button
-                  type="button"
-                  className="channel-dialog-compose__reply-dismiss"
-                  onClick={() => setReplyToMessageId(null)}
-                  aria-label="Отменить ответ"
-                >
-                  <CloseIcon />
-                </button>
-              </div>
+        {dialogType === 'comments' ? (
+          <section className="channel-dialog-compose">
+            {showJumpToLatest ? (
+              <button
+                type="button"
+                className="channel-dialog-jump-latest"
+                onClick={handleJumpToLatest}
+                aria-label={`Перейти к ${unreadCount} новым комментариям`}
+              >
+                <span className="channel-dialog-jump-latest__icon" aria-hidden>
+                  <SendArrowIcon />
+                </span>
+                <span>К новым</span>
+                <b>{unreadCount}</b>
+              </button>
             ) : null}
 
-            {editingMessage?.attachments.length ? (
-              <>
-                <CommentComposeImageStrip attachments={editingImageAttachments} />
-                <CommentComposeFileList attachments={editingFileAttachments} />
-              </>
-            ) : !editingMessage && draftAttachments.length > 0 ? (
-              <>
-                <CommentComposeImageStrip
-                  attachments={draftImageAttachments}
-                  removable
-                  onRemove={(filteredIndex) => {
-                    const attachment = draftImageAttachments[filteredIndex];
-                    const originalIndex = attachment ? draftAttachments.indexOf(attachment) : -1;
-                    if (originalIndex >= 0) {
-                      handleDraftAttachmentRemove(originalIndex);
-                    }
-                  }}
-                />
-                {dialogType === 'comments' ? (
-                  <CommentComposeFileList
-                    attachments={draftFileAttachments}
+            <div className="channel-dialog-compose__surface">
+              {editingMessage ? (
+                <div className={cn('channel-dialog-compose__reply', 'is-editing')}>
+                  <button
+                    type="button"
+                    className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                    onClick={() => scrollToMessage(editingMessage.id)}
+                  >
+                    <span>Редактирование комментария</span>
+                    <p>
+                      {summarizeReplyText(
+                        editingMessage.text || editingAttachmentSummary || 'Комментарий',
+                        84,
+                      )}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    className="channel-dialog-compose__reply-dismiss"
+                    onClick={() => cancelEditing({ restoreDraft: true })}
+                    aria-label="Отменить редактирование"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ) : replyTarget ? (
+                <div className="channel-dialog-compose__reply">
+                  <button
+                    type="button"
+                    className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                    onClick={handleComposeReplySourceJump}
+                  >
+                    <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
+                    <p>{summarizeReplyText(replyTarget.text, 84)}</p>
+                  </button>
+                  <button
+                    type="button"
+                    className="channel-dialog-compose__reply-dismiss"
+                    onClick={() => setReplyToMessageId(null)}
+                    aria-label="Отменить ответ"
+                  >
+                    <CloseIcon />
+                  </button>
+                </div>
+              ) : null}
+
+              {editingMessage?.attachments.length ? (
+                <>
+                  <CommentComposeImageStrip attachments={editingImageAttachments} />
+                  <CommentComposeFileList attachments={editingFileAttachments} />
+                </>
+              ) : !editingMessage && draftAttachments.length > 0 ? (
+                <>
+                  <CommentComposeImageStrip
+                    attachments={draftImageAttachments}
                     removable
                     onRemove={(filteredIndex) => {
-                      const attachment = draftFileAttachments[filteredIndex];
+                      const attachment = draftImageAttachments[filteredIndex];
                       const originalIndex = attachment ? draftAttachments.indexOf(attachment) : -1;
                       if (originalIndex >= 0) {
                         handleDraftAttachmentRemove(originalIndex);
                       }
                     }}
                   />
-                ) : null}
-              </>
-            ) : null}
+                  {dialogType === 'comments' ? (
+                    <CommentComposeFileList
+                      attachments={draftFileAttachments}
+                      removable
+                      onRemove={(filteredIndex) => {
+                        const attachment = draftFileAttachments[filteredIndex];
+                        const originalIndex = attachment
+                          ? draftAttachments.indexOf(attachment)
+                          : -1;
+                        if (originalIndex >= 0) {
+                          handleDraftAttachmentRemove(originalIndex);
+                        }
+                      }}
+                    />
+                  ) : null}
+                </>
+              ) : null}
 
-            <div className="channel-dialog-compose__toolbar">
-              <div
-                className={cn(
-                  'channel-dialog-compose__quick-actions',
-                  editingMessage && 'is-editing',
-                )}
-              >
-                <button
-                  type="button"
+              <div className="channel-dialog-compose__toolbar">
+                <div
                   className={cn(
-                    'channel-dialog-compose__attach',
-                    'channel-dialog-compose__attach--icon',
-                    'channel-dialog-compose__emoji-toggle',
-                    isComposeEmojiOpen && 'is-active',
+                    'channel-dialog-compose__quick-actions',
+                    editingMessage && 'is-editing',
                   )}
-                  onClick={() => {
-                    maxImpact('light');
-                    setIsComposeEmojiOpen((current) => !current);
-                    requestAnimationFrame(() => composeFieldRef.current?.focus());
-                  }}
-                  aria-label="Эмодзи"
-                  aria-expanded={isComposeEmojiOpen}
-                  aria-controls="channel-dialog-compose-emoji-panel"
-                  disabled={isComposePending}
                 >
-                  <IconoirEmoji aria-hidden focusable="false" />
-                </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      'channel-dialog-compose__attach',
+                      'channel-dialog-compose__attach--icon',
+                      'channel-dialog-compose__emoji-toggle',
+                      isComposeEmojiOpen && 'is-active',
+                    )}
+                    onClick={() => {
+                      maxImpact('light');
+                      setIsComposeEmojiOpen((current) => !current);
+                      requestAnimationFrame(() => composeFieldRef.current?.focus());
+                    }}
+                    aria-label="Эмодзи"
+                    aria-expanded={isComposeEmojiOpen}
+                    aria-controls="channel-dialog-compose-emoji-panel"
+                    disabled={isComposePending}
+                  >
+                    <IconoirEmoji aria-hidden focusable="false" />
+                  </button>
 
-                {!editingMessage ? (
-                  useNativeTapFileInputs ? (
-                    <>
-                      <label
-                        className={cn(
-                          'channel-dialog-compose__attach',
-                          'channel-dialog-compose__attach--icon',
-                          (isComposePending || isPreparingAttachment) &&
-                            'channel-dialog-compose__attach--disabled',
-                          draftAttachments.some((attachment) => attachment.type === 'image') &&
-                            'is-active',
-                        )}
-                        aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
-                        aria-disabled={isComposePending || isPreparingAttachment}
-                        role="button"
-                        tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                        onClick={() => {
-                          armDraftAttachmentInputWatcher('image');
-                        }}
-                        onKeyDown={(event) => {
-                          if (event.key !== 'Enter' && event.key !== ' ') {
-                            return;
-                          }
-                          event.preventDefault();
-                          armDraftAttachmentInputWatcher('image');
-                          imageInputRef.current?.click();
-                        }}
-                      >
+                  {!editingMessage ? (
+                    useNativeTapFileInputs ? (
+                      <>
+                        <label
+                          className={cn(
+                            'channel-dialog-compose__attach',
+                            'channel-dialog-compose__attach--icon',
+                            (isComposePending || isPreparingAttachment) &&
+                              'channel-dialog-compose__attach--disabled',
+                            draftAttachments.some((attachment) => attachment.type === 'image') &&
+                              'is-active',
+                          )}
+                          aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
+                          aria-disabled={isComposePending || isPreparingAttachment}
+                          role="button"
+                          tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                          onClick={() => {
+                            armDraftAttachmentInputWatcher('image');
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key !== 'Enter' && event.key !== ' ') {
+                              return;
+                            }
+                            event.preventDefault();
+                            armDraftAttachmentInputWatcher('image');
+                            imageInputRef.current?.click();
+                          }}
+                        >
+                          <input
+                            ref={imageInputRef}
+                            className="channel-dialog-compose__attach-input"
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            disabled={isComposePending || isPreparingAttachment}
+                            onChange={handleDraftImagesChange}
+                            onInput={handleDraftImagesInput}
+                            onClickCapture={() => {
+                              armDraftAttachmentInputWatcher('image');
+                            }}
+                            onPointerDownCapture={() => {
+                              armDraftAttachmentInputWatcher('image');
+                            }}
+                            tabIndex={-1}
+                          />
+                          <IconoirCamera aria-hidden focusable="false" />
+                        </label>
+                        {dialogType === 'comments' ? (
+                          <label
+                            className={cn(
+                              'channel-dialog-compose__attach',
+                              'channel-dialog-compose__attach--icon',
+                              (isComposePending || isPreparingAttachment) &&
+                                'channel-dialog-compose__attach--disabled',
+                              draftAttachments.some((attachment) => attachment.type === 'file') &&
+                                'is-active',
+                            )}
+                            aria-label="Прикрепить файл"
+                            aria-disabled={isComposePending || isPreparingAttachment}
+                            role="button"
+                            tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
+                            onClick={() => {
+                              armDraftAttachmentInputWatcher('file');
+                            }}
+                            onKeyDown={(event) => {
+                              if (event.key !== 'Enter' && event.key !== ' ') {
+                                return;
+                              }
+                              event.preventDefault();
+                              armDraftAttachmentInputWatcher('file');
+                              fileInputRef.current?.click();
+                            }}
+                          >
+                            <input
+                              ref={fileInputRef}
+                              className="channel-dialog-compose__attach-input"
+                              type="file"
+                              disabled={isComposePending || isPreparingAttachment}
+                              onChange={handleDraftFilesChange}
+                              onInput={handleDraftFilesInput}
+                              onClickCapture={() => {
+                                armDraftAttachmentInputWatcher('file');
+                              }}
+                              onPointerDownCapture={() => {
+                                armDraftAttachmentInputWatcher('file');
+                              }}
+                              tabIndex={-1}
+                            />
+                            <IconoirAttachment aria-hidden focusable="false" />
+                          </label>
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className={cn(
+                            'channel-dialog-compose__attach',
+                            'channel-dialog-compose__attach--icon',
+                            (isComposePending || isPreparingAttachment) &&
+                              'channel-dialog-compose__attach--disabled',
+                            draftAttachments.some((attachment) => attachment.type === 'image') &&
+                              'is-active',
+                          )}
+                          aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
+                          aria-disabled={isComposePending || isPreparingAttachment}
+                          disabled={isComposePending || isPreparingAttachment}
+                          onClick={() => {
+                            armDraftAttachmentInputWatcher('image');
+                            openFileInputPicker(imageInputRef.current);
+                          }}
+                        >
+                          <IconoirCamera aria-hidden focusable="false" />
+                        </button>
                         <input
                           ref={imageInputRef}
-                          className="channel-dialog-compose__attach-input"
+                          className="channel-dialog-compose__picker-input"
                           type="file"
                           accept="image/*"
                           multiple
@@ -3272,251 +3609,166 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           }}
                           tabIndex={-1}
                         />
-                        <IconoirCamera aria-hidden focusable="false" />
-                      </label>
-                      {dialogType === 'comments' ? (
-                        <label
-                          className={cn(
-                            'channel-dialog-compose__attach',
-                            'channel-dialog-compose__attach--icon',
-                            (isComposePending || isPreparingAttachment) &&
-                              'channel-dialog-compose__attach--disabled',
-                            draftAttachments.some((attachment) => attachment.type === 'file') &&
-                              'is-active',
-                          )}
-                          aria-label="Прикрепить файл"
-                          aria-disabled={isComposePending || isPreparingAttachment}
-                          role="button"
-                          tabIndex={isComposePending || isPreparingAttachment ? -1 : 0}
-                          onClick={() => {
-                            armDraftAttachmentInputWatcher('file');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key !== 'Enter' && event.key !== ' ') {
-                              return;
-                            }
-                            event.preventDefault();
-                            armDraftAttachmentInputWatcher('file');
-                            fileInputRef.current?.click();
-                          }}
-                        >
-                          <input
-                            ref={fileInputRef}
-                            className="channel-dialog-compose__attach-input"
-                            type="file"
-                            disabled={isComposePending || isPreparingAttachment}
-                            onChange={handleDraftFilesChange}
-                            onInput={handleDraftFilesInput}
-                            onClickCapture={() => {
-                              armDraftAttachmentInputWatcher('file');
-                            }}
-                            onPointerDownCapture={() => {
-                              armDraftAttachmentInputWatcher('file');
-                            }}
-                            tabIndex={-1}
-                          />
-                          <IconoirAttachment aria-hidden focusable="false" />
-                        </label>
-                      ) : null}
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        className={cn(
-                          'channel-dialog-compose__attach',
-                          'channel-dialog-compose__attach--icon',
-                          (isComposePending || isPreparingAttachment) &&
-                            'channel-dialog-compose__attach--disabled',
-                          draftAttachments.some((attachment) => attachment.type === 'image') &&
-                            'is-active',
-                        )}
-                        aria-label={`Добавить до ${MAX_CHANNEL_DIALOG_ATTACHMENTS} фото`}
-                        aria-disabled={isComposePending || isPreparingAttachment}
-                        disabled={isComposePending || isPreparingAttachment}
-                        onClick={() => {
-                          armDraftAttachmentInputWatcher('image');
-                          openFileInputPicker(imageInputRef.current);
-                        }}
-                      >
-                        <IconoirCamera aria-hidden focusable="false" />
-                      </button>
-                      <input
-                        ref={imageInputRef}
-                        className="channel-dialog-compose__picker-input"
-                        type="file"
-                        accept="image/*"
-                        multiple
-                        disabled={isComposePending || isPreparingAttachment}
-                        onChange={handleDraftImagesChange}
-                        onInput={handleDraftImagesInput}
-                        onClickCapture={() => {
-                          armDraftAttachmentInputWatcher('image');
-                        }}
-                        onPointerDownCapture={() => {
-                          armDraftAttachmentInputWatcher('image');
-                        }}
-                        tabIndex={-1}
-                      />
-                      {dialogType === 'comments' ? (
-                        <>
-                          <button
-                            type="button"
-                            className={cn(
-                              'channel-dialog-compose__attach',
-                              'channel-dialog-compose__attach--icon',
-                              (isComposePending || isPreparingAttachment) &&
-                                'channel-dialog-compose__attach--disabled',
-                              draftAttachments.some((attachment) => attachment.type === 'file') &&
-                                'is-active',
-                            )}
-                            aria-label="Прикрепить файл"
-                            aria-disabled={isComposePending || isPreparingAttachment}
-                            disabled={isComposePending || isPreparingAttachment}
-                            onClick={() => {
-                              armDraftAttachmentInputWatcher('file');
-                              openFileInputPicker(fileInputRef.current);
-                            }}
-                          >
-                            <IconoirAttachment aria-hidden focusable="false" />
-                          </button>
-                          <input
-                            ref={fileInputRef}
-                            className="channel-dialog-compose__picker-input"
-                            type="file"
-                            disabled={isComposePending || isPreparingAttachment}
-                            onChange={handleDraftFilesChange}
-                            onInput={handleDraftFilesInput}
-                            onClickCapture={() => {
-                              armDraftAttachmentInputWatcher('file');
-                            }}
-                            onPointerDownCapture={() => {
-                              armDraftAttachmentInputWatcher('file');
-                            }}
-                            tabIndex={-1}
-                          />
-                        </>
-                      ) : null}
-                    </>
-                  )
+                        {dialogType === 'comments' ? (
+                          <>
+                            <button
+                              type="button"
+                              className={cn(
+                                'channel-dialog-compose__attach',
+                                'channel-dialog-compose__attach--icon',
+                                (isComposePending || isPreparingAttachment) &&
+                                  'channel-dialog-compose__attach--disabled',
+                                draftAttachments.some((attachment) => attachment.type === 'file') &&
+                                  'is-active',
+                              )}
+                              aria-label="Прикрепить файл"
+                              aria-disabled={isComposePending || isPreparingAttachment}
+                              disabled={isComposePending || isPreparingAttachment}
+                              onClick={() => {
+                                armDraftAttachmentInputWatcher('file');
+                                openFileInputPicker(fileInputRef.current);
+                              }}
+                            >
+                              <IconoirAttachment aria-hidden focusable="false" />
+                            </button>
+                            <input
+                              ref={fileInputRef}
+                              className="channel-dialog-compose__picker-input"
+                              type="file"
+                              disabled={isComposePending || isPreparingAttachment}
+                              onChange={handleDraftFilesChange}
+                              onInput={handleDraftFilesInput}
+                              onClickCapture={() => {
+                                armDraftAttachmentInputWatcher('file');
+                              }}
+                              onPointerDownCapture={() => {
+                                armDraftAttachmentInputWatcher('file');
+                              }}
+                              tabIndex={-1}
+                            />
+                          </>
+                        ) : null}
+                      </>
+                    )
+                  ) : null}
+                </div>
+
+                {showComposeMeta ? (
+                  <div
+                    className={cn(
+                      'channel-dialog-compose__meta',
+                      !composeMetaLabel && 'channel-dialog-compose__meta--solo',
+                    )}
+                  >
+                    {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
+                    <span>
+                      {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
+                    </span>
+                  </div>
                 ) : null}
               </div>
 
-              {showComposeMeta ? (
+              {isComposeEmojiOpen ? (
                 <div
-                  className={cn(
-                    'channel-dialog-compose__meta',
-                    !composeMetaLabel && 'channel-dialog-compose__meta--solo',
-                  )}
+                  id="channel-dialog-compose-emoji-panel"
+                  className="channel-dialog-compose__emoji-panel"
+                  aria-label="Эмодзи"
                 >
-                  {composeMetaLabel ? <span>{composeMetaLabel}</span> : null}
-                  <span>
-                    {draftLength}/{COMMENT_DRAFT_MAX_LENGTH}
-                  </span>
+                  <div className="channel-dialog-compose__emoji-head">
+                    <span className="channel-dialog-compose__emoji-handle" aria-hidden />
+                    <button
+                      type="button"
+                      className="channel-dialog-compose__emoji-close"
+                      onClick={() => {
+                        maxImpact('light');
+                        setIsComposeEmojiOpen(false);
+                        requestAnimationFrame(() => composeFieldRef.current?.focus());
+                      }}
+                      aria-label="Закрыть эмодзи"
+                    >
+                      <CloseIcon />
+                    </button>
+                  </div>
+                  <div className="channel-dialog-compose__emoji-tabs" role="tablist">
+                    {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
+                      <button
+                        key={group.id}
+                        type="button"
+                        className={cn(
+                          'channel-dialog-compose__emoji-tab',
+                          group.id === activeComposeEmojiGroup.id && 'is-active',
+                        )}
+                        role="tab"
+                        aria-selected={group.id === activeComposeEmojiGroup.id}
+                        onClick={() => setActiveComposeEmojiGroupId(group.id)}
+                      >
+                        {group.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="channel-dialog-compose__emoji-grid" role="list">
+                    {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
+                      <button
+                        key={`${emoji}-${emojiIndex}`}
+                        type="button"
+                        className="channel-dialog-compose__emoji"
+                        onClick={() => handleComposeEmojiInsert(emoji)}
+                        aria-label={`Добавить ${emoji}`}
+                      >
+                        {emoji}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               ) : null}
-            </div>
 
-            {isComposeEmojiOpen ? (
-              <div
-                id="channel-dialog-compose-emoji-panel"
-                className="channel-dialog-compose__emoji-panel"
-                aria-label="Эмодзи"
-              >
-                <div className="channel-dialog-compose__emoji-head">
-                  <span className="channel-dialog-compose__emoji-handle" aria-hidden />
+              <div className="channel-dialog-compose__row">
+                <label className="channel-dialog-compose__field">
+                  <textarea
+                    ref={composeFieldRef}
+                    rows={1}
+                    value={draft}
+                    onChange={(event) => setDraft(event.target.value)}
+                    placeholder={
+                      editingMessage
+                        ? editingMessage.attachments.length > 0 && !editingMessage.text.trim()
+                          ? 'Подпись'
+                          : 'Правка'
+                        : replyTarget
+                          ? 'Ответ'
+                          : viewModel.placeholder
+                    }
+                    maxLength={COMMENT_DRAFT_MAX_LENGTH}
+                  />
+                </label>
+
+                <div className="channel-dialog-compose__actions">
                   <button
                     type="button"
-                    className="channel-dialog-compose__emoji-close"
-                    onClick={() => {
-                      maxImpact('light');
-                      setIsComposeEmojiOpen(false);
-                      requestAnimationFrame(() => composeFieldRef.current?.focus());
-                    }}
-                    aria-label="Закрыть эмодзи"
+                    className="channel-dialog-submit"
+                    onClick={onSubmit}
+                    disabled={!canSubmitMessage || isComposePending}
+                    aria-label={
+                      editingMessage
+                        ? updateMutation.isPending
+                          ? 'Сохранение'
+                          : 'Сохранить'
+                        : sendMutation.isPending
+                          ? 'Отправка'
+                          : 'Отправить'
+                    }
                   >
-                    <CloseIcon />
+                    {isComposePending ? (
+                      <span className="channel-dialog-submit__loader" aria-hidden />
+                    ) : (
+                      <SendArrowIcon />
+                    )}
                   </button>
                 </div>
-                <div className="channel-dialog-compose__emoji-tabs" role="tablist">
-                  {COMMENT_COMPOSE_EMOJI_GROUPS.map((group) => (
-                    <button
-                      key={group.id}
-                      type="button"
-                      className={cn(
-                        'channel-dialog-compose__emoji-tab',
-                        group.id === activeComposeEmojiGroup.id && 'is-active',
-                      )}
-                      role="tab"
-                      aria-selected={group.id === activeComposeEmojiGroup.id}
-                      onClick={() => setActiveComposeEmojiGroupId(group.id)}
-                    >
-                      {group.label}
-                    </button>
-                  ))}
-                </div>
-                <div className="channel-dialog-compose__emoji-grid" role="list">
-                  {activeComposeEmojiGroup.emojis.map((emoji, emojiIndex) => (
-                    <button
-                      key={`${emoji}-${emojiIndex}`}
-                      type="button"
-                      className="channel-dialog-compose__emoji"
-                      onClick={() => handleComposeEmojiInsert(emoji)}
-                      aria-label={`Добавить ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="channel-dialog-compose__row">
-              <label className="channel-dialog-compose__field">
-                <textarea
-                  ref={composeFieldRef}
-                  rows={1}
-                  value={draft}
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder={
-                    editingMessage
-                      ? editingMessage.attachments.length > 0 && !editingMessage.text.trim()
-                        ? 'Подпись'
-                        : 'Правка'
-                      : replyTarget
-                        ? 'Ответ'
-                        : viewModel.placeholder
-                  }
-                  maxLength={COMMENT_DRAFT_MAX_LENGTH}
-                />
-              </label>
-
-              <div className="channel-dialog-compose__actions">
-                <button
-                  type="button"
-                  className="channel-dialog-submit"
-                  onClick={onSubmit}
-                  disabled={!canSubmitMessage || isComposePending}
-                  aria-label={
-                    editingMessage
-                      ? updateMutation.isPending
-                        ? 'Сохранение'
-                        : 'Сохранить'
-                      : sendMutation.isPending
-                        ? 'Отправка'
-                        : 'Отправить'
-                  }
-                >
-                  {isComposePending ? (
-                    <span className="channel-dialog-submit__loader" aria-hidden />
-                  ) : (
-                    <SendArrowIcon />
-                  )}
-                </button>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
       </div>
 
       {imageViewer && activeViewerAttachment && activeViewerImageSrc
