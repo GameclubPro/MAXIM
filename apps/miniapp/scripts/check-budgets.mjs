@@ -21,13 +21,14 @@ const STARTUP_JS_BUDGET_GZIP = 108 * 1024 + 512;
 // broadcast test-to-self delivery, duplicate-to-compose actions,
 // the three-tab broadcast workspace with calendar/archive filters,
 // the publish review sheet,
+// the sheet-based broadcast button editor,
 // the compact send-now/scheduled/cycle timing selector,
 // favorite-audience quick selection and local text template entry points,
 // bidirectional stop-word preset actions and inline +/- parsing,
 // the invitation access gate with editable bot notices,
 // plus the new-chat/channel handoff loading state
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 12 * 1024 + 512;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 13 * 1024 + 512;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

@@ -263,6 +263,7 @@ const LazyBroadcastSchedulePlanner = lazy(() =>
   })),
 );
 const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-content-composer'));
+const LazyBroadcastButtonsSheet = lazy(() => import('../components/broadcast-buttons-sheet'));
 const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../components/broadcast-publish-review-sheet'),
 );
@@ -2163,6 +2164,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastScopedTargetMode>('current');
   const [mailingAudienceError, setMailingAudienceError] = useState('');
   const [mailingButtons, setMailingButtons] = useState<BroadcastLinkButton[]>([]);
+  const [mailingButtonsSheetOpen, setMailingButtonsSheetOpen] = useState(false);
   const [mailingButtonRevealSignal, setMailingButtonRevealSignal] = useState(0);
   const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
   const [mailingImageBase64, setMailingImageBase64] = useState('');
@@ -2170,7 +2172,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingVideoCleared, setMailingVideoCleared] = useState(false);
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
-  const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('scheduled');
+  const [mailingTimingMode, setMailingTimingMode] = useState<BroadcastTimingMode>('now');
   const [mailingCycleDraft, setMailingCycleDraft] = useState<BroadcastCycleDraft>(() =>
     createDefaultBroadcastCycleDraft(),
   );
@@ -2320,12 +2322,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingAudienceError('');
     setMailingText('');
     setMailingButtons([]);
+    setMailingButtonsSheetOpen(false);
     setMailingImageEnabled(false);
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingVideoCleared(false);
-    setMailingTimingMode('scheduled');
+    setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -4413,7 +4416,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingVideoCleared(false);
-    setMailingTimingMode('scheduled');
+    setMailingTimingMode('now');
     setMailingCycleDraft(createDefaultBroadcastCycleDraft());
     setMailingScheduledSlots([]);
     setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -4429,6 +4432,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingScheduleError('');
     setMailingCycleError('');
     setPendingMailingPublishReview(null);
+    setMailingButtonsSheetOpen(false);
     setMailingWorkspaceView('compose');
     resetMailingPlanner();
   }
@@ -4581,6 +4585,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     cancelManagedBroadcastMutation.mutate(managedBroadcastDeleteTarget.id);
+  }
+
+  function handleMailingButtonsEnabledChange(enabled: boolean) {
+    if (enabled) {
+      if (mailingButtons.length === 0) {
+        setMailingButtonRevealSignal((current) => current + 1);
+      }
+      setMailingButtons((current) =>
+        current.length > 0 ? current : [createEmptyBroadcastLinkButton()],
+      );
+      return;
+    }
+
+    setMailingButtons([]);
+    setMailingButtonErrors([]);
   }
 
   function validateMailingButtonDraft() {
@@ -5845,8 +5864,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         className="button button--ghost broadcast-publish-bar__test"
         onClick={handleSendBroadcastTest}
         disabled={isMailingBusy || !mailingTestReady}
+        aria-label={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
+        title={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
       >
-        {sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
+        <span>{sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}</span>
       </button>
       <button
         type="button"
@@ -5854,15 +5875,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         onClick={handleSendBroadcast}
         disabled={mailingSendDisabled}
       >
-        {isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
-          : sendBroadcastMutation.isPending
-            ? mailingTimingMode === 'now'
-              ? 'Отправляем...'
-              : 'Планируем...'
-            : isOpeningManagedBroadcastEditor
-              ? 'Открываем...'
-              : mailingPrimaryActionLabel}
+        <span>
+          {isUpdatingManagedBroadcast
+            ? 'Сохраняем...'
+            : sendBroadcastMutation.isPending
+              ? mailingTimingMode === 'now'
+                ? 'Отправляем...'
+                : 'Планируем...'
+              : isOpeningManagedBroadcastEditor
+                ? 'Открываем...'
+                : mailingPrimaryActionLabel}
+        </span>
       </button>
     </div>
   );
@@ -10834,6 +10857,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }}
                                     buttons={normalizedMailingButtons}
                                     systemButtons={mailingSystemButtons}
+                                    buttonsStatusLabel={formatBroadcastButtonsStatus(
+                                      normalizedMailingButtons,
+                                    )}
+                                    buttonsActive={mailingButtonEnabled}
+                                    buttonsError={!mailingButtonDraftValid}
+                                    onOpenButtons={() => setMailingButtonsSheetOpen(true)}
                                     templateScope={mailingTemplateScope}
                                   />
                                 </Suspense>
@@ -10924,81 +10953,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     }}
                                   />
                                 </Suspense>
-                              </div>
-                            </div>
-
-                            <div className="broadcast-stage-card broadcast-stage-card--cta">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Кнопки</strong>
-                                </div>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                <div className="broadcast-cta-toggle">
-                                  <span
-                                    className={cn(
-                                      'broadcast-cta-toggle__pill',
-                                      mailingButtonEnabled && 'is-active',
-                                    )}
-                                  >
-                                    {mailingButtonEnabled
-                                      ? normalizedMailingButtons[0]?.text ||
-                                        formatBroadcastButtonsStatus(normalizedMailingButtons)
-                                      : 'Без кнопки'}
-                                  </span>
-
-                                  <label
-                                    className="settings-native-switch"
-                                    aria-label="Добавить кнопку в рассылку"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={mailingButtonEnabled}
-                                      onChange={(event) => {
-                                        const enabled = event.target.checked;
-                                        if (enabled && mailingButtons.length === 0) {
-                                          setMailingButtonRevealSignal((current) => current + 1);
-                                        }
-                                        setMailingButtons((current) =>
-                                          enabled
-                                            ? current.length > 0
-                                              ? current
-                                              : [createEmptyBroadcastLinkButton()]
-                                            : [],
-                                        );
-                                        if (!enabled) {
-                                          setMailingButtonErrors([]);
-                                        }
-                                      }}
-                                      disabled={isMailingBusy}
-                                    />
-                                    <span className="toggle-switch" aria-hidden>
-                                      <span className="toggle-switch__thumb" />
-                                    </span>
-                                  </label>
-                                </div>
-
-                                {mailingButtonEnabled ? (
-                                  <BroadcastLinkButtonsEditor
-                                    api={api}
-                                    buttons={mailingButtons}
-                                    errors={mailingButtonErrors}
-                                    revealNextStepSignal={mailingButtonRevealSignal}
-                                    compact
-                                    title=""
-                                    subtitle=""
-                                    onChange={(nextButtons) => {
-                                      setMailingButtons(nextButtons);
-                                      if (mailingButtonErrors.length > 0) {
-                                        setMailingButtonErrors([]);
-                                      }
-                                    }}
-                                    disabled={isMailingBusy}
-                                    urlPlaceholder="https://max.ru/channel/..."
-                                    textPlaceholder="Открыть"
-                                  />
-                                ) : null}
                               </div>
                             </div>
                           </div>
@@ -12631,6 +12585,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </GlassCard>
       ) : null}
+
+      <Suspense fallback={null}>
+        <LazyBroadcastButtonsSheet
+          open={mailingButtonsSheetOpen}
+          api={api}
+          enabled={mailingButtonEnabled}
+          buttons={mailingButtons}
+          errors={mailingButtonErrors}
+          revealNextStepSignal={mailingButtonRevealSignal}
+          disabled={isMailingBusy}
+          statusLabel={
+            mailingButtonEnabled
+              ? formatBroadcastButtonsStatus(normalizedMailingButtons)
+              : 'Без кнопок'
+          }
+          urlPlaceholder="https://max.ru/channel/..."
+          textPlaceholder="Открыть"
+          onEnabledChange={handleMailingButtonsEnabledChange}
+          onChange={(nextButtons) => {
+            setMailingButtons(nextButtons);
+            if (mailingButtonErrors.length > 0) {
+              setMailingButtonErrors([]);
+            }
+          }}
+          onClose={() => setMailingButtonsSheetOpen(false)}
+        />
+      </Suspense>
 
       <Suspense fallback={null}>
         <LazyBroadcastPublishReviewSheet

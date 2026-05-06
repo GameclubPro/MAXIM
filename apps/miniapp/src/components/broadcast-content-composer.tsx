@@ -1,5 +1,5 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
-import { Camera as IconoirCamera, Xmark as IconoirXmark } from 'iconoir-react';
+import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MaxMarkdownEditor } from './max-markdown-editor';
@@ -27,6 +27,9 @@ type BroadcastContentComposerProps = {
   image: BroadcastContentComposerImage;
   buttons?: BroadcastLinkButton[];
   systemButtons?: BroadcastLinkButton[];
+  buttonsStatusLabel?: string;
+  buttonsActive?: boolean;
+  buttonsError?: boolean;
   templateScope?: string;
   videoLabel?: string | null;
   disabled?: boolean;
@@ -34,9 +37,25 @@ type BroadcastContentComposerProps = {
   imageError?: string;
   onTextChange: (value: string) => void;
   onImageChange: (image: BroadcastContentComposerImage) => void;
+  onOpenButtons?: () => void;
   onClearVideo?: () => void;
   onError?: (message: string) => void;
 };
+
+const QUICK_TEXT_TEMPLATES = [
+  {
+    label: 'Анонс',
+    text: 'Анонс: скоро важное обновление. Следите за сообщениями.',
+  },
+  {
+    label: 'Напоминание',
+    text: 'Напоминание: событие начнется сегодня. Не пропустите.',
+  },
+  {
+    label: 'Итоги',
+    text: 'Итоги дня: собрали главное в одном сообщении.',
+  },
+];
 
 export function BroadcastContentComposer({
   text,
@@ -44,6 +63,9 @@ export function BroadcastContentComposer({
   image,
   buttons = [],
   systemButtons = [],
+  buttonsStatusLabel = 'Без кнопки',
+  buttonsActive = false,
+  buttonsError = false,
   templateScope,
   videoLabel = null,
   disabled = false,
@@ -51,6 +73,7 @@ export function BroadcastContentComposer({
   imageError = '',
   onTextChange,
   onImageChange,
+  onOpenButtons,
   onClearVideo,
   onError,
 }: BroadcastContentComposerProps) {
@@ -189,6 +212,17 @@ export function BroadcastContentComposer({
                 Сохранить
               </button>
             ) : null}
+            {QUICK_TEXT_TEMPLATES.map((template) => (
+              <button
+                key={template.label}
+                type="button"
+                className="broadcast-content-composer__template-chip is-snippet"
+                onClick={() => applyTemplate(template.text)}
+                disabled={isBusy}
+              >
+                {template.label}
+              </button>
+            ))}
           </div>
 
           <MaxMarkdownEditor
@@ -224,13 +258,44 @@ export function BroadcastContentComposer({
                 onChange={(event) => void handleImageFiles(event.currentTarget.files)}
                 tabIndex={-1}
               />
+              {onOpenButtons ? (
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-content-composer__tool',
+                    buttonsActive && 'is-active',
+                    buttonsError && 'is-danger',
+                  )}
+                  onClick={onOpenButtons}
+                  disabled={isBusy}
+                  aria-label={buttonsActive ? buttonsStatusLabel : 'Добавить кнопки'}
+                  title={buttonsActive ? buttonsStatusLabel : 'Добавить кнопки'}
+                >
+                  <IconoirLink aria-hidden focusable="false" />
+                </button>
+              ) : null}
             </div>
 
-            {imagePreviewUrl || videoLabel ? (
-              <span className="broadcast-content-composer__media-label">
-                {imagePreviewUrl ? image.fileName || 'Фото' : videoLabel}
-              </span>
-            ) : null}
+            <span className="broadcast-content-composer__asset-strip">
+              {imagePreviewUrl || videoLabel ? (
+                <span className="broadcast-content-composer__media-label">
+                  {imagePreviewUrl ? image.fileName || 'Фото' : videoLabel}
+                </span>
+              ) : null}
+              {onOpenButtons && buttonsActive ? (
+                <button
+                  type="button"
+                  className={cn(
+                    'broadcast-content-composer__button-label',
+                    buttonsError && 'is-danger',
+                  )}
+                  onClick={onOpenButtons}
+                  disabled={isBusy}
+                >
+                  {buttonsStatusLabel}
+                </button>
+              ) : null}
+            </span>
           </div>
         </div>
 

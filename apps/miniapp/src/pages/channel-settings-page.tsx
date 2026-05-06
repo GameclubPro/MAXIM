@@ -21,7 +21,6 @@ import {
 } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import type { BroadcastSchedulePlannerSelectionState } from '../components/broadcast-schedule-planner';
-import { BroadcastLinkButtonsEditor } from '../components/broadcast-link-buttons-editor';
 import {
   BroadcastStudioHeader,
   type BroadcastStudioSignal,
@@ -191,6 +190,7 @@ const LazyBroadcastSchedulePlanner = lazy(() =>
   })),
 );
 const LazyBroadcastContentComposer = lazy(() => import('../components/broadcast-content-composer'));
+const LazyBroadcastButtonsSheet = lazy(() => import('../components/broadcast-buttons-sheet'));
 const LazyBroadcastPublishReviewSheet = lazy(
   () => import('../components/broadcast-publish-review-sheet'),
 );
@@ -782,6 +782,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastTextError, setBroadcastTextError] = useState('');
   const [broadcastButtons, setBroadcastButtons] = useState<BroadcastLinkButton[]>([]);
+  const [broadcastButtonsSheetOpen, setBroadcastButtonsSheetOpen] = useState(false);
   const [broadcastButtonRevealSignal, setBroadcastButtonRevealSignal] = useState(0);
   const [broadcastButtonErrors, setBroadcastButtonErrors] = useState<
     BroadcastLinkButtonFieldErrors[]
@@ -792,7 +793,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastVideoCleared, setBroadcastVideoCleared] = useState(false);
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
-  const [broadcastTimingMode, setBroadcastTimingMode] = useState<BroadcastTimingMode>('scheduled');
+  const [broadcastTimingMode, setBroadcastTimingMode] = useState<BroadcastTimingMode>('now');
   const [broadcastCycleDraft, setBroadcastCycleDraft] = useState<BroadcastCycleDraft>(() =>
     createDefaultBroadcastCycleDraft(),
   );
@@ -1007,13 +1008,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastText('');
     setBroadcastTextError('');
     setBroadcastButtons([]);
+    setBroadcastButtonsSheetOpen(false);
     setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastVideoCleared(false);
-    setBroadcastTimingMode('scheduled');
+    setBroadcastTimingMode('now');
     setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -1959,8 +1961,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         className="button button--ghost broadcast-publish-bar__test"
         onClick={handleSendChannelBroadcastTest}
         disabled={isBroadcastBusy || !broadcastTestReady}
+        aria-label={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
+        title={sendBroadcastTestMutation.isPending ? 'Отправляем тест' : 'Отправить тест'}
       >
-        {sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}
+        <span>{sendBroadcastTestMutation.isPending ? 'Тест...' : 'Тест'}</span>
       </button>
       <button
         type="button"
@@ -1968,15 +1972,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         onClick={handleSendChannelBroadcast}
         disabled={broadcastSendDisabled}
       >
-        {isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
-          : sendBroadcastMutation.isPending
-            ? broadcastTimingMode === 'now'
-              ? 'Отправляем...'
-              : 'Планируем...'
-            : isOpeningManagedBroadcastEditor
-              ? 'Открываем...'
-              : broadcastPrimaryActionLabel}
+        <span>
+          {isUpdatingManagedBroadcast
+            ? 'Сохраняем...'
+            : sendBroadcastMutation.isPending
+              ? broadcastTimingMode === 'now'
+                ? 'Отправляем...'
+                : 'Планируем...'
+              : isOpeningManagedBroadcastEditor
+                ? 'Открываем...'
+                : broadcastPrimaryActionLabel}
+        </span>
       </button>
     </div>
   );
@@ -1992,13 +1998,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastText('');
     setBroadcastTextError('');
     setBroadcastButtons([]);
+    setBroadcastButtonsSheetOpen(false);
     setBroadcastButtonErrors([]);
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastVideoCleared(false);
-    setBroadcastTimingMode('scheduled');
+    setBroadcastTimingMode('now');
     setBroadcastCycleDraft(createDefaultBroadcastCycleDraft());
     setBroadcastScheduledSlots([]);
     setBroadcastScheduleTimezone(resolveBroadcastScheduleTimezone());
@@ -2119,6 +2126,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </button>
       </div>
     );
+  }
+
+  function handleBroadcastButtonsEnabledChange(enabled: boolean) {
+    if (enabled) {
+      if (broadcastButtons.length === 0) {
+        setBroadcastButtonRevealSignal((current) => current + 1);
+      }
+      setBroadcastButtons((current) =>
+        current.length > 0 ? current : [createEmptyBroadcastLinkButton()],
+      );
+      return;
+    }
+
+    setBroadcastButtons([]);
+    setBroadcastButtonErrors([]);
   }
 
   function validateBroadcastButtonDraft() {
@@ -2847,6 +2869,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               }}
                               buttons={normalizedBroadcastButtons}
                               systemButtons={broadcastSystemButtons}
+                              buttonsStatusLabel={formatBroadcastButtonsStatus(
+                                normalizedBroadcastButtons,
+                              )}
+                              buttonsActive={broadcastHasButton}
+                              buttonsError={!broadcastButtonDraftValid}
+                              onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
                               templateScope={broadcastTemplateScope}
                             />
                           </Suspense>
@@ -2906,82 +2934,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               }}
                             />
                           </Suspense>
-                        </div>
-                      </div>
-
-                      <div className="broadcast-stage-card broadcast-stage-card--cta">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <strong>Кнопки</strong>
-                          </div>
-                        </div>
-
-                        <div className="broadcast-stage-card__body">
-                          <div className="broadcast-cta-toggle">
-                            <span
-                              className={cn(
-                                'broadcast-cta-toggle__pill',
-                                broadcastHasButton && 'is-active',
-                              )}
-                            >
-                              {broadcastHasButton
-                                ? normalizedBroadcastButtons[0]?.text ||
-                                  formatBroadcastButtonsStatus(normalizedBroadcastButtons)
-                                : 'Без кнопки'}
-                            </span>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Добавить кнопку в пост канала"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={broadcastHasButton}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  if (enabled && broadcastButtons.length === 0) {
-                                    setBroadcastButtonRevealSignal((current) => current + 1);
-                                  }
-                                  setBroadcastButtons((current) =>
-                                    enabled
-                                      ? current.length > 0
-                                        ? current
-                                        : [createEmptyBroadcastLinkButton()]
-                                      : [],
-                                  );
-                                  if (!enabled) {
-                                    setBroadcastButtonErrors([]);
-                                  }
-                                }}
-                                disabled={isBroadcastBusy}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {broadcastHasButton ? (
-                            <BroadcastLinkButtonsEditor
-                              api={api}
-                              contextEntityType="channel"
-                              buttons={broadcastButtons}
-                              errors={broadcastButtonErrors}
-                              revealNextStepSignal={broadcastButtonRevealSignal}
-                              compact
-                              title=""
-                              subtitle=""
-                              onChange={(nextButtons) => {
-                                setBroadcastButtons(nextButtons);
-                                if (broadcastButtonErrors.length > 0) {
-                                  setBroadcastButtonErrors([]);
-                                }
-                              }}
-                              disabled={isBroadcastBusy}
-                              urlPlaceholder="https://max.ru/channel/..."
-                              textPlaceholder="Открыть"
-                            />
-                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -3356,6 +3308,34 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </SettingsDrilldownPanel>
         </GlassCard>
       ) : null}
+
+      <Suspense fallback={null}>
+        <LazyBroadcastButtonsSheet
+          open={broadcastButtonsSheetOpen}
+          api={api}
+          enabled={broadcastHasButton}
+          buttons={broadcastButtons}
+          errors={broadcastButtonErrors}
+          revealNextStepSignal={broadcastButtonRevealSignal}
+          contextEntityType="channel"
+          disabled={isBroadcastBusy}
+          statusLabel={
+            broadcastHasButton
+              ? formatBroadcastButtonsStatus(normalizedBroadcastButtons)
+              : 'Без кнопок'
+          }
+          urlPlaceholder="https://max.ru/channel/..."
+          textPlaceholder="Открыть"
+          onEnabledChange={handleBroadcastButtonsEnabledChange}
+          onChange={(nextButtons) => {
+            setBroadcastButtons(nextButtons);
+            if (broadcastButtonErrors.length > 0) {
+              setBroadcastButtonErrors([]);
+            }
+          }}
+          onClose={() => setBroadcastButtonsSheetOpen(false)}
+        />
+      </Suspense>
 
       <Suspense fallback={null}>
         <LazyBroadcastPublishReviewSheet
