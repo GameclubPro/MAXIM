@@ -2,7 +2,7 @@ import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { MaxMarkdownEditor } from './max-markdown-editor';
+import { MaxMarkdownEditor, type MaxMarkdownEditorHandle } from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
@@ -78,8 +78,10 @@ export function BroadcastContentComposer({
   onError,
 }: BroadcastContentComposerProps) {
   const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const markdownEditorRef = useRef<MaxMarkdownEditorHandle | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
+  const [formattingTrayOpen, setFormattingTrayOpen] = useState(false);
   const [savedTemplates, setSavedTemplates] = useState(() =>
     templateScope ? readBroadcastTextTemplates(templateScope) : [],
   );
@@ -226,19 +228,35 @@ export function BroadcastContentComposer({
           </div>
 
           <MaxMarkdownEditor
+            ref={markdownEditorRef}
             value={text}
             onChange={onTextChange}
             maxLength={maxLength}
             placeholder="Текст рассылки"
             rows={3}
             disabled={isBusy}
-            compactToolbar
+            toolbarMode="selection-tray"
             ariaLabel="Текст рассылки"
             className="broadcast-content-composer__markdown"
+            onFormattingTrayOpenChange={setFormattingTrayOpen}
           />
 
           <div className="broadcast-content-composer__bar">
             <div className="broadcast-content-composer__media-actions">
+              <button
+                type="button"
+                className={cn(
+                  'broadcast-content-composer__tool',
+                  'broadcast-content-composer__tool--format',
+                  formattingTrayOpen && 'is-active',
+                )}
+                onClick={() => markdownEditorRef.current?.toggleFormattingTray()}
+                disabled={isBusy}
+                aria-label="Форматирование"
+                title="Форматирование"
+              >
+                Aa
+              </button>
               <button
                 type="button"
                 className={cn('broadcast-content-composer__tool', imagePreviewUrl && 'is-active')}

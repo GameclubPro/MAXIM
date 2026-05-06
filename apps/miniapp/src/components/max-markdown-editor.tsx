@@ -1,11 +1,34 @@
-import { useEffect, useRef } from 'react';
+import { Link as IconoirLink } from 'iconoir-react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 
-type MaxMarkdownTool = 'bold' | 'italic' | 'underline' | 'strike' | 'code' | 'link';
+export type MaxMarkdownTool = 'bold' | 'italic' | 'underline' | 'strike' | 'code' | 'link';
 
 type SelectionRange = {
   start: number;
   end: number;
+};
+
+export type MaxMarkdownEditorHandle = {
+  focus: () => void;
+  openFormattingTray: () => void;
+  closeFormattingTray: () => void;
+  toggleFormattingTray: () => void;
+};
+
+type MaxMarkdownEditorProps = {
+  value: string;
+  onChange: (value: string) => void;
+  maxLength: number;
+  placeholder: string;
+  rows?: number;
+  disabled?: boolean;
+  showToolbar?: boolean;
+  compactToolbar?: boolean;
+  toolbarMode?: 'inline' | 'selection-tray';
+  ariaLabel: string;
+  className?: string;
+  onFormattingTrayOpenChange?: (open: boolean) => void;
 };
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
@@ -23,107 +46,272 @@ const TOOL_DEFINITIONS: Array<{
   { id: 'link', label: 'Link', title: 'Ссылка' },
 ];
 
-export function MaxMarkdownEditor({
-  value,
-  onChange,
-  maxLength,
-  placeholder,
-  rows = 5,
-  disabled = false,
-  showToolbar = true,
-  compactToolbar = false,
-  ariaLabel,
-  className,
-}: {
-  value: string;
-  onChange: (value: string) => void;
-  maxLength: number;
-  placeholder: string;
-  rows?: number;
-  disabled?: boolean;
-  showToolbar?: boolean;
-  compactToolbar?: boolean;
-  ariaLabel: string;
-  className?: string;
-}) {
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const pendingSelectionRef = useRef<SelectionRange | null>(null);
+export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdownEditorProps>(
+  function MaxMarkdownEditor(
+    {
+      value,
+      onChange,
+      maxLength,
+      placeholder,
+      rows = 5,
+      disabled = false,
+      showToolbar = true,
+      compactToolbar = false,
+      toolbarMode = 'inline',
+      ariaLabel,
+      className,
+      onFormattingTrayOpenChange,
+    },
+    ref,
+  ) {
+    const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+    const pendingSelectionRef = useRef<SelectionRange | null>(null);
+    const savedSelectionRef = useRef<SelectionRange>({ start: value.length, end: value.length });
+    const [hasSelectedText, setHasSelectedText] = useState(false);
+    const [formattingTrayOpen, setFormattingTrayOpen] = useState(false);
+    const shouldRenderInlineToolbar = showToolbar && toolbarMode === 'inline';
+    const shouldEnableSelectionTray = showToolbar && toolbarMode === 'selection-tray';
+    const isSelectionTrayVisible =
+      shouldEnableSelectionTray && (formattingTrayOpen || hasSelectedText);
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    const pendingSelection = pendingSelectionRef.current;
-    if (!textarea || !pendingSelection) {
-      return;
-    }
+    const syncSelection = useCallback((textarea: HTMLTextAreaElement | null) => {
+      if (!textarea) {
+        return;
+      }
 
-    textarea.focus();
-    textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
-    pendingSelectionRef.current = null;
-  }, [value]);
+      const nextSelection = clampSelection(
+        {
+          start: textarea.selectionStart,
+          end: textarea.selectionEnd,
+        },
+        textarea.value.length,
+      );
+      savedSelectionRef.current = nextSelection;
+      setHasSelectedText(nextSelection.start !== nextSelection.end);
+    }, []);
 
-  const applyTool = (tool: MaxMarkdownTool) => {
-    const textarea = textareaRef.current;
-    const selectionStart = textarea?.selectionStart ?? value.length;
-    const selectionEnd = textarea?.selectionEnd ?? value.length;
-    const selectedText = value.slice(selectionStart, selectionEnd);
+    useEffect(() => {
+      const textarea = textareaRef.current;
+      const pendingSelection = pendingSelectionRef.current;
+      if (!textarea || !pendingSelection) {
+        return;
+      }
 
-    const next = buildNextMarkdownValue(value, {
-      tool,
-      selectionStart,
-      selectionEnd,
-      selectedText,
-    });
+      textarea.focus();
+      textarea.setSelectionRange(pendingSelection.start, pendingSelection.end);
+      syncSelection(textarea);
+      pendingSelectionRef.current = null;
+    }, [syncSelection, value]);
 
-    onChange(next.value);
-    pendingSelectionRef.current = next.selection;
+    useEffect(() => {
+      savedSelectionRef.current = clampSelection(savedSelectionRef.current, value.length);
+    }, [value.length]);
+
+    useEffect(() => {
+      if (!shouldEnableSelectionTray || typeof document === 'undefined') {
+        return undefined;
+      }
+
+      const handleSelectionChange = () => {
+        const textarea = textareaRef.current;
+        if (textarea && document.activeElement === textarea) {
+          syncSelection(textarea);
+        }
+      };
+
+      document.addEventListener('selectionchange', handleSelectionChange);
+      return () => {
+        document.removeEventListener('selectionchange', handleSelectionChange);
+      };
+    }, [shouldEnableSelectionTray, syncSelection]);
+
+    useEffect(() => {
+      if (disabled) {
+        setFormattingTrayOpen(false);
+        setHasSelectedText(false);
+      }
+    }, [disabled]);
+
+    useEffect(() => {
+      onFormattingTrayOpenChange?.(isSelectionTrayVisible);
+    }, [isSelectionTrayVisible, onFormattingTrayOpenChange]);
+
+    useImperativeHandle(
+      ref,
+      () => ({
+        focus: () => {
+          textareaRef.current?.focus();
+        },
+        openFormattingTray: () => {
+          if (!disabled && shouldEnableSelectionTray) {
+            setFormattingTrayOpen(true);
+            textareaRef.current?.focus();
+          }
+        },
+        closeFormattingTray: () => {
+          setFormattingTrayOpen(false);
+        },
+        toggleFormattingTray: () => {
+          if (!disabled && shouldEnableSelectionTray) {
+            setFormattingTrayOpen((open) => !open);
+            textareaRef.current?.focus();
+          }
+        },
+      }),
+      [disabled, shouldEnableSelectionTray],
+    );
+
+    const applyTool = (tool: MaxMarkdownTool) => {
+      const { selectionStart, selectionEnd } = resolveSelectionForTool(
+        value,
+        textareaRef.current,
+        savedSelectionRef.current,
+      );
+      const selectedText = value.slice(selectionStart, selectionEnd);
+
+      const next = buildNextMarkdownValue(value, {
+        tool,
+        selectionStart,
+        selectionEnd,
+        selectedText,
+      });
+
+      onChange(next.value);
+      pendingSelectionRef.current = next.selection;
+      savedSelectionRef.current = next.selection;
+      if (shouldEnableSelectionTray) {
+        setFormattingTrayOpen(true);
+        setHasSelectedText(next.selection.start !== next.selection.end);
+      }
+    };
+
+    return (
+      <div
+        className={cn(
+          'max-markdown-editor',
+          shouldEnableSelectionTray && 'max-markdown-editor--selection-tray',
+          className,
+        )}
+      >
+        {shouldRenderInlineToolbar ? (
+          <div
+            className={cn(
+              'max-markdown-editor__toolbar',
+              compactToolbar && 'max-markdown-editor__toolbar--compact',
+            )}
+            role="toolbar"
+            aria-label="Форматирование MAX"
+          >
+            {TOOL_DEFINITIONS.map((tool) => (
+              <button
+                key={tool.id}
+                type="button"
+                className={cn(
+                  'max-markdown-editor__tool',
+                  tool.id === 'italic' && 'max-markdown-editor__tool--italic',
+                  tool.id === 'code' && 'max-markdown-editor__tool--code',
+                )}
+                title={tool.title}
+                aria-label={tool.title}
+                disabled={disabled}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => applyTool(tool.id)}
+              >
+                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={(event) => {
+            onChange(event.target.value);
+            syncSelection(event.currentTarget);
+          }}
+          onSelect={(event) => syncSelection(event.currentTarget)}
+          onClick={(event) => syncSelection(event.currentTarget)}
+          onKeyUp={(event) => syncSelection(event.currentTarget)}
+          onPointerUp={(event) => syncSelection(event.currentTarget)}
+          rows={rows}
+          maxLength={maxLength}
+          disabled={disabled}
+          placeholder={placeholder}
+          aria-label={ariaLabel}
+        />
+
+        {isSelectionTrayVisible ? (
+          <div
+            className="max-markdown-editor__format-tray"
+            role="toolbar"
+            aria-label="Форматирование MAX"
+          >
+            <span className="max-markdown-editor__format-tray-label" aria-hidden>
+              Aa
+            </span>
+            {TOOL_DEFINITIONS.map((tool) => (
+              <button
+                key={tool.id}
+                type="button"
+                className={cn(
+                  'max-markdown-editor__tool',
+                  tool.id === 'italic' && 'max-markdown-editor__tool--italic',
+                  tool.id === 'code' && 'max-markdown-editor__tool--code',
+                )}
+                title={tool.title}
+                aria-label={tool.title}
+                disabled={disabled}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => applyTool(tool.id)}
+              >
+                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  },
+);
+
+MaxMarkdownEditor.displayName = 'MaxMarkdownEditor';
+
+function clampSelection(selection: SelectionRange, sourceLength: number): SelectionRange {
+  const start = Math.max(0, Math.min(selection.start, sourceLength));
+  const end = Math.max(0, Math.min(selection.end, sourceLength));
+
+  return start <= end ? { start, end } : { start: end, end: start };
+}
+
+function resolveSelectionForTool(
+  source: string,
+  textarea: HTMLTextAreaElement | null,
+  savedSelection: SelectionRange,
+): {
+  selectionStart: number;
+  selectionEnd: number;
+} {
+  const liveSelection = textarea
+    ? clampSelection(
+        {
+          start: textarea.selectionStart,
+          end: textarea.selectionEnd,
+        },
+        source.length,
+      )
+    : null;
+  const saved = clampSelection(savedSelection, source.length);
+  const selection = saved.start !== saved.end ? saved : (liveSelection ?? saved);
+
+  return {
+    selectionStart: selection.start,
+    selectionEnd: selection.end,
   };
-
-  return (
-    <div className={cn('max-markdown-editor', className)}>
-      {showToolbar ? (
-        <div
-          className={cn(
-            'max-markdown-editor__toolbar',
-            compactToolbar && 'max-markdown-editor__toolbar--compact',
-          )}
-          role="toolbar"
-          aria-label="Форматирование MAX"
-        >
-          {TOOL_DEFINITIONS.map((tool) => (
-            <button
-              key={tool.id}
-              type="button"
-              className={cn(
-                'max-markdown-editor__tool',
-                tool.id === 'italic' && 'max-markdown-editor__tool--italic',
-                tool.id === 'code' && 'max-markdown-editor__tool--code',
-              )}
-              title={tool.title}
-              aria-label={tool.title}
-              disabled={disabled}
-              onMouseDown={(event) => {
-                event.preventDefault();
-              }}
-              onClick={() => applyTool(tool.id)}
-            >
-              {tool.label}
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      <textarea
-        ref={textareaRef}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        rows={rows}
-        maxLength={maxLength}
-        disabled={disabled}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
-      />
-    </div>
-  );
 }
 
 function buildNextMarkdownValue(
