@@ -11,6 +11,7 @@ type SelectionRange = {
 
 export type MaxMarkdownEditorHandle = {
   focus: () => void;
+  applyTool: (tool: MaxMarkdownTool) => void;
   openFormattingTray: () => void;
   closeFormattingTray: () => void;
   toggleFormattingTray: () => void;
@@ -33,7 +34,7 @@ type MaxMarkdownEditorProps = {
 
 const LINK_PLACEHOLDER_URL = 'https://max.ru/';
 
-const TOOL_DEFINITIONS: Array<{
+export const MAX_MARKDOWN_TOOL_DEFINITIONS: Array<{
   id: MaxMarkdownTool;
   label: string;
   title: string;
@@ -136,12 +137,40 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
       onFormattingTrayOpenChange?.(isSelectionTrayVisible);
     }, [isSelectionTrayVisible, onFormattingTrayOpenChange]);
 
+    const applyTool = useCallback(
+      (tool: MaxMarkdownTool) => {
+        const { selectionStart, selectionEnd } = resolveSelectionForTool(
+          value,
+          textareaRef.current,
+          savedSelectionRef.current,
+        );
+        const selectedText = value.slice(selectionStart, selectionEnd);
+
+        const next = buildNextMarkdownValue(value, {
+          tool,
+          selectionStart,
+          selectionEnd,
+          selectedText,
+        });
+
+        onChange(next.value);
+        pendingSelectionRef.current = next.selection;
+        savedSelectionRef.current = next.selection;
+        if (shouldEnableSelectionTray) {
+          setFormattingTrayOpen(true);
+          setHasSelectedText(next.selection.start !== next.selection.end);
+        }
+      },
+      [onChange, shouldEnableSelectionTray, value],
+    );
+
     useImperativeHandle(
       ref,
       () => ({
         focus: () => {
           textareaRef.current?.focus();
         },
+        applyTool,
         openFormattingTray: () => {
           if (!disabled && shouldEnableSelectionTray) {
             setFormattingTrayOpen(true);
@@ -158,32 +187,8 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
           }
         },
       }),
-      [disabled, shouldEnableSelectionTray],
+      [applyTool, disabled, shouldEnableSelectionTray],
     );
-
-    const applyTool = (tool: MaxMarkdownTool) => {
-      const { selectionStart, selectionEnd } = resolveSelectionForTool(
-        value,
-        textareaRef.current,
-        savedSelectionRef.current,
-      );
-      const selectedText = value.slice(selectionStart, selectionEnd);
-
-      const next = buildNextMarkdownValue(value, {
-        tool,
-        selectionStart,
-        selectionEnd,
-        selectedText,
-      });
-
-      onChange(next.value);
-      pendingSelectionRef.current = next.selection;
-      savedSelectionRef.current = next.selection;
-      if (shouldEnableSelectionTray) {
-        setFormattingTrayOpen(true);
-        setHasSelectedText(next.selection.start !== next.selection.end);
-      }
-    };
 
     return (
       <div
@@ -202,7 +207,7 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
             role="toolbar"
             aria-label="Форматирование MAX"
           >
-            {TOOL_DEFINITIONS.map((tool) => (
+            {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
               <button
                 key={tool.id}
                 type="button"
@@ -252,7 +257,7 @@ export const MaxMarkdownEditor = forwardRef<MaxMarkdownEditorHandle, MaxMarkdown
             <span className="max-markdown-editor__format-tray-label" aria-hidden>
               Aa
             </span>
-            {TOOL_DEFINITIONS.map((tool) => (
+            {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
               <button
                 key={tool.id}
                 type="button"

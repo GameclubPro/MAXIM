@@ -765,7 +765,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
   const routeAvatarUrl = routeState.avatarUrl;
-  const broadcastTemplateScope = `channel:${chatId || 'draft'}`;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -2752,57 +2751,59 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio broadcast-studio-screen broadcast-studio-screen--channel">
-                  <BroadcastStudioHeader
-                    title={
-                      editingManagedBroadcast
-                        ? 'Редактирование рассылки'
-                        : duplicatedManagedBroadcast
-                          ? 'Копия рассылки'
-                          : 'Новая рассылка'
-                    }
-                    subtitle={broadcastStudioSubtitle}
-                    readyCount={broadcastStudioReadyCount}
-                    totalCount={4}
-                    signals={broadcastStudioSignals}
-                    busy={isBroadcastBusy}
-                    editing={
-                      editingManagedBroadcast !== null || duplicatedManagedBroadcast !== null
-                    }
-                  />
+                  <div className="broadcast-studio-screen__chrome">
+                    <BroadcastStudioHeader
+                      title={
+                        editingManagedBroadcast
+                          ? 'Редактирование рассылки'
+                          : duplicatedManagedBroadcast
+                            ? 'Копия рассылки'
+                            : 'Новая рассылка'
+                      }
+                      subtitle={broadcastStudioSubtitle}
+                      readyCount={broadcastStudioReadyCount}
+                      totalCount={4}
+                      signals={broadcastStudioSignals}
+                      busy={isBroadcastBusy}
+                      editing={
+                        editingManagedBroadcast !== null || duplicatedManagedBroadcast !== null
+                      }
+                    />
 
-                  {showBroadcastWorkspaceTabs || showBroadcastResetAction ? (
-                    <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-                      {showBroadcastWorkspaceTabs ? (
-                        <BroadcastWorkspaceTabs
-                          value={activeBroadcastWorkspaceView}
-                          historyCount={orderedManagedBroadcasts.length}
-                          disabled={isBroadcastBusy}
-                          onChange={setBroadcastWorkspaceView}
-                        />
-                      ) : null}
+                    {showBroadcastWorkspaceTabs || showBroadcastResetAction ? (
+                      <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
+                        {showBroadcastWorkspaceTabs ? (
+                          <BroadcastWorkspaceTabs
+                            value={activeBroadcastWorkspaceView}
+                            historyCount={orderedManagedBroadcasts.length}
+                            disabled={isBroadcastBusy}
+                            onChange={setBroadcastWorkspaceView}
+                          />
+                        ) : null}
 
-                      {showBroadcastResetAction ? (
-                        <button
-                          type="button"
-                          className="broadcast-shell-reset"
-                          onClick={handleClearBroadcastComposer}
-                          disabled={isBroadcastBusy}
-                          aria-label={
-                            clearBroadcastHandoffMutation.isPending
-                              ? 'Сбрасываем'
-                              : broadcastResetActionLabel
-                          }
-                          title={
-                            clearBroadcastHandoffMutation.isPending
-                              ? 'Сбрасываем'
-                              : broadcastResetActionLabel
-                          }
-                        >
-                          <ResetIcon />
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
+                        {showBroadcastResetAction ? (
+                          <button
+                            type="button"
+                            className="broadcast-shell-reset"
+                            onClick={handleClearBroadcastComposer}
+                            disabled={isBroadcastBusy}
+                            aria-label={
+                              clearBroadcastHandoffMutation.isPending
+                                ? 'Сбрасываем'
+                                : broadcastResetActionLabel
+                            }
+                            title={
+                              clearBroadcastHandoffMutation.isPending
+                                ? 'Сбрасываем'
+                                : broadcastResetActionLabel
+                            }
+                          >
+                            <ResetIcon />
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
 
                   {activeBroadcastWorkspaceView === 'compose' ? (
                     <div className="broadcast-compose-flow broadcast-compose-flow--screen">
@@ -2875,7 +2876,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                               buttonsActive={broadcastHasButton}
                               buttonsError={!broadcastButtonDraftValid}
                               onOpenButtons={() => setBroadcastButtonsSheetOpen(true)}
-                              templateScope={broadcastTemplateScope}
                             />
                           </Suspense>
                         </div>

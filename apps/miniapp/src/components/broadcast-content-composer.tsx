@@ -1,17 +1,16 @@
 import type { BroadcastLinkButton } from '@maxim/contracts';
 import { Camera as IconoirCamera, Link as IconoirLink, Xmark as IconoirXmark } from 'iconoir-react';
-import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { MaxMarkdownEditor, type MaxMarkdownEditorHandle } from './max-markdown-editor';
+import { useRef, useState } from 'react';
+import {
+  MAX_MARKDOWN_TOOL_DEFINITIONS,
+  MaxMarkdownEditor,
+  type MaxMarkdownEditorHandle,
+  type MaxMarkdownTool,
+} from './max-markdown-editor';
 import { MaxMarkdownPreview } from './max-markdown-preview';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { buildBroadcastPreviewButtonRows } from '../lib/broadcast-link-buttons';
-import {
-  createBroadcastTextTemplate,
-  deleteBroadcastTextTemplate,
-  readBroadcastTextTemplates,
-} from '../lib/broadcast-text-templates';
 import { openFileInputPicker } from '../lib/file-input-picker';
 
 type BroadcastContentComposerImage = {
@@ -30,7 +29,6 @@ type BroadcastContentComposerProps = {
   buttonsStatusLabel?: string;
   buttonsActive?: boolean;
   buttonsError?: boolean;
-  templateScope?: string;
   videoLabel?: string | null;
   disabled?: boolean;
   textError?: string;
@@ -42,21 +40,6 @@ type BroadcastContentComposerProps = {
   onError?: (message: string) => void;
 };
 
-const QUICK_TEXT_TEMPLATES = [
-  {
-    label: 'Анонс',
-    text: 'Анонс: скоро важное обновление. Следите за сообщениями.',
-  },
-  {
-    label: 'Напоминание',
-    text: 'Напоминание: событие начнется сегодня. Не пропустите.',
-  },
-  {
-    label: 'Итоги',
-    text: 'Итоги дня: собрали главное в одном сообщении.',
-  },
-];
-
 export function BroadcastContentComposer({
   text,
   maxLength,
@@ -66,7 +49,6 @@ export function BroadcastContentComposer({
   buttonsStatusLabel = 'Без кнопки',
   buttonsActive = false,
   buttonsError = false,
-  templateScope,
   videoLabel = null,
   disabled = false,
   textError = '',
@@ -80,11 +62,6 @@ export function BroadcastContentComposer({
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const markdownEditorRef = useRef<MaxMarkdownEditorHandle | null>(null);
   const [isPreparingImage, setIsPreparingImage] = useState(false);
-  const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
-  const [formattingTrayOpen, setFormattingTrayOpen] = useState(false);
-  const [savedTemplates, setSavedTemplates] = useState(() =>
-    templateScope ? readBroadcastTextTemplates(templateScope) : [],
-  );
   const imagePreviewUrl =
     image.enabled && image.base64 && image.mimeType
       ? `data:${image.mimeType};base64,${image.base64}`
@@ -96,25 +73,6 @@ export function BroadcastContentComposer({
   const hasPreview = Boolean(normalizedText || imagePreviewUrl || videoLabel);
   const remainingLength = maxLength - text.length;
   const isBusy = disabled || isPreparingImage;
-  const canUseTemplates = Boolean(templateScope);
-  const canSaveTemplate = Boolean(canUseTemplates && normalizedText);
-  const canOpenTemplates = savedTemplates.length > 0;
-
-  useEffect(() => {
-    setSavedTemplates(templateScope ? readBroadcastTextTemplates(templateScope) : []);
-  }, [templateScope]);
-
-  useEffect(() => {
-    if (!templateSheetOpen || typeof document === 'undefined') {
-      return undefined;
-    }
-
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [templateSheetOpen]);
 
   async function handleImageFiles(files: FileList | null) {
     const file = files?.[0] ?? null;
@@ -150,26 +108,8 @@ export function BroadcastContentComposer({
     });
   }
 
-  function applyTemplate(value: string) {
-    const nextValue = text.trim().length > 0 ? `${text.trimEnd()}\n\n${value}` : value;
-    onTextChange(nextValue.slice(0, maxLength));
-    setTemplateSheetOpen(false);
-  }
-
-  function saveTemplate() {
-    if (!templateScope || !normalizedText) {
-      return;
-    }
-
-    setSavedTemplates(createBroadcastTextTemplate(templateScope, normalizedText).templates);
-  }
-
-  function deleteTemplate(templateId: string) {
-    if (!templateScope) {
-      return;
-    }
-
-    setSavedTemplates(deleteBroadcastTextTemplate(templateScope, templateId));
+  function applyTextModifier(tool: MaxMarkdownTool) {
+    markdownEditorRef.current?.applyTool(tool);
   }
 
   return (
@@ -193,36 +133,25 @@ export function BroadcastContentComposer({
             </span>
           </div>
 
-          <div className="broadcast-content-composer__template-row" aria-label="Быстрый текст">
-            {canOpenTemplates ? (
+          <div className="broadcast-content-composer__modifier-row" aria-label="Модификаторы">
+            {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
               <button
+                key={tool.id}
                 type="button"
-                className="broadcast-content-composer__template-chip"
-                onClick={() => setTemplateSheetOpen(true)}
+                className={cn(
+                  'broadcast-content-composer__modifier',
+                  tool.id === 'italic' && 'is-italic',
+                  tool.id === 'code' && 'is-code',
+                )}
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={() => applyTextModifier(tool.id)}
                 disabled={isBusy}
+                title={tool.title}
+                aria-label={tool.title}
               >
-                Шаблоны
-              </button>
-            ) : null}
-            {canUseTemplates ? (
-              <button
-                type="button"
-                className="broadcast-content-composer__template-chip is-save"
-                onClick={saveTemplate}
-                disabled={isBusy || !canSaveTemplate}
-              >
-                Сохранить
-              </button>
-            ) : null}
-            {QUICK_TEXT_TEMPLATES.map((template) => (
-              <button
-                key={template.label}
-                type="button"
-                className="broadcast-content-composer__template-chip is-snippet"
-                onClick={() => applyTemplate(template.text)}
-                disabled={isBusy}
-              >
-                {template.label}
+                {tool.id === 'link' ? <IconoirLink aria-hidden focusable="false" /> : tool.label}
               </button>
             ))}
           </div>
@@ -235,28 +164,13 @@ export function BroadcastContentComposer({
             placeholder="Текст рассылки"
             rows={3}
             disabled={isBusy}
-            toolbarMode="selection-tray"
+            showToolbar={false}
             ariaLabel="Текст рассылки"
             className="broadcast-content-composer__markdown"
-            onFormattingTrayOpenChange={setFormattingTrayOpen}
           />
 
           <div className="broadcast-content-composer__bar">
             <div className="broadcast-content-composer__media-actions">
-              <button
-                type="button"
-                className={cn(
-                  'broadcast-content-composer__tool',
-                  'broadcast-content-composer__tool--format',
-                  formattingTrayOpen && 'is-active',
-                )}
-                onClick={() => markdownEditorRef.current?.toggleFormattingTray()}
-                disabled={isBusy}
-                aria-label="Форматирование"
-                title="Форматирование"
-              >
-                Aa
-              </button>
               <button
                 type="button"
                 className={cn('broadcast-content-composer__tool', imagePreviewUrl && 'is-active')}
@@ -419,67 +333,6 @@ export function BroadcastContentComposer({
       {textError || imageError ? (
         <small className="field__hint">{textError || imageError}</small>
       ) : null}
-
-      {templateSheetOpen && typeof document !== 'undefined'
-        ? createPortal(
-            <div className="broadcast-template-sheet" aria-hidden={!templateSheetOpen}>
-              <button
-                type="button"
-                className="broadcast-template-sheet__backdrop"
-                aria-label="Закрыть шаблоны"
-                onClick={() => setTemplateSheetOpen(false)}
-              />
-
-              <section
-                className="broadcast-template-sheet__panel"
-                role="dialog"
-                aria-modal="true"
-                aria-labelledby="broadcast-template-sheet-title"
-              >
-                <div className="broadcast-template-sheet__grabber" aria-hidden />
-                <div className="broadcast-template-sheet__head">
-                  <strong id="broadcast-template-sheet-title">Шаблоны</strong>
-                  <button
-                    type="button"
-                    className="broadcast-template-sheet__close"
-                    onClick={() => setTemplateSheetOpen(false)}
-                    aria-label="Закрыть"
-                  >
-                    <IconoirXmark aria-hidden focusable="false" />
-                  </button>
-                </div>
-
-                <div className="broadcast-template-sheet__grid">
-                  {savedTemplates.map((template) => (
-                    <span key={template.id} className="broadcast-template-sheet__saved">
-                      <button
-                        type="button"
-                        className="broadcast-template-sheet__item is-saved"
-                        onClick={() => applyTemplate(template.text)}
-                        disabled={isBusy}
-                      >
-                        <strong>{template.label}</strong>
-                      </button>
-                      {canUseTemplates ? (
-                        <button
-                          type="button"
-                          className="broadcast-template-sheet__delete"
-                          onClick={() => deleteTemplate(template.id)}
-                          disabled={isBusy}
-                          aria-label={`Удалить шаблон ${template.label}`}
-                          title="Удалить"
-                        >
-                          <IconoirXmark aria-hidden focusable="false" />
-                        </button>
-                      ) : null}
-                    </span>
-                  ))}
-                </div>
-              </section>
-            </div>,
-            document.body,
-          )
-        : null}
     </div>
   );
 }

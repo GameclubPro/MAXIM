@@ -2139,7 +2139,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
-  const mailingTemplateScope = `chat:${chatId ?? 'draft'}`;
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -10740,57 +10739,60 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell broadcast-studio-screen broadcast-studio-screen--chat">
-                        <BroadcastStudioHeader
-                          title={
-                            editingManagedBroadcast
-                              ? 'Редактирование рассылки'
-                              : duplicatedManagedBroadcast
-                                ? 'Копия рассылки'
-                                : 'Новая рассылка'
-                          }
-                          subtitle={mailingStudioSubtitle}
-                          readyCount={mailingStudioReadyCount}
-                          totalCount={4}
-                          signals={mailingStudioSignals}
-                          busy={isMailingBusy}
-                          editing={
-                            editingManagedBroadcast !== null || duplicatedManagedBroadcast !== null
-                          }
-                        />
+                        <div className="broadcast-studio-screen__chrome">
+                          <BroadcastStudioHeader
+                            title={
+                              editingManagedBroadcast
+                                ? 'Редактирование рассылки'
+                                : duplicatedManagedBroadcast
+                                  ? 'Копия рассылки'
+                                  : 'Новая рассылка'
+                            }
+                            subtitle={mailingStudioSubtitle}
+                            readyCount={mailingStudioReadyCount}
+                            totalCount={4}
+                            signals={mailingStudioSignals}
+                            busy={isMailingBusy}
+                            editing={
+                              editingManagedBroadcast !== null ||
+                              duplicatedManagedBroadcast !== null
+                            }
+                          />
 
-                        {showMailingWorkspaceTabs || showMailingResetAction ? (
-                          <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
-                            {showMailingWorkspaceTabs ? (
-                              <BroadcastWorkspaceTabs
-                                value={mailingWorkspaceView}
-                                historyCount={orderedManagedBroadcasts.length}
-                                disabled={isMailingBusy}
-                                onChange={setMailingWorkspaceView}
-                              />
-                            ) : null}
+                          {showMailingWorkspaceTabs || showMailingResetAction ? (
+                            <div className="broadcast-studio-shell__topbar broadcast-studio-screen__nav">
+                              {showMailingWorkspaceTabs ? (
+                                <BroadcastWorkspaceTabs
+                                  value={mailingWorkspaceView}
+                                  historyCount={orderedManagedBroadcasts.length}
+                                  disabled={isMailingBusy}
+                                  onChange={setMailingWorkspaceView}
+                                />
+                              ) : null}
 
-                            {showMailingResetAction ? (
-                              <button
-                                type="button"
-                                className="broadcast-shell-reset"
-                                onClick={handleClearMailingComposer}
-                                disabled={isMailingBusy}
-                                aria-label={
-                                  clearBroadcastHandoffMutation.isPending
-                                    ? 'Сбрасываем'
-                                    : mailingResetActionLabel
-                                }
-                                title={
-                                  clearBroadcastHandoffMutation.isPending
-                                    ? 'Сбрасываем'
-                                    : mailingResetActionLabel
-                                }
-                              >
-                                <ResetIcon />
-                              </button>
-                            ) : null}
-                          </div>
-                        ) : null}
+                              {showMailingResetAction ? (
+                                <button
+                                  type="button"
+                                  className="broadcast-shell-reset"
+                                  onClick={handleClearMailingComposer}
+                                  disabled={isMailingBusy}
+                                  aria-label={
+                                    clearBroadcastHandoffMutation.isPending
+                                      ? 'Сбрасываем'
+                                      : mailingResetActionLabel
+                                  }
+                                  title={
+                                    clearBroadcastHandoffMutation.isPending
+                                      ? 'Сбрасываем'
+                                      : mailingResetActionLabel
+                                  }
+                                >
+                                  <ResetIcon />
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
 
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow broadcast-compose-flow--screen">
@@ -10863,7 +10865,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     buttonsActive={mailingButtonEnabled}
                                     buttonsError={!mailingButtonDraftValid}
                                     onOpenButtons={() => setMailingButtonsSheetOpen(true)}
-                                    templateScope={mailingTemplateScope}
                                   />
                                 </Suspense>
                               </div>
