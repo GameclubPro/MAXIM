@@ -17,6 +17,7 @@ type BroadcastButtonsSheetProps = {
   revealNextStepSignal?: number;
   contextEntityType?: 'chat' | 'channel';
   statusLabel: string;
+  closeAriaLabel?: string;
   urlPlaceholder?: string;
   textPlaceholder?: string;
   onEnabledChange: (enabled: boolean) => void;
@@ -42,6 +43,7 @@ export function BroadcastButtonsSheet({
   revealNextStepSignal = 0,
   contextEntityType = 'chat',
   statusLabel,
+  closeAriaLabel = 'Закрыть кнопки',
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
   onEnabledChange,
@@ -70,7 +72,7 @@ export function BroadcastButtonsSheet({
       <button
         type="button"
         className="broadcast-buttons-sheet__backdrop"
-        aria-label="Закрыть кнопки автопостинга"
+        aria-label={closeAriaLabel}
         onClick={onClose}
       />
 

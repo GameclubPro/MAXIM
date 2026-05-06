@@ -7025,6 +7025,45 @@
   gap: 10px;
 }
 
+.settings-drilldown__panel--rules-screen .rules-studio-screen__actions {
+  position: absolute;
+  right: 8px;
+  bottom: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.settings-drilldown__panel--rules-screen .broadcast-studio-command__signals {
+  padding-right: 46px;
+}
+
+.settings-drilldown__panel--rules-screen .rules-compose-flow {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.settings-drilldown__panel--rules-screen .broadcast-stage-card--rules-settings {
+  align-self: start;
+}
+
+.settings-drilldown__panel--rules-screen
+  .broadcast-stage-card--rules-settings
+  .broadcast-stage-card__body {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-drilldown__panel--rules-screen .rules-native-card {
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: none;
+}
+
+.settings-drilldown__panel--rules-screen .rules-publish-bar .broadcast-publish-bar__test::before {
+  content: none;
+}
+
 .rules-published-link {
   display: inline-flex;
   align-items: center;

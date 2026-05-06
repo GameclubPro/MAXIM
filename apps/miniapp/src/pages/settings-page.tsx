@@ -93,7 +93,6 @@ import {
   getBroadcastHandoffState,
   getManagedBroadcast,
   getSettingsScreen,
-  handoffRules,
   publishRules,
   removeDomain,
   resolveRequiredSubscriptionChannel,
@@ -155,12 +154,7 @@ import {
   applyMessageLimitsBlockedWordsInput,
   splitMessageLimitsBlockedWordsInput,
 } from '../lib/message-limits-blocked-words';
-import {
-  maxNotify,
-  openMaxBotLink,
-  openMaxBotLinkAndClose,
-  setMaxClosingConfirmation,
-} from '../lib/max-bridge';
+import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -577,9 +571,6 @@ type HintKey =
   | 'mailingButton'
   | 'mailingSchedule'
   | 'mailingCycle'
-  | 'rulesAutoFill'
-  | 'rulesPostButton'
-  | 'rulesViolationsButton'
   | 'mailingSend';
 type BotMessageEditorKey =
   | 'link'
@@ -2142,10 +2133,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [, setRulesTextError] = useState('');
-  const [, setRulesImageError] = useState('');
+  const [rulesTextError, setRulesTextError] = useState('');
+  const [rulesImageError, setRulesImageError] = useState('');
   const [rulesButtonErrors, setRulesButtonErrors] = useState<BroadcastLinkButtonFieldErrors[]>([]);
   const [rulesButtonFieldsTouched, setRulesButtonFieldsTouched] = useState(false);
+  const [rulesButtonsSheetOpen, setRulesButtonsSheetOpen] = useState(false);
   const [rulesButtonRevealSignal, setRulesButtonRevealSignal] = useState(0);
   const [domainInput, setDomainInput] = useState('');
   const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
@@ -2312,6 +2304,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setRulesImageError('');
     setRulesButtonErrors([]);
     setRulesButtonFieldsTouched(false);
+    setRulesButtonsSheetOpen(false);
     setRulesButtonRevealSignal(0);
     setRulesFailedSnapshot('');
     previousRulesServerSnapshotRef.current = '';
@@ -3253,34 +3246,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось очистить черновик',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const handoffRulesMutation = useMutation({
-    mutationFn: () => handoffRules(api, chatId ?? ''),
-    onSuccess: (result) => {
-      if (!openMaxBotLinkAndClose(result.botUrl)) {
-        pushToast({
-          tone: 'danger',
-          title: 'Не удалось открыть бота',
-          description: 'Ссылка на handoff вернулась пустой.',
-        });
-        return;
-      }
-
-      pushToast({
-        tone: 'info',
-        title: 'Открываем личный чат бота',
-        description:
-          'Отправьте там текст или фото. Публиковать можно и там, и здесь. Кнопка «Правила» остаётся в mini app.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть правила в боте',
         description: formatApiError(error),
       });
     },
@@ -4304,35 +4269,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  async function handleHandoffRules() {
-    if (
-      !chatId ||
-      !rulesDraft ||
-      isSavingRules ||
-      isPublishingRules ||
-      handoffRulesMutation.isPending
-    ) {
-      return;
-    }
-
-    const preparedRulesDraft = prepareRulesDraftForSubmit(rulesDraft);
-    if (!preparedRulesDraft) {
-      return;
-    }
-
-    if (serializeRulesDraftPayload(preparedRulesDraft) !== rulesServerSnapshot) {
-      const saved = await saveRulesDraftNow({
-        forceButtonErrors: true,
-        draft: preparedRulesDraft,
-      });
-      if (!saved) {
-        return;
-      }
-    }
-
-    handoffRulesMutation.mutate();
-  }
-
   async function handlePublishRules() {
     if (!chatId || !rulesDraft) {
       return;
@@ -4377,7 +4313,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     publishRulesMutation.mutate();
   }
 
-  function handleManagedPostLinkClick(event: MouseEvent<HTMLAnchorElement>, url: string) {
+  function handleManagedPostLinkClick(event: MouseEvent<HTMLElement>, url: string) {
     if (!(window.MAX?.WebApp ?? window.WebApp)) {
       return;
     }
@@ -4599,6 +4535,41 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setMailingButtons([]);
     setMailingButtonErrors([]);
+  }
+
+  function handleRulesButtonsEnabledChange(enabled: boolean) {
+    setRulesButtonFieldsTouched(true);
+    setRulesButtonErrors([]);
+    if (enabled && (rulesDraft?.buttons.length ?? 0) === 0) {
+      setRulesButtonRevealSignal((value) => value + 1);
+    }
+    setRulesDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      if (!enabled) {
+        return {
+          ...current,
+          buttons: [],
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: DEFAULT_RULES_POST_BUTTON_TEXT,
+        };
+      }
+
+      const buttons =
+        current.buttons.length > 0 ? current.buttons : [createEmptyBroadcastLinkButton()];
+      const buttonState = buildBroadcastLinkButtonLegacyFields(buttons);
+
+      return {
+        ...current,
+        buttons,
+        buttonEnabled: true,
+        buttonUrl: buttonState.buttonUrl,
+        buttonText: buttonState.buttonText,
+      };
+    });
   }
 
   function validateMailingButtonDraft() {
@@ -5291,31 +5262,133 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : 'Опубликовано'
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
-      : 'Не настроено';
-  const hasRulesDraftText = Boolean(rulesDraft?.text.trim());
-  const rulesHeroStatusLabel = hasPublishedRules
-    ? 'Опубликовано'
-    : hasRulesDraftText
-      ? 'Черновик'
-      : 'Пусто';
-  const rulesHeroTitle = hasPublishedRules
-    ? 'Правила опубликованы'
-    : hasRulesDraftText
-      ? 'Черновик готов к публикации'
-      : 'Правила ещё не опубликованы';
-  const rulesHeroMeta = hasPublishedRules
-    ? rulesPublishedAtLabel
-      ? `Последняя публикация · ${rulesPublishedAtLabel}`
-      : 'Пост опубликован'
-    : hasRulesDraftText
-      ? `${rulesDraft?.text.trim().length ?? 0}/${MAX_CHAT_RULES_TEXT_LENGTH} символов`
-      : 'Редактирование через бота';
-  const rulesButtonStatus = formatBroadcastButtonsStatus(rulesDraft?.buttons ?? []);
+      : rulesDraft?.autoTextEnabled
+        ? 'Автотекст'
+        : 'Не настроено';
+  const normalizedRulesText = rulesDraft?.text.trim() ?? '';
+  const normalizedRulesButtons = trimBroadcastLinkButtons(rulesDraft?.buttons ?? []);
+  const rulesButtonEnabled = Boolean(rulesDraft?.buttonEnabled);
+  const rulesButtonDraftValid =
+    !rulesButtonEnabled ||
+    !hasBroadcastLinkButtonErrors(validateBroadcastLinkButtons(normalizedRulesButtons));
+  const rulesHasImage = Boolean(rulesDraft?.imageBase64 && rulesDraft?.imageMimeType);
+  const rulesImageReady = !rulesDraft?.imageBase64 || rulesHasImage;
+  const rulesHasPublishableContent = Boolean(normalizedRulesText || rulesDraft?.autoTextEnabled);
+  const rulesPublishIssueLabels = [
+    !rulesHasPublishableContent ? 'Текст' : null,
+    !rulesImageReady ? 'Фото' : null,
+    !rulesButtonDraftValid ? 'Кнопки' : null,
+  ].filter((item): item is string => Boolean(item));
+  const rulesPublishReady = Boolean(
+    rulesDraft && rulesHasPublishableContent && rulesImageReady && rulesButtonDraftValid,
+  );
+  const rulesButtonStatus = rulesButtonEnabled
+    ? formatBroadcastButtonsStatus(normalizedRulesButtons)
+    : 'Без кнопок';
   const rulesAutoFillSummary = rulesDraft?.autoTextEnabled ? 'Включено' : 'Выключено';
-  const rulesPostButtonSummary = rulesDraft?.buttonEnabled ? rulesButtonStatus : 'Выключена';
   const rulesViolationButtonSummary = draft?.rulesAttachViolationsEnabled
     ? 'Включена'
     : 'Выключена';
+  const rulesFooterTitle =
+    rulesPublishIssueLabels.length > 0
+      ? `Нужно: ${rulesPublishIssueLabels.join(' · ')}`
+      : hasPublishedRules
+        ? 'Переиздать правила'
+        : 'Опубликовать правила';
+  const rulesFooterMeta = [
+    normalizedRulesText ? `${normalizedRulesText.length}/${MAX_CHAT_RULES_TEXT_LENGTH}` : null,
+    rulesDraft?.autoTextEnabled ? 'Авто' : null,
+    rulesHasImage ? 'Фото' : null,
+    rulesButtonEnabled ? rulesButtonStatus : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+  const rulesStudioReadyCount = [
+    rulesHasPublishableContent,
+    rulesImageReady,
+    rulesButtonDraftValid,
+    hasPublishedRules,
+  ].filter(Boolean).length;
+  const rulesStudioSignals: BroadcastStudioSignal[] = [
+    {
+      label: 'Текст',
+      value: rulesDraft?.autoTextEnabled
+        ? 'Авто'
+        : normalizedRulesText
+          ? `${normalizedRulesText.length}/2000`
+          : 'Пусто',
+      tone: rulesHasPublishableContent ? 'ready' : 'pending',
+      icon: 'content',
+    },
+    {
+      label: 'Фото',
+      value: rulesHasImage ? 'Есть' : 'Нет',
+      tone: rulesHasImage ? 'ready' : rulesImageReady ? 'neutral' : 'danger',
+      icon: 'content',
+    },
+    {
+      label: 'Кнопки',
+      value: rulesButtonStatus,
+      tone: rulesButtonDraftValid ? (rulesButtonEnabled ? 'ready' : 'neutral') : 'danger',
+      icon: 'button',
+    },
+    {
+      label: 'Публикация',
+      value: hasPublishedRules ? 'Есть' : 'Черновик',
+      tone: hasPublishedRules ? 'ready' : 'pending',
+      icon: 'channel',
+    },
+  ];
+  const rulesStudioSubtitle =
+    rulesFooterMeta ||
+    (hasPublishedRules && rulesPublishedAtLabel ? rulesPublishedAtLabel : 'Черновик');
+  const isRulesBusy =
+    isSavingRules ||
+    isPublishingRules ||
+    isResettingPublishedRules ||
+    updateRulesAttachMutation.isPending;
+  const rulesDrilldownFooter = rulesDraft ? (
+    <div className="broadcast-publish-bar rules-publish-bar">
+      <div className="broadcast-publish-bar__copy">
+        <strong>{rulesFooterTitle}</strong>
+        <small>{rulesFooterMeta || 'Черновик'}</small>
+        {rulesPublishIssueLabels.length > 0 && !isRulesBusy ? (
+          <span className="broadcast-publish-bar__issues" aria-label="Не готово">
+            {rulesPublishIssueLabels.map((label) => (
+              <span key={`rules-publish-issue-${label}`}>{label}</span>
+            ))}
+          </span>
+        ) : null}
+      </div>
+
+      {rulesPublishedUrl ? (
+        <button
+          type="button"
+          className="button button--ghost broadcast-publish-bar__test"
+          onClick={(event) => handleManagedPostLinkClick(event, rulesPublishedUrl)}
+        >
+          <span>Пост</span>
+        </button>
+      ) : null}
+
+      <button
+        type="button"
+        className="button button--accent broadcast-publish-bar__button"
+        onClick={() => void handlePublishRules()}
+        disabled={isRulesBusy || !rulesPublishReady}
+      >
+        <span>
+          {isPublishingRules
+            ? 'Публикуем...'
+            : isSavingRules
+              ? 'Сохраняем...'
+              : hasPublishedRules
+                ? 'Переиздать'
+                : 'Опубликовать'}
+        </span>
+      </button>
+    </div>
+  ) : null;
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled || draft?.greetingRulesButtonEnabled
@@ -7066,9 +7139,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 open={expandedSections.rules}
                 title="Правила"
                 summary={rulesHeaderSummary}
+                variant="screen"
                 tone="ink"
-                className="settings-drilldown__panel--notice settings-drilldown__panel--rules"
+                className="settings-drilldown__panel--campaign settings-drilldown__panel--rules settings-drilldown__panel--broadcast-screen settings-drilldown__panel--rules-screen"
                 onClose={() => toggleSection('rules')}
+                footer={rulesDrilldownFooter}
               >
                 <div
                   id="settings-rules-content"
@@ -7088,346 +7163,223 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
 
                         {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
-                          <>
-                            <div className="rules-studio">
-                              <div className="rules-studio__hero rules-hero-card">
-                                <div className="rules-hero-card__head">
-                                  <div className="rules-hero-card__copy">
-                                    <span className="rules-studio__eyebrow">Пост с правилами</span>
-                                    <h4>{rulesHeroTitle}</h4>
-                                    <p>{rulesHeroMeta}</p>
+                          <div className="rules-studio broadcast-studio-screen rules-studio-screen">
+                            <div className="broadcast-studio-screen__chrome">
+                              <BroadcastStudioHeader
+                                title="Пост правил"
+                                subtitle={rulesStudioSubtitle}
+                                readyCount={rulesStudioReadyCount}
+                                totalCount={rulesStudioSignals.length}
+                                signals={rulesStudioSignals}
+                                busy={isRulesBusy}
+                                ariaLabel="Сводка правил"
+                              />
+
+                              {hasPublishedRules ? (
+                                <div className="rules-studio-screen__actions">
+                                  <button
+                                    type="button"
+                                    className="broadcast-shell-reset"
+                                    onClick={handleResetPublishedRules}
+                                    disabled={isResettingPublishedRules}
+                                    aria-label="Сбросить публикацию"
+                                    title="Сбросить публикацию"
+                                  >
+                                    <ResetIcon />
+                                  </button>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            <div className="broadcast-compose-flow broadcast-compose-flow--screen rules-compose-flow">
+                              <div className="broadcast-stage-card broadcast-stage-card--message broadcast-stage-card--primary">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Пост</strong>
                                   </div>
                                   <span
                                     className={cn(
-                                      'chip',
-                                      hasPublishedRules
-                                        ? 'chip--success'
-                                        : hasRulesDraftText
-                                          ? 'chip--warning'
-                                          : undefined,
+                                      'broadcast-stage-card__status',
+                                      rulesHasPublishableContent ? 'is-ready' : 'is-pending',
                                     )}
                                   >
-                                    {rulesHeroStatusLabel}
+                                    {rulesHasPublishableContent ? 'Готов' : 'Пусто'}
                                   </span>
                                 </div>
 
-                                <div className="rules-hero-card__meta">
-                                  {rulesPublishedUrl ? (
-                                    <a
-                                      href={rulesPublishedUrl}
-                                      target="_blank"
-                                      rel="noreferrer"
-                                      className="rules-published-link"
-                                      onClick={(event) =>
-                                        handleManagedPostLinkClick(event, rulesPublishedUrl)
-                                      }
-                                    >
-                                      Открыть пост
-                                    </a>
-                                  ) : hasPublishedRules ? (
-                                    <span className="rules-hero-card__meta-note">
-                                      Ссылка на пост ещё обновляется.
-                                    </span>
-                                  ) : null}
+                                <div className="broadcast-stage-card__body">
+                                  <Suspense fallback={null}>
+                                    <LazyBroadcastContentComposer
+                                      className="rules-content-composer"
+                                      text={rulesDraft.text}
+                                      maxLength={MAX_CHAT_RULES_TEXT_LENGTH}
+                                      image={{
+                                        enabled: rulesHasImage,
+                                        base64: rulesDraft.imageBase64,
+                                        mimeType: rulesDraft.imageMimeType,
+                                        fileName: rulesDraft.imageFileName,
+                                      }}
+                                      disabled={isRulesBusy}
+                                      textError={rulesTextError}
+                                      imageError={rulesImageError}
+                                      messageAriaLabel="Пост правил"
+                                      textPlaceholder="Текст правил"
+                                      textAriaLabel="Текст правил"
+                                      onTextChange={(nextText) => {
+                                        setRulesTextError('');
+                                        setRulesDraft((current) =>
+                                          current
+                                            ? {
+                                                ...current,
+                                                autoTextEnabled: false,
+                                                text: nextText,
+                                              }
+                                            : current,
+                                        );
+                                      }}
+                                      onImageChange={(nextImage) => {
+                                        setRulesImageError('');
+                                        setRulesDraft((current) =>
+                                          current
+                                            ? {
+                                                ...current,
+                                                imageBase64: nextImage.enabled
+                                                  ? nextImage.base64
+                                                  : '',
+                                                imageMimeType: nextImage.enabled
+                                                  ? nextImage.mimeType
+                                                  : '',
+                                                imageFileName: nextImage.enabled
+                                                  ? nextImage.fileName
+                                                  : '',
+                                              }
+                                            : current,
+                                        );
+                                      }}
+                                      onError={(message) => {
+                                        setRulesImageError(message);
+                                        pushToast({
+                                          tone: 'danger',
+                                          title: 'Фото не добавлено',
+                                          description: message,
+                                        });
+                                        maxNotify('error');
+                                      }}
+                                      buttons={normalizedRulesButtons}
+                                      buttonsStatusLabel={rulesButtonStatus}
+                                      buttonsActive={rulesButtonEnabled}
+                                      buttonsError={!rulesButtonDraftValid}
+                                      onOpenButtons={() => setRulesButtonsSheetOpen(true)}
+                                    />
+                                  </Suspense>
                                 </div>
-
-                                <div className="rules-hero-card__actions">
-                                  <button
-                                    type="button"
-                                    className="button button--ghost rules-hero-card__secondary"
-                                    onClick={() => void handleHandoffRules()}
-                                    disabled={
-                                      rulesQuery.isLoading ||
-                                      Boolean(rulesQuery.error) ||
-                                      isSavingRules ||
-                                      isPublishingRules ||
-                                      handoffRulesMutation.isPending
-                                    }
-                                  >
-                                    {handoffRulesMutation.isPending
-                                      ? 'Открываем бота...'
-                                      : 'Редактировать в боте'}
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    className="button button--accent rules-hero-card__primary"
-                                    onClick={() => void handlePublishRules()}
-                                    disabled={
-                                      rulesQuery.isLoading ||
-                                      Boolean(rulesQuery.error) ||
-                                      isPublishingRules ||
-                                      isSavingRules
-                                    }
-                                  >
-                                    {isPublishingRules
-                                      ? 'Публикуем...'
-                                      : hasPublishedRules
-                                        ? 'Переопубликовать'
-                                        : 'Опубликовать'}
-                                  </button>
-                                </div>
-
-                                {hasPublishedRules ? (
-                                  <button
-                                    type="button"
-                                    className="button button--ghost rules-hero-card__reset"
-                                    onClick={handleResetPublishedRules}
-                                    disabled={isResettingPublishedRules}
-                                  >
-                                    {isResettingPublishedRules
-                                      ? 'Сбрасываем...'
-                                      : 'Сбросить публикацию'}
-                                  </button>
-                                ) : null}
                               </div>
 
-                              <div className="rules-settings-stack">
-                                <div className="settings-native-toggle rules-native-card">
-                                  <div className="settings-native-toggle__row">
-                                    <div className="settings-native-toggle__title-wrap">
-                                      <div className="rules-native-card__copy">
-                                        <span className="settings-native-toggle__title">
-                                          Автозаполнять правила из настроек
-                                        </span>
-                                        <span className="rules-native-card__meta">
-                                          {rulesAutoFillSummary}
-                                        </span>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        className={cn(
-                                          'settings-info-button',
-                                          openHintKey === 'rulesAutoFill' && 'is-open',
-                                        )}
-                                        aria-label="Пояснение для автозаполнения правил из настроек"
-                                        aria-controls="rules-auto-fill-hint"
-                                        aria-expanded={openHintKey === 'rulesAutoFill'}
-                                        onClick={() => toggleHint('rulesAutoFill')}
-                                      >
-                                        <span aria-hidden>i</span>
-                                      </button>
-                                    </div>
-
-                                    <label
-                                      className="settings-native-switch"
-                                      aria-label="Включить автозаполнение правил из настроек"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(rulesDraft.autoTextEnabled)}
-                                        onChange={(event) => {
-                                          const enabled = event.target.checked;
-                                          if (!enabled) {
-                                            setRulesTextError('');
-                                            setRulesDraft((current) =>
-                                              current
-                                                ? {
-                                                    ...current,
-                                                    autoTextEnabled: false,
-                                                  }
-                                                : current,
-                                            );
-                                            return;
-                                          }
-
-                                          try {
-                                            const nextDraft = buildRulesDraftFromCurrentSettings({
-                                              ...rulesDraft,
-                                              autoTextEnabled: true,
-                                            });
-                                            setRulesTextError('');
-                                            setRulesDraft((current) =>
-                                              current
-                                                ? {
-                                                    ...current,
-                                                    autoTextEnabled: true,
-                                                    text: nextDraft.text,
-                                                  }
-                                                : current,
-                                            );
-                                          } catch (error) {
-                                            reportRulesAutofillError(error);
-                                          }
-                                        }}
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </label>
+                              <div className="broadcast-stage-card broadcast-stage-card--rules-settings rules-settings-stack">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Настройки</strong>
                                   </div>
-
-                                  {openHintKey === 'rulesAutoFill' ? (
-                                    <p
-                                      id="rules-auto-fill-hint"
-                                      className="settings-native-toggle__hint"
-                                    >
-                                      При включении соберём текст правил из текущих настроек чата и
-                                      сохраним его в черновик.
-                                    </p>
-                                  ) : null}
                                 </div>
 
-                                <div className="settings-native-toggle rules-native-card">
-                                  <div className="settings-native-toggle__row">
-                                    <div className="settings-native-toggle__title-wrap">
-                                      <div className="rules-native-card__copy">
-                                        <span className="settings-native-toggle__title">
-                                          Пользовательская кнопка в посте
-                                        </span>
-                                        <span className="rules-native-card__meta">
-                                          {rulesPostButtonSummary}
-                                        </span>
+                                <div className="broadcast-stage-card__body">
+                                  <div className="settings-native-toggle rules-native-card">
+                                    <div className="settings-native-toggle__row">
+                                      <div className="settings-native-toggle__title-wrap">
+                                        <div className="rules-native-card__copy">
+                                          <span className="settings-native-toggle__title">
+                                            Автотекст из настроек
+                                          </span>
+                                          <span className="rules-native-card__meta">
+                                            {rulesAutoFillSummary}
+                                          </span>
+                                        </div>
                                       </div>
-                                      <button
-                                        type="button"
-                                        className={cn(
-                                          'settings-info-button',
-                                          openHintKey === 'rulesPostButton' && 'is-open',
-                                        )}
-                                        aria-label="Пояснение для пользовательской кнопки в посте правил"
-                                        aria-controls="rules-post-button-hint"
-                                        aria-expanded={openHintKey === 'rulesPostButton'}
-                                        onClick={() => toggleHint('rulesPostButton')}
-                                      >
-                                        <span aria-hidden>i</span>
-                                      </button>
-                                    </div>
 
-                                    <label
-                                      className="settings-native-switch"
-                                      aria-label="Включить пользовательскую кнопку в посте правил"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={rulesDraft.buttonEnabled}
-                                        onChange={(event) => {
-                                          const enabled = event.target.checked;
-                                          setRulesButtonFieldsTouched(false);
-                                          setRulesButtonErrors([]);
-                                          setRulesDraft((current) =>
-                                            current
-                                              ? {
-                                                  ...current,
-                                                  buttons:
-                                                    enabled && current.buttons.length === 0
-                                                      ? [createEmptyBroadcastLinkButton()]
-                                                      : current.buttons,
-                                                  buttonEnabled: enabled,
-                                                }
-                                              : current,
-                                          );
-                                          if (enabled && rulesDraft.buttons.length === 0) {
-                                            setRulesButtonRevealSignal((current) => current + 1);
+                                      <label
+                                        className="settings-native-switch"
+                                        aria-label="Включить автотекст правил из настроек"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(rulesDraft.autoTextEnabled)}
+                                          onChange={(event) => {
+                                            const enabled = event.target.checked;
+                                            if (!enabled) {
+                                              setRulesTextError('');
+                                              setRulesDraft((current) =>
+                                                current
+                                                  ? {
+                                                      ...current,
+                                                      autoTextEnabled: false,
+                                                    }
+                                                  : current,
+                                              );
+                                              return;
+                                            }
+
+                                            try {
+                                              const nextDraft = buildRulesDraftFromCurrentSettings({
+                                                ...rulesDraft,
+                                                autoTextEnabled: true,
+                                              });
+                                              setRulesTextError('');
+                                              setRulesDraft((current) =>
+                                                current
+                                                  ? {
+                                                      ...current,
+                                                      autoTextEnabled: true,
+                                                      text: nextDraft.text,
+                                                    }
+                                                  : current,
+                                              );
+                                            } catch (error) {
+                                              reportRulesAutofillError(error);
+                                            }
+                                          }}
+                                        />
+                                        <span className="toggle-switch" aria-hidden>
+                                          <span className="toggle-switch__thumb" />
+                                        </span>
+                                      </label>
+                                    </div>
+                                  </div>
+
+                                  <div className="settings-native-toggle rules-native-card">
+                                    <div className="settings-native-toggle__row">
+                                      <div className="settings-native-toggle__title-wrap">
+                                        <div className="rules-native-card__copy">
+                                          <span className="settings-native-toggle__title">
+                                            Кнопка в нарушениях
+                                          </span>
+                                          <span className="rules-native-card__meta">
+                                            {rulesViolationButtonSummary}
+                                          </span>
+                                        </div>
+                                      </div>
+
+                                      <label
+                                        className="settings-native-switch"
+                                        aria-label="Включить кнопку Правила в сообщениях о нарушениях"
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={Boolean(draft?.rulesAttachViolationsEnabled)}
+                                          disabled={updateRulesAttachMutation.isPending}
+                                          onChange={(event) =>
+                                            updateRulesAttachMutation.mutate(event.target.checked)
                                           }
-                                        }}
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </label>
-                                  </div>
-
-                                  {openHintKey === 'rulesPostButton' ? (
-                                    <p
-                                      id="rules-post-button-hint"
-                                      className="settings-native-toggle__hint"
-                                    >
-                                      Добавляет в пост правил отдельную кнопку со ссылкой на нужную
-                                      страницу.
-                                    </p>
-                                  ) : null}
-
-                                  {rulesDraft.buttonEnabled ? (
-                                    <div className="rules-native-card__body">
-                                      <BroadcastLinkButtonsEditor
-                                        api={api}
-                                        buttons={rulesDraft.buttons}
-                                        errors={rulesButtonErrors}
-                                        revealNextStepSignal={rulesButtonRevealSignal}
-                                        onChange={(nextButtons) => {
-                                          setRulesButtonFieldsTouched(true);
-                                          setRulesButtonErrors([]);
-                                          const buttonState =
-                                            buildBroadcastLinkButtonLegacyFields(nextButtons);
-                                          setRulesDraft((current) =>
-                                            current
-                                              ? {
-                                                  ...current,
-                                                  buttons: nextButtons,
-                                                  buttonEnabled: nextButtons.length > 0,
-                                                  buttonUrl: buttonState.buttonUrl,
-                                                  buttonText: buttonState.buttonText,
-                                                }
-                                              : current,
-                                          );
-                                        }}
-                                        title="Сетка кнопок"
-                                        subtitle="До 8 ссылочных кнопок. В посте правил они тоже покажутся рядами по 3."
-                                        urlPlaceholder="https://max.ru/channel/rules"
-                                        textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
-                                      />
-                                    </div>
-                                  ) : null}
-                                </div>
-
-                                <div className="settings-native-toggle rules-native-card">
-                                  <div className="settings-native-toggle__row">
-                                    <div className="settings-native-toggle__title-wrap">
-                                      <div className="rules-native-card__copy">
-                                        <span className="settings-native-toggle__title">
-                                          Кнопка «Правила» в нарушениях
+                                        />
+                                        <span className="toggle-switch" aria-hidden>
+                                          <span className="toggle-switch__thumb" />
                                         </span>
-                                        <span className="rules-native-card__meta">
-                                          {rulesViolationButtonSummary}
-                                        </span>
-                                      </div>
-                                      <button
-                                        type="button"
-                                        className={cn(
-                                          'settings-info-button',
-                                          openHintKey === 'rulesViolationsButton' && 'is-open',
-                                        )}
-                                        aria-label="Пояснение для кнопки Правила в сообщениях о нарушениях"
-                                        aria-controls="rules-violations-button-hint"
-                                        aria-expanded={openHintKey === 'rulesViolationsButton'}
-                                        onClick={() => toggleHint('rulesViolationsButton')}
-                                      >
-                                        <span aria-hidden>i</span>
-                                      </button>
+                                      </label>
                                     </div>
-
-                                    <label
-                                      className="settings-native-switch"
-                                      aria-label="Включить кнопку Правила в сообщениях о нарушениях"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={Boolean(draft?.rulesAttachViolationsEnabled)}
-                                        disabled={updateRulesAttachMutation.isPending}
-                                        onChange={(event) =>
-                                          updateRulesAttachMutation.mutate(event.target.checked)
-                                        }
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </label>
                                   </div>
-
-                                  {openHintKey === 'rulesViolationsButton' ? (
-                                    <p
-                                      id="rules-violations-button-hint"
-                                      className="settings-native-toggle__hint"
-                                    >
-                                      Добавляет кнопку «Правила» в сообщения о нарушениях, чтобы
-                                      участник мог сразу открыть правила.
-                                    </p>
-                                  ) : null}
                                 </div>
                               </div>
                             </div>
-                          </>
+                          </div>
                         ) : null}
                       </div>
                     </div>
@@ -11239,7 +11191,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот
                                 сам публикует сообщение с кнопкой комментариев. Для постов админа
                                 бот отправляет копию с той же разметкой и удаляет исходное
-                                сообщение, а для автопостинга кнопка ставится сразу на сообщение бота.
+                                сообщение, а для автопостинга кнопка ставится сразу на сообщение
+                                бота.
                               </SettingsHintAnchor>
                             </div>
                           </div>
@@ -11320,7 +11273,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">Для автопостинга</span>
+                                <span className="settings-native-toggle__title">
+                                  Для автопостинга
+                                </span>
                                 <div className="settings-native-toggle__title-actions">
                                   <SettingsHintAnchor
                                     hintKey="commentsChatBroadcasts"
@@ -12586,6 +12541,39 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
         </GlassCard>
       ) : null}
+
+      <Suspense fallback={null}>
+        <LazyBroadcastButtonsSheet
+          open={rulesButtonsSheetOpen}
+          api={api}
+          enabled={rulesButtonEnabled}
+          buttons={rulesDraft?.buttons ?? []}
+          errors={rulesButtonErrors}
+          revealNextStepSignal={rulesButtonRevealSignal}
+          disabled={isRulesBusy}
+          statusLabel={rulesButtonEnabled ? rulesButtonStatus : 'Без кнопок'}
+          urlPlaceholder="https://max.ru/channel/rules"
+          textPlaceholder={DEFAULT_RULES_POST_BUTTON_TEXT}
+          onEnabledChange={handleRulesButtonsEnabledChange}
+          onChange={(nextButtons) => {
+            setRulesButtonFieldsTouched(true);
+            setRulesButtonErrors([]);
+            const buttonState = buildBroadcastLinkButtonLegacyFields(nextButtons);
+            setRulesDraft((current) =>
+              current
+                ? {
+                    ...current,
+                    buttons: nextButtons,
+                    buttonEnabled: nextButtons.length > 0,
+                    buttonUrl: buttonState.buttonUrl,
+                    buttonText: buttonState.buttonText,
+                  }
+                : current,
+            );
+          }}
+          onClose={() => setRulesButtonsSheetOpen(false)}
+        />
+      </Suspense>
 
       <Suspense fallback={null}>
         <LazyBroadcastButtonsSheet

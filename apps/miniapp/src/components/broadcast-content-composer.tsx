@@ -16,6 +16,7 @@ type BroadcastContentComposerImage = {
 };
 
 type BroadcastContentComposerProps = {
+  className?: string;
   text: string;
   maxLength: number;
   image: BroadcastContentComposerImage;
@@ -28,6 +29,9 @@ type BroadcastContentComposerProps = {
   disabled?: boolean;
   textError?: string;
   imageError?: string;
+  messageAriaLabel?: string;
+  textPlaceholder?: string;
+  textAriaLabel?: string;
   onTextChange: (value: string) => void;
   onImageChange: (image: BroadcastContentComposerImage) => void;
   onOpenButtons?: () => void;
@@ -36,6 +40,7 @@ type BroadcastContentComposerProps = {
 };
 
 export function BroadcastContentComposer({
+  className,
   text,
   maxLength,
   image,
@@ -48,6 +53,9 @@ export function BroadcastContentComposer({
   disabled = false,
   textError = '',
   imageError = '',
+  messageAriaLabel = 'Сообщение автопостинга',
+  textPlaceholder = 'Текст автопостинга',
+  textAriaLabel = textPlaceholder,
   onTextChange,
   onImageChange,
   onOpenButtons,
@@ -108,7 +116,13 @@ export function BroadcastContentComposer({
   }
 
   return (
-    <div className={cn('broadcast-content-composer', (textError || imageError) && 'field--error')}>
+    <div
+      className={cn(
+        'broadcast-content-composer',
+        className,
+        (textError || imageError) && 'field--error',
+      )}
+    >
       <div className="broadcast-content-composer__workspace broadcast-content-composer__workspace--rich">
         <div className="broadcast-content-composer__editor broadcast-content-composer__editor--rich">
           <div className="broadcast-content-composer__editor-head">
@@ -151,7 +165,7 @@ export function BroadcastContentComposer({
               'broadcast-message-card--editable',
               !hasPreview && 'is-empty',
             )}
-            aria-label="Сообщение автопостинга"
+            aria-label={messageAriaLabel}
           >
             <div className="broadcast-message-card__phone">
               <div className="broadcast-message-card__bubble">
@@ -194,9 +208,9 @@ export function BroadcastContentComposer({
                   value={text}
                   onChange={onTextChange}
                   maxLength={maxLength}
-                  placeholder="Текст автопостинга"
+                  placeholder={textPlaceholder}
                   disabled={isBusy}
-                  ariaLabel="Текст автопостинга"
+                  ariaLabel={textAriaLabel}
                   className="broadcast-message-card__rich-editor"
                 />
 

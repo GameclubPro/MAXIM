@@ -19,6 +19,7 @@ type BroadcastStudioHeaderProps = {
   signals: BroadcastStudioSignal[];
   busy?: boolean;
   editing?: boolean;
+  ariaLabel?: string;
 };
 
 type BroadcastStudioChecklistProps = {
@@ -113,6 +114,7 @@ export function BroadcastStudioHeader({
   signals,
   busy = false,
   editing = false,
+  ariaLabel = 'Сводка автопостинга',
 }: BroadcastStudioHeaderProps) {
   const safeTotal = Math.max(1, totalCount);
   const normalizedReadyCount = Math.min(Math.max(0, readyCount), safeTotal);
@@ -124,7 +126,7 @@ export function BroadcastStudioHeader({
   return (
     <section
       className={cn('broadcast-studio-command', busy && 'is-busy', editing && 'is-editing')}
-      aria-label="Сводка автопостинга"
+      aria-label={ariaLabel}
     >
       <div className="broadcast-studio-command__hero">
         <div className="broadcast-studio-command__copy">
