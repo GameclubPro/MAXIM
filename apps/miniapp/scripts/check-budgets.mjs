@@ -8,8 +8,9 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
 // Measured April 7, 2026 builds were within 60-192 bytes of the old limits,
 // which made harmless MAX-miniapp UI polish and VPS/Alpine gzip drift too brittle.
-// Keep the guardrail strict, but give the startup path enough room for iterative design work.
-const STARTUP_JS_BUDGET_GZIP = 108 * 1024 + 512;
+// Keep the guardrail strict, but give the startup path enough room for iterative design work
+// and the large managed-entities home list virtualization needed for 100+ visible chats/channels.
+const STARTUP_JS_BUDGET_GZIP = 109 * 1024;
 // Settings remains lazy-loaded, but richer giveaway, rules, and broadcast editors,
 // shared drilldown UI reuse, the compact required-subscription timer card,
 // the per-day broadcast agenda sheet, and the compact managed-broadcast

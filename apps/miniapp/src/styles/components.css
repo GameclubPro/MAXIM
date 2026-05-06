@@ -4526,7 +4526,7 @@ body.chats-home-page-open .bottom-nav__label {
   right: 0;
   left: 0;
   min-height: 0;
-  height: calc(var(--chat-list-row-height, 93px) - 9px);
+  height: 84px;
 }
 
 .chat-card {
@@ -4825,7 +4825,7 @@ body.chats-home-page-open .bottom-nav__label {
   }
 
   .chat-grid--virtual .chat-card {
-    height: calc(var(--chat-list-row-height, 84px) - 8px);
+    height: 85px;
   }
 
   .chat-card {

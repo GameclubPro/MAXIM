@@ -56,7 +56,6 @@ import {
   preloadEventsPage,
   preloadSettingsPage,
 } from './lazy-pages';
-import { resolveVirtualListRange } from '../lib/virtual-list';
 
 type ManagedTab = 'chat' | 'channel';
 type HomeSyncTone = 'ready' | 'syncing' | 'cache' | 'warning';
@@ -81,7 +80,7 @@ const HOME_MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 2_000;
 const CHAT_LIST_VIRTUALIZATION_THRESHOLD = 80;
 const CHAT_LIST_VIRTUAL_OVERSCAN = 6;
 const CHAT_LIST_VIRTUAL_ROW_HEIGHT = 93;
-const CHAT_LIST_VIRTUAL_VIEWPORT_HEIGHT = 620;
+const CHAT_LIST_VIRTUAL_WINDOW_SIZE = 20;
 
 const LazySystemEntryCard = lazy(async () => {
   const module = await import('../components/system-entry-card');
@@ -180,16 +179,6 @@ function buildEntityRouteState(entityType: ManagedTab, entity: ManagedHomeEntity
   };
 }
 
-function DashboardGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden>
-      <path d="M5 13.5h5.2v5H5z" />
-      <path d="M13.8 5H19v13.5h-5.2z" />
-      <path d="M5 5h5.2v5.2H5z" />
-    </svg>
-  );
-}
-
 function ActivityGlyph() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden>
@@ -198,14 +187,6 @@ function ActivityGlyph() {
       <path d="M15 17v-4.6" />
       <path d="M20 17V5" />
       <path d="M4.5 19h15.8" />
-    </svg>
-  );
-}
-
-function ChevronGlyph() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden className="chat-card__chevron">
-      <path d="m9 6 6 6-6 6" />
     </svg>
   );
 }
@@ -346,21 +327,19 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const showEmptyState = isNoEntitiesForTab;
   const limitedStagger =
     filteredEntities.length > CHAT_CARD_STAGGER_THRESHOLD ? CHAT_CARD_STAGGER_LIMIT : null;
-  const shouldVirtualizeEntities =
-    filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD && !isLoading && !queryError;
-  const virtualRange = useMemo(
-    () =>
-      resolveVirtualListRange({
-        itemCount: filteredEntities.length,
-        scrollTop: shouldVirtualizeEntities ? virtualListScrollTop : 0,
-        viewportHeight: CHAT_LIST_VIRTUAL_VIEWPORT_HEIGHT,
-        rowHeight: CHAT_LIST_VIRTUAL_ROW_HEIGHT,
-        overscan: CHAT_LIST_VIRTUAL_OVERSCAN,
-      }),
-    [filteredEntities.length, shouldVirtualizeEntities, virtualListScrollTop],
-  );
+  const shouldVirtualizeEntities = filteredEntities.length > CHAT_LIST_VIRTUALIZATION_THRESHOLD;
+  const virtualStartIndex = shouldVirtualizeEntities
+    ? Math.max(
+        0,
+        Math.floor(virtualListScrollTop / CHAT_LIST_VIRTUAL_ROW_HEIGHT) -
+          CHAT_LIST_VIRTUAL_OVERSCAN,
+      )
+    : 0;
+  const virtualEndIndex = shouldVirtualizeEntities
+    ? Math.min(filteredEntities.length, virtualStartIndex + CHAT_LIST_VIRTUAL_WINDOW_SIZE)
+    : filteredEntities.length;
   const renderedEntities = shouldVirtualizeEntities
-    ? filteredEntities.slice(virtualRange.startIndex, virtualRange.endIndex)
+    ? filteredEntities.slice(virtualStartIndex, virtualEndIndex)
     : filteredEntities;
   const settledRefreshMarker = useMemo(
     () =>
@@ -575,12 +554,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       homeSyncStatus.tone === 'cache' && 'is-from-cache',
       homeSyncStatus.tone === 'warning' && 'is-paused',
     );
-    const style: CSSProperties = {};
-    if (staggerIndex !== null) {
-      style.animationDelay = `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms`;
-    }
+    let style: CSSProperties | undefined;
     if (shouldVirtualizeEntities) {
-      style.top = `${index * CHAT_LIST_VIRTUAL_ROW_HEIGHT}px`;
+      style = { top: index * CHAT_LIST_VIRTUAL_ROW_HEIGHT };
+      if (staggerIndex !== null) {
+        style.animationDelay = `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms`;
+      }
+    } else if (staggerIndex !== null) {
+      style = { animationDelay: `${staggerIndex * CHAT_CARD_STAGGER_STEP_MS}ms` };
     }
 
     const settingsRoute = buildEntitySettingsRoute(activeTab, entity.id);
@@ -589,12 +570,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     const activityLabel = activeTab === 'channel' ? 'Статистика' : 'События';
 
     return (
-      <GlassCard
-        as="article"
-        key={entity.id}
-        className={className}
-        style={Object.keys(style).length > 0 ? style : undefined}
-      >
+      <GlassCard as="article" key={entity.id} className={className} style={style}>
         <Link
           to={settingsRoute}
           className="chat-card__primary-link"
@@ -620,7 +596,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               <h3>{entity.title}</h3>
             </div>
           </div>
-          <ChevronGlyph />
         </div>
 
         <div className="chat-card__quick-actions">
@@ -737,7 +712,6 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
           <div className="chats-command__metrics" aria-label="Сводка">
             <span className="chats-command__metric" title={hasSearchQuery ? 'Найдено' : 'В списке'}>
-              <DashboardGlyph />
               <strong>{hasSearchQuery ? visibleEntitiesCount : totalEntitiesCount}</strong>
             </span>
             <span className="chats-command__metric" title="Избранное">
@@ -916,18 +890,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               : undefined
           }
           tabIndex={shouldVirtualizeEntities ? 0 : undefined}
-          style={
-            shouldVirtualizeEntities
-              ? ({
-                  '--chat-list-row-height': `${CHAT_LIST_VIRTUAL_ROW_HEIGHT}px`,
-                } as CSSProperties)
-              : undefined
-          }
         >
           {shouldVirtualizeEntities ? (
-            <div className="chat-grid__virtual-spacer" style={{ height: virtualRange.totalHeight }}>
+            <div
+              className="chat-grid__virtual-spacer"
+              style={{ height: filteredEntities.length * CHAT_LIST_VIRTUAL_ROW_HEIGHT }}
+            >
               {renderedEntities.map((entity, index) =>
-                renderEntityCard(entity, virtualRange.startIndex + index),
+                renderEntityCard(entity, virtualStartIndex + index),
               )}
             </div>
           ) : (
