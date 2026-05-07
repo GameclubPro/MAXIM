@@ -2889,14 +2889,9 @@ export class MaxClientService implements OnModuleDestroy {
     fallbackText: string | null,
     fallbackTextFormat: MaxTextFormat | null = null,
   ): { text: string | null; textFormat: MaxTextFormat | null } {
-    const body = this.asRecord(message?.body);
-    const link = this.asRecord(message?.link);
-    const sourceText = typeof body?.text === 'string' ? body.text : null;
-    const preferFallbackText =
-      sourceText === '' &&
-      typeof fallbackText === 'string' &&
-      fallbackText.length > 0 &&
-      this.readLowerString(link?.type) === 'forward';
+    const source = this.resolveOutgoingMessageTextSource(message, fallbackText);
+    const sourceText = source.text;
+    const preferFallbackText = source.fromFallback;
     const text = preferFallbackText ? fallbackText : (sourceText ?? fallbackText);
 
     if (fallbackTextFormat && typeof fallbackText === 'string') {
@@ -2907,7 +2902,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (typeof sourceText === 'string' && typeof text === 'string' && text === sourceText) {
-      const html = this.renderMessageMarkupAsHtml(sourceText, this.extractMessageMarkup(message));
+      const html = this.renderMessageMarkupAsHtml(sourceText, source.markup);
       if (html && html !== sourceText) {
         return {
           text: html,
@@ -2915,7 +2910,7 @@ export class MaxClientService implements OnModuleDestroy {
         };
       }
 
-      const textFormat = this.extractMessageTextFormat(message);
+      const textFormat = source.textFormat;
       if (textFormat) {
         return {
           text,
@@ -2928,6 +2923,86 @@ export class MaxClientService implements OnModuleDestroy {
       text,
       textFormat: null,
     };
+  }
+
+  private resolveOutgoingMessageTextSource(
+    message: Record<string, unknown> | null,
+    fallbackText: string | null,
+  ): {
+    text: string | null;
+    markup: MaxMessageMarkup[];
+    textFormat: MaxTextFormat | null;
+    fromFallback: boolean;
+  } {
+    const direct = this.extractMessageTextSource(message);
+    if (typeof direct.text === 'string' && direct.text.length > 0) {
+      return {
+        ...direct,
+        fromFallback: false,
+      };
+    }
+
+    const linked = this.extractForwardedMessageTextSource(message);
+    if (typeof linked.text === 'string' && linked.text.length > 0) {
+      return {
+        ...linked,
+        fromFallback: false,
+      };
+    }
+
+    return {
+      text: direct.text,
+      markup: direct.markup,
+      textFormat: direct.textFormat,
+      fromFallback:
+        direct.text === '' &&
+        typeof fallbackText === 'string' &&
+        fallbackText.length > 0 &&
+        this.isForwardedMessage(message),
+    };
+  }
+
+  private extractForwardedMessageTextSource(message: Record<string, unknown> | null): {
+    text: string | null;
+    markup: MaxMessageMarkup[];
+    textFormat: MaxTextFormat | null;
+  } {
+    if (!this.isForwardedMessage(message)) {
+      return {
+        text: null,
+        markup: [],
+        textFormat: null,
+      };
+    }
+
+    const link = this.asRecord(message?.link);
+    const linkedMessage = this.asRecord(link?.message);
+    return this.extractMessageTextSource(linkedMessage ?? null);
+  }
+
+  private extractMessageTextSource(message: Record<string, unknown> | null): {
+    text: string | null;
+    markup: MaxMessageMarkup[];
+    textFormat: MaxTextFormat | null;
+  } {
+    const body = this.asRecord(message?.body);
+    const text =
+      typeof body?.text === 'string'
+        ? body.text
+        : typeof message?.text === 'string'
+          ? message.text
+          : null;
+
+    return {
+      text,
+      markup: this.extractMessageMarkup(message),
+      textFormat: this.extractMessageTextFormat(message),
+    };
+  }
+
+  private isForwardedMessage(message: Record<string, unknown> | null): boolean {
+    const link = this.asRecord(message?.link);
+    return this.readLowerString(link?.type) === 'forward';
   }
 
   private extractMessageMarkup(message: Record<string, unknown> | null): MaxMessageMarkup[] {
@@ -2987,8 +3062,14 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const openTags = new Map<number, Array<{ open: string; close: string; end: number }>>();
-    const closeTags = new Map<number, Array<{ close: string; start: number; end: number }>>();
+    const openTags = new Map<
+      number,
+      Array<{ open: string; close: string; end: number; priority: number }>
+    >();
+    const closeTags = new Map<
+      number,
+      Array<{ close: string; start: number; end: number; priority: number }>
+    >();
     const boundaries = new Set<number>([0, text.length]);
 
     for (const item of markup) {
@@ -3009,6 +3090,7 @@ export class MaxClientService implements OnModuleDestroy {
         open: tag.open,
         close: tag.close,
         end,
+        priority: tag.priority,
       });
       openTags.set(start, openBucket);
 
@@ -3017,6 +3099,7 @@ export class MaxClientService implements OnModuleDestroy {
         close: tag.close,
         start,
         end,
+        priority: tag.priority,
       });
       closeTags.set(end, closeBucket);
       boundaries.add(start);
@@ -3040,7 +3123,10 @@ export class MaxClientService implements OnModuleDestroy {
       if (closing) {
         closing
           .slice()
-          .sort((left, right) => right.start - left.start || left.end - right.end)
+          .sort(
+            (left, right) =>
+              right.start - left.start || left.end - right.end || right.priority - left.priority,
+          )
           .forEach((tag) => {
             html += tag.close;
           });
@@ -3050,7 +3136,7 @@ export class MaxClientService implements OnModuleDestroy {
       if (opening) {
         opening
           .slice()
-          .sort((left, right) => right.end - left.end)
+          .sort((left, right) => right.end - left.end || left.priority - right.priority)
           .forEach((tag) => {
             html += tag.open;
           });
@@ -3259,26 +3345,31 @@ export class MaxClientService implements OnModuleDestroy {
   private resolveMarkupHtmlTags(
     markup: MaxMessageMarkup,
     visibleText: string,
-  ): { open: string; close: string } | null {
+  ): { open: string; close: string; priority: number } | null {
     switch (markup.type) {
       case 'strong':
       case 'heading':
-        return { open: '<strong>', close: '</strong>' };
+        return {
+          open: '<strong>',
+          close: '</strong>',
+          priority: markup.type === 'heading' ? 5 : 20,
+        };
       case 'emphasized':
-        return { open: '<em>', close: '</em>' };
+        return { open: '<em>', close: '</em>', priority: 30 };
       case 'underline':
-        return { open: '<u>', close: '</u>' };
+        return { open: '<u>', close: '</u>', priority: 40 };
       case 'strikethrough':
-        return { open: '<del>', close: '</del>' };
+        return { open: '<del>', close: '</del>', priority: 50 };
       case 'monospaced':
         return visibleText.includes('\n')
-          ? { open: '<pre>', close: '</pre>' }
-          : { open: '<code>', close: '</code>' };
+          ? { open: '<pre>', close: '</pre>', priority: 60 }
+          : { open: '<code>', close: '</code>', priority: 60 };
       case 'link':
         return markup.url
           ? {
               open: `<a href="${this.escapeHtmlAttribute(markup.url)}">`,
               close: '</a>',
+              priority: 10,
             }
           : null;
       case 'user_mention':
@@ -3286,6 +3377,7 @@ export class MaxClientService implements OnModuleDestroy {
           ? {
               open: `<a href="${this.escapeHtmlAttribute(`https://max.ru/${markup.userLink}`)}">`,
               close: '</a>',
+              priority: 10,
             }
           : null;
       default:

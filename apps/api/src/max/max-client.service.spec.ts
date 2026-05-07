@@ -753,6 +753,90 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('preserves linked forwarded message markup and paragraphs when reposting with inline keyboard', async () => {
+    const sourceText = '🔥MAX Docs\n\nВторой абзац';
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-forward-rich-source-1',
+                    text: '',
+                    attachments: [],
+                  },
+                  link: {
+                    type: 'forward',
+                    message: {
+                      text: sourceText,
+                      markup: [
+                        {
+                          from: 2,
+                          type: 'strong',
+                          length: 8,
+                        },
+                        {
+                          from: 2,
+                          type: 'link',
+                          length: 8,
+                          url: 'https://dev.max.ru/docs-api',
+                        },
+                      ],
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              mid: 'mid-forward-rich-copy-1',
+              url: 'https://max.ru/chats/chat-1/message/791',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-forward-rich-source-1',
+      sourceText,
+      {
+        button: {
+          text: '💬 Комментарии',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      messageId: 'mid-forward-rich-copy-1',
+      url: 'https://max.ru/chats/chat-1/message/791',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: expect.objectContaining({
+          text: '🔥<a href="https://dev.max.ru/docs-api"><strong>MAX Docs</strong></a>\n\nВторой абзац',
+          format: 'html',
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves MAX body markup when editing inline keyboard on an existing message', async () => {
     const httpService = {
       request: jest
