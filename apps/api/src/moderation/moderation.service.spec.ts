@@ -16882,7 +16882,7 @@ describe('ModerationService', () => {
           [
             expect.objectContaining({
               type: 'link',
-              url: expect.stringContaining('https://max.ru/scan-bot-2?startapp='),
+              url: expect.stringContaining('https://max.ru/test-bot?startapp='),
             }),
           ],
         ],
@@ -16894,6 +16894,10 @@ describe('ModerationService', () => {
         botId: 'scan-bot-2',
       },
     );
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+    );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('scan-bot-2');
     expect(prisma.auditLog.create).toHaveBeenCalledWith({
       data: expect.objectContaining({

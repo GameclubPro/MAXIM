@@ -10671,8 +10671,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${this.appBaseUrl}/app${route}`;
   }
 
-  private buildMiniappRouteLaunchUrl(route: string, botId?: string | null): string | null {
-    return this.buildMiniappStartUrl(this.buildMiniappRouteStartParam(route), botId);
+  private buildMiniappRouteLaunchUrl(route: string, _botId?: string | null): string | null {
+    return this.buildEntryMiniappStartUrl(this.buildMiniappRouteStartParam(route));
   }
 
   private buildMiniappRouteStartParam(route: string): string {
@@ -15567,20 +15567,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
-    botId?: string | null,
+    _botId?: string | null,
   ): string | null {
     const startParam = this.buildChannelDialogStartParam(chatId, type, threadId);
-    return this.buildMiniappStartUrl(startParam, botId);
+    return this.buildEntryMiniappStartUrl(startParam);
   }
 
   private buildChatDialogLaunchUrl(
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
-    botId?: string | null,
+    _botId?: string | null,
   ): string | null {
     const startParam = this.buildChatDialogStartParam(chatId, type, threadId);
-    return this.buildMiniappStartUrl(startParam, botId);
+    return this.buildEntryMiniappStartUrl(startParam);
   }
 
   private buildChannelDialogDirectWebAppUrl(
@@ -15643,13 +15643,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
   }
 
-  private buildMiniappStartUrl(startParam: string, botId?: string | null): string | null {
+  private buildEntryMiniappStartUrl(startParam: string): string | null {
     if (!isValidMaxMiniappStartPayload(startParam)) {
       return null;
     }
 
     return (
-      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam, botId) ??
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
+      this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam) ??
       (this.ownBotUserId
         ? `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`
         : null)

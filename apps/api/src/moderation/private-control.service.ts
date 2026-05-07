@@ -11446,6 +11446,7 @@ export class PrivateControlService {
     }
 
     return (
+      this.maxBotLinkService?.buildEntryMiniappStartUrlSync?.(startParam) ??
       this.maxBotLinkService?.buildMiniappStartUrlSync?.(startParam) ??
       (this.botDeepLinkId
         ? `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`

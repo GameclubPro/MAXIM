@@ -1242,7 +1242,7 @@ describe('PrivateControlService', () => {
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 
-  it('keeps private dialog traffic on the active bot instead of redirecting to the entry bot', async () => {
+  it('keeps private responses on the active bot while opening the mini app through the entry bot', async () => {
     const maxBotLinkService = {
       getBotTokenSync: jest.fn().mockReturnValue('test-token'),
       getValidationTokens: jest.fn().mockReturnValue(['test-token']),
@@ -1282,9 +1282,13 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         text: '📱 Приложение',
         type: 'link',
-        url: expect.stringContaining('https://max.ru/888000_bot?startapp='),
+        url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
       }),
     );
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+    );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(adminService.listManagedEntities).not.toHaveBeenCalled();
   });
 

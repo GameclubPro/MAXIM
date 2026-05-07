@@ -20586,6 +20586,12 @@ describe('AdminService.sendChannelBroadcast', () => {
       invalidate: jest.fn(),
     };
     const maxBotLinkService = {
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) =>
+            `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+        ),
       buildMiniappStartUrlSync: jest
         .fn()
         .mockImplementation(
@@ -20652,14 +20658,18 @@ describe('AdminService.sendChannelBroadcast', () => {
           expect.objectContaining({
             text: '💬 Комментарии · 0',
             type: 'link',
-            url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
+            url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
           }),
         ],
       ],
     });
     expect(String(options.buttons[0][0].url ?? '')).toContain(
-      'https://max.ru/channel-bot-2?startapp=',
+      'https://max.ru/entry-bot?startapp=',
     );
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+    );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
   });
 
@@ -23123,6 +23133,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     };
     const chatContextCache = createChatContextCacheMock();
     const maxBotLinkService = {
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) =>
+            `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+        ),
       buildMiniappStartUrlSync: jest
         .fn()
         .mockImplementation(
@@ -23192,14 +23208,14 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       { botId: 'channel-bot-2' },
     );
     expect(maxBotLinkService.resolveContactIdSync).toHaveBeenCalledWith('channel-bot-2');
-    expect(maxBotLinkService.buildMiniappStartUrlSync).toHaveBeenCalledWith(
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
       expect.any(String),
-      'channel-bot-2',
     );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     const [, , , keyboardOptions] = maxClient.editMessageInlineKeyboard.mock.calls[0] ?? [];
     const commentsButton = keyboardOptions?.buttons?.[0]?.[0] as { url?: string } | undefined;
     expect(commentsButton).toMatchObject({
-      url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
+      url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
     });
   });
 
@@ -25203,6 +25219,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       invalidate: jest.fn(),
     };
     const maxBotLinkService = {
+      buildEntryMiniappStartUrlSync: jest
+        .fn()
+        .mockImplementation(
+          (startParam: string) =>
+            `https://max.ru/entry-bot?startapp=${encodeURIComponent(startParam)}`,
+        ),
       buildMiniappStartUrlSync: jest
         .fn()
         .mockImplementation(
@@ -25264,7 +25286,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             expect.objectContaining({
               text: '💬 Комментарии · 0',
               type: 'link',
-              url: expect.stringContaining('https://max.ru/channel-bot-2?startapp='),
+              url: expect.stringContaining('https://max.ru/entry-bot?startapp='),
             }),
           ],
           [
@@ -25289,8 +25311,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       | { url?: string; webApp?: string }
       | undefined;
     const suggestButton = publishedOptions?.buttons?.[1]?.[0] as { url?: string } | undefined;
-    expect(commentsButton?.url).toContain('https://max.ru/channel-bot-2?startapp=');
+    expect(commentsButton?.url).toContain('https://max.ru/entry-bot?startapp=');
     expect(suggestButton?.url).toContain('https://max.ru/channel-bot-2?start=');
+    expect(maxBotLinkService.buildEntryMiniappStartUrlSync).toHaveBeenCalledWith(
+      expect.any(String),
+    );
+    expect(maxBotLinkService.buildMiniappStartUrlSync).not.toHaveBeenCalled();
     const suggestStartParam = suggestButton?.url
       ? new URL(suggestButton.url).searchParams.get('start')
       : null;
