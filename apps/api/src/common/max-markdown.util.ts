@@ -10,8 +10,9 @@ type RenderMarkdownOptions = {
 };
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
+const HEADING_LINE_PATTERN = /^(#{1,6})[ \t]+(.+)$/u;
 const SUPPORTED_MARKDOWN_PATTERN =
-  /(?:^#{1,6}\s+\S.*$|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
+  /(?:^#{1,6}\s+\S.*$|```[\s\S]+?```|\*\*\*[^*\n]+?\*\*\*|___[^_\n]+?___|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
 const ESCAPABLE_MARKDOWN_CHARACTERS = new Set(['\\', '`', '*', '_', '[', ']', '(', ')', '~', '+']);
 
 export function containsSupportedMarkdownSyntax(source: string): boolean {
@@ -28,27 +29,40 @@ export function renderSupportedMarkdownAsHtml(
   }
 
   if (options.blockMode === 'raw') {
-    return normalized
-      .split('\n')
-      .map((rawLine) => {
-        const trimmedLine = rawLine.trim();
-        if (!trimmedLine) {
-          return '';
-        }
+    const renderedLines: string[] = [];
+    const lines = normalized.split('\n');
 
-        const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
-        if (headingMatch) {
-          const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
-          return `<strong>${content}</strong>`;
-        }
+    for (let index = 0; index < lines.length; index += 1) {
+      const fencedCodeBlock = readFencedCodeBlock(lines, index);
+      if (fencedCodeBlock) {
+        renderedLines.push(renderCodeBlockHtml(fencedCodeBlock.content));
+        index = fencedCodeBlock.nextIndex - 1;
+        continue;
+      }
 
-        return renderInlineTokens(parseInlineTokens(rawLine), options);
-      })
-      .join('\n');
+      const rawLine = lines[index] ?? '';
+      const trimmedLine = rawLine.trim();
+      if (!trimmedLine) {
+        renderedLines.push('');
+        continue;
+      }
+
+      const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
+      if (headingMatch) {
+        const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
+        renderedLines.push(renderHeadingHtml(content));
+        continue;
+      }
+
+      renderedLines.push(renderInlineTokens(parseInlineTokens(rawLine), options));
+    }
+
+    return renderedLines.join('\n');
   }
 
   const blocks: string[] = [];
   let paragraphLines: string[] = [];
+  const lines = normalized.split('\n');
 
   const flushParagraph = () => {
     if (paragraphLines.length === 0) {
@@ -62,7 +76,16 @@ export function renderSupportedMarkdownAsHtml(
     paragraphLines = [];
   };
 
-  for (const rawLine of normalized.split('\n')) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const fencedCodeBlock = readFencedCodeBlock(lines, index);
+    if (fencedCodeBlock) {
+      flushParagraph();
+      blocks.push(renderCodeBlockHtml(fencedCodeBlock.content));
+      index = fencedCodeBlock.nextIndex - 1;
+      continue;
+    }
+
+    const rawLine = lines[index] ?? '';
     const line = rawLine.trimEnd();
     const trimmedLine = line.trim();
     if (!trimmedLine) {
@@ -70,11 +93,11 @@ export function renderSupportedMarkdownAsHtml(
       continue;
     }
 
-    const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+    const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
     if (headingMatch) {
       flushParagraph();
       const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
-      blocks.push(`<p><strong>${content}</strong></p>`);
+      blocks.push(`<p>${renderHeadingHtml(content)}</p>`);
       continue;
     }
 
@@ -94,6 +117,7 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
 
   const blocks: string[] = [];
   let paragraphLines: string[] = [];
+  const lines = normalized.split('\n');
 
   const flushParagraph = () => {
     if (paragraphLines.length === 0) {
@@ -108,7 +132,16 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
     paragraphLines = [];
   };
 
-  for (const rawLine of normalized.split('\n')) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const fencedCodeBlock = readFencedCodeBlock(lines, index);
+    if (fencedCodeBlock) {
+      flushParagraph();
+      blocks.push(fencedCodeBlock.content);
+      index = fencedCodeBlock.nextIndex - 1;
+      continue;
+    }
+
+    const rawLine = lines[index] ?? '';
     const line = rawLine.trimEnd();
     const trimmedLine = line.trim();
     if (!trimmedLine) {
@@ -116,7 +149,7 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
       continue;
     }
 
-    const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+    const headingMatch = HEADING_LINE_PATTERN.exec(trimmedLine);
     if (headingMatch) {
       flushParagraph();
       blocks.push(renderInlineTokensAsPlainText(parseInlineTokens(headingMatch[2] ?? '')));
@@ -129,6 +162,42 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
   flushParagraph();
 
   return blocks.join('\n\n');
+}
+
+function renderHeadingHtml(content: string): string {
+  return `<strong>${content}</strong>`;
+}
+
+function renderCodeBlockHtml(content: string): string {
+  return `<pre>${escapeHtmlPreservingWhitespace(content)}</pre>`;
+}
+
+function readFencedCodeBlock(
+  lines: string[],
+  startIndex: number,
+): { content: string; nextIndex: number } | null {
+  const openingLine = lines[startIndex]?.trim();
+  if (!openingLine?.startsWith('```')) {
+    return null;
+  }
+
+  const codeLines: string[] = [];
+  for (let index = startIndex + 1; index < lines.length; index += 1) {
+    const line = lines[index] ?? '';
+    if (line.trim().startsWith('```')) {
+      return {
+        content: codeLines.join('\n'),
+        nextIndex: index + 1,
+      };
+    }
+
+    codeLines.push(line);
+  }
+
+  return {
+    content: codeLines.join('\n'),
+    nextIndex: lines.length,
+  };
 }
 
 function parseInlineTokens(source: string): InlineToken[] {

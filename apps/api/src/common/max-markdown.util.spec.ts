@@ -85,6 +85,19 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
+  it('renders heading and fenced code blocks for MAX publication', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('# Анонс\n\n```\nconst value = "<MAX>";\n```\n\nТекст', {
+        blockMode: 'raw',
+      }),
+    ).toBe(
+      '<strong>Анонс</strong>\n\n<pre>const value = &quot;&lt;MAX&gt;&quot;;</pre>\n\nТекст',
+    );
+    expect(stripSupportedMarkdownToPlainText('# Анонс\n\n```\nconst value = "<MAX>";\n```')).toBe(
+      'Анонс\n\nconst value = "<MAX>";',
+    );
+  });
+
   it('renders escaped markdown punctuation as literal text', () => {
     expect(renderSupportedMarkdownAsHtml('**Анонс** C\\+\\+ \\[beta\\] \\(v2\\) \\_raw\\_')).toBe(
       '<p><strong>Анонс</strong> C++ [beta] (v2) _raw_</p>',

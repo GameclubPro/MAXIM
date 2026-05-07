@@ -29,8 +29,9 @@ const STARTUP_JS_BUDGET_GZIP = 109 * 1024;
 // the invitation access gate with editable bot notices,
 // the new-chat/channel handoff loading state,
 // plus 10-photo broadcast gallery preparation and preview
+// plus rich paste parity for headings and code blocks in broadcast/suggestion previews
 // add a small amount of legitimate lazy-loaded logic.
-const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 14 * 1024;
+const SETTINGS_JS_BUDGET_GZIP = 108 * 1024 + 15 * 1024;
 // Startup CSS was effectively at the ceiling already, so widen it modestly instead of
 // forcing cosmetic regressions into the home surface and shared mobile shell.
 const STARTUP_CSS_BUDGET_GZIP = 42 * 1024;

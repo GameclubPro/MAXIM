@@ -37,6 +37,15 @@ test('skips active content and decodes html entities', () => {
   );
 });
 
+test('preserves modern clipboard blocks with safe fallbacks', () => {
+  assert.equal(
+    clipboardHtmlToSupportedMarkdown(
+      '<h2>Анонс</h2><pre><code>const value = "&lt;MAX&gt;";</code></pre><ul><li>Первое</li><li><b>Второе</b></li></ul><blockquote>Важно<br>сейчас</blockquote><mark>Фокус</mark>',
+    ),
+    '# Анонс\n\n```\nconst value = "<MAX>";\n```\n\n• Первое\n• **Второе**\n\n> Важно\n> сейчас\n\n**Фокус**',
+  );
+});
+
 test('escapes pasted markdown punctuation as literal text', () => {
   const markdown = clipboardHtmlToSupportedMarkdown('<b>A*B_[C]</b>');
 

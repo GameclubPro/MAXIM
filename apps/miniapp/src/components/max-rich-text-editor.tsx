@@ -11,7 +11,6 @@ import {
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
 import { renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
-import { clipboardHtmlToSupportedMarkdown } from '../lib/max-rich-text-clipboard';
 
 export type MaxRichTextEditorHandle = {
   focus: () => void;
@@ -164,6 +163,18 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           return;
         }
 
+        if (tool === 'heading') {
+          const range = restoreOrCreateEditorRange();
+          if (!range) {
+            return;
+          }
+
+          wrapRangeWithHeading(range);
+          emitCurrentMarkdown();
+          syncActiveTools();
+          return;
+        }
+
         if (tool === 'link') {
           const range = restoreOrCreateEditorRange();
           const editor = editorRef.current;
@@ -279,17 +290,35 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           onPaste={(event) => {
             event.preventDefault();
             const pastedHtml = event.clipboardData.getData('text/html');
-            const pastedMarkdown = pastedHtml ? clipboardHtmlToSupportedMarkdown(pastedHtml) : '';
-            if (pastedMarkdown && insertSupportedMarkdownAtCurrentRange(pastedMarkdown)) {
+            const pastedText = event.clipboardData.getData('text/plain');
+            if (!pastedHtml) {
+              insertPlainTextAtCurrentRange(pastedText);
               emitCurrentMarkdown();
               syncActiveTools();
               return;
             }
 
-            const pastedText = event.clipboardData.getData('text/plain');
-            insertPlainTextAtCurrentRange(pastedText);
-            emitCurrentMarkdown();
-            syncActiveTools();
+            const pasteRange = restoreOrCreateEditorRange()?.cloneRange() ?? null;
+            void import('../lib/max-rich-text-clipboard')
+              .then(({ clipboardHtmlToSupportedMarkdown }) => {
+                restorePasteRange(editorRef.current, pasteRange);
+                const pastedMarkdown = clipboardHtmlToSupportedMarkdown(pastedHtml);
+                if (pastedMarkdown && insertSupportedMarkdownAtCurrentRange(pastedMarkdown)) {
+                  emitCurrentMarkdown();
+                  syncActiveTools();
+                  return;
+                }
+
+                insertPlainTextAtCurrentRange(pastedText);
+                emitCurrentMarkdown();
+                syncActiveTools();
+              })
+              .catch(() => {
+                restorePasteRange(editorRef.current, pasteRange);
+                insertPlainTextAtCurrentRange(pastedText);
+                emitCurrentMarkdown();
+                syncActiveTools();
+              });
           }}
         />
 
@@ -346,7 +375,9 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
 
 MaxRichTextEditor.displayName = 'MaxRichTextEditor';
 
-function resolveToolTagName(tool: Exclude<MaxMarkdownTool, 'link'>): keyof HTMLElementTagNameMap {
+function resolveToolTagName(
+  tool: Exclude<MaxMarkdownTool, 'heading' | 'link'>,
+): keyof HTMLElementTagNameMap {
   switch (tool) {
     case 'bold':
       return 'strong';
@@ -361,7 +392,7 @@ function resolveToolTagName(tool: Exclude<MaxMarkdownTool, 'link'>): keyof HTMLE
   }
 }
 
-function resolveToolPlaceholder(tool: Exclude<MaxMarkdownTool, 'link'>): string {
+function resolveToolPlaceholder(tool: Exclude<MaxMarkdownTool, 'heading' | 'link'>): string {
   switch (tool) {
     case 'bold':
       return 'жирный';
@@ -448,6 +479,22 @@ function wrapRangeWithLink(range: Range, href: string): void {
   selectElementContents(link);
 }
 
+function wrapRangeWithHeading(range: Range): void {
+  const heading = document.createElement('h3');
+
+  if (range.collapsed) {
+    heading.textContent = 'Заголовок';
+    range.insertNode(heading);
+    selectElementContents(heading);
+    return;
+  }
+
+  const fragment = range.extractContents();
+  heading.appendChild(fragment);
+  range.insertNode(heading);
+  selectElementContents(heading);
+}
+
 function selectElementContents(element: HTMLElement): void {
   const range = document.createRange();
   range.selectNodeContents(element);
@@ -504,6 +551,14 @@ function insertSupportedMarkdownAtCurrentRange(markdown: string): boolean {
   return true;
 }
 
+function restorePasteRange(editor: HTMLElement | null, range: Range | null): void {
+  if (!editor || !range || !editorContainsRange(editor, range)) {
+    return;
+  }
+
+  applyDocumentRange(range);
+}
+
 function resolveActiveTools(editor: HTMLElement, range: Range): ReadonlySet<MaxMarkdownTool> {
   const active = new Set<MaxMarkdownTool>();
   const container = resolveRangeNode(range.commonAncestorContainer);
@@ -537,6 +592,13 @@ function resolveActiveTools(editor: HTMLElement, range: Range): ReadonlySet<MaxM
 
   if (findClosestElement(container, editor, 'a')) {
     active.add('link');
+  }
+
+  if (
+    findClosestElement(container, editor, '[data-max-block="heading"]') ||
+    findClosestElement(container, editor, 'h1,h2,h3,h4,h5,h6')
+  ) {
+    active.add('heading');
   }
 
   return active;
@@ -580,7 +642,16 @@ function serializeNode(node: Node): string {
     return `\`${serializeCodeText(element.textContent ?? '')}\``;
   }
 
+  if (tagName === 'pre') {
+    return appendBlockBreak(`\`\`\`\n${serializeCodeBlockText(element.textContent ?? '')}\n\`\`\``);
+  }
+
   const content = serializeChildNodes(element.childNodes);
+
+  if (isHeadingElement(element, tagName)) {
+    const headingContent = content.replace(/\n+/gu, ' ').trim();
+    return headingContent ? appendBlockBreak(`# ${headingContent}`) : '';
+  }
 
   switch (tagName) {
     case 'strong':
@@ -618,6 +689,14 @@ function escapeMarkdownText(value: string): string {
 
 function serializeCodeText(value: string): string {
   return value.replace(/\r?\n/gu, ' ').replace(/`/gu, "'");
+}
+
+function serializeCodeBlockText(value: string): string {
+  return value.replace(/\r\n?/gu, '\n').replace(/```/gu, "'''").trimEnd();
+}
+
+function isHeadingElement(element: HTMLElement, tagName: string): boolean {
+  return /^h[1-6]$/u.test(tagName) || element.dataset.maxBlock === 'heading';
 }
 
 function normalizeEditorLinkUrl(value: string): string {

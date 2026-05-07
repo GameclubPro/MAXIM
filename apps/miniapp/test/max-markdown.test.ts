@@ -17,6 +17,19 @@ test('renders compact bold italic marker runs without leaking markdown punctuati
   assert.equal(stripSupportedMarkdownToPlainText('___++~~MAX Docs~~++___'), 'MAX Docs');
 });
 
+test('renders heading blocks and fenced code blocks', () => {
+  assert.equal(
+    renderSupportedMarkdownAsHtml('# Анонс\n\n```\nconst value = "<MAX>";\n```\n\nТекст', {
+      blockMode: 'inline',
+    }),
+    '<h3>Анонс</h3><br><br><pre>const value = &quot;&lt;MAX&gt;&quot;;</pre><br><br>Текст',
+  );
+  assert.equal(
+    stripSupportedMarkdownToPlainText('# Анонс\n\n```\nconst value = "<MAX>";\n```'),
+    'Анонс\n\nconst value = "<MAX>";',
+  );
+});
+
 test('renders every nested rich text modifier combination without leaking markers', () => {
   for (const source of buildNestedModifierSamples()) {
     assert.doesNotMatch(

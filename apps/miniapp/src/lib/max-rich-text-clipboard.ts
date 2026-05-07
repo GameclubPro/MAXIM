@@ -301,14 +301,22 @@ function serializeClipboardHtmlNode(
     return '\n';
   }
 
-  if (tagName === 'code' || tagName === 'pre') {
+  if (tagName === 'pre') {
+    const code = serializeClipboardCodeBlockText(readClipboardNodeText(node));
+    if (!code) {
+      return '';
+    }
+
+    return appendClipboardBlockBreak(`\`\`\`\n${code}\n\`\`\``);
+  }
+
+  if (tagName === 'code') {
     const code = serializeClipboardCodeText(readClipboardNodeText(node));
     if (!code) {
       return '';
     }
 
-    const markdown = `\`${code}\``;
-    return tagName === 'pre' ? appendClipboardBlockBreak(markdown) : markdown;
+    return `\`${code}\``;
   }
 
   const nodeMarks = resolveClipboardNodeMarks(tagName, node.attributes.style ?? '');
@@ -323,16 +331,36 @@ function serializeClipboardHtmlNode(
     content = href ? `[${content}](${href})` : content;
   }
 
+  if (HEADING_HTML_TAGS.has(tagName)) {
+    const headingContent = content.replace(/\n+/gu, ' ').trim();
+    return headingContent ? appendClipboardBlockBreak(`# ${headingContent}`) : '';
+  }
+
+  if (tagName === 'blockquote') {
+    return appendClipboardBlockBreak(
+      content
+        .split('\n')
+        .map((line) => (line.trim() ? `> ${line}` : line))
+        .join('\n'),
+    );
+  }
+
+  if (tagName === 'ul' || tagName === 'ol') {
+    return serializeClipboardList(node, activeMarks, tagName === 'ol' ? 'ordered' : 'unordered');
+  }
+
+  if (tagName === 'li') {
+    return appendClipboardBlockBreak(`• ${normalizeClipboardListItem(content)}`);
+  }
+
   content = applyClipboardMarks(content, nodeMarks, activeMarks);
-  return BLOCK_HTML_TAGS.has(tagName) || HEADING_HTML_TAGS.has(tagName)
-    ? appendClipboardBlockBreak(content)
-    : content;
+  return BLOCK_HTML_TAGS.has(tagName) ? appendClipboardBlockBreak(content) : content;
 }
 
 function resolveClipboardNodeMarks(tagName: string, style: string): ClipboardInlineMark[] {
   const marks = new Set<ClipboardInlineMark>();
 
-  if (tagName === 'strong' || tagName === 'b' || HEADING_HTML_TAGS.has(tagName)) {
+  if (tagName === 'strong' || tagName === 'b' || tagName === 'mark') {
     marks.add('bold');
   }
   if (tagName === 'em' || tagName === 'i') {
@@ -358,8 +386,49 @@ function resolveClipboardNodeMarks(tagName: string, style: string): ClipboardInl
   if (/font-weight\s*:\s*(?:bold|[6-9]00|[1-9]\d{3,})/iu.test(normalizedStyle)) {
     marks.add('bold');
   }
+  if (/background(?:-color)?\s*:\s*(?!\s*(?:transparent|none)\b)/iu.test(normalizedStyle)) {
+    marks.add('bold');
+  }
 
   return CLIPBOARD_MARK_ORDER.filter((mark) => marks.has(mark));
+}
+
+function serializeClipboardList(
+  node: Extract<ClipboardHtmlNode, { type: 'element' }>,
+  activeMarks: ReadonlySet<ClipboardInlineMark>,
+  listType: 'ordered' | 'unordered',
+): string {
+  let itemIndex = 1;
+  const rows: string[] = [];
+
+  for (const child of node.children) {
+    if (child.type === 'element' && child.tagName === 'li') {
+      const content = normalizeClipboardListItem(
+        serializeClipboardHtmlChildren(child.children, activeMarks),
+      );
+      if (content) {
+        rows.push(`${listType === 'ordered' ? `${itemIndex}.` : '•'} ${content}`);
+      }
+      itemIndex += 1;
+      continue;
+    }
+
+    const content = serializeClipboardHtmlNode(child, activeMarks).trim();
+    if (content) {
+      rows.push(content);
+    }
+  }
+
+  return appendClipboardBlockBreak(rows.join('\n'));
+}
+
+function normalizeClipboardListItem(value: string): string {
+  return value
+    .replace(/\n{2,}/gu, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join('\n  ');
 }
 
 function extendClipboardMarks(
@@ -422,6 +491,10 @@ function escapeClipboardMarkdownText(value: string): string {
 
 function serializeClipboardCodeText(value: string): string {
   return value.replace(/\r?\n/gu, ' ').replace(/`/gu, "'");
+}
+
+function serializeClipboardCodeBlockText(value: string): string {
+  return value.replace(/\r\n?/gu, '\n').replace(/```/gu, "'''").trimEnd();
 }
 
 function normalizeClipboardLinkUrl(value: string): string {

@@ -2,7 +2,14 @@ import { Link as IconoirLink } from 'iconoir-react';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 
-export type MaxMarkdownTool = 'bold' | 'italic' | 'underline' | 'strike' | 'code' | 'link';
+export type MaxMarkdownTool =
+  | 'heading'
+  | 'bold'
+  | 'italic'
+  | 'underline'
+  | 'strike'
+  | 'code'
+  | 'link';
 
 type SelectionRange = {
   start: number;
@@ -39,6 +46,7 @@ export const MAX_MARKDOWN_TOOL_DEFINITIONS: Array<{
   label: string;
   title: string;
 }> = [
+  { id: 'heading', label: 'H', title: 'Заголовок' },
   { id: 'bold', label: 'B', title: 'Жирный' },
   { id: 'italic', label: 'I', title: 'Курсив' },
   { id: 'underline', label: 'U', title: 'Подчеркнутый' },
@@ -332,6 +340,13 @@ function buildNextMarkdownValue(
   selection: SelectionRange;
 } {
   switch (selection.tool) {
+    case 'heading':
+      return insertHeading(
+        source,
+        selection.selectionStart,
+        selection.selectionEnd,
+        selection.selectedText,
+      );
     case 'bold':
       return wrapSelection(
         source,
@@ -369,14 +384,9 @@ function buildNextMarkdownValue(
         'зачеркнутый',
       );
     case 'code':
-      return wrapSelection(
-        source,
-        selection.selectionStart,
-        selection.selectionEnd,
-        '`',
-        '`',
-        'код',
-      );
+      return selection.selectedText.includes('\n')
+        ? wrapCodeBlock(source, selection.selectionStart, selection.selectionEnd)
+        : wrapSelection(source, selection.selectionStart, selection.selectionEnd, '`', '`', 'код');
     case 'link':
       return insertLink(
         source,
@@ -385,6 +395,58 @@ function buildNextMarkdownValue(
         selection.selectedText,
       );
   }
+}
+
+function insertHeading(
+  source: string,
+  selectionStart: number,
+  selectionEnd: number,
+  selectedText: string,
+): {
+  value: string;
+  selection: SelectionRange;
+} {
+  const content = selectedText || 'Заголовок';
+  const replacement = content
+    .split('\n')
+    .map((line) => (line.trim() ? line.replace(/^\s*#{1,6}[ \t]+/u, '# ') : line))
+    .map((line) => (line.trim() && !/^\s*#{1,6}[ \t]+/u.test(line) ? `# ${line}` : line))
+    .join('\n');
+  const value = `${source.slice(0, selectionStart)}${replacement}${source.slice(selectionEnd)}`;
+  const contentStart = selectionStart + (replacement.startsWith('# ') ? 2 : 0);
+
+  return {
+    value,
+    selection: {
+      start: contentStart,
+      end: contentStart + content.length,
+    },
+  };
+}
+
+function wrapCodeBlock(
+  source: string,
+  selectionStart: number,
+  selectionEnd: number,
+): {
+  value: string;
+  selection: SelectionRange;
+} {
+  const selectedText = source.slice(selectionStart, selectionEnd).replace(/```/gu, "'''");
+  const content = selectedText || 'код';
+  const prefix = '```\n';
+  const suffix = '\n```';
+  const replacement = `${prefix}${content}${suffix}`;
+  const value = `${source.slice(0, selectionStart)}${replacement}${source.slice(selectionEnd)}`;
+  const contentStart = selectionStart + prefix.length;
+
+  return {
+    value,
+    selection: {
+      start: contentStart,
+      end: contentStart + content.length,
+    },
+  };
 }
 
 function wrapSelection(
