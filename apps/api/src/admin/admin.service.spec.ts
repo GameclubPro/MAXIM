@@ -9073,6 +9073,91 @@ describe('AdminService.listChats', () => {
     expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
   });
 
+  it('filters cached denied chats out of published snapshot responses and patches the snapshot', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
+        return chatId === 'chat-stale' ? 'user_denied' : null;
+      }),
+      getManagedEntitiesPublishedSnapshot: jest.fn().mockResolvedValue({
+        version: 'snapshot-v1',
+        builtAt: '2026-04-04T10:00:00.000Z',
+        lastSyncedAt: '2026-04-04T09:59:30.000Z',
+        itemCount: 2,
+        itemsHash: 'hash-v1',
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-keep',
+            title: 'Живой чат',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+          createChatSummaryFixture({
+            id: 'chat-stale',
+            title: 'Старый чат',
+            createdAt: '2026-04-02T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ],
+      }),
+    });
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual([
+      createChatSummaryFixture({
+        id: 'chat-keep',
+        title: 'Живой чат',
+        createdAt: '2026-04-03T10:00:00.000Z',
+        entityType: 'chat',
+        primaryBotId: '777000_bot',
+      }),
+    ]);
+    expect(chatContextCache.setManagedEntitiesPublishedSnapshot).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      expect.objectContaining({
+        itemCount: 1,
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-keep',
+            title: 'Живой чат',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ],
+      }),
+      expect.any(Number),
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      'snapshot-v1',
+      expect.objectContaining({
+        baseVersion: 'snapshot-v1',
+        removedIds: ['chat-stale'],
+      }),
+      expect.any(Number),
+    );
+    expect(prisma.chatAdminAllowlist.findMany).not.toHaveBeenCalled();
+  });
+
   it('returns the published snapshot during refresh requests instead of a partial in-progress list', async () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock({
@@ -13591,6 +13676,83 @@ describe('AdminService.listChats', () => {
         userId: 'admin-1',
       },
     });
+  });
+
+  it('removes a pruned allowlist chat from the published snapshot immediately', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    await chatContextCache.setManagedEntitiesPublishedSnapshot('admin-1', 'chat', {
+      version: 'snapshot-v1',
+      builtAt: '2026-04-04T10:00:00.000Z',
+      lastSyncedAt: '2026-04-04T09:59:30.000Z',
+      itemCount: 2,
+      itemsHash: 'hash-v1',
+      items: [
+        createChatSummaryFixture({
+          id: 'chat-keep',
+          title: 'Живой чат',
+          createdAt: '2026-04-03T10:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+        createChatSummaryFixture({
+          id: 'chat-stale',
+          title: 'Старый чат',
+          createdAt: '2026-04-02T10:00:00.000Z',
+          entityType: 'chat',
+          primaryBotId: '777000_bot',
+        }),
+      ],
+    });
+    chatContextCache.setManagedEntitiesPublishedSnapshot.mockClear();
+    chatContextCache.setManagedEntitiesPublishedDiff.mockClear();
+    const service = new AdminService(
+      prisma as never,
+      {
+        listBotChats: jest.fn(),
+      } as never,
+      chatContextCache as never,
+      createConfigMock({ botId: '777000_bot' }) as never,
+    );
+
+    await (service as any).prunePersistedChatAccess('chat-stale', 'admin-1');
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-stale',
+        userId: 'admin-1',
+      },
+    });
+    await expect(
+      chatContextCache.getManagedEntitiesPublishedSnapshot('admin-1', 'chat'),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        itemCount: 1,
+        items: [
+          createChatSummaryFixture({
+            id: 'chat-keep',
+            title: 'Живой чат',
+            createdAt: '2026-04-03T10:00:00.000Z',
+            entityType: 'chat',
+            primaryBotId: '777000_bot',
+          }),
+        ],
+      }),
+    );
+    expect(chatContextCache.setManagedEntitiesPublishedDiff).toHaveBeenCalledWith(
+      'admin-1',
+      'chat',
+      'snapshot-v1',
+      expect.objectContaining({
+        baseVersion: 'snapshot-v1',
+        removedIds: ['chat-stale'],
+      }),
+      expect.any(Number),
+    );
+    expect(chatContextCache.clearManagedEntitiesRecentBootstrapForChat).toHaveBeenCalledWith(
+      'chat-stale',
+      null,
+    );
   });
 
   it('defers a reset-cursor managed refresh background job when the governor reports slow pressure', async () => {

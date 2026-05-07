@@ -1823,19 +1823,44 @@ export class AdminService implements OnModuleDestroy {
         return null;
       }
 
-      const filteredItems = this.filterManagedEntitiesToRuntimeScope(
+      const runtimeScopedItems = this.filterManagedEntitiesToRuntimeScope(
         snapshot.items.map((item) => this.cloneManagedEntitySummary(item)),
         { requireKnownBot: true },
       );
-      if (filteredItems.length !== snapshot.items.length) {
+      if (runtimeScopedItems.length !== snapshot.items.length) {
         this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+      }
+      const filteredItems = await this.filterManagedEntitiesPublishedSnapshotDeniedItems(
+        userId,
+        runtimeScopedItems,
+      );
+      let responseSnapshot = snapshot;
+      if (filteredItems.length !== runtimeScopedItems.length) {
+        try {
+          responseSnapshot = await this.writeManagedEntitiesPublishedSnapshotPatched(
+            userId,
+            entityType,
+            snapshot,
+            filteredItems,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              entityType,
+              userId,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to patch denied managed entities out of published snapshot',
+          );
+          this.scheduleManagedEntitiesPublishedSnapshotRebuild(userId, entityType);
+        }
       }
 
       return {
         items: filteredItems,
-        version: snapshot.version,
-        builtAt: snapshot.builtAt,
-        lastSyncedAt: snapshot.lastSyncedAt,
+        version: responseSnapshot.version,
+        builtAt: responseSnapshot.builtAt,
+        lastSyncedAt: responseSnapshot.lastSyncedAt,
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -1867,6 +1892,35 @@ export class AdminService implements OnModuleDestroy {
       source: 'published_snapshot',
       stale,
     };
+  }
+
+  private async filterManagedEntitiesPublishedSnapshotDeniedItems(
+    userId: string,
+    items: readonly ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (items.length === 0 || typeof this.chatContextCache.getAdminAccess !== 'function') {
+      return [...items];
+    }
+
+    const accessStates = await Promise.all(
+      items.map(async (item) => {
+        try {
+          return {
+            item,
+            access: await this.chatContextCache.getAdminAccess(item.id, userId),
+          };
+        } catch {
+          return {
+            item,
+            access: null,
+          };
+        }
+      }),
+    );
+
+    return accessStates
+      .filter(({ access }) => access !== 'user_denied' && access !== 'bot_denied')
+      .map(({ item }) => item);
   }
 
   private normalizeManagedEntitiesSnapshotVersion(value: string | null | undefined): string | null {
@@ -2101,14 +2155,57 @@ export class AdminService implements OnModuleDestroy {
     );
   }
 
+  private async removeManagedEntitiesPublishedSnapshotItem(
+    userId: string,
+    entityType: ManagedEntityType,
+    chatId: string,
+  ): Promise<void> {
+    if (
+      typeof this.chatContextCache.getManagedEntitiesPublishedSnapshot !== 'function' ||
+      typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function'
+    ) {
+      return;
+    }
+
+    const currentSnapshot = await this.chatContextCache.getManagedEntitiesPublishedSnapshot(
+      userId,
+      entityType,
+    );
+    if (!currentSnapshot) {
+      return;
+    }
+
+    const nextItems = currentSnapshot.items.filter((item) => item.id !== chatId);
+    if (nextItems.length === currentSnapshot.items.length) {
+      return;
+    }
+
+    await this.writeManagedEntitiesPublishedSnapshotPatched(
+      userId,
+      entityType,
+      currentSnapshot,
+      nextItems,
+    );
+  }
+
+  private async removeManagedEntitiesPublishedSnapshotItemForChat(
+    userId: string,
+    chatId: string,
+  ): Promise<void> {
+    await Promise.all([
+      this.removeManagedEntitiesPublishedSnapshotItem(userId, 'chat', chatId),
+      this.removeManagedEntitiesPublishedSnapshotItem(userId, 'channel', chatId),
+    ]);
+  }
+
   private async writeManagedEntitiesPublishedSnapshotPatched(
     userId: string,
     entityType: ManagedEntityType,
     currentSnapshot: ManagedEntitiesPublishedSnapshot,
     items: readonly ChatSummary[],
-  ): Promise<void> {
+  ): Promise<ManagedEntitiesPublishedSnapshot> {
     if (typeof this.chatContextCache.setManagedEntitiesPublishedSnapshot !== 'function') {
-      return;
+      return currentSnapshot;
     }
 
     const nextSnapshot: ManagedEntitiesPublishedSnapshot = {
@@ -2144,6 +2241,8 @@ export class AdminService implements OnModuleDestroy {
         MANAGED_ENTITIES_PUBLISHED_SNAPSHOT_TTL_SEC,
       );
     }
+
+    return nextSnapshot;
   }
 
   private scheduleManagedEntitiesPublishedSnapshotRebuildForBootstrapChats(
@@ -25631,6 +25730,25 @@ export class AdminService implements OnModuleDestroy {
     });
     this.forgetManagedEntitiesLastSuccessChat(userId, chatId);
     this.invalidateManagedEntitiesAllowlistCache(userId);
+    const invalidationResults = await Promise.allSettled([
+      this.removeManagedEntitiesPublishedSnapshotItemForChat(userId, chatId),
+      this.chatContextCache.clearManagedEntitiesRecentBootstrapForChat?.(chatId, null) ??
+        Promise.resolve(),
+    ]);
+    for (const result of invalidationResults) {
+      if (result.status === 'fulfilled') {
+        continue;
+      }
+
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          err: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        },
+        'Failed to invalidate managed entities published snapshot after persisted access prune',
+      );
+    }
   }
 
   private async prunePersistedChatAccessBestEffort(
