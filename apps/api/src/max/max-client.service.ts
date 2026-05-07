@@ -664,13 +664,17 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     sourceMessageId: string,
     fallbackText: string | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
     requestOptions: MaxApiRequestOptions | MaxApiTrafficClass = {},
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId, requestOptions);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
-    const messageTextPayload = this.buildOutgoingMessageTextPayload(sourceMessage, fallbackText);
+    const messageTextPayload = this.buildOutgoingMessageTextPayload(
+      sourceMessage,
+      fallbackText,
+      options?.textFormat ?? null,
+    );
     const sendResponse = await this.sendCustomMessageImmediate(
       chatId,
       {

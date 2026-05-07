@@ -108,6 +108,7 @@ import {
   parseManagedPollCallbackPayload,
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { renderMaxTextMarkupAsHtml, type MaxTextMarkup } from '../common/max-text-markup.util';
 import {
   DEFAULT_WEBHOOK_QUEUE_NAMES,
   JOIN_WEBHOOK_QUEUE_NAMES,
@@ -172,6 +173,11 @@ type RemoteChatAdminAccessState = 'granted' | 'user_denied';
 type ManagedChannelContext = {
   channelSettings: PersistedChannelSettings;
   adminUserIds: string[];
+};
+
+type ChannelAutoPostMessageText = {
+  text: string | null;
+  textFormat: MaxSendMessageOptions['textFormat'] | null;
 };
 
 type ChannelAutoPostScanState = {
@@ -13668,10 +13674,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    const raw = this.asRecord(update.raw);
+    const rawMessage = raw ? (this.extractRawMessageNode(raw) ?? raw) : null;
+    const messageText = this.resolveChannelAutoPostMessageText(
+      rawMessage,
+      typeof text === 'string' ? text : null,
+    );
+
     await this.tryAutoAttachChannelMessageButtons({
       chatId,
       messageId,
-      text: typeof text === 'string' && text.trim() ? text : null,
+      text: messageText.text,
+      textFormat: messageText.textFormat,
       linkType: this.extractChannelMessageLinkType(update),
       managedChannel,
       source: 'webhook',
@@ -13895,6 +13909,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         messageId: normalized.messageId,
         text: normalized.text,
+        textFormat: normalized.textFormat,
         linkType: normalized.linkType,
         managedChannel,
         source: 'poll',
@@ -14448,6 +14463,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private parseChannelListedMessage(message: Record<string, unknown>): {
     messageId: string;
     text: string | null;
+    textFormat: MaxSendMessageOptions['textFormat'] | null;
     linkType: string | null;
     timestampMs: number;
     hasInlineKeyboard: boolean;
@@ -14455,7 +14471,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   } | null {
     const body = this.asRecord(message.body);
     const link = this.asRecord(message.link);
-    const linkedMessage = this.asRecord(link?.message);
     const messageIdCandidate =
       body?.mid ??
       body?.seq ??
@@ -14483,18 +14498,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const row = this.asRecord(attachment);
       return this.readLowerString(row?.type) === 'inline_keyboard';
     });
+    const messageText = this.resolveChannelAutoPostMessageText(message, null);
 
     return {
       messageId: String(messageIdCandidate),
-      text: (() => {
-        const candidates = [body?.text, message.text, message.caption, linkedMessage?.text];
-        for (const candidate of candidates) {
-          if (typeof candidate === 'string' && candidate.trim()) {
-            return candidate.trim();
-          }
-        }
-        return null;
-      })(),
+      text: messageText.text,
+      textFormat: messageText.textFormat,
       linkType: this.readLowerString(link?.type),
       timestampMs,
       hasInlineKeyboard,
@@ -14503,6 +14512,189 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null;
       })(),
     };
+  }
+
+  private resolveChannelAutoPostMessageText(
+    message: Record<string, unknown> | null,
+    fallbackText: string | null,
+  ): ChannelAutoPostMessageText {
+    const source = this.resolveChannelAutoPostMessageTextSource(message, fallbackText);
+    if (typeof source.text !== 'string' || source.text.trim().length === 0) {
+      return {
+        text: null,
+        textFormat: null,
+      };
+    }
+
+    if (source.markup.length > 0) {
+      const html = renderMaxTextMarkupAsHtml(source.text, source.markup);
+      if (html && html !== source.text) {
+        return {
+          text: html,
+          textFormat: 'html',
+        };
+      }
+    }
+
+    return {
+      text: source.text,
+      textFormat: source.textFormat,
+    };
+  }
+
+  private resolveChannelAutoPostMessageTextSource(
+    message: Record<string, unknown> | null,
+    fallbackText: string | null,
+  ): {
+    text: string | null;
+    markup: MaxTextMarkup[];
+    textFormat: MaxSendMessageOptions['textFormat'] | null;
+  } {
+    const direct = this.extractChannelAutoPostMessageTextSource(message);
+    if (typeof direct.text === 'string' && direct.text.trim().length > 0) {
+      return direct;
+    }
+
+    const linked = this.extractForwardedChannelAutoPostMessageTextSource(message);
+    if (typeof linked.text === 'string' && linked.text.trim().length > 0) {
+      return linked;
+    }
+
+    return {
+      text:
+        typeof fallbackText === 'string' && fallbackText.trim().length > 0 ? fallbackText : null,
+      markup: [],
+      textFormat: null,
+    };
+  }
+
+  private extractForwardedChannelAutoPostMessageTextSource(
+    message: Record<string, unknown> | null,
+  ): {
+    text: string | null;
+    markup: MaxTextMarkup[];
+    textFormat: MaxSendMessageOptions['textFormat'] | null;
+  } {
+    const link = this.asRecord(message?.link);
+    if (this.readLowerString(link?.type) !== 'forward') {
+      return {
+        text: null,
+        markup: [],
+        textFormat: null,
+      };
+    }
+
+    return this.extractChannelAutoPostMessageTextSource(this.asRecord(link?.message));
+  }
+
+  private extractChannelAutoPostMessageTextSource(message: Record<string, unknown> | null): {
+    text: string | null;
+    markup: MaxTextMarkup[];
+    textFormat: MaxSendMessageOptions['textFormat'] | null;
+  } {
+    const body = this.asRecord(message?.body);
+    const textCandidates = [body?.text, message?.text, message?.caption];
+    const text =
+      textCandidates.find(
+        (candidate): candidate is string =>
+          typeof candidate === 'string' && candidate.trim().length > 0,
+      ) ?? null;
+
+    return {
+      text,
+      markup: this.extractChannelAutoPostMessageMarkup(message),
+      textFormat: this.extractChannelAutoPostMessageTextFormat(message),
+    };
+  }
+
+  private extractChannelAutoPostMessageTextFormat(
+    message: Record<string, unknown> | null,
+  ): MaxSendMessageOptions['textFormat'] | null {
+    const body = this.asRecord(message?.body);
+    const format = this.readLowerString(body?.format ?? message?.format);
+    return format === 'markdown' || format === 'html' ? format : null;
+  }
+
+  private extractChannelAutoPostMessageMarkup(
+    message: Record<string, unknown> | null,
+  ): MaxTextMarkup[] {
+    const body = this.asRecord(message?.body);
+    const candidates = [
+      body?.markup,
+      body?.text_markup,
+      body?.textMarkup,
+      body?.caption_markup,
+      body?.captionMarkup,
+      message?.markup,
+      message?.text_markup,
+      message?.textMarkup,
+      message?.caption_markup,
+      message?.captionMarkup,
+    ];
+
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) {
+        continue;
+      }
+
+      const markup = candidate
+        .map((item) => this.normalizeChannelAutoPostMessageMarkup(item))
+        .filter((item): item is MaxTextMarkup => item !== null);
+      if (markup.length > 0) {
+        return markup;
+      }
+    }
+
+    return [];
+  }
+
+  private normalizeChannelAutoPostMessageMarkup(value: unknown): MaxTextMarkup | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const type = this.readLowerString(row.type);
+    const from = this.readInteger(row.from);
+    const length = this.readInteger(row.length);
+
+    if (
+      !type ||
+      from === null ||
+      length === null ||
+      from < 0 ||
+      length <= 0 ||
+      ![
+        'emphasized',
+        'heading',
+        'link',
+        'monospaced',
+        'strikethrough',
+        'strong',
+        'underline',
+        'user_mention',
+      ].includes(type)
+    ) {
+      return null;
+    }
+
+    return {
+      from,
+      length,
+      type: type as MaxTextMarkup['type'],
+      url: this.readString(row.url),
+      userLink: this.readString(row.user_link ?? row.userLink),
+    };
+  }
+
+  private readInteger(value: unknown): number | null {
+    const parsed =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    return Number.isInteger(parsed) ? parsed : null;
   }
 
   private resolveChannelAutoPostEventTimestampMs(update: MaxUpdate): number {
@@ -14559,12 +14751,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     messageId: string;
     text: string | null;
+    textFormat: MaxSendMessageOptions['textFormat'] | null;
     linkType: string | null;
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
     senderId: string | null;
   }): Promise<void> {
-    const { chatId, messageId, text, linkType, managedChannel, source, senderId } = params;
+    const { chatId, messageId, text, textFormat, linkType, managedChannel, source, senderId } =
+      params;
     const autoAttachBotId = await this.resolveAutoAttachBotId(chatId, source);
     const mutationRequestOptions =
       source === 'poll'
@@ -14630,6 +14824,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           {
             buttons,
+            ...(textFormat ? { textFormat } : {}),
             debugContext: {
               screen: 'channel-auto-post',
               action:
@@ -14668,6 +14863,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           {
             buttons,
+            ...(textFormat ? { textFormat } : {}),
             debugContext: {
               screen: 'channel-auto-post',
               action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',

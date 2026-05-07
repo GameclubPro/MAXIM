@@ -90,6 +90,53 @@ function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
+function createRichForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
+  const sourceText = '🔥MAX Docs\n\nВторой абзац';
+  return {
+    updateId: 'upd-channel-forward-rich-no-sender-1',
+    type: 'message_created',
+    message: {
+      messageId: 'mid-channel-forward-rich-no-sender-1',
+      chatId: 'channel-1',
+      senderId: '',
+      senderName: '',
+      text: sourceText,
+      createdAt: new Date('2026-03-06T15:10:00.000Z').toISOString(),
+    },
+    raw: {
+      message: {
+        recipient: {
+          chat_id: 'channel-1',
+          chat_type: 'channel',
+        },
+        timestamp: 1772810100000,
+        body: {
+          mid: 'mid-channel-forward-rich-no-sender-1',
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: sourceText,
+            markup: [
+              {
+                from: 2,
+                type: 'strong',
+                length: 8,
+              },
+              {
+                from: 2,
+                type: 'underline',
+                length: 8,
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
 function createConfigMock(overrides: Partial<Record<string, string | number | boolean>> = {}) {
   return {
     get: jest.fn((key: string) => {
@@ -522,6 +569,86 @@ describe('ModerationService channel auto post buttons', () => {
           }),
         }),
       }),
+    );
+  });
+
+  it('preserves MAX markup from forwarded channel post webhooks when publishing the bot copy', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: 'Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-forward-rich-copy-1',
+        url: 'https://max.ru/chats/channel-1/message/1003',
+      }),
+      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createRichForwardedChannelPostUpdateWithoutSender());
+
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-rich-no-sender-1',
+      '🔥<strong><u>MAX Docs</u></strong>\n\nВторой абзац',
+      expect.objectContaining({
+        textFormat: 'html',
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
+        ],
+      }),
+      undefined,
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-rich-no-sender-1',
+      {
+        immediate: true,
+      },
     );
   });
 
