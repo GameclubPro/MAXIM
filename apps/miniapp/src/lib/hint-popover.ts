@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 
 const HINT_MARGIN_PX = 12;
 
-function getViewportMetrics() {
+function getViewportMetrics(anchor?: HTMLElement) {
   if (typeof window === 'undefined') {
     return {
       left: 0,
@@ -13,24 +13,41 @@ function getViewportMetrics() {
   }
 
   const viewport = window.visualViewport;
-  if (!viewport) {
-    return {
-      left: 0,
-      top: 0,
-      width: window.innerWidth,
-      height: window.innerHeight,
-    };
+  const viewportMetrics = viewport
+    ? {
+        left: viewport.offsetLeft,
+        top: viewport.offsetTop,
+        width: viewport.width,
+        height: viewport.height,
+      }
+    : {
+        left: 0,
+        top: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+
+  const clippingBody = anchor?.closest<HTMLElement>('.settings-drilldown__body');
+  if (!clippingBody) {
+    return viewportMetrics;
   }
 
+  const clippingRect = clippingBody.getBoundingClientRect();
+  const left = Math.max(viewportMetrics.left, clippingRect.left);
+  const top = Math.max(viewportMetrics.top, clippingRect.top);
+  const right = Math.min(viewportMetrics.left + viewportMetrics.width, clippingRect.right);
+  const bottom = Math.min(viewportMetrics.top + viewportMetrics.height, clippingRect.bottom);
+
   return {
-    left: viewport.offsetLeft,
-    top: viewport.offsetTop,
-    width: viewport.width,
-    height: viewport.height,
+    left,
+    top,
+    width: Math.max(0, right - left),
+    height: Math.max(0, bottom - top),
   };
 }
 
 function resetHintAnchor(anchor: HTMLElement) {
+  anchor.style.removeProperty('--hint-popover-max-width');
   anchor.style.removeProperty('--hint-popover-shift-x');
   anchor.style.removeProperty('--hint-popover-shift-y');
   delete anchor.dataset.hintPlacement;
@@ -45,9 +62,11 @@ function repositionHintAnchor(anchor: HTMLElement) {
 
   resetHintAnchor(anchor);
 
-  const viewport = getViewportMetrics();
+  const viewport = getViewportMetrics(anchor);
   const viewportRight = viewport.left + viewport.width;
   const viewportBottom = viewport.top + viewport.height;
+  const maxPopoverWidth = Math.max(120, Math.floor(viewport.width - HINT_MARGIN_PX * 2));
+  anchor.style.setProperty('--hint-popover-max-width', `${maxPopoverWidth}px`);
 
   let rect = popover.getBoundingClientRect();
   let shiftX = 0;
@@ -103,7 +122,7 @@ function repositionOpenHintPopovers() {
   });
 }
 
-export function useHintPopoverAutoPosition(active: boolean) {
+export function useHintPopoverAutoPosition(active: boolean, updateKey?: unknown) {
   useEffect(() => {
     if (!active || typeof window === 'undefined') {
       return;
@@ -130,5 +149,5 @@ export function useHintPopoverAutoPosition(active: boolean) {
         .querySelectorAll<HTMLElement>('.channel-settings-hint-anchor')
         .forEach(resetHintAnchor);
     };
-  }, [active]);
+  }, [active, updateKey]);
 }

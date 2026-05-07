@@ -496,7 +496,7 @@ export function ManagedPollCard({
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   };
 
-  useHintPopoverAutoPosition(openHintKey !== null);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
   useEffect(() => {
     if (!draft) {

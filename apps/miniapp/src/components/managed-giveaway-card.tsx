@@ -772,7 +772,7 @@ export function ManagedGiveawayCard({
     };
   }, [openHintKey]);
 
-  useHintPopoverAutoPosition(openHintKey !== null);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
   useEffect(() => {
     if (!channelModalOpen || typeof window === 'undefined') {

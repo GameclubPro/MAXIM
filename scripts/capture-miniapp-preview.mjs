@@ -332,7 +332,7 @@ const scenarios = [
     name: 'channel-settings-comments',
     path: '/channel/preview-channel/settings',
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: /Комментарии/u }).click();
+      await page.getByRole('button', { name: /(?:Комментарии|Обсуждение)/u }).click();
       await page.waitForTimeout(300);
     },
   },

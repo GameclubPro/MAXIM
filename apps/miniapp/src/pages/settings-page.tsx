@@ -6039,7 +6039,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     };
   }, [expandedSections.mailing, hasActiveManagedBroadcastCountdown]);
 
-  useHintPopoverAutoPosition(openHintKey !== null);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
 
   function resetMailingPlanner() {
     setMailingPlannerState(EMPTY_BROADCAST_PLANNER_STATE);

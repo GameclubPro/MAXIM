@@ -1641,7 +1641,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  useHintPopoverAutoPosition(openHintKey !== null);
+  useHintPopoverAutoPosition(openHintKey !== null, openHintKey);
+
+  useEffect(() => {
+    document.body.classList.add('channel-settings-page-open');
+
+    return () => {
+      document.body.classList.remove('channel-settings-page-open');
+    };
+  }, []);
 
   if (!chatId) {
     return (
