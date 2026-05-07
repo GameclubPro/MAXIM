@@ -921,23 +921,37 @@ function CommentComposeFileList({
 
 function SuggestComposeImageGrid({
   attachments,
+  preparingCount = 0,
+  busy = false,
   onRemove,
 }: {
   attachments: CommentComposeAttachment[];
+  preparingCount?: number;
+  busy?: boolean;
   onRemove: (index: number) => void;
 }) {
-  if (!attachments.length) {
+  const cappedPreparingCount = Math.max(
+    0,
+    Math.min(preparingCount, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES - attachments.length),
+  );
+
+  if (!attachments.length && cappedPreparingCount <= 0) {
     return null;
   }
+  const visibleCount = Math.min(
+    attachments.length + cappedPreparingCount,
+    MAX_CHANNEL_DIALOG_SUGGEST_IMAGES,
+  );
 
   return (
     <div
       className={cn(
         'channel-suggest-composer__image-grid',
-        `is-count-${Math.min(attachments.length, MAX_CHANNEL_DIALOG_SUGGEST_IMAGES)}`,
+        `is-count-${visibleCount}`,
+        busy && 'is-busy',
       )}
       role="list"
-      aria-label={`Фото: ${attachments.length}`}
+      aria-label={`Фото: ${visibleCount}`}
     >
       {attachments.map((attachment, attachmentIndex) => {
         const previewUrl = getCommentComposeAttachmentPreviewUrl(attachment);
@@ -946,7 +960,7 @@ function SuggestComposeImageGrid({
         return (
           <div
             key={`${fileName}-${attachmentIndex}`}
-            className="channel-suggest-composer__image-tile"
+            className={cn('channel-suggest-composer__image-tile', busy && 'is-uploading')}
             role="listitem"
             aria-label={fileName}
           >
@@ -967,7 +981,41 @@ function SuggestComposeImageGrid({
           </div>
         );
       })}
+      {Array.from({ length: cappedPreparingCount }, (_, index) => (
+        <div
+          key={`preparing-${index}`}
+          className="channel-suggest-composer__image-tile is-loading"
+          role="listitem"
+          aria-label="Готовим фото"
+        >
+          <span className="channel-suggest-composer__image-loader" aria-hidden>
+            <IconoirCamera aria-hidden focusable="false" />
+          </span>
+        </div>
+      ))}
     </div>
+  );
+}
+
+function SuggestionRequirements({ text }: { text: string }) {
+  const paragraphs = text
+    .split(/\n{2,}/u)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (paragraphs.length === 0) {
+    return null;
+  }
+
+  return (
+    <section className="channel-suggest-requirements" aria-label="Требования">
+      <span className="channel-suggest-requirements__label">Требования</span>
+      <div className="channel-suggest-requirements__text">
+        {paragraphs.map((paragraph, index) => (
+          <p key={`${paragraph}-${index}`}>{paragraph}</p>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -1131,6 +1179,12 @@ type SwipeReplyGesture = {
 
 type CommentDraftAttachment = PreparedCommentDialogAttachment;
 
+type PreparingAttachmentState = {
+  kind: AttachmentInputKind;
+  total: number;
+  done: number;
+};
+
 type SuggestionStatusPresentation = {
   badge: string;
   headline: string;
@@ -1180,7 +1234,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [terminalDialogError, setTerminalDialogError] = useState<string | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
-  const [isPreparingAttachment, setIsPreparingAttachment] = useState(false);
+  const [preparingAttachmentState, setPreparingAttachmentState] =
+    useState<PreparingAttachmentState | null>(null);
   const [imageViewer, setImageViewer] = useState<CommentImageViewerState | null>(null);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
@@ -1330,6 +1385,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const draftLength = draft.trim().length;
   const draftAttachmentCount = draftAttachments.length;
   const editingAttachmentCount = editingMessage?.attachments.length ?? 0;
+  const isPreparingAttachment = preparingAttachmentState !== null;
   const showComposeMeta = isPreparingAttachment || draftLength > 0 || Boolean(editingMessage);
   const canSubmitMessage =
     !isPreparingAttachment &&
@@ -1383,9 +1439,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       ),
     [editingMessage?.attachments],
   );
+  const suggestPreparingImageSlots =
+    dialogType === 'suggest' && preparingAttachmentState?.kind === 'image'
+      ? preparingAttachmentState.total
+      : 0;
+  const suggestPreparingImageLabel =
+    dialogType === 'suggest' && preparingAttachmentState?.kind === 'image'
+      ? `Готовим ${Math.min(preparingAttachmentState.done + 1, preparingAttachmentState.total)}/${preparingAttachmentState.total}`
+      : null;
   const composeMetaLabel = isPreparingAttachment
     ? dialogType === 'suggest'
-      ? 'Готовим фото'
+      ? suggestPreparingImageLabel || 'Готовим фото'
       : 'Готовим вложения'
     : editingMessage
       ? editingAttachmentSummary || 'Изменение сохранится для всех участников треда'
@@ -1586,7 +1650,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setReactionPopoverLayout(null);
     setDraft('');
     setDraftAttachments([]);
-    setIsPreparingAttachment(false);
+    setPreparingAttachmentState(null);
     lastMessageIdRef.current = null;
     messageNodeRefs.current.clear();
     messageLayoutContextRef.current = null;
@@ -2136,7 +2200,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setIsPreparingAttachment(true);
+    setPreparingAttachmentState({ kind, total: selectableFiles.length, done: 0 });
     try {
       const prepared: CommentDraftAttachment[] = [];
       let firstError: string | null = null;
@@ -2166,6 +2230,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             firstError =
               kind === 'image' ? 'Не удалось подготовить фото.' : 'Не удалось подготовить файл.';
           }
+        } finally {
+          setPreparingAttachmentState((current) =>
+            current?.kind === kind
+              ? { ...current, done: Math.min(current.total, current.done + 1) }
+              : current,
+          );
         }
       }
 
@@ -2193,7 +2263,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
     } finally {
       resetAttachmentPickers();
-      setIsPreparingAttachment(false);
+      setPreparingAttachmentState(null);
     }
   };
 
@@ -3006,6 +3076,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             {!dialogQuery.isLoading && !dialogQuery.error ? (
               dialogType === 'suggest' ? (
                 <div className="channel-suggest-workspace">
+                  {introText ? <SuggestionRequirements text={introText} /> : null}
+
                   <section
                     className={cn(
                       'channel-suggest-composer',
@@ -3028,75 +3100,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       </span>
                     </div>
 
-                    <div
-                      className="channel-suggest-composer__modifier-row"
-                      role="toolbar"
-                      aria-label="Форматирование"
-                    >
-                      {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
-                        <button
-                          key={tool.id}
-                          type="button"
-                          className={cn(
-                            'channel-suggest-composer__modifier',
-                            tool.id === 'italic' && 'is-italic',
-                            tool.id === 'code' && 'is-code',
-                          )}
-                          onMouseDown={(event) => {
-                            event.preventDefault();
-                          }}
-                          onClick={() => applySuggestTextModifier(tool.id)}
-                          disabled={isComposePending || isPreparingAttachment}
-                          title={tool.title}
-                          aria-label={tool.title}
-                        >
-                          {tool.id === 'link' ? (
-                            <IconoirLink aria-hidden focusable="false" />
-                          ) : (
-                            tool.label
-                          )}
-                        </button>
-                      ))}
-                    </div>
-
-                    <div
-                      className={cn(
-                        'channel-suggest-composer__phone',
-                        !draft.trim() && draftImageAttachments.length === 0 && 'is-empty',
-                      )}
-                    >
-                      <div className="channel-suggest-composer__bubble">
-                        <SuggestComposeImageGrid
-                          attachments={draftImageAttachments}
-                          onRemove={(filteredIndex) => {
-                            const attachment = draftImageAttachments[filteredIndex];
-                            const originalIndex = attachment
-                              ? draftAttachments.indexOf(attachment)
-                              : -1;
-                            if (originalIndex >= 0) {
-                              handleDraftAttachmentRemove(originalIndex);
-                            }
-                          }}
-                        />
-
-                        <div className="channel-suggest-composer__field">
-                          <MaxRichTextEditor
-                            ref={richTextEditorRef}
-                            value={draft}
-                            onChange={setDraft}
-                            placeholder={viewModel.placeholder}
-                            maxLength={COMMENT_DRAFT_MAX_LENGTH}
-                            disabled={isComposePending}
-                            ariaLabel="Текст предложки"
-                            className="channel-suggest-composer__rich-editor"
-                          />
-                        </div>
-
-                        <span className="channel-suggest-composer__tail" aria-hidden />
-                      </div>
-                    </div>
-
-                    <div className="channel-suggest-composer__bar">
+                    <div className="channel-suggest-composer__media-row">
                       <div className="channel-suggest-composer__tools">
                         {useNativeTapFileInputs ? (
                           <label
@@ -3179,12 +3183,86 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       <span className="channel-suggest-composer__asset">
-                        {isPreparingAttachment
-                          ? 'Готовим фото'
-                          : draftImageAttachments.length > 0
+                        {suggestPreparingImageLabel ??
+                          (draftImageAttachments.length > 0
                             ? `${draftImageAttachments.length}/${MAX_CHANNEL_DIALOG_SUGGEST_IMAGES}`
-                            : null}
+                            : null)}
                       </span>
+                    </div>
+
+                    <div
+                      className={cn(
+                        'channel-suggest-composer__phone',
+                        !draft.trim() &&
+                          draftImageAttachments.length === 0 &&
+                          suggestPreparingImageSlots === 0 &&
+                          'is-empty',
+                      )}
+                    >
+                      <div className="channel-suggest-composer__bubble">
+                        <SuggestComposeImageGrid
+                          attachments={draftImageAttachments}
+                          preparingCount={suggestPreparingImageSlots}
+                          busy={isComposePending || suggestPreparingImageSlots > 0}
+                          onRemove={(filteredIndex) => {
+                            const attachment = draftImageAttachments[filteredIndex];
+                            const originalIndex = attachment
+                              ? draftAttachments.indexOf(attachment)
+                              : -1;
+                            if (originalIndex >= 0) {
+                              handleDraftAttachmentRemove(originalIndex);
+                            }
+                          }}
+                        />
+
+                        <div className="channel-suggest-composer__field">
+                          <MaxRichTextEditor
+                            ref={richTextEditorRef}
+                            value={draft}
+                            onChange={setDraft}
+                            placeholder={viewModel.placeholder}
+                            maxLength={COMMENT_DRAFT_MAX_LENGTH}
+                            disabled={isComposePending}
+                            ariaLabel="Текст предложки"
+                            className="channel-suggest-composer__rich-editor"
+                          />
+                        </div>
+
+                        <span className="channel-suggest-composer__tail" aria-hidden />
+                      </div>
+                    </div>
+
+                    <div className="channel-suggest-composer__bar">
+                      <div
+                        className="channel-suggest-composer__modifier-row"
+                        role="toolbar"
+                        aria-label="Форматирование"
+                      >
+                        {MAX_MARKDOWN_TOOL_DEFINITIONS.map((tool) => (
+                          <button
+                            key={tool.id}
+                            type="button"
+                            className={cn(
+                              'channel-suggest-composer__modifier',
+                              tool.id === 'italic' && 'is-italic',
+                              tool.id === 'code' && 'is-code',
+                            )}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                            }}
+                            onClick={() => applySuggestTextModifier(tool.id)}
+                            disabled={isComposePending || isPreparingAttachment}
+                            title={tool.title}
+                            aria-label={tool.title}
+                          >
+                            {tool.id === 'link' ? (
+                              <IconoirLink aria-hidden focusable="false" />
+                            ) : (
+                              tool.label
+                            )}
+                          </button>
+                        ))}
+                      </div>
 
                       <button
                         type="button"
