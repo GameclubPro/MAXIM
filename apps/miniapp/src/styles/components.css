@@ -4052,8 +4052,7 @@ body.chats-home-page-open .bottom-nav__label {
 }
 
 .chats-command {
-  position: sticky;
-  top: 0;
+  position: relative;
   z-index: 15;
   display: grid;
   gap: 8px;
@@ -4758,7 +4757,6 @@ body.chats-home-page-open .bottom-nav__label {
   }
 
   .chats-command {
-    top: calc(var(--app-safe-top) + 6px);
     gap: 8px;
     padding: 9px;
     border-radius: 20px;
@@ -4892,7 +4890,6 @@ body.chats-home-page-open .bottom-nav__label {
 }
 
 .chats-command {
-  top: calc(var(--app-safe-top) + 6px);
   border-color: rgba(255, 255, 255, 0.88);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(244, 249, 252, 0.95)),
@@ -4970,7 +4967,6 @@ body.chats-home-page-open .bottom-nav__label {
 
 @media (max-width: 430px) {
   .chats-command {
-    top: calc(var(--app-safe-top) + 6px);
     padding: 9px;
     border-radius: 20px;
   }
