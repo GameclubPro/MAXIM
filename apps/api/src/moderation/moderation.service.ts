@@ -338,6 +338,31 @@ type ForwardedRulesSource = {
 const DEFAULT_MUTE_DURATION_HOURS = 6;
 const MAX_ACTIVE_MUTE_DURATION_HOURS = 336;
 const PERMANENT_MUTE_COMMAND_DURATION_HOURS = 88;
+const DELETE_MESSAGE_PERMISSION_ALIASES = new Set([
+  'delete',
+  'delete_message',
+  'delete_messages',
+  'can_delete_message',
+  'can_delete_messages',
+  'post_edit_delete_message',
+  'post_edit_delete_messages',
+  'can_post_edit_delete_message',
+  'can_post_edit_delete_messages',
+]);
+const MODERATE_MEMBER_PERMISSION_ALIASES = new Set([
+  'add_remove_members',
+  'can_add_remove_members',
+  'remove_members',
+  'can_remove_members',
+  'manage_members',
+  'can_manage_members',
+  'kick_members',
+  'can_kick_members',
+  'ban_members',
+  'can_ban_members',
+  'delete_members',
+  'can_delete_members',
+]);
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
@@ -631,7 +656,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly moderationActionPermissionSkipLogAtMs = new Map<string, number>();
   private readonly moderationActionBotBackoffUntilMs = new Map<string, number>();
   private readonly moderationActionSnapshotRefreshUntilMs = new Map<string, number>();
-  private readonly moderationActionSnapshotRefreshInFlight = new Map<string, Promise<void>>();
+  private readonly moderationActionSnapshotRefreshInFlight = new Map<
+    string,
+    Promise<Set<string>>
+  >();
   private readonly managedPollCallbackChains = new Map<string, Promise<void>>();
   private readonly globalSpammerLocalChatObservations = new Map<string, number>();
   private readonly globalSpammerExemptionCache = new Map<
@@ -5195,38 +5223,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const result =
-        command.action === 'BAN'
-          ? await this.adminService.applyManualSystemBan(
-              chatId,
-              target.userId,
-              actor,
-              'group_command',
-            )
-          : await this.adminService.applyManualModerationAction(
-              chatId,
-              target.userId,
-              actor,
-              {
-                action: 'MUTE',
-                ...(command.mutePermanent
-                  ? { mutePermanent: true }
-                  : { muteDurationHours: command.muteDurationHours }),
-              },
-              'group_command',
-            );
-
-      await this.deleteForwardedModerationTargetMessage(chatId, target);
-      await this.deleteAdminCommandMessage(chatId, messageId);
-      const targetLabel = this.formatUserLabel(target.senderName ?? undefined, target.userId);
-      await this.sendGroupAdminCommandNotice({
-        chatId,
-        settings,
-        text:
-          command.action === 'BAN'
-            ? `Пользователь ${targetLabel} забанен.`
-            : `${result.message}\nПользователь: ${targetLabel}`,
+      const queued = await this.adminService.enqueueManualGroupModerationCommand({
+        sourceChatId: chatId,
+        targetUserId: target.userId,
+        targetSenderName: target.senderName ?? null,
+        targetMessageId: target.messageId ?? null,
+        commandMessageId: messageId,
+        actor,
+        action: command.action,
+        ...(command.action === 'MUTE'
+          ? command.mutePermanent
+            ? { mutePermanent: true }
+            : { muteDurationHours: command.muteDurationHours }
+          : {}),
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
+      if (!queued) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: senderId,
+            targetUserId: target.userId,
+            action: command.action,
+          },
+          'Failed to enqueue forwarded admin moderation command',
+        );
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5235,20 +5258,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           targetUserId: target.userId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to apply forwarded admin moderation command',
+        'Failed to enqueue forwarded admin moderation command',
       );
 
-      if (this.shouldSuppressGroupAdminCommandErrorNotice(error)) {
-        return true;
-      }
-
-      await this.sendGroupAdminCommandNotice({
-        chatId,
-        settings,
-        text: `Не удалось применить ${command.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMaxMarkdownText(
-          this.extractGroupAdminCommandErrorMessage(error),
-        )}`,
-      });
+      return true;
     }
 
     return true;
@@ -5802,29 +5815,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async deleteForwardedModerationTargetMessage(
-    chatId: string,
-    target: ForwardedModerationTarget,
-  ): Promise<void> {
-    if (target.chatId !== chatId || !target.messageId) {
-      return;
-    }
-
-    try {
-      await this.deleteMessageImmediately(chatId, target.messageId);
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          targetUserId: target.userId,
-          targetMessageId: target.messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete handled forwarded moderation target message',
-      );
-    }
-  }
-
   private async sendGroupAdminCommandNotice(params: {
     chatId: string;
     settings: ChatSettings;
@@ -5869,21 +5859,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return 'Попробуйте ещё раз через несколько секунд.';
-  }
-
-  private shouldSuppressGroupAdminCommandErrorNotice(error: unknown): boolean {
-    if (this.isMaxApiThrottleError(error) || this.isMaxApiTimeoutError(error)) {
-      return true;
-    }
-
-    const message = this.extractGroupAdminCommandErrorMessage(error).toLowerCase();
-    return (
-      message.includes('rate limit exceeded') ||
-      message.includes('circuit breaker') ||
-      message.includes('timeout') ||
-      message.includes('временно огранич') ||
-      (message.includes('max') && message.includes('повторите'))
-    );
   }
 
   private async handleActiveMuteMessage(params: {
@@ -11032,7 +11007,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     force?: boolean;
     skipBackoffClearBotIds?: readonly string[];
   }): Promise<string[]> {
-    await this.refreshModerationActionBotSnapshots(params);
+    const confirmedBotIds = await this.refreshModerationActionBotSnapshots(params);
     const candidateBotIds = (
       await this.resolveModerationActionBotIds({
         chatId: params.chatId,
@@ -11048,6 +11023,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (skippedBackoffClearBotIds.has(botId)) {
         continue;
       }
+      if (!confirmedBotIds.has(botId)) {
+        continue;
+      }
       await this.clearModerationActionBotBackoff(params.chatId, params.action, botId);
     }
     return candidateBotIds;
@@ -11057,17 +11035,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     action: 'delete_message' | 'moderate_member';
     force?: boolean;
-  }): Promise<void> {
+  }): Promise<Set<string>> {
     const refreshKey = this.buildModerationActionSnapshotRefreshKey(params.chatId, params.action);
     const inFlightRefresh = this.moderationActionSnapshotRefreshInFlight.get(refreshKey);
     if (inFlightRefresh) {
-      await inFlightRefresh;
-      return;
+      return await inFlightRefresh;
     }
 
     const refreshAllowedAtMs = this.moderationActionSnapshotRefreshUntilMs.get(refreshKey) ?? 0;
     if (!params.force && refreshAllowedAtMs > Date.now()) {
-      return;
+      return new Set();
     }
 
     const refreshPromise = this.refreshModerationActionBotSnapshotsInternal(
@@ -11081,16 +11058,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     });
     this.moderationActionSnapshotRefreshInFlight.set(refreshKey, refreshPromise);
-    await refreshPromise;
+    return await refreshPromise;
   }
 
   private async refreshModerationActionBotSnapshotsInternal(
     chatId: string,
     action: 'delete_message' | 'moderate_member',
-  ): Promise<void> {
+  ): Promise<Set<string>> {
     const botIds = await this.loadModerationActionSnapshotRefreshBotIds(chatId);
+    const confirmedBotIds = new Set<string>();
     if (botIds.length === 0) {
-      return;
+      return confirmedBotIds;
     }
 
     await Promise.all(
@@ -11102,10 +11080,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             actionHealthLane: 'background',
             timeoutMs: MODERATION_ACTION_PERMISSION_REFRESH_TIMEOUT_MS,
           });
-          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access);
+          if (
+            this.hasModerationActionAccess(access, action, {
+              requireExplicitPermission: true,
+            })
+          ) {
+            confirmedBotIds.add(botId);
+          }
+          await this.persistModerationActionBotAccessSnapshot(chatId, botId, access, { action });
         } catch (error: unknown) {
           if (this.isTerminalModerationActionPermissionError(error)) {
             await this.persistModerationActionBotAccessSnapshot(chatId, botId, null, {
+              action,
               error,
             });
             await this.recordModerationActionProblemChat({
@@ -11128,6 +11114,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }),
     );
+    return confirmedBotIds;
   }
 
   private async loadModerationActionSnapshotRefreshBotIds(chatId: string): Promise<string[]> {
@@ -11226,6 +11213,69 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to persist bot self access snapshot for moderation action fallback',
       );
     }
+  }
+
+  private hasModerationActionAccess(
+    access: Pick<MaxChatMemberAccess, 'isAdmin' | 'isOwner' | 'permissions'> | null,
+    action: 'delete_message' | 'moderate_member',
+    options?: { requireExplicitPermission?: boolean },
+  ): boolean {
+    if (!access) {
+      return false;
+    }
+
+    if (access.isOwner === true) {
+      return true;
+    }
+
+    const permissions = this.normalizeModerationActionPermissions(access.permissions);
+    if (permissions.length > 0) {
+      return permissions.some((permission) =>
+        this.isModerationActionPermission(permission, action),
+      );
+    }
+
+    if (options?.requireExplicitPermission) {
+      return false;
+    }
+
+    return access.isAdmin === true;
+  }
+
+  private normalizeModerationActionPermissions(
+    value: readonly string[] | null | undefined,
+  ): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .map((permission) => this.normalizeModerationActionPermissionName(permission))
+          .filter((permission): permission is string => permission.length > 0),
+      ),
+    );
+  }
+
+  private normalizeModerationActionPermissionName(permission: unknown): string {
+    if (typeof permission !== 'string') {
+      return '';
+    }
+
+    return permission
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/gu, '_');
+  }
+
+  private isModerationActionPermission(
+    permission: string,
+    action: 'delete_message' | 'moderate_member',
+  ): boolean {
+    return action === 'delete_message'
+      ? DELETE_MESSAGE_PERMISSION_ALIASES.has(permission)
+      : MODERATE_MEMBER_PERMISSION_ALIASES.has(permission);
   }
 
   private buildModerationActionBotBackoffKey(
@@ -11377,20 +11427,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const statusCode = issue?.error ? this.extractStatusCode(issue.error) : null;
     const code = issue?.error ? this.extractMaxErrorCode(issue.error) : null;
     const message = issue?.error ? this.extractMaxErrorMessage(issue.error) : null;
+    const permissions = this.normalizeModerationActionPermissions(access?.permissions);
+    const actionLimited =
+      Boolean(access && issue?.action) &&
+      !this.hasModerationActionAccess(access, issue?.action ?? 'delete_message', {
+        requireExplicitPermission: true,
+      });
 
     return {
       checkedAt: new Date().toISOString(),
       isAdmin: access?.isAdmin === true,
       isOwner: access?.isOwner === true,
-      permissions: Array.from(
-        new Set(
-          (access?.permissions ?? [])
-            .map((permission) => permission.trim())
-            .filter((permission) => permission.length > 0),
-        ),
-      ),
-      health: access ? 'ok' : 'access_limited',
-      ...(issue
+      permissions,
+      health: access ? (actionLimited ? 'action_limited' : 'ok') : 'access_limited',
+      ...(actionLimited && issue?.action ? { missingActions: [issue.action] } : {}),
+      ...(issue?.error
         ? {
             lastIssue: {
               kind: 'terminal_moderation_action',

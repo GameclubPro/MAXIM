@@ -21,8 +21,11 @@ const CHAT_ADMIN_ROSTER_SYNC_TIMEOUT_MS = 2_500;
 const CHAT_ADMIN_ROSTER_SYNC_FAST_LANE_TIMEOUT_MS = 1_500;
 const CHAT_ADMIN_ROSTER_SYNC_ACTION_HEALTH_LANE = 'background';
 const CHAT_ADMIN_ROSTER_DISCOVERY_SCHEDULE_CONCURRENCY = 4;
-const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 20;
-const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS = 2_000;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_ATTEMPTS = 8;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_INITIAL_DELAY_MS = 5_000;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_INITIAL_JITTER_MS = 5_000;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS = 5_000;
+const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_RETRY_UNTIL_TOLERANCE_MS = 10_000;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_ATTEMPTS = 6;
 const CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_MEMBERSHIP_CHURN_BACKOFF_DELAY_MS = 3_000;
 const CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY = 10;
@@ -104,6 +107,7 @@ export class MaxChatAdminRosterSyncService {
         priority: this.resolveJobPriority(desiredJobData),
         removeOnComplete: true,
         removeOnFail: false,
+        delay: this.resolveJobInitialDelayMs(desiredJobData),
         backoff: this.resolveJobBackoff(desiredJobData),
       });
       return true;
@@ -337,10 +341,35 @@ export class MaxChatAdminRosterSyncService {
       (left.title ?? null) === (right.title ?? null) &&
       (left.entityType ?? null) === (right.entityType ?? null) &&
       (left.source ?? null) === (right.source ?? null) &&
-      (left.retryUntilMs ?? null) === (right.retryUntilMs ?? null) &&
+      this.areRetryUntilMsEquivalent(left, right) &&
       left.botIds?.length === right.botIds?.length &&
       (left.botIds ?? []).every((botId, index) => botId === (right.botIds ?? [])[index])
     );
+  }
+
+  private areRetryUntilMsEquivalent(
+    left: MaxChatAdminRosterSyncJob,
+    right: MaxChatAdminRosterSyncJob,
+  ): boolean {
+    const leftRetryUntilMs = left.retryUntilMs ?? null;
+    const rightRetryUntilMs = right.retryUntilMs ?? null;
+    if (leftRetryUntilMs === rightRetryUntilMs) {
+      return true;
+    }
+
+    if (
+      left.source === 'webhook_bot_added' &&
+      right.source === 'webhook_bot_added' &&
+      typeof leftRetryUntilMs === 'number' &&
+      typeof rightRetryUntilMs === 'number'
+    ) {
+      return (
+        Math.abs(leftRetryUntilMs - rightRetryUntilMs) <=
+        CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_RETRY_UNTIL_TOLERANCE_MS
+      );
+    }
+
+    return false;
   }
 
   private buildJobId(chatId: string): string {
@@ -605,6 +634,17 @@ export class MaxChatAdminRosterSyncService {
     return CHAT_ADMIN_ROSTER_SYNC_DEFAULT_PRIORITY;
   }
 
+  private resolveJobInitialDelayMs(job: MaxChatAdminRosterSyncJob): number {
+    if (job.source !== 'webhook_bot_added') {
+      return 0;
+    }
+
+    return (
+      CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_INITIAL_DELAY_MS +
+      this.hashModulo(job.chatId, CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_INITIAL_JITTER_MS + 1)
+    );
+  }
+
   private resolveJobBackoff(job: MaxChatAdminRosterSyncJob):
     | {
         type: 'fixed';
@@ -616,7 +656,7 @@ export class MaxChatAdminRosterSyncService {
       } {
     if (job.source === 'webhook_bot_added') {
       return {
-        type: 'fixed',
+        type: 'exponential',
         delay: CHAT_ADMIN_ROSTER_SYNC_WEBHOOK_BOT_ADDED_BACKOFF_DELAY_MS,
       };
     }
@@ -636,6 +676,15 @@ export class MaxChatAdminRosterSyncService {
       type: 'exponential',
       delay: 1_000,
     };
+  }
+
+  private hashModulo(value: string, modulo: number): number {
+    if (modulo <= 1) {
+      return 0;
+    }
+
+    const digest = createHash('sha256').update(value).digest();
+    return digest.readUInt32BE(0) % modulo;
   }
 
   private buildChatAdminRosterReadOptions(

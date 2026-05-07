@@ -2491,7 +2491,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('lets traffic classes borrow spare global headroom without exceeding the global MAX API cap', async () => {
+  it('lets user-facing traffic classes borrow spare global headroom while capping background work', async () => {
     const service = createService(
       {},
       {
@@ -2504,7 +2504,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
 
     expect((service as any).resolveTrafficClassEffectiveRpsLimit('critical')).toBe(16);
     expect((service as any).resolveTrafficClassEffectiveRpsLimit('interactive')).toBe(14);
-    expect((service as any).resolveTrafficClassEffectiveRpsLimit('background')).toBe(8);
+    expect((service as any).resolveTrafficClassEffectiveRpsLimit('background')).toBe(4);
 
     await service.onModuleDestroy();
   });

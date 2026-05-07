@@ -574,7 +574,7 @@ describe('MaxBotLinkService', () => {
     );
   });
 
-  it('prefers the primary admin bot for group-chat deletes even when a standby bot has an explicit delete alias', async () => {
+  it('prefers a bot with an explicit delete alias when the primary snapshot lacks it', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-3', {
       id: 'chat-3',
@@ -623,10 +623,10 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toBe('id613002203036_bot');
+    ).resolves.toBe('id613002203036_4_bot');
   });
 
-  it('treats a primary admin bot as delete-capable in group chats even without an explicit delete alias', async () => {
+  it('does not treat non-empty admin permissions as delete-capable without a delete alias', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-4', {
       id: 'chat-4',
@@ -675,7 +675,7 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toBe('id613002203036_bot');
+    ).resolves.toBeNull();
   });
 
   it('returns null for member moderation when every active bot explicitly lacks the permission', async () => {
@@ -824,7 +824,7 @@ describe('MaxBotLinkService', () => {
     ).resolves.toBe('id613002203036_4_bot');
   });
 
-  it('returns ordered moderation action candidates so callers can retry another bot after a terminal failure', async () => {
+  it('excludes primary moderation action candidates that explicitly lack delete permission', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-7', {
       id: 'chat-7',
@@ -873,10 +873,10 @@ describe('MaxBotLinkService', () => {
         action: 'delete_message',
         fallbackToPrimary: false,
       }),
-    ).resolves.toEqual(['id613002203036_bot', 'id613002203036_4_bot']);
+    ).resolves.toEqual(['id613002203036_4_bot']);
   });
 
-  it('returns a structured moderation route with ordered retry candidates', async () => {
+  it('returns a structured moderation route for the confirmed delete-capable bot', async () => {
     const fixture = createServiceFixture();
     fixture.chats.set('chat-route-7', {
       id: 'chat-route-7',
@@ -930,9 +930,9 @@ describe('MaxBotLinkService', () => {
       purpose: 'moderation_action',
       chatId: 'chat-route-7',
       primaryBotId: 'id613002203036_bot',
-      botId: 'id613002203036_bot',
-      candidateBotIds: ['id613002203036_bot', 'id613002203036_4_bot'],
-      reason: 'primary_confirmed',
+      botId: 'id613002203036_4_bot',
+      candidateBotIds: ['id613002203036_4_bot'],
+      reason: 'alternate_confirmed',
       action: 'delete_message',
     });
   });

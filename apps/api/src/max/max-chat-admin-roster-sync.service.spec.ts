@@ -61,7 +61,7 @@ describe('MaxChatAdminRosterSyncService', () => {
     };
   }
 
-  it('enqueues fresh webhook bot_added jobs with a denser fixed retry cadence', async () => {
+  it('enqueues fresh webhook bot_added jobs with delayed exponential retry cadence', async () => {
     const { service, queue } = createService();
 
     await expect(
@@ -82,14 +82,50 @@ describe('MaxChatAdminRosterSyncService', () => {
         source: 'webhook_bot_added',
       }),
       expect.objectContaining({
-        attempts: 20,
+        attempts: 8,
         priority: 1,
+        delay: expect.any(Number),
         backoff: {
-          type: 'fixed',
-          delay: 2_000,
+          type: 'exponential',
+          delay: 5_000,
         },
       }),
     );
+    const options = queue.add.mock.calls[0]?.[2] as { delay?: number };
+    expect(options.delay).toBeGreaterThanOrEqual(5_000);
+    expect(options.delay).toBeLessThanOrEqual(10_000);
+  });
+
+  it('keeps an equivalent delayed bot_added roster sync instead of rescheduling retryUntil churn', async () => {
+    const { service, queue } = createService();
+    const remove = jest.fn();
+    const baseRetryUntilMs = Date.now() + 45_000;
+    queue.getJob.mockResolvedValue({
+      getState: jest.fn().mockResolvedValue('delayed'),
+      remove,
+      data: {
+        chatId: '-100122',
+        botIds: ['bot-1'],
+        title: 'Fresh chat',
+        entityType: 'chat',
+        source: 'webhook_bot_added',
+        retryUntilMs: baseRetryUntilMs,
+      },
+    });
+
+    await expect(
+      service.scheduleChatAdminRosterSync({
+        chatId: '-100122',
+        botIds: ['bot-1'],
+        title: 'Fresh chat',
+        entityType: 'chat',
+        source: 'webhook_bot_added',
+        retryUntilMs: baseRetryUntilMs + 5_000,
+      }),
+    ).resolves.toBe(true);
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('prioritizes webhook membership churn roster sync jobs ahead of discovery sync', async () => {

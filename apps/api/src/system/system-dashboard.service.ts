@@ -79,6 +79,8 @@ export class SystemDashboardService {
     const criticalRate = mode.action.criticalRate;
     const errorRate = mode.action.errorRate;
     const stabilizing = this.isStabilizing(mode, queueLagSec);
+    const hotPathTimeoutCount =
+      runtimeDiagnostics?.hotPath.stages.reduce((sum, stage) => sum + stage.timeoutCount, 0) ?? 0;
 
     if (mode.source === 'manual') {
       alerts.push({
@@ -210,6 +212,11 @@ export class SystemDashboardService {
       alerts.push(problemChatsAlert);
     }
 
+    const hotPathTimeoutAlert = this.buildHotPathTimeoutAlert(runtimeDiagnostics?.hotPath);
+    if (hotPathTimeoutAlert) {
+      alerts.push(hotPathTimeoutAlert);
+    }
+
     const webhookSloAlert = this.buildWebhookSloAlert(webhookSlo);
     if (webhookSloAlert) {
       alerts.push(webhookSloAlert);
@@ -228,6 +235,8 @@ export class SystemDashboardService {
       problemChatsWarning:
         runtimeDiagnostics?.problemChats?.items.some((item) => item.severity === 'warning') ??
         false,
+      hotPathTimeoutCritical: hotPathTimeoutCount >= 10,
+      hotPathTimeoutWarning: hotPathTimeoutCount > 0,
       webhookSloStatus: webhookSlo?.status ?? null,
     });
 
@@ -277,6 +286,8 @@ export class SystemDashboardService {
     webhookSubscriptionStatus: WebhookSubscriptionSnapshot['status'];
     problemChatsCritical?: boolean;
     problemChatsWarning?: boolean;
+    hotPathTimeoutCritical?: boolean;
+    hotPathTimeoutWarning?: boolean;
     webhookSloStatus?: WebhookSloSnapshot['status'] | null;
   }): SystemDashboardStatus {
     if (
@@ -286,6 +297,7 @@ export class SystemDashboardService {
       input.criticalRate >= ACTION_RATE_CRITICAL_THRESHOLD ||
       input.webhookSubscriptionStatus === 'critical' ||
       input.problemChatsCritical === true ||
+      input.hotPathTimeoutCritical === true ||
       input.webhookSloStatus === 'critical'
     ) {
       return 'critical';
@@ -298,6 +310,7 @@ export class SystemDashboardService {
       input.errorRate > ACTION_RATE_WARNING_THRESHOLD ||
       input.webhookSubscriptionStatus === 'warning' ||
       input.problemChatsWarning === true ||
+      input.hotPathTimeoutWarning === true ||
       input.webhookSloStatus === 'warning'
     ) {
       return 'warning';
@@ -487,6 +500,31 @@ export class SystemDashboardService {
       detail: `${items.length} чатов/сценариев за окно ${problemChats?.windowSec ?? 0} сек. Топ: ${top.chatId}, ${top.category}, ${top.reason}.`,
       recommendedAction:
         'Откройте system dashboard/problemChats или логи по chatId: чаще всего нужно восстановить права бота или снизить фоновые MAX-запросы.',
+    };
+  }
+
+  private buildHotPathTimeoutAlert(
+    hotPath:
+      | Awaited<ReturnType<RuntimeDiagnosticsService['getDashboardSnapshot']>>['hotPath']
+      | undefined,
+  ): SystemDashboardAlert | null {
+    const stages = hotPath?.stages ?? [];
+    const top = stages.find((stage) => stage.timeoutCount > 0);
+    if (!top) {
+      return null;
+    }
+
+    const totalTimeouts = stages.reduce((sum, stage) => sum + stage.timeoutCount, 0);
+    return {
+      code: 'webhook-hot-path-timeouts',
+      level: totalTimeouts >= 10 ? 'critical' : 'warning',
+      title:
+        totalTimeouts >= 10
+          ? 'Webhook hot path регулярно упирается в watchdog'
+          : 'Есть timeout в webhook hot path',
+      detail: `${totalTimeouts} timeout за окно ${hotPath?.windowSec ?? 0} сек. Топ-стадия: ${top.stage}, max ${top.maxElapsedMs} мс.`,
+      recommendedAction:
+        'Уберите синхронный MAX API или тяжёлую работу из этой стадии; для group/admin actions используйте очередь.',
     };
   }
 

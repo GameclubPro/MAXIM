@@ -8370,14 +8370,8 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
-      applyManualSystemBan: jest.fn().mockResolvedValue({
-        ok: true,
-        action: 'BAN',
-        userId: 'user-2',
-        muteDurationHours: null,
-        unbanScheduledAt: null,
-        message: 'Пользователь забанен.',
-      }),
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -8396,32 +8390,30 @@ describe('ModerationService', () => {
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
-    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
-        chatTitle: null,
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: 'mid-forward-ban-1',
+        commandMessageId: 'msg-admin-forward-ban-1',
+        action: 'BAN',
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+          chatTitle: null,
+        }),
       }),
-      'group_command',
     );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-forward-ban-1', {
-      immediate: true,
-    });
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-ban-1', {
-      immediate: true,
-    });
-    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(
-      sentTexts.some((text) =>
-        text.includes(`Пользователь ${userMention('Нарушитель', 'user-2')} забанен.`),
-      ),
-    ).toBe(true);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
-  it('executes group forwarded moderation commands immediately when async fanout is available', async () => {
+  it('queues group forwarded moderation commands outside the webhook hot path', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -8483,33 +8475,26 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
-    expect(adminService.enqueueManualGroupModerationCommand).not.toHaveBeenCalled();
-    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetMessageId: 'mid-forward-ban-1',
+        commandMessageId: 'msg-admin-forward-ban-1',
+        action: 'BAN',
+        deleteBotMessagesEnabled: true,
+        deleteBotMessagesDelayMinutes: 3,
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
       }),
-      'group_command',
     );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-forward-ban-1', {
-      immediate: true,
-    });
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-ban-1', {
-      immediate: true,
-    });
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('Пользователь [Нарушитель](max://user/user-2) забанен.'),
-      { textFormat: 'markdown' },
-      expect.objectContaining({
-        immediate: true,
-        autoDeleteDelayMs: 3 * 60 * 1000,
-      }),
-    );
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('lets chat admins mute a replied sender with the default duration', async () => {
@@ -8550,15 +8535,9 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
       applyManualSystemBan: jest.fn(),
-      applyManualModerationAction: jest.fn().mockResolvedValue({
-        ok: true,
-        action: 'MUTE',
-        userId: 'user-2',
-        muteDurationHours: 6,
-        muteExpiresAt: '2026-03-27T01:00:00.000Z',
-        message: 'Мут на 6ч.',
-      }),
+      applyManualModerationAction: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -8577,32 +8556,27 @@ describe('ModerationService', () => {
     await service.handleUpdate(createAdminLinkedModerationUpdate());
 
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
-        chatTitle: null,
-      }),
-      {
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetSenderName: 'Нарушитель',
+        targetMessageId: null,
+        commandMessageId: 'msg-admin-link-moderation-1',
         action: 'MUTE',
         muteDurationHours: 6,
-      },
-      'group_command',
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+          chatTitle: null,
+        }),
+      }),
     );
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-link-moderation-1', {
-      immediate: true,
-    });
-    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Мут на 6ч.'))).toBe(true);
-    expect(
-      sentTexts.some((text) =>
-        text.includes(`Пользователь: ${userMention('Нарушитель', 'user-2')}`),
-      ),
-    ).toBe(true);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('lets chat admins mute a replied sender for an explicit duration', async () => {
@@ -8643,15 +8617,9 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
       applyManualSystemBan: jest.fn(),
-      applyManualModerationAction: jest.fn().mockResolvedValue({
-        ok: true,
-        action: 'MUTE',
-        userId: 'user-2',
-        muteDurationHours: 12,
-        muteExpiresAt: '2026-03-27T07:00:00.000Z',
-        message: 'Мут на 12ч.',
-      }),
+      applyManualModerationAction: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -8669,22 +8637,22 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('мут 12'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
-      }),
-      {
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        commandMessageId: 'msg-admin-link-moderation-1',
         action: 'MUTE',
         muteDurationHours: 12,
-      },
-      'group_command',
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
+      }),
     );
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
-    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Мут на 12ч.'))).toBe(true);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('treats group mute command duration 88 as a permanent mute', async () => {
@@ -8725,15 +8693,9 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
       applyManualSystemBan: jest.fn(),
-      applyManualModerationAction: jest.fn().mockResolvedValue({
-        ok: true,
-        action: 'MUTE',
-        userId: 'user-2',
-        muteDurationHours: null,
-        muteExpiresAt: null,
-        message: 'Мут бессрочно.',
-      }),
+      applyManualModerationAction: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -8751,22 +8713,22 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createAdminLinkedModerationUpdate('мут 88'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
-      }),
-      {
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        commandMessageId: 'msg-admin-link-moderation-1',
         action: 'MUTE',
         mutePermanent: true,
-      },
-      'group_command',
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
+      }),
     );
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
-    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(sentTexts.some((text) => text.includes('Мут бессрочно.'))).toBe(true);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('lets chat admins bind forwarded rules message to moderation buttons', async () => {
@@ -9280,14 +9242,8 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
-      applyManualSystemBan: jest.fn().mockResolvedValue({
-        ok: true,
-        action: 'BAN',
-        userId: 'user-2',
-        muteDurationHours: null,
-        unbanScheduledAt: null,
-        message: 'Пользователь забанен.',
-      }),
+      enqueueManualGroupModerationCommand: jest.fn().mockResolvedValue(true),
+      applyManualSystemBan: jest.fn(),
     };
 
     const service = new ModerationService(
@@ -9306,15 +9262,20 @@ describe('ModerationService', () => {
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
-      'chat-1',
-      'user-2',
+    expect(adminService.enqueueManualGroupModerationCommand).toHaveBeenCalledWith(
       expect.objectContaining({
-        userId: 'admin-1',
-        chatId: 'chat-1',
+        sourceChatId: 'chat-1',
+        targetUserId: 'user-2',
+        targetMessageId: 'mid-forward-ban-1',
+        commandMessageId: 'msg-admin-forward-ban-1',
+        action: 'BAN',
+        actor: expect.objectContaining({
+          userId: 'admin-1',
+          chatId: 'chat-1',
+        }),
       }),
-      'group_command',
     );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
   });
 
   it('does not require a shared execution lock for owner-stamped shared chat updates', async () => {

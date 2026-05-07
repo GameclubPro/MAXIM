@@ -1413,7 +1413,7 @@ export class MaxBotLinkService {
   private hasModerationActionPermission(
     snapshot: MembershipAccessSnapshot | null,
     action: ModerationActionPermission,
-    entityType: ChatEntityType | null,
+    _entityType: ChatEntityType | null,
   ): boolean {
     if (!snapshot) {
       return false;
@@ -1421,12 +1421,6 @@ export class MaxBotLinkService {
 
     if (snapshot.isOwner) {
       return true;
-    }
-
-    // MAX group-chat membership snapshots often omit explicit delete aliases
-    // even when the admin bot can delete offending user messages.
-    if (action === 'delete_message' && this.adminImpliesDeleteMessage(entityType)) {
-      return snapshot.isAdmin;
     }
 
     if (snapshot.permissions.length === 0) {
@@ -1441,7 +1435,7 @@ export class MaxBotLinkService {
   private membershipExplicitlyLacksModerationAction(
     value: unknown,
     action: ModerationActionPermission,
-    entityType: ChatEntityType | null,
+    _entityType: ChatEntityType | null,
   ): boolean {
     const snapshot = this.normalizeMembershipAccessSnapshot(value);
     if (!snapshot) {
@@ -1450,10 +1444,6 @@ export class MaxBotLinkService {
 
     if (snapshot.isOwner) {
       return false;
-    }
-
-    if (action === 'delete_message' && this.adminImpliesDeleteMessage(entityType)) {
-      return !snapshot.isAdmin;
     }
 
     if (snapshot.permissions.length === 0) {
@@ -1477,10 +1467,6 @@ export class MaxBotLinkService {
     return action === 'delete_message'
       ? DELETE_MESSAGE_PERMISSION_ALIASES.has(normalized)
       : MODERATE_MEMBER_PERMISSION_ALIASES.has(normalized);
-  }
-
-  private adminImpliesDeleteMessage(entityType: ChatEntityType | null): boolean {
-    return entityType !== ChatEntityType.CHANNEL;
   }
 
   private normalizePermissionName(permission: unknown): string {

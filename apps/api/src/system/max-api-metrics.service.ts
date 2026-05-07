@@ -466,12 +466,14 @@ export class MaxApiMetricsService implements OnModuleDestroy {
 
   private resolveTrafficClassEffectiveRpsLimit(trafficClass: MaxApiTrafficClass): number {
     const configuredLimit = this.resolveTrafficClassGlobalRpsLimit(trafficClass);
+    if (trafficClass === 'background') {
+      return configuredLimit;
+    }
+
     const reservedForOtherClasses = (() => {
       switch (trafficClass) {
         case 'critical':
           return this.interactiveGlobalRpsLimit + this.backgroundGlobalRpsLimit;
-        case 'background':
-          return this.criticalGlobalRpsLimit + this.interactiveGlobalRpsLimit;
         case 'interactive':
         default:
           return this.criticalGlobalRpsLimit + this.backgroundGlobalRpsLimit;
