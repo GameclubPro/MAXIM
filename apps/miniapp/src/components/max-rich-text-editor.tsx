@@ -11,6 +11,7 @@ import {
 import { MAX_MARKDOWN_TOOL_DEFINITIONS, type MaxMarkdownTool } from './max-markdown-editor';
 import { cn } from '../lib/cn';
 import { renderSupportedMarkdownAsHtml } from '../lib/max-markdown';
+import { clipboardHtmlToSupportedMarkdown } from '../lib/max-rich-text-clipboard';
 
 export type MaxRichTextEditorHandle = {
   focus: () => void;
@@ -277,6 +278,14 @@ export const MaxRichTextEditor = forwardRef<MaxRichTextEditorHandle, MaxRichText
           onFocus={syncActiveTools}
           onPaste={(event) => {
             event.preventDefault();
+            const pastedHtml = event.clipboardData.getData('text/html');
+            const pastedMarkdown = pastedHtml ? clipboardHtmlToSupportedMarkdown(pastedHtml) : '';
+            if (pastedMarkdown && insertSupportedMarkdownAtCurrentRange(pastedMarkdown)) {
+              emitCurrentMarkdown();
+              syncActiveTools();
+              return;
+            }
+
             const pastedText = event.clipboardData.getData('text/plain');
             insertPlainTextAtCurrentRange(pastedText);
             emitCurrentMarkdown();
@@ -458,6 +467,41 @@ function insertPlainTextAtCurrentRange(text: string): void {
   range.setStartAfter(node);
   range.collapse(true);
   applyDocumentRange(range);
+}
+
+function insertSupportedMarkdownAtCurrentRange(markdown: string): boolean {
+  if (typeof document === 'undefined') {
+    return false;
+  }
+
+  const selection = document.getSelection();
+  if (!selection || selection.rangeCount === 0) {
+    return false;
+  }
+
+  const html = renderSupportedMarkdownAsHtml(markdown, {
+    blockMode: 'inline',
+    linkMode: 'anchor',
+  });
+  if (!html) {
+    return false;
+  }
+
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const fragment = template.content;
+  const lastNode = fragment.lastChild;
+  if (!lastNode) {
+    return false;
+  }
+
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(fragment);
+  range.setStartAfter(lastNode);
+  range.collapse(true);
+  applyDocumentRange(range);
+  return true;
 }
 
 function resolveActiveTools(editor: HTMLElement, range: Range): ReadonlySet<MaxMarkdownTool> {
